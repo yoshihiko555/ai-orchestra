@@ -102,6 +102,7 @@ BUILD_TIMEOUT_SECONDS = 180
 CAPABILITY_SMOKE_TIMEOUT_SECONDS = 60
 JUDGE_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TIMEOUT_MS = 60000
+_ORACLE_STDERR_EXCERPT_MAX_CHARS = 4000
 MAX_ORACLE_ARTIFACT_BYTES = 5_000_000
 RUN_ID_NONCE_BYTES = 4
 EVALUATION_ID_NONCE_BYTES = 4
@@ -1891,7 +1892,7 @@ def _oracle_command_exit(
         raise EvaluatorStageError("oracle", "oracle_error", str(exc)) from exc
     detail = f"exit={completed.returncode}"
     if completed.returncode != 0:
-        detail += f" stderr={completed.stderr.strip()[:500]}"
+        detail += f" stderr={completed.stderr.strip()[:_ORACLE_STDERR_EXCERPT_MAX_CHARS]}"
     return _check_result(check, completed.returncode == 0, detail)
 
 
@@ -2211,7 +2212,7 @@ def _judge_via_claude_bare(
         return JudgeVerdict(
             False,
             f"judge unavailable: claude --bare exited {completed.returncode}: "
-            f"{completed.stderr.strip()[:500]}",
+            f"{completed.stderr.strip()[:_ORACLE_STDERR_EXCERPT_MAX_CHARS]}",
             "claude-bare",
             error=True,
         )

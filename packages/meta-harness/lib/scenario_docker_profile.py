@@ -150,6 +150,12 @@ def build_oracle_command(launch: Any, command: str, *, container_name: str) -> l
             CONTAINER_GIT_LINK,
             read_only=True,
         ),
+        "--mount",
+        _bind_mount(
+            launch.runtime_state_dir / "ignored-baseline.json",
+            f"{CONTAINER_RUNTIME}/ignored-baseline.json",
+            read_only=True,
+        ),
         "--tmpfs",
         _tmpfs(CONTAINER_TMP, uid, gid, size="64m"),
         "--workdir",

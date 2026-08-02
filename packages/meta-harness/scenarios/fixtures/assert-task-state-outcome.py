@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import re
 import subprocess
@@ -645,11 +646,82 @@ def _is_symlink(cwd: Path | None, relative_path: str) -> bool:
     return (root / relative_path).is_symlink()
 
 
+def _load_ignored_baseline(path: Path | None) -> frozenset[str]:
+    """Load the ignored-path baseline, failing closed when it is absent."""
+    if path is None or not path.exists():
+        return frozenset()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"invalid ignored baseline file {path}: {exc}") from exc
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("ignored_paths"), list)
+        or not all(isinstance(item, str) for item in payload["ignored_paths"])
+    ):
+        raise ValueError(
+            f"invalid ignored baseline file {path}: expected an ignored_paths list of strings"
+        )
+    return frozenset(payload["ignored_paths"])
+
+
+def _walk_ignored_directory_files(cwd: Path | None, relative_directory: str) -> list[str]:
+    """Expand a collapsed ignored directory without following symlinked subdirectories.
+
+    `os.walk(..., followlinks=False)` never recurses into a symlinked subdirectory, but it
+    still reports that subdirectory's name in `dirnames` -- it does *not* silently drop it.
+    The original implementation only inspected `filenames`, so a candidate-created symlink
+    pointing at a directory (e.g. `ln -s / .claude/meta-harness/evil-link`) never appeared in
+    the returned paths at all, letting it slip past the unconditional symlink rejection in
+    `_is_disallowed_ignored_path`. Each symlinked subdirectory name must therefore be recorded
+    here as its own path (its target is irrelevant -- only that a symlink exists at that path
+    matters to callers), and then pruned from `dirnames` in place so the walk still does not
+    descend into it (topdown `os.walk` respects in-place mutation of the `dirnames` list it
+    yields).
+    """
+    root = cwd if cwd is not None else Path.cwd()
+    paths: list[str] = []
+    for directory, subdirectories, filenames in os.walk(
+        root / relative_directory, followlinks=False
+    ):
+        symlinked_subdirectories = [
+            name for name in subdirectories if (Path(directory) / name).is_symlink()
+        ]
+        for name in symlinked_subdirectories:
+            paths.append((Path(directory) / name).relative_to(root).as_posix())
+        subdirectories[:] = [
+            name for name in subdirectories if name not in symlinked_subdirectories
+        ]
+        for filename in filenames:
+            path = Path(directory) / filename
+            if not path.is_file() and not path.is_symlink():
+                continue
+            paths.append(path.relative_to(root).as_posix())
+    return paths
+
+
+def _is_disallowed_ignored_path(
+    path: str,
+    *,
+    cwd: Path | None,
+    ignored_baseline: frozenset[str],
+    allowed_paths: set[str],
+    allowed_new_prefixes: tuple[str, ...],
+) -> bool:
+    """Reject symlinks always; otherwise accept baseline or explicitly allowed paths."""
+    return _is_symlink(cwd, path) or (
+        path not in ignored_baseline
+        and path not in allowed_paths
+        and not path.startswith(allowed_new_prefixes)
+    )
+
+
 def assert_tracked_changes_limited_to(
     allowed_paths: set[str],
     *,
     allowed_new_prefixes: tuple[str, ...] = (),
     ignored_scan_prefixes: tuple[str, ...] = (),
+    ignored_baseline_file: Path | None = None,
     cwd: Path | None = None,
 ) -> None:
     """Assert no tracked file outside `allowed_paths` differs from the pre-run baseline commit,
@@ -710,6 +782,16 @@ def assert_tracked_changes_limited_to(
     ignored writes under that root (e.g. `CANDIDATE_FINAL_REPORT_RELATIVE_PATH`) in
     `allowed_paths`.
 
+    Ignored-path baseline (Issue #350): the isolated snapshot's fresh index drops files that
+    were force-added in the real repository despite matching `.gitignore`, which otherwise
+    makes unchanged files look like newly created ignored collateral. When
+    `ignored_baseline_file` names the JSON written by
+    `scenario_isolation._prepare_isolated_git`, pre-existing ignored paths recorded there are
+    excluded from this scan. Collapsed ignored directories are expanded when the baseline can
+    excuse one of their files, so a new sibling remains detectable. Symlinks are still rejected
+    unconditionally, including when their exact path appears in the baseline. A missing or
+    omitted baseline fails closed and preserves the prior allowlist-only behavior.
+
     `cwd` defaults to the process's own working directory (the production oracle container
     sets `--workdir /workspace` and relies on the process cwd); tests pass an explicit
     temporary git repo instead.
@@ -753,6 +835,7 @@ def assert_tracked_changes_limited_to(
 
     if not ignored_scan_prefixes:
         return
+    ignored_baseline = _load_ignored_baseline(ignored_baseline_file)
     ignored_status_tokens = _run_git_z(
         ["git", "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all"],
         cwd=cwd,
@@ -762,12 +845,26 @@ def assert_tracked_changes_limited_to(
         for path in _parse_ignored_paths(ignored_status_tokens)
         if path.startswith(ignored_scan_prefixes)
     ]
-    disallowed_ignored = [
-        path
-        for path in ignored_in_scope
-        if _is_symlink(cwd, path)
-        or (path not in allowed_paths and not path.startswith(allowed_new_prefixes))
-    ]
+    disallowed_ignored: list[str] = []
+    for path in ignored_in_scope:
+        if _is_symlink(cwd, path):
+            disallowed_ignored.append(path)
+            continue
+        baseline_has_child = path.endswith("/") and any(
+            baseline_path.startswith(path) for baseline_path in ignored_baseline
+        )
+        paths_to_check = _walk_ignored_directory_files(cwd, path) if baseline_has_child else [path]
+        disallowed_ignored.extend(
+            checked_path
+            for checked_path in paths_to_check
+            if _is_disallowed_ignored_path(
+                checked_path,
+                cwd=cwd,
+                ignored_baseline=ignored_baseline,
+                allowed_paths=allowed_paths,
+                allowed_new_prefixes=allowed_new_prefixes,
+            )
+        )
     assert not disallowed_ignored, (
         f"new git-ignored files under {sorted(ignored_scan_prefixes)} outside the allowed scope "
         f"({sorted(allowed_paths)}) and allowed prefixes {sorted(allowed_new_prefixes)} (or are "
@@ -834,6 +931,17 @@ def main(argv: list[str] | None = None) -> None:
             "`.claude/meta-harness/`) completely undetected (PR #326 review round 5, Codex P1)"
         ),
     )
+    collateral_scope.add_argument(
+        "--ignored-baseline-file",
+        type=Path,
+        default=None,
+        help=(
+            "JSON file written by scenario_isolation._prepare_isolated_git with pre-existing "
+            "ignored paths. Paths recorded there are excluded from the ignored-file scan "
+            "(Issue #350 baseline-diff fix); ignored paths absent from it are still flagged "
+            "by the existing allowlist rules"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -842,6 +950,7 @@ def main(argv: list[str] | None = None) -> None:
             set(args.allow),
             allowed_new_prefixes=tuple(args.allow_new_prefix),
             ignored_scan_prefixes=tuple(args.ignored_scan_prefix),
+            ignored_baseline_file=args.ignored_baseline_file,
         )
         return
 

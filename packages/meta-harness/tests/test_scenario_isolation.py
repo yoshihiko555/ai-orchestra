@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import shutil
 import subprocess
@@ -230,6 +231,121 @@ def test_container_git_wrapper_uses_fixed_image_git_not_itself(
     assert "exec /usr/bin/git --git-dir=/runtime/git-snapshot" in wrapper
     assert "--work-tree=/workspace" in wrapper
     assert wrapper_dir.stat().st_mode & 0o777 == 0o711
+
+
+def test_prepare_isolated_git_records_tracked_but_ignored_file_in_baseline(
+    git_project: Path, tmp_path: Path
+) -> None:
+    gitignore = git_project / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + ".claude/docs/\n",
+        encoding="utf-8",
+    )
+    plan = git_project / ".claude" / "docs" / "plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("tracked despite gitignore\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=git_project, check=True)
+    subprocess.run(["git", "add", "-f", ".claude/docs/plan.md"], cwd=git_project, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=meta-harness-test",
+            "-c",
+            "user.email=meta-harness-test@invalid",
+            "commit",
+            "-q",
+            "-m",
+            "add tracked ignored file",
+        ],
+        cwd=git_project,
+        check=True,
+    )
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=git_project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    runtime = tmp_path / "ignored-runtime"
+    runtime.mkdir()
+
+    siso._prepare_isolated_git(
+        worktree_dir=git_project,
+        runtime_state_dir=runtime,
+        source_commit=source_commit,
+        runner=subprocess.run,
+    )
+
+    baseline_path = runtime / "ignored-baseline.json"
+    assert baseline_path.is_file()
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert ".claude/docs/plan.md" in baseline["ignored_paths"]
+
+
+def test_prepare_isolated_git_records_symlinked_ignored_directory_without_descending_into_it(
+    git_project: Path, tmp_path: Path
+) -> None:
+    """A symlink whose *target* is a directory is reported by `os.walk` in `dirnames`, not
+    `filenames`. The baseline collector must record the symlink's own path (so the
+    collateral-scope oracle's unconditional symlink rejection can catch a candidate that plants
+    `ln -s <dir> .claude/docs/evil-link` inside an already-tracked-but-ignored directory) without
+    following it into the linked-to directory's contents."""
+    gitignore = git_project / ".gitignore"
+    gitignore.write_text(
+        gitignore.read_text(encoding="utf-8") + ".claude/docs/\n",
+        encoding="utf-8",
+    )
+    plan = git_project / ".claude" / "docs" / "plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("tracked despite gitignore\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=git_project, check=True)
+    subprocess.run(["git", "add", "-f", ".claude/docs/plan.md"], cwd=git_project, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=meta-harness-test",
+            "-c",
+            "user.email=meta-harness-test@invalid",
+            "commit",
+            "-q",
+            "-m",
+            "add tracked ignored file",
+        ],
+        cwd=git_project,
+        check=True,
+    )
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=git_project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    # A marker file inside the symlink target: if the walk ever followed the symlink, this
+    # would leak into the baseline as `.claude/docs/evil-link/leak-marker.txt`.
+    link_target = tmp_path / "outside-target"
+    link_target.mkdir()
+    (link_target / "leak-marker.txt").write_text("should never be walked into\n", encoding="utf-8")
+    (git_project / ".claude" / "docs" / "evil-link").symlink_to(
+        link_target, target_is_directory=True
+    )
+    runtime = tmp_path / "ignored-symlink-runtime"
+    runtime.mkdir()
+
+    siso._prepare_isolated_git(
+        worktree_dir=git_project,
+        runtime_state_dir=runtime,
+        source_commit=source_commit,
+        runner=subprocess.run,
+    )
+
+    baseline = json.loads((runtime / "ignored-baseline.json").read_text(encoding="utf-8"))
+    ignored_paths = baseline["ignored_paths"]
+    assert ".claude/docs/evil-link" in ignored_paths
+    assert not any(path.startswith(".claude/docs/evil-link/") for path in ignored_paths)
 
 
 def test_real_scenario_srt_blocks_store_path(git_project: Path, tmp_path: Path) -> None:

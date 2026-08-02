@@ -1217,10 +1217,22 @@
   notes: >-
     Mechanical scan asserts every bypassPermissions scenario yaml carries a collateral-scope
     critical check (PR #273 final review, security+spec Medium). TestCollateralScopeOracle
-    (15 cases) covers the oracle's own correctness: tracked diff scoping including staged
+    (24 cases) covers the oracle's own correctness: tracked diff scoping including staged
     additions (status A) vs modifications/deletions/renames, unconditional untracked scanning
     (no allowed_new_prefixes-empty skip), space/quote-safe -z parsing, and symlink rejection
-    regardless of path allowlist match (security High, PR #273 final review).
+    regardless of path allowlist match (security High, PR #273 final review). Issue #350
+    added the baseline-diff ignored-file coverage: opt-in --ignored-scan-prefix defaults to
+    the strict fail-closed behavior when no --ignored-baseline-file is supplied, a supplied
+    baseline excuses only pre-existing ignored paths (not new ones, including new siblings
+    under a collapsed baseline directory), and baseline membership never excuses a symlink --
+    including a symlinked *directory* nested inside a baseline-expanded collapsed ignored
+    directory (code-reviewer/security-reviewer Critical follow-up: `os.walk` reports a
+    symlinked subdirectory in `dirnames`, not `filenames`, so the original expansion helper
+    silently dropped it; `test_ignored_baseline_file_still_rejects_symlinked_directory_inside_collapsed_ignored_dir`
+    pins the fix). The companion baseline-recording tests live in test_scenario_isolation.py
+    (whole file already covered by EV-46's command) --
+    test_prepare_isolated_git_records_tracked_but_ignored_file_in_baseline and
+    test_prepare_isolated_git_records_symlinked_ignored_directory_without_descending_into_it.
 
 - ev_id: EV-98
   phase: 3
