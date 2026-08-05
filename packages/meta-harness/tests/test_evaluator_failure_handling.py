@@ -386,3 +386,116 @@ class TestLedgerAppendLockConflictIsDiagnosable:
             raise AssertionError(
                 "LockAcquisitionError must propagate so the CLI can normalize it to exit 3"
             )
+
+
+def test_judge_claude_bare_nonzero_exit_reports_both_stderr_and_stdout(monkeypatch) -> None:
+    """Issue #354: claude --bare の非ゼロ終了時、従来は stderr のみをメッセージへ採用して
+    stdout を破棄していた。`--output-format json` はエラー診断を stdout の JSON へ書くことが
+    あるため（実測では stderr が空文字で真因が artifacts から追跡不能だった）、エラー
+    メッセージに stderr と stdout の両方の抜粋が含まれることを固定する。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+
+    def fake_runner(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            returncode=1,
+            stdout='{"type":"error","message":"model not allowed by broker"}',
+            stderr="",
+        )
+
+    verdict = ev._judge_via_claude_bare(
+        "irrelevant prompt",
+        {},
+        max_output_tokens=1024,
+        isolation_launch=None,
+        runner=fake_runner,
+    )
+
+    assert verdict.error is True
+    assert "claude --bare exited 1" in verdict.reason
+    assert "model not allowed by broker" in verdict.reason  # stdout 抜粋が残ること
+    assert "stderr=" in verdict.reason and "stdout=" in verdict.reason
+
+
+_JUDGE_PASS_STDOUT = '{"passed": true, "reason": "ok"}'
+_JUDGE_FAIL_STDOUT = '{"passed": false, "reason": "rubric not satisfied"}'
+
+
+def _make_flaky_runner(outcomes: list[subprocess.CompletedProcess]):
+    """呼び出しごとに outcomes を順に返す runner。呼び出し回数を記録する。"""
+    calls: list[list[str]] = []
+
+    def runner(cmd, **kwargs):
+        calls.append(list(cmd))
+        return outcomes[len(calls) - 1]
+
+    return runner, calls
+
+
+def test_judge_unavailable_retries_once_and_recovers(monkeypatch, tmp_path) -> None:
+    """Issue #354: judge が一過性のインフラ要因（使い捨てコンテナ連続起動の終盤で
+    claude --bare が exit 1）で実行できなかった場合、同一 backend で 1 回だけリトライして
+    回復すること。数十秒後の同一コマンドが成功する実測に基づく堅牢化。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    sleeps: list[float] = []
+    monkeypatch.setattr(ev.time, "sleep", sleeps.append)
+    runner, calls = _make_flaky_runner(
+        [
+            subprocess.CompletedProcess([], returncode=1, stdout="", stderr=""),
+            subprocess.CompletedProcess([], returncode=0, stdout=_JUDGE_PASS_STDOUT, stderr=""),
+        ]
+    )
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is False
+    assert verdict.passed is True
+    assert len(calls) == 2
+    assert sleeps == [ev.JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS]
+
+
+def test_judge_unavailable_after_retry_stays_error_with_both_reasons(monkeypatch, tmp_path) -> None:
+    """リトライ後も失敗した場合は fail-closed（verdict=error）を維持し、初回・再試行の
+    両方の失敗理由がメッセージに残ること（別 backend へ降格しないこと）。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    monkeypatch.setattr(ev.time, "sleep", lambda _s: None)
+    runner, calls = _make_flaky_runner(
+        [
+            subprocess.CompletedProcess([], returncode=1, stdout="boot failure A", stderr=""),
+            subprocess.CompletedProcess([], returncode=1, stdout="boot failure B", stderr=""),
+        ]
+    )
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is True
+    assert verdict.backend == "claude-bare"
+    assert len(calls) == 2
+    assert "after retry" in verdict.reason
+    assert "boot failure A" in verdict.reason and "boot failure B" in verdict.reason
+
+
+def test_judge_rubric_fail_is_not_retried(monkeypatch, tmp_path) -> None:
+    """rubric の fail 判定（passed=false）は judge 実行自体の失敗ではないためリトライしない
+    こと（リトライは判定セマンティクスを変えない、の固定）。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    monkeypatch.setattr(
+        ev.time,
+        "sleep",
+        lambda _s: (_ for _ in ()).throw(AssertionError("sleep must not be called")),
+    )
+    runner, calls = _make_flaky_runner(
+        [subprocess.CompletedProcess([], returncode=0, stdout=_JUDGE_FAIL_STDOUT, stderr="")]
+    )
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is False
+    assert verdict.passed is False
+    assert len(calls) == 1
