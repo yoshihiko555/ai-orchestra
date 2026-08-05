@@ -1177,8 +1177,13 @@ def test_container_lifetime_matches_broker_absolute_bound() -> None:
     resources = docker.profile.resources_config(config)
     broker_env = docker.profile.broker_env(config, "run-token", 8787)
 
+    # Issue #354: broker は candidate 実行〜全 oracle/judge check（リトライ含む）を単一寿命で
+    # 賄うため、コンテナ個別上限 + judge リトライ込み最悪増分だけ長く生存する。scenario/oracle
+    # コンテナ個別の封じ込め上限にはこの増分を加えない。
     assert resources["max_lifetime_sec"] == 70
-    assert broker_env["MH_BROKER_MAX_LIFETIME_SEC"] == "70"
+    assert broker_env["MH_BROKER_MAX_LIFETIME_SEC"] == str(
+        70 + docker.profile.JUDGE_RETRY_EXTRA_LIFETIME_SECONDS
+    )
 
 
 def test_broker_env_sends_generic_and_legacy_contracts() -> None:

@@ -104,8 +104,10 @@ CAPABILITY_SMOKE_TIMEOUT_SECONDS = 60
 JUDGE_TIMEOUT_SECONDS = 120
 # Issue #354: 使い捨てコンテナ連続起動の終盤で claude --bare が一過性に exit 1 する実測
 # （同一コマンドが数十秒後には成功する）への堅牢化。リトライは「judge を実行できなかった」
-# エラー時のみ・同一 backend への 1 回に限定する（判定セマンティクスは不変）。
-JUDGE_UNAVAILABLE_RETRIES = 1
+# エラー時のみ・同一 backend への 1 回に限定する（判定セマンティクスは不変）。リトライ込みの
+# judge 最悪所要時間（JUDGE_TIMEOUT_SECONDS×2 + 本 delay）は scenario_docker_profile の
+# JUDGE_RETRY_EXTRA_LIFETIME_SECONDS が broker/コンテナ max lifetime へ織り込む
+# （手動同期。突合テスト: test_evaluator_failure_handling.py）。
 JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS = 10.0
 DEFAULT_COMMAND_TIMEOUT_MS = 60000
 _ORACLE_STDERR_EXCERPT_MAX_CHARS = 4000
@@ -2133,11 +2135,11 @@ def run_rubric_judge(
             runner=runner,
         )
         # Issue #354: verdict.error（judge を実行できなかった）のときだけ同一 backend で
-        # リトライする。rubric の pass/fail 判定はリトライしない（判定セマンティクス不変）。
-        # 別 backend への降格もしない（fail-closed・暗黙フォールバック禁止の維持）。
-        for _ in range(JUDGE_UNAVAILABLE_RETRIES):
-            if not verdict.error:
-                return verdict
+        # 1 回だけリトライする。rubric の pass/fail 判定はリトライしない（判定セマンティクス
+        # 不変）。別 backend への降格もしない（fail-closed・暗黙フォールバック禁止の維持）。
+        # 意図的に単純な if 分岐にしている（回数を増やす場合は初回 reason の保持とネスト抑止を
+        # 再設計すること — コミット前レビュー指摘）。
+        if verdict.error:
             first_reason = verdict.reason
             time.sleep(JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS)
             verdict = _judge_via_claude_bare(

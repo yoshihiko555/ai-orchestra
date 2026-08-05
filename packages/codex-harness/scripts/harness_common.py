@@ -222,6 +222,10 @@ REDACTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
     ("API key (sk- prefix)", re.compile(rf"\bsk-[A-Za-z0-9]{{{_MIN_GENERIC_KEY_LENGTH},}}")),
     (
+        "meta-harness broker run token (mh-)",
+        re.compile(rf"\bmh-[A-Za-z0-9_-]{{{_MIN_TOKEN_LENGTH},}}"),
+    ),
+    (
         "PEM private key block",
         re.compile(
             r"-----BEGIN[ A-Z]*PRIVATE KEY-----[\s\S]*?-----END[ A-Z]*PRIVATE KEY-----",

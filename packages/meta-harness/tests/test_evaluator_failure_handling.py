@@ -479,6 +479,23 @@ def test_judge_unavailable_after_retry_stays_error_with_both_reasons(monkeypatch
     assert "boot failure A" in verdict.reason and "boot failure B" in verdict.reason
 
 
+def test_judge_retry_worst_case_is_reflected_in_container_lifetime() -> None:
+    """Issue #354: リトライ導入で judge 1 check の最悪所要時間は
+    JUDGE_TIMEOUT_SECONDS×2 + retry delay へ増えた。broker/コンテナの max lifetime が
+    この増分（JUDGE_RETRY_EXTRA_LIFETIME_SECONDS、手動同期の定数）を織り込んでいることを
+    突合し、リトライがコンテナ寿命切れで確実に失敗する経路（レビュー指摘）を塞ぐ。"""
+    sdp = load_module(
+        "meta_harness_sdp_failure_handling",
+        "packages/meta-harness/lib/scenario_docker_profile.py",
+    )
+    retry_extra = ev.JUDGE_TIMEOUT_SECONDS + ev.JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS
+    assert sdp.JUDGE_RETRY_EXTRA_LIFETIME_SECONDS >= retry_extra
+    assert (
+        sdp.broker_max_lifetime_seconds(mh.DEFAULTS)
+        >= sdp.container_max_lifetime_seconds(mh.DEFAULTS) + retry_extra
+    )
+
+
 def test_judge_rubric_fail_is_not_retried(monkeypatch, tmp_path) -> None:
     """rubric の fail 判定（passed=false）は judge 実行自体の失敗ではないためリトライしない
     こと（リトライは判定セマンティクスを変えない、の固定）。"""
