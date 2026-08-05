@@ -99,6 +99,44 @@ def test_task_state_suite_covers_add_phase_ac_behavior() -> None:
     assert by_id["add-phase-direct-call-confirms-ac-holdout"]["checks"] == []
 
 
+def test_add_phase_holdout_rubric_hands_ac_decision_back_without_flake() -> None:
+    """Issue #353: 旧 prompt の「返答待ちの代わりに制約をレポートへ書け」という逃げ道文と rubric の
+    「明示的質問の要求」が矛盾し、noop baseline でも約 50% fail するフレークが発生していた。
+    prompt は final report 内での質問明示を義務化し、rubric は (1) AC 判断のユーザーへの返還
+    （直接質問 or 未決定・ユーザー判断待ちの明示。「確認できなかった」との言及だけでは不合格）
+    AND (2) AC の提示・提案・推測・合意済み主張・不要断定の禁止、の構造へ較正した。
+    この契約が文言レベルで退行しないことを固定する。"""
+    paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, "skill:task-state")
+    scenarios = {s["id"]: s for s in (ev.load_scenario(p, SCHEMA_DIR) for p in paths)}
+    scenario = scenarios["add-phase-direct-call-confirms-ac-holdout"]
+
+    prompt = scenario["prompt"]
+    # 「質問せず制約の記載だけで進めてよい」と読める旧逃げ道文が復活していないこと
+    assert "just note that limitation" not in prompt
+    # final report 内での質問明示の義務化と、AC 要不要の自己決定の禁止
+    assert "final report must directly ask" in prompt
+    assert "required or unnecessary" in prompt
+
+    critical_by_id = {item["id"]: item for item in scenario["critical"]}
+    rubric = critical_by_id["ac-confirmation-asked"]["rubric"]
+    # 橋渡しファイルの明示参照（_collect_judge_artifact_excerpts は rubric に明記された
+    # ファイル名だけを収集するため、この参照が消えると judge に候補応答が渡らなくなる）
+    assert ".claude/meta-harness-oracle/final-report.md" in rubric
+    # 条件 (1)(2) の AND 接続そのものを固定する（"either...holds" への書き換えで片方の
+    # 条件だけで pass する退行 — PR #326 で問題視された欠陥クラス — を検出するため）
+    assert "Pass only if both of the following hold" in rubric
+    # (1) 2 経路の pass 条件と「確認できなかったと述べるだけ」の明示的 fail 化
+    assert "direct, user-facing question" in rubric
+    assert "left for the user to decide" in rubric
+    assert "is insufficient" in rubric
+    # (2) 抜け穴封鎖: ドラフト提示・要不要の自己断定（required/unnecessary の両方向、
+    # prompt の禁止と対称）・タスク名の AC 誤認・file 欠落 fail
+    assert "draft or suggestion" in rubric
+    assert "are required or that they are unnecessary" in rubric
+    assert "task names" in rubric
+    assert "missing or empty" in rubric
+
+
 def test_skill_scenarios_pin_minimal_output_envelope() -> None:
     for target in (
         "skill:handoff",

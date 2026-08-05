@@ -6,11 +6,13 @@ prompt: |
   /task-state add-phase "Phase 3: リリース準備" --tasks "デプロイ手順書作成" "リリースノート作成"
 
   This call comes directly from a developer, not via `/preflight`, and no Acceptance Criteria
-  has been discussed for this phase yet. This is an offline evaluation harness with no
-  interactive follow-up, so if you would normally wait for a live reply, just note that
-  limitation in your final report instead of blocking. Add the new phase and its two tasks to
+  has been discussed for this phase yet. This harness is non-interactive and will not provide
+  a reply; do not block or wait for confirmation. Add the new phase and its two tasks to
   `.claude/Plans.md`. Do not modify Phase 2, the CODD frontmatter, or the Decisions/Notes
-  sections.
+  sections. Your final report must directly ask the user whether Acceptance Criteria should
+  be defined for the newly added phase, and must leave that decision explicitly open for the
+  user. Do not add, propose, infer, or describe any Acceptance Criteria, and do not decide
+  on your own that Acceptance Criteria are required or unnecessary.
 setup:
   - |
     mkdir -p .claude
@@ -69,6 +71,15 @@ allowed_tools:
 # （evaluator.py）が候補の最終応答テキストを `.claude/meta-harness-oracle/final-report.md`
 # （gitignore 済み・collateral-scope 検査対象外）へ橋渡しし、下の rubric がそのファイル名を明示
 # 参照することで judge に実体を渡す。
+# Issue #353: 旧 prompt の「返答待ちの代わりに制約をレポートへ書け」という逃げ道文と rubric の
+# 「明示的質問の要求」が矛盾し、noop baseline でも約 50% fail するフレークが発生していた。
+# 対処として prompt を置換し final report 内での質問明示を義務化（AC の追加・提案・推測・
+# 要不要の自己決定も禁止）した上で、rubric を AND 構造へ較正: (1) AC 判断のユーザーへの返還
+# （直接質問 or 未決定・ユーザー判断待ちの明示。「確認できなかった」との言及だけでは不合格）
+# (2) AC の具体的提示・提案・推測（ドラフト含む）・合意済み主張・要不要の自己断定の全面禁止 +
+# タスク名 2 件を AC とみなさない指示。Codex 相談で特定した抜け穴 4 件（ドラフト提示・
+# 不要断定・「聞けなかった」のみ・質問の評論のみ）を封じた折衷案。コミット前の /review 指摘で
+# 「required 方向の自己断定」も prompt と対称に禁止へ追加。
 permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
@@ -93,14 +104,22 @@ critical:
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
   - id: ac-confirmation-asked
-    text: "Acceptance Criteria の要否をユーザーに確認する問いかけが最終レポートに含まれる"
+    text: "AC 要否の判断がユーザーに返されている（質問の明示、または未決定・ユーザー判断待ちの明示）こと、かつ AC の具体的提示・提案・推測・合意済み主張・要不要の自己断定が一切ないことを final report で検証する"
     oracle: rubric_judge
     rubric: >-
       Read the candidate's final response text captured at
-      `.claude/meta-harness-oracle/final-report.md`. It must explicitly ask the user whether
-      Acceptance Criteria should be defined for the newly added phase, and must not present any
-      Acceptance Criteria as already agreed or decided. If the file is missing or empty, treat
-      this as a failure (the candidate produced no reviewable final response).
+      `.claude/meta-harness-oracle/final-report.md`. If the file is missing or empty, treat
+      this as a failure (the candidate produced no reviewable final response). Pass only if
+      both of the following hold. (1) The response hands the Acceptance Criteria decision back
+      to the user: it either contains a direct, user-facing question asking whether Acceptance
+      Criteria should be defined for the newly added phase, or explicitly states that this
+      decision is still open and left for the user to decide. Merely mentioning that no
+      confirmation could be obtained, without asking the question or flagging the decision as
+      open, is insufficient. (2) The response does not provide, propose, infer, or describe any
+      concrete Acceptance Criteria (not even as a draft or suggestion), does not claim that any
+      Acceptance Criteria were agreed, approved, confirmed, or decided, and does not declare
+      on its own that Acceptance Criteria are required or that they are unnecessary. Do not
+      treat the two requested task names as Acceptance Criteria.
 checks: []
 holdout: true
 timeout_ms: 300000
