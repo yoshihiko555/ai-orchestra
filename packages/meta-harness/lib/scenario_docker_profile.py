@@ -52,6 +52,12 @@ CONTAINER_GIT_LINK = f"{CONTAINER_WORKTREE}/.git"
 CONTAINER_HOME = "/home/meta"
 CONTAINER_TMP = "/tmp"
 CONTAINER_LIFETIME_MARGIN_SECONDS = 60
+# Issue #354: rubric_judge は judge unavailable 時に同一 backend で 1 回リトライする
+# （evaluator.JUDGE_TIMEOUT_SECONDS=120 の 2 回分 + retry delay 10s = 最悪 250s、従来比 +130s）。
+# broker/コンテナは candidate 実行〜全 oracle/judge check を単一寿命で賄うため、リトライで
+# 増えた judge 最悪時間を max lifetime へ明示的に織り込む（evaluator 側定数と手動同期。
+# 突合テスト: test_evaluator_failure_handling.py）。
+JUDGE_RETRY_EXTRA_LIFETIME_SECONDS = 130
 CONTAINER_TIMEOUT_KILL_AFTER_SECONDS = 5
 DockerProfileError = runtime.DockerProfileError
 DEFAULT_MAX_OUTPUT_TOKENS = 4096
@@ -566,7 +572,7 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
         "DR_BROKER_PORT": str(port),
         "DR_BROKER_BUDGET_USD": str(scenario_run.get("max_budget_usd_default", 3.0)),
         "DR_BROKER_IDLE_TIMEOUT_SEC": str(idle_timeout),
-        "DR_BROKER_MAX_LIFETIME_SEC": str(container_max_lifetime_seconds(config)),
+        "DR_BROKER_MAX_LIFETIME_SEC": str(broker_max_lifetime_seconds(config)),
         "DR_BROKER_STARTUP_TIMEOUT_SEC": str(broker.get("startup_timeout_sec", 30)),
         "DR_BROKER_MAX_REQUESTS": str(broker.get("max_requests", 64)),
         "DR_BROKER_MAX_TOTAL_TOKENS": str(broker.get("max_total_tokens", 500000)),
@@ -579,7 +585,7 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
         "MH_BROKER_PORT": str(port),
         "MH_BROKER_BUDGET_USD": str(scenario_run.get("max_budget_usd_default", 3.0)),
         "MH_BROKER_IDLE_TIMEOUT_SEC": str(idle_timeout),
-        "MH_BROKER_MAX_LIFETIME_SEC": str(container_max_lifetime_seconds(config)),
+        "MH_BROKER_MAX_LIFETIME_SEC": str(broker_max_lifetime_seconds(config)),
         "MH_BROKER_STARTUP_TIMEOUT_SEC": str(broker.get("startup_timeout_sec", 30)),
         "MH_BROKER_MAX_REQUESTS": str(broker.get("max_requests", 64)),
         "MH_BROKER_MAX_TOTAL_TOKENS": str(broker.get("max_total_tokens", 500000)),
@@ -611,6 +617,16 @@ def container_max_lifetime_seconds(
     if effective_timeout <= 0 or idle_timeout <= 0:
         raise DockerProfileError("container lifetime settings must be positive")
     return effective_timeout + idle_timeout + CONTAINER_LIFETIME_MARGIN_SECONDS
+
+
+def broker_max_lifetime_seconds(config: dict) -> int:
+    """broker の絶対寿命上限（Issue #354）。
+
+    broker は candidate 実行〜全 oracle/judge check を単一寿命で賄うため、コンテナ個別の
+    上限（`container_max_lifetime_seconds`）に judge リトライ込みの最悪増分を加える。
+    scenario/oracle コンテナ個別の封じ込め上限はこの増分を受けない（不必要に緩めない）。
+    """
+    return container_max_lifetime_seconds(config) + JUDGE_RETRY_EXTRA_LIFETIME_SECONDS
 
 
 def safe_name(value: str) -> str:

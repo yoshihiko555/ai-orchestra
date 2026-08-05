@@ -386,3 +386,155 @@ class TestLedgerAppendLockConflictIsDiagnosable:
             raise AssertionError(
                 "LockAcquisitionError must propagate so the CLI can normalize it to exit 3"
             )
+
+
+def test_judge_claude_bare_nonzero_exit_reports_both_stderr_and_stdout(monkeypatch) -> None:
+    """Issue #354: claude --bare の非ゼロ終了時、従来は stderr のみをメッセージへ採用して
+    stdout を破棄していた。`--output-format json` はエラー診断を stdout の JSON へ書くことが
+    あるため（実測では stderr が空文字で真因が artifacts から追跡不能だった）、エラー
+    メッセージに stderr と stdout の両方の抜粋が含まれることを固定する。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+
+    def fake_runner(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            returncode=1,
+            stdout='{"type":"error","message":"model not allowed by broker"}',
+            stderr="",
+        )
+
+    verdict = ev._judge_via_claude_bare(
+        "irrelevant prompt",
+        {},
+        max_output_tokens=1024,
+        isolation_launch=None,
+        runner=fake_runner,
+    )
+
+    assert verdict.error is True
+    assert "claude --bare exited 1" in verdict.reason
+    assert "model not allowed by broker" in verdict.reason  # stdout 抜粋が残ること
+    assert "stderr=" in verdict.reason and "stdout=" in verdict.reason
+
+
+_JUDGE_PASS_STDOUT = '{"passed": true, "reason": "ok"}'
+_JUDGE_FAIL_STDOUT = '{"passed": false, "reason": "rubric not satisfied"}'
+
+
+def _make_flaky_runner(outcomes: list[subprocess.CompletedProcess]):
+    """呼び出しごとに outcomes を順に返す runner。呼び出し回数を記録する。"""
+    calls: list[list[str]] = []
+
+    def runner(cmd, **kwargs):
+        calls.append(list(cmd))
+        return outcomes[len(calls) - 1]
+
+    return runner, calls
+
+
+def test_judge_unavailable_retries_once_and_recovers(monkeypatch, tmp_path) -> None:
+    """Issue #354: judge が一過性のインフラ要因（使い捨てコンテナ連続起動の終盤で
+    claude --bare が exit 1）で実行できなかった場合、同一 backend で 1 回だけリトライして
+    回復すること。数十秒後の同一コマンドが成功する実測に基づく堅牢化。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    sleeps: list[float] = []
+    monkeypatch.setattr(ev.time, "sleep", sleeps.append)
+    runner, calls = _make_flaky_runner(
+        [
+            subprocess.CompletedProcess([], returncode=1, stdout="", stderr=""),
+            subprocess.CompletedProcess([], returncode=0, stdout=_JUDGE_PASS_STDOUT, stderr=""),
+        ]
+    )
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is False
+    assert verdict.passed is True
+    assert len(calls) == 2
+    assert sleeps == [ev.JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS]
+
+
+def test_judge_unavailable_after_retry_stays_error_with_both_reasons(monkeypatch, tmp_path) -> None:
+    """リトライ後も失敗した場合は fail-closed（verdict=error）を維持し、初回・再試行の
+    両方の失敗理由がメッセージに残ること（別 backend へ降格しないこと）。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    monkeypatch.setattr(ev.time, "sleep", lambda _s: None)
+    runner, calls = _make_flaky_runner(
+        [
+            subprocess.CompletedProcess([], returncode=1, stdout="boot failure A", stderr=""),
+            subprocess.CompletedProcess([], returncode=1, stdout="boot failure B", stderr=""),
+        ]
+    )
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is True
+    assert verdict.backend == "claude-bare"
+    assert len(calls) == 2
+    assert "after retry" in verdict.reason
+    assert "boot failure A" in verdict.reason and "boot failure B" in verdict.reason
+
+
+def test_judge_retry_worst_case_is_reflected_in_container_lifetime() -> None:
+    """Issue #354: リトライ導入で judge 1 check の最悪所要時間は
+    JUDGE_TIMEOUT_SECONDS×2 + retry delay へ増えた。broker/コンテナの max lifetime が
+    この増分（JUDGE_RETRY_EXTRA_LIFETIME_SECONDS、手動同期の定数）を織り込んでいることを
+    突合し、リトライがコンテナ寿命切れで確実に失敗する経路（レビュー指摘）を塞ぐ。"""
+    sdp = load_module(
+        "meta_harness_sdp_failure_handling",
+        "packages/meta-harness/lib/scenario_docker_profile.py",
+    )
+    retry_extra = ev.JUDGE_TIMEOUT_SECONDS + ev.JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS
+    assert sdp.JUDGE_RETRY_EXTRA_LIFETIME_SECONDS >= retry_extra
+    assert (
+        sdp.broker_max_lifetime_seconds(mh.DEFAULTS)
+        >= sdp.container_max_lifetime_seconds(mh.DEFAULTS) + retry_extra
+    )
+
+
+def test_judge_permanent_setup_failure_is_not_retried(monkeypatch, tmp_path) -> None:
+    """PR #355 レビュー指摘（CodeRabbit Low + Codex P2）: 認証情報欠落などの恒久的な
+    セットアップ不備（retryable=False）は、10 秒待って同じ不可能な試行を繰り返さず
+    即 fail-closed になること。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: False)
+    monkeypatch.setattr(
+        ev.time,
+        "sleep",
+        lambda _s: (_ for _ in ()).throw(AssertionError("sleep must not be called")),
+    )
+    runner, calls = _make_flaky_runner([])
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is True
+    assert verdict.retryable is False
+    assert "requires ANTHROPIC_API_KEY" in verdict.reason
+    assert calls == []  # 認証不備では claude --bare の起動自体を試みない
+
+
+def test_judge_rubric_fail_is_not_retried(monkeypatch, tmp_path) -> None:
+    """rubric の fail 判定（passed=false）は judge 実行自体の失敗ではないためリトライしない
+    こと（リトライは判定セマンティクスを変えない、の固定）。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    monkeypatch.setattr(
+        ev.time,
+        "sleep",
+        lambda _s: (_ for _ in ()).throw(AssertionError("sleep must not be called")),
+    )
+    runner, calls = _make_flaky_runner(
+        [subprocess.CompletedProcess([], returncode=0, stdout=_JUDGE_FAIL_STDOUT, stderr="")]
+    )
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is False
+    assert verdict.passed is False
+    assert len(calls) == 1

@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -101,6 +102,13 @@ GIT_WORKTREE_TIMEOUT_SECONDS = 120
 BUILD_TIMEOUT_SECONDS = 180
 CAPABILITY_SMOKE_TIMEOUT_SECONDS = 60
 JUDGE_TIMEOUT_SECONDS = 120
+# Issue #354: 使い捨てコンテナ連続起動の終盤で claude --bare が一過性に exit 1 する実測
+# （同一コマンドが数十秒後には成功する）への堅牢化。リトライは「judge を実行できなかった」
+# エラー時のみ・同一 backend への 1 回に限定する（判定セマンティクスは不変）。リトライ込みの
+# judge 最悪所要時間（JUDGE_TIMEOUT_SECONDS×2 + 本 delay）は scenario_docker_profile の
+# JUDGE_RETRY_EXTRA_LIFETIME_SECONDS が broker/コンテナ max lifetime へ織り込む
+# （手動同期。突合テスト: test_evaluator_failure_handling.py）。
+JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS = 10.0
 DEFAULT_COMMAND_TIMEOUT_MS = 60000
 _ORACLE_STDERR_EXCERPT_MAX_CHARS = 4000
 MAX_ORACLE_ARTIFACT_BYTES = 5_000_000
@@ -1997,6 +2005,9 @@ class JudgeVerdict:
     reason: str
     backend: str
     error: bool = False
+    # Issue #354 / PR #355 レビュー指摘: リトライは一過性のプロセス実行失敗に限定する。
+    # 恒久的なセットアップ不備（認証情報欠落等）は retryable=False のまま即 fail-closed。
+    retryable: bool = False
 
 
 _JUDGE_DELIMITER_LABEL = "UNTRUSTED_CANDIDATE_OUTPUT"
@@ -2119,13 +2130,37 @@ def run_rubric_judge(
         )
     if tool == "claude-bare":
         max_output_tokens = siso.resolve_max_output_tokens_default(config)
-        return _judge_via_claude_bare(
+        verdict = _judge_via_claude_bare(
             prompt,
             judge_cfg,
             max_output_tokens=max_output_tokens,
             isolation_launch=isolation_launch,
             runner=runner,
         )
+        # Issue #354: verdict.error かつ retryable（一過性のプロセス実行失敗）のときだけ
+        # 同一 backend で 1 回だけリトライする。恒久的なセットアップ不備（認証情報欠落等・
+        # retryable=False）は待機せず即 fail-closed（PR #355 レビュー指摘）。rubric の
+        # pass/fail 判定はリトライしない（判定セマンティクス不変）。別 backend への降格も
+        # しない（fail-closed・暗黙フォールバック禁止の維持）。意図的に単純な if 分岐にして
+        # いる（回数を増やす場合は初回 reason の保持とネスト抑止を再設計すること）。
+        if verdict.error and verdict.retryable:
+            first_reason = verdict.reason
+            time.sleep(JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS)
+            verdict = _judge_via_claude_bare(
+                prompt,
+                judge_cfg,
+                max_output_tokens=max_output_tokens,
+                isolation_launch=isolation_launch,
+                runner=runner,
+            )
+            if verdict.error:
+                verdict = JudgeVerdict(
+                    False,
+                    f"{verdict.reason} (after retry; first attempt: {first_reason})",
+                    verdict.backend,
+                    error=True,
+                )
+        return verdict
     return JudgeVerdict(False, f"judge unavailable: unknown judge.tool {tool!r}", tool, error=True)
 
 
@@ -2207,14 +2242,21 @@ def _judge_via_claude_bare(
             f"judge unavailable: claude --bare failed to run: {exc}",
             "claude-bare",
             error=True,
+            retryable=True,
         )
     if completed.returncode != 0:
+        # Issue #354: `claude --bare --output-format json` はエラー診断を stdout の JSON へ
+        # 書くことがある。stderr だけを採用すると（今回の実測では空文字)真の失敗理由が
+        # artifacts から追跡不能になるため、stdout の抜粋も必ず併記する。
+        stderr_excerpt = completed.stderr.strip()[:_ORACLE_STDERR_EXCERPT_MAX_CHARS]
+        stdout_excerpt = completed.stdout.strip()[:_ORACLE_STDERR_EXCERPT_MAX_CHARS]
         return JudgeVerdict(
             False,
             f"judge unavailable: claude --bare exited {completed.returncode}: "
-            f"{completed.stderr.strip()[:_ORACLE_STDERR_EXCERPT_MAX_CHARS]}",
+            f"stderr={stderr_excerpt!r} stdout={stdout_excerpt!r}",
             "claude-bare",
             error=True,
+            retryable=True,
         )
     return _parse_claude_bare_output(completed.stdout)
 

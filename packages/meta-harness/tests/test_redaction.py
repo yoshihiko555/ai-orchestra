@@ -54,6 +54,29 @@ class TestRedactSecretsMasking:
         assert "sk-abcdef1234567890abcdef" not in result
         assert "[REDACTED:OPENAI_API_KEY assignment]" in result
 
+    def test_broker_run_token_is_masked(self) -> None:
+        """Issue #354: broker の per-run トークン（mh- + token_urlsafe(24) = 32 文字）が
+        judge 失敗時の stdout 抜粋経由で artifacts へ永続化されうるため、mh- prefix の
+        トークン形式をマスクする。"""
+        token = "mh-" + "Ab3dEf6hIj9lMn2pQr5tUv8xYz1B4c6d"
+        result = redaction.redact_secrets(f"ANTHROPIC_API_KEY={token} rejected")
+        assert token not in result
+        assert "[REDACTED:meta-harness broker run token (mh-)]" in result
+
+    def test_short_mh_prefixed_names_are_not_masked(self) -> None:
+        """mh-run- 等の短いコンテナ名・エイリアスまで塗りつぶさないこと（20 文字未満）。"""
+        text = "container mh-run-abc123 via mh-broker alias"
+        assert redaction.redact_secrets(text) == text
+
+    def test_mh_token_minimum_length_boundary(self) -> None:
+        """PR #355 レビュー指摘: 最小長 `_MIN_TOKEN_LENGTH` の境界で挙動を固定する
+        （ちょうど N 文字はマスク、N-1 文字は非マスク）。"""
+        n = redaction._MIN_TOKEN_LENGTH
+        at_boundary = "mh-" + "a" * n
+        below_boundary = "mh-" + "a" * (n - 1)
+        assert at_boundary not in redaction.redact_secrets(f"x {at_boundary} y")
+        assert redaction.redact_secrets(f"x {below_boundary} y") == f"x {below_boundary} y"
+
     def test_github_pat_is_masked(self) -> None:
         token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4"
         result = redaction.redact_secrets(f"token={token}")
