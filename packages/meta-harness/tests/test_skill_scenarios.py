@@ -129,9 +129,11 @@ def test_add_phase_holdout_rubric_hands_ac_decision_back_without_flake() -> None
     assert "direct, user-facing question" in rubric
     assert "left for the user to decide" in rubric
     assert "is insufficient" in rubric
-    # (2) 抜け穴封鎖: ドラフト提示・要不要の自己断定（required/unnecessary の両方向、
-    # prompt の禁止と対称）・タスク名の AC 誤認・file 欠落 fail
+    # (2) 抜け穴封鎖: ドラフト提示・合意済み/承認済み/確定済みの主張・要不要の自己断定
+    # （required/unnecessary の両方向、prompt の禁止と対称）・タスク名の AC 誤認・
+    # file 欠落 fail
     assert "draft or suggestion" in rubric
+    assert "agreed, approved, confirmed, or decided" in rubric
     assert "are required or that they are unnecessary" in rubric
     assert "task names" in rubric
     assert "missing or empty" in rubric

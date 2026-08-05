@@ -2005,6 +2005,9 @@ class JudgeVerdict:
     reason: str
     backend: str
     error: bool = False
+    # Issue #354 / PR #355 レビュー指摘: リトライは一過性のプロセス実行失敗に限定する。
+    # 恒久的なセットアップ不備（認証情報欠落等）は retryable=False のまま即 fail-closed。
+    retryable: bool = False
 
 
 _JUDGE_DELIMITER_LABEL = "UNTRUSTED_CANDIDATE_OUTPUT"
@@ -2134,12 +2137,13 @@ def run_rubric_judge(
             isolation_launch=isolation_launch,
             runner=runner,
         )
-        # Issue #354: verdict.error（judge を実行できなかった）のときだけ同一 backend で
-        # 1 回だけリトライする。rubric の pass/fail 判定はリトライしない（判定セマンティクス
-        # 不変）。別 backend への降格もしない（fail-closed・暗黙フォールバック禁止の維持）。
-        # 意図的に単純な if 分岐にしている（回数を増やす場合は初回 reason の保持とネスト抑止を
-        # 再設計すること — コミット前レビュー指摘）。
-        if verdict.error:
+        # Issue #354: verdict.error かつ retryable（一過性のプロセス実行失敗）のときだけ
+        # 同一 backend で 1 回だけリトライする。恒久的なセットアップ不備（認証情報欠落等・
+        # retryable=False）は待機せず即 fail-closed（PR #355 レビュー指摘）。rubric の
+        # pass/fail 判定はリトライしない（判定セマンティクス不変）。別 backend への降格も
+        # しない（fail-closed・暗黙フォールバック禁止の維持）。意図的に単純な if 分岐にして
+        # いる（回数を増やす場合は初回 reason の保持とネスト抑止を再設計すること）。
+        if verdict.error and verdict.retryable:
             first_reason = verdict.reason
             time.sleep(JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS)
             verdict = _judge_via_claude_bare(
@@ -2238,6 +2242,7 @@ def _judge_via_claude_bare(
             f"judge unavailable: claude --bare failed to run: {exc}",
             "claude-bare",
             error=True,
+            retryable=True,
         )
     if completed.returncode != 0:
         # Issue #354: `claude --bare --output-format json` はエラー診断を stdout の JSON へ
@@ -2251,6 +2256,7 @@ def _judge_via_claude_bare(
             f"stderr={stderr_excerpt!r} stdout={stdout_excerpt!r}",
             "claude-bare",
             error=True,
+            retryable=True,
         )
     return _parse_claude_bare_output(completed.stdout)
 

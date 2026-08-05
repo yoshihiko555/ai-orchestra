@@ -496,6 +496,28 @@ def test_judge_retry_worst_case_is_reflected_in_container_lifetime() -> None:
     )
 
 
+def test_judge_permanent_setup_failure_is_not_retried(monkeypatch, tmp_path) -> None:
+    """PR #355 レビュー指摘（CodeRabbit Low + Codex P2）: 認証情報欠落などの恒久的な
+    セットアップ不備（retryable=False）は、10 秒待って同じ不可能な試行を繰り返さず
+    即 fail-closed になること。"""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: False)
+    monkeypatch.setattr(
+        ev.time,
+        "sleep",
+        lambda _s: (_ for _ in ()).throw(AssertionError("sleep must not be called")),
+    )
+    runner, calls = _make_flaky_runner([])
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is True
+    assert verdict.retryable is False
+    assert "requires ANTHROPIC_API_KEY" in verdict.reason
+    assert calls == []  # 認証不備では claude --bare の起動自体を試みない
+
+
 def test_judge_rubric_fail_is_not_retried(monkeypatch, tmp_path) -> None:
     """rubric の fail 判定（passed=false）は judge 実行自体の失敗ではないためリトライしない
     こと（リトライは判定セマンティクスを変えない、の固定）。"""
