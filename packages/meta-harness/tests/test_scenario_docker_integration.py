@@ -288,7 +288,11 @@ def test_preparation_command_uses_isolated_git_snapshot(images, tmp_path) -> Non
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert (worktree / "git-head.txt").read_text().strip() == source_commit[:7]
+    # Issue #357: the wrapper no longer fakes HEAD to `source_commit` -- it must resolve to
+    # the real (freshly created) snapshot repo HEAD instead, which is an arbitrary short hash
+    # unrelated to the placeholder `source_commit` used in this test.
+    head_output = (worktree / "git-head.txt").read_text().strip()
+    assert head_output and all(c in "0123456789abcdef" for c in head_output)
 
 
 def test_preparation_workspace_quota_fails_closed(images, tmp_path) -> None:
@@ -381,7 +385,13 @@ def test_linked_worktree_git_is_masked_and_snapshot_wrapper_works(
             success_callback=lambda: docker.export_docker_workspace(launch),
         )
         assert completed.returncode == 0, completed.stderr
-        assert completed.stdout.strip() == source_commit[:7]
+        # Issue #357: the agent-facing scenario container and the oracle container must see
+        # the same HEAD, since both bind-mount the same read-only snapshot repo. Before the
+        # fix, this only held by coincidence when both sides happened to use the exact
+        # `rev-parse --short HEAD` form that the wrapper faked to `source_commit`; any other
+        # invocation form (e.g. via a different container profile) would silently diverge.
+        scenario_head = completed.stdout.strip()
+        assert scenario_head and all(c in "0123456789abcdef" for c in scenario_head)
         assert (worktree / "result.txt").read_text() == "exported"
         assert (worktree / ".git").is_file()
 
@@ -399,6 +409,6 @@ def test_linked_worktree_git_is_masked_and_snapshot_wrapper_works(
             cleanup_args=["docker", "rm", "-f", oracle_name],
         )
         assert oracle.returncode == 0, oracle.stderr
-        assert oracle.stdout.strip() == source_commit[:7]
+        assert oracle.stdout.strip() == scenario_head
     finally:
         docker.cleanup_docker_launch(launch)

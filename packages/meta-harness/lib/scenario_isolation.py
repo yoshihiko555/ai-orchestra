@@ -502,13 +502,17 @@ def _prepare_isolated_git(
     quoted_git = shlex.quote(wrapper_git)
     quoted_snapshot = shlex.quote(wrapper_snapshot)
     quoted_worktree = shlex.quote(wrapper_worktree)
+    # Issue #357: the wrapper used to special-case the exact-argument forms
+    # `rev-parse --short HEAD` / `rev-parse HEAD` and fake their output to
+    # `source_commit`, while any other equivalent invocation (e.g. with a `-C`
+    # global option) fell through to this same `exec` line and returned the
+    # snapshot repository's real HEAD instead. That gave two contradictory
+    # "truths" for the same question depending on how the caller phrased the
+    # command, so an agent and an oracle disagreeing on invocation form could
+    # disagree on HEAD too. Always exec the real git against the snapshot so
+    # every invocation form resolves identically and consistently.
     wrapper_path.write_text(
         "#!/bin/sh\n"
-        f'if [ "$#" -eq 3 ] && [ "$1" = rev-parse ] && '
-        f'[ "$2" = --short ] && [ "$3" = HEAD ]; then printf \'%s\\n\' '
-        f"{shlex.quote(source_commit[:7])}; exit 0; fi\n"
-        f'if [ "$#" -eq 2 ] && [ "$1" = rev-parse ] && '
-        f"[ \"$2\" = HEAD ]; then printf '%s\\n' {shlex.quote(source_commit)}; exit 0; fi\n"
         f'exec {quoted_git} --git-dir={quoted_snapshot} --work-tree={quoted_worktree} "$@"\n',
         encoding="utf-8",
     )
