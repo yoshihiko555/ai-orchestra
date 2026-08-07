@@ -1241,15 +1241,34 @@ def run_headless_scenario(
         timeout_ms = scenario.get(
             "timeout_ms", (config.get("evaluate") or {}).get("timeout_ms_default", 300000)
         )
+        evaluate_cfg = config.get("evaluate") or {}
+        launch_evaluate_cfg = {**evaluate_cfg, "timeout_ms_default": timeout_ms}
+        if mh.BROKER_MAX_TOTAL_TOKENS_KEY in budget:
+            scenario_max_total_tokens = budget[mh.BROKER_MAX_TOTAL_TOKENS_KEY]
+            if (
+                not isinstance(scenario_max_total_tokens, int)
+                or isinstance(scenario_max_total_tokens, bool)
+                or scenario_max_total_tokens < 1
+            ):
+                raise ValueError("budget.max_total_tokens must be a positive integer")
+            isolation_cfg = evaluate_cfg.get("isolation") or {}
+            broker_cfg = isolation_cfg.get("broker") or {}
+            launch_evaluate_cfg = {
+                **launch_evaluate_cfg,
+                "isolation": {
+                    **isolation_cfg,
+                    "broker": {
+                        **broker_cfg,
+                        mh.BROKER_MAX_TOTAL_TOKENS_KEY: scenario_max_total_tokens,
+                    },
+                },
+            }
         broker_budget = budget.get(
             "max_budget_usd", scenario_run_cfg.get("max_budget_usd_default", 3.0)
         )
         launch_config = {
             **config,
-            "evaluate": {
-                **(config.get("evaluate") or {}),
-                "timeout_ms_default": timeout_ms,
-            },
+            "evaluate": launch_evaluate_cfg,
             "scenario_run": {**scenario_run_cfg, "max_budget_usd_default": broker_budget},
         }
         launch = siso.resolve_scenario_isolation(
@@ -2414,9 +2433,10 @@ def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
 
     Includes settings that affect cross-run cost/quality comparability even
     when no scenario/suite file changes (Issue #261 PR2): judge tool/model/effort,
-    broker pricing upper bounds, the broker model allowlist, and the global
-    per-scenario budget default. A config-only change to any of these must
-    stale out prior evaluator_hash-scoped runs.
+    broker pricing upper bounds, the broker model allowlist, the broker
+    input-bytes-per-token coefficient, the broker max-total-tokens cap, and the global
+    per-scenario budget default. A config-only change to any of these must stale out
+    prior evaluator_hash-scoped runs.
     """
     evaluate_cfg = config.get("evaluate") or {}
     judge_cfg = config.get("judge") or {}
@@ -2442,6 +2462,10 @@ def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
         # model_allowlist "menu", so a broken/under-priced config never silently
         # produces a comparable-looking hash.
         "broker_model_allowlist": siso.docker.profile.effective_broker_model_allowlist(config),
+        "broker_input_bytes_per_token": siso.docker.profile.effective_broker_input_bytes_per_token(
+            config
+        ),
+        "broker_max_total_tokens": siso.docker.profile.effective_broker_max_total_tokens(config),
         "scenario_run_max_budget_usd_default": (config.get("scenario_run") or {}).get(
             "max_budget_usd_default"
         ),

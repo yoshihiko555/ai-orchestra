@@ -1199,6 +1199,7 @@ def test_broker_env_sends_generic_and_legacy_contracts() -> None:
         ("DR_BROKER_STARTUP_TIMEOUT_SEC", "MH_BROKER_STARTUP_TIMEOUT_SEC"),
         ("DR_BROKER_MAX_REQUESTS", "MH_BROKER_MAX_REQUESTS"),
         ("DR_BROKER_MAX_TOTAL_TOKENS", "MH_BROKER_MAX_TOTAL_TOKENS"),
+        ("DR_BROKER_INPUT_BYTES_PER_TOKEN", "MH_BROKER_INPUT_BYTES_PER_TOKEN"),
         ("DR_BROKER_MAX_UPSTREAM_BYTES", "MH_BROKER_MAX_UPSTREAM_BYTES"),
         ("DR_PRICE_INPUT", "MH_PRICE_INPUT"),
         ("DR_PRICE_OUTPUT", "MH_PRICE_OUTPUT"),
@@ -1207,6 +1208,80 @@ def test_broker_env_sends_generic_and_legacy_contracts() -> None:
         ("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST"),
     ):
         assert broker_env[generic_name] == broker_env[legacy_name]
+
+
+def test_broker_env_uses_default_when_input_bytes_per_token_is_null() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["input_bytes_per_token"] = None
+
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+
+    assert broker_env["DR_BROKER_INPUT_BYTES_PER_TOKEN"] == "3"
+    assert broker_env["MH_BROKER_INPUT_BYTES_PER_TOKEN"] == "3"
+
+
+def test_effective_broker_input_bytes_per_token_resolves_default_and_validates() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    broker_config = config["evaluate"]["isolation"]["broker"]
+    broker_config.pop("input_bytes_per_token")
+
+    assert docker.profile.effective_broker_input_bytes_per_token(config) == 3
+
+    broker_config["input_bytes_per_token"] = 2
+    assert docker.profile.effective_broker_input_bytes_per_token(config) == 2
+
+    for invalid_value in (0, -1, True, 1.5, "3"):
+        broker_config["input_bytes_per_token"] = invalid_value
+        with pytest.raises(docker.profile.DockerProfileError, match="input_bytes_per_token"):
+            docker.profile.effective_broker_input_bytes_per_token(config)
+
+
+def test_effective_broker_max_total_tokens_resolves_default_and_validates() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    broker_config = config["evaluate"]["isolation"]["broker"]
+    broker_config.pop("max_total_tokens")
+
+    assert docker.profile.effective_broker_max_total_tokens(config) == 500000
+
+    broker_config["max_total_tokens"] = 250000
+    assert docker.profile.effective_broker_max_total_tokens(config) == 250000
+
+    broker_config["max_total_tokens"] = None
+    assert docker.profile.effective_broker_max_total_tokens(config) == 500000
+
+    for invalid_value in (0, -1, True, 1.5, "500000"):
+        broker_config["max_total_tokens"] = invalid_value
+        with pytest.raises(docker.profile.DockerProfileError, match="max_total_tokens"):
+            docker.profile.effective_broker_max_total_tokens(config)
+
+
+def test_broker_env_resolves_max_total_tokens_default_override_and_null() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    broker_config = config["evaluate"]["isolation"]["broker"]
+    broker_config.pop("max_total_tokens")
+
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+    assert broker_env["DR_BROKER_MAX_TOTAL_TOKENS"] == "500000"
+    assert broker_env["MH_BROKER_MAX_TOTAL_TOKENS"] == "500000"
+
+    broker_config["max_total_tokens"] = 250000
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+    assert broker_env["DR_BROKER_MAX_TOTAL_TOKENS"] == "250000"
+    assert broker_env["MH_BROKER_MAX_TOTAL_TOKENS"] == "250000"
+
+    broker_config["max_total_tokens"] = None
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+    assert broker_env["DR_BROKER_MAX_TOTAL_TOKENS"] == "500000"
+    assert broker_env["MH_BROKER_MAX_TOTAL_TOKENS"] == "500000"
+
+
+@pytest.mark.parametrize("invalid_value", [0, -1, True, 1.5, "3"])
+def test_broker_env_rejects_invalid_input_bytes_per_token(invalid_value) -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["input_bytes_per_token"] = invalid_value
+
+    with pytest.raises(docker.profile.DockerProfileError, match="input_bytes_per_token"):
+        docker.profile.broker_env(config, "run-token", 8787)
 
 
 @pytest.mark.parametrize(

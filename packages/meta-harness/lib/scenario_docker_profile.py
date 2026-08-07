@@ -22,6 +22,13 @@ if str(_DOCKER_RUNTIME_LIB) not in sys.path:
 import docker_runtime_profile as runtime  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 
+_DEFAULT_INPUT_BYTES_PER_TOKEN = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+    mh.BROKER_INPUT_BYTES_PER_TOKEN_KEY
+]
+_DEFAULT_MAX_TOTAL_TOKENS = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+    mh.BROKER_MAX_TOTAL_TOKENS_KEY
+]
+
 # Single source of truth for the broker env fallback prices (Issue #261 PR2 review
 # round 4): broker_env() must never hardcode its own price literals, or a
 # partial/`.local.yaml`-overridden config that nulls out one pricing key would
@@ -505,6 +512,32 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
     return [pinned_model]
 
 
+def effective_broker_input_bytes_per_token(config: dict) -> int:
+    """Resolve the config value with its meta-harness default and fail closed on
+    non-positive integers so broker env and evaluator hashing share one validation."""
+    broker = ((config.get("evaluate") or {}).get("isolation") or {}).get("broker") or {}
+    configured_value = broker.get(mh.BROKER_INPUT_BYTES_PER_TOKEN_KEY)
+    value = _DEFAULT_INPUT_BYTES_PER_TOKEN if configured_value is None else configured_value
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise DockerProfileError(
+            "evaluate.isolation.broker.input_bytes_per_token must be a positive integer"
+        )
+    return value
+
+
+def effective_broker_max_total_tokens(config: dict) -> int:
+    """Resolve the config value with its meta-harness default and fail closed on
+    non-positive integers so broker env and evaluator hashing share one validation."""
+    broker = ((config.get("evaluate") or {}).get("isolation") or {}).get("broker") or {}
+    configured_value = broker.get(mh.BROKER_MAX_TOTAL_TOKENS_KEY)
+    value = _DEFAULT_MAX_TOTAL_TOKENS if configured_value is None else configured_value
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise DockerProfileError(
+            "evaluate.isolation.broker.max_total_tokens must be a positive integer"
+        )
+    return value
+
+
 def _pricing_value(pricing: dict, key: str) -> float:
     """Resolve one pricing_upper_bound_usd_per_million field with a null-safe
     fallback to mh.DEFAULTS (local review round 5, High).
@@ -558,6 +591,8 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
     pricing = broker.get("pricing_upper_bound_usd_per_million") or {}
     scenario_run = config.get("scenario_run") or {}
     idle_timeout = int(broker.get("idle_timeout_sec", 300))
+    input_bytes_per_token = effective_broker_input_bytes_per_token(config)
+    max_total_tokens = effective_broker_max_total_tokens(config)
     model_allowlist = effective_broker_model_allowlist(config)
     model_allowlist_env: dict[str, str] = {}
     if model_allowlist:
@@ -575,7 +610,8 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
         "DR_BROKER_MAX_LIFETIME_SEC": str(broker_max_lifetime_seconds(config)),
         "DR_BROKER_STARTUP_TIMEOUT_SEC": str(broker.get("startup_timeout_sec", 30)),
         "DR_BROKER_MAX_REQUESTS": str(broker.get("max_requests", 64)),
-        "DR_BROKER_MAX_TOTAL_TOKENS": str(broker.get("max_total_tokens", 500000)),
+        "DR_BROKER_MAX_TOTAL_TOKENS": str(max_total_tokens),
+        "DR_BROKER_INPUT_BYTES_PER_TOKEN": str(input_bytes_per_token),
         "DR_BROKER_MAX_UPSTREAM_BYTES": str(broker.get("max_upstream_bytes", 50000000)),
         "DR_PRICE_INPUT": str(_pricing_value(pricing, "input")),
         "DR_PRICE_OUTPUT": str(_pricing_value(pricing, "output")),
@@ -588,7 +624,8 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
         "MH_BROKER_MAX_LIFETIME_SEC": str(broker_max_lifetime_seconds(config)),
         "MH_BROKER_STARTUP_TIMEOUT_SEC": str(broker.get("startup_timeout_sec", 30)),
         "MH_BROKER_MAX_REQUESTS": str(broker.get("max_requests", 64)),
-        "MH_BROKER_MAX_TOTAL_TOKENS": str(broker.get("max_total_tokens", 500000)),
+        "MH_BROKER_MAX_TOTAL_TOKENS": str(max_total_tokens),
+        "MH_BROKER_INPUT_BYTES_PER_TOKEN": str(input_bytes_per_token),
         "MH_BROKER_MAX_UPSTREAM_BYTES": str(broker.get("max_upstream_bytes", 50000000)),
         "MH_PRICE_INPUT": str(_pricing_value(pricing, "input")),
         "MH_PRICE_OUTPUT": str(_pricing_value(pricing, "output")),
