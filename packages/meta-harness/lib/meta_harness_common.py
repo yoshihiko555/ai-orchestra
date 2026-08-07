@@ -118,6 +118,9 @@ DEFAULTS: dict[str, Any] = {
                 "startup_timeout_sec": 30,
                 "max_requests": 64,
                 BROKER_MAX_TOTAL_TOKENS_KEY: 500000,
+                # JSON/API bodies commonly average roughly four bytes per token; 3 keeps
+                # a 25% safety margin for code-heavy payloads. Meta-harness wires this
+                # value; unwired callers use broker.py's conservative default of 1.
                 BROKER_INPUT_BYTES_PER_TOKEN_KEY: 3,
                 "max_upstream_bytes": 50000000,
                 "pricing_upper_bound_usd_per_million": {

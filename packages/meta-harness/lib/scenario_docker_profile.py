@@ -509,6 +509,19 @@ def effective_broker_model_allowlist(config: dict) -> list[str]:
     return [pinned_model]
 
 
+def effective_broker_input_bytes_per_token(config: dict) -> int:
+    """Resolve the config value with its meta-harness default and fail closed on
+    non-positive integers so broker env and evaluator hashing share one validation."""
+    broker = ((config.get("evaluate") or {}).get("isolation") or {}).get("broker") or {}
+    configured_value = broker.get(mh.BROKER_INPUT_BYTES_PER_TOKEN_KEY)
+    value = _DEFAULT_INPUT_BYTES_PER_TOKEN if configured_value is None else configured_value
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise DockerProfileError(
+            "evaluate.isolation.broker.input_bytes_per_token must be a positive integer"
+        )
+    return value
+
+
 def _pricing_value(pricing: dict, key: str) -> float:
     """Resolve one pricing_upper_bound_usd_per_million field with a null-safe
     fallback to mh.DEFAULTS (local review round 5, High).
@@ -562,20 +575,7 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
     pricing = broker.get("pricing_upper_bound_usd_per_million") or {}
     scenario_run = config.get("scenario_run") or {}
     idle_timeout = int(broker.get("idle_timeout_sec", 300))
-    configured_input_bytes_per_token = broker.get(mh.BROKER_INPUT_BYTES_PER_TOKEN_KEY)
-    input_bytes_per_token = (
-        _DEFAULT_INPUT_BYTES_PER_TOKEN
-        if configured_input_bytes_per_token is None
-        else configured_input_bytes_per_token
-    )
-    if (
-        not isinstance(input_bytes_per_token, int)
-        or isinstance(input_bytes_per_token, bool)
-        or input_bytes_per_token < 1
-    ):
-        raise DockerProfileError(
-            "evaluate.isolation.broker.input_bytes_per_token must be a positive integer"
-        )
+    input_bytes_per_token = effective_broker_input_bytes_per_token(config)
     model_allowlist = effective_broker_model_allowlist(config)
     model_allowlist_env: dict[str, str] = {}
     if model_allowlist:

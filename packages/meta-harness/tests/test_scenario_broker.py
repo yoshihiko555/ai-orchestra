@@ -744,11 +744,13 @@ def test_request_budget_uses_ceiling_byte_to_token_estimate(
     body = json.dumps(
         {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [{"content": "x" * 60}]}
     ).encode()
-    converted_input_tokens = -(-len(body) // broker.DEFAULT_INPUT_BYTES_PER_TOKEN)
+    input_bytes_per_token = 3
+    converted_input_tokens = -(-len(body) // input_bytes_per_token)
     state = _state(
         tmp_path,
         monkeypatch,
         max_total_tokens=converted_input_tokens + 1,
+        input_bytes_per_token=input_bytes_per_token,
     )
 
     result = state.request_budget_error("/v1/messages", body)
@@ -778,13 +780,15 @@ def test_request_cost_uses_converted_input_token_estimate(
     body = json.dumps(
         {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [{"content": "x" * 60}]}
     ).encode()
-    converted_input_tokens = -(-len(body) // broker.DEFAULT_INPUT_BYTES_PER_TOKEN)
+    input_bytes_per_token = 3
+    converted_input_tokens = -(-len(body) // input_bytes_per_token)
     state = _state(
         tmp_path,
         monkeypatch,
         budget_usd=converted_input_tokens + 0.5,
         pricing=broker.Pricing(1_000_000, 0, 1_000_000, 1_000_000),
         max_total_tokens=1_000_000,
+        input_bytes_per_token=input_bytes_per_token,
     )
 
     result = state.request_budget_error("/v1/messages", body)
@@ -814,12 +818,12 @@ def test_request_cost_rejects_when_converted_estimate_exceeds_remaining_budget(
     assert state.metrics.budget_rejected_count == 1
 
 
-def test_input_bytes_per_token_defaults_to_safe_estimate(
+def test_input_bytes_per_token_defaults_to_backward_compatible_byte_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = _state(tmp_path, monkeypatch)
 
-    assert state.input_bytes_per_token == broker.DEFAULT_INPUT_BYTES_PER_TOKEN == 3
+    assert state.input_bytes_per_token == broker.DEFAULT_INPUT_BYTES_PER_TOKEN == 1
 
 
 @pytest.mark.parametrize("invalid_value", [0, -1, True, 1.5])

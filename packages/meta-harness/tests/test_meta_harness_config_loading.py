@@ -20,6 +20,10 @@ mh = load_module(
     "meta_harness_common_config_loading",
     "packages/meta-harness/lib/meta_harness_common.py",
 )
+broker = load_module(
+    "meta_harness_common_config_loading_broker",
+    "packages/docker-runtime/docker/broker/broker.py",
+)
 profile = load_module(
     "meta_harness_profile_config_loading",
     "packages/meta-harness/lib/scenario_docker_profile.py",
@@ -60,6 +64,17 @@ def test_yaml_input_bytes_per_token_default_matches_python_default() -> None:
     ]
 
     assert yaml_value == python_value == 3
+
+
+def test_broker_and_meta_harness_input_bytes_per_token_defaults_intentionally_diverge() -> None:
+    """Meta-harness wires 3 explicitly; broker.py's 1 is only the fail-safe for
+    unwired callers such as loop-harness."""
+    meta_harness_value = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+        mh.BROKER_INPUT_BYTES_PER_TOKEN_KEY
+    ]
+
+    assert broker.DEFAULT_INPUT_BYTES_PER_TOKEN == 1
+    assert meta_harness_value == 3
 
 
 class TestConfigLocalOverride:

@@ -502,12 +502,16 @@ class TestScenarioExecutionEnvelope:
                     }
                 }
             },
+            # A coefficient-only change must stale prior evaluator_hash-scoped runs
+            # (Issue #356).
+            {"evaluate": {"isolation": {"broker": {"input_bytes_per_token": 2}}}},
             {"scenario_run": {"max_budget_usd_default": 54.0}},
         ],
         ids=[
             "judge_tool",
             "model_repin",
             "broker_pricing",
+            "input_bytes_per_token",
             "scenario_run_budget",
         ],
     )
@@ -535,6 +539,30 @@ class TestScenarioExecutionEnvelope:
         after = ev.compute_configured_evaluator_hash(changed_config)
 
         assert before != after
+
+    def test_evaluator_hash_treats_unset_input_bytes_per_token_as_explicit_default(
+        self,
+    ) -> None:
+        base_config: dict = {
+            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "model": "claude-sonnet-5",
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0},
+                        "model_allowlist": ["claude-sonnet-5"],
+                    }
+                },
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+        explicit_config = json.loads(json.dumps(base_config))
+        explicit_config["evaluate"]["isolation"]["broker"]["input_bytes_per_token"] = 3
+
+        before = ev.compute_configured_evaluator_hash(base_config)
+        after = ev.compute_configured_evaluator_hash(explicit_config)
+
+        assert before == after
 
     def test_evaluator_hash_unaffected_by_unpinned_menu_surplus_entries(self) -> None:
         """Issue #261 PR2 review round 3: effective_broker_model_allowlist wires only

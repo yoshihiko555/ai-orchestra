@@ -47,9 +47,11 @@ INPUT_BYTES_PER_TOKEN_ENV_NAMES = (
     "DR_BROKER_INPUT_BYTES_PER_TOKEN",
     "MH_BROKER_INPUT_BYTES_PER_TOKEN",
 )
-# JSON/API bodies commonly average roughly four bytes per token. Three keeps a
-# 25% safety margin for code-heavy payloads while correcting the old 1:1 estimate.
-DEFAULT_INPUT_BYTES_PER_TOKEN = 3
+# Fail-safe for callers that never wire INPUT_BYTES_PER_TOKEN_ENV_NAMES (for example,
+# loop-harness today): preserve the historical 1:1 byte-to-token accounting.
+# Meta-harness wires it in packages/meta-harness/lib/scenario_docker_profile.py::broker_env();
+# its rationale lives with value 3 in DEFAULTS and both meta-harness.yaml files, not here.
+DEFAULT_INPUT_BYTES_PER_TOKEN = 1
 ALLOWED_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 # Request body fields that can attach a price multiplier to an otherwise-allowlisted
 # model (Issue #261 PR2 review round 6, High). The broker's fixed

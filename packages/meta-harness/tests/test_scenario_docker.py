@@ -1220,6 +1220,22 @@ def test_broker_env_uses_default_when_input_bytes_per_token_is_null() -> None:
     assert broker_env["MH_BROKER_INPUT_BYTES_PER_TOKEN"] == "3"
 
 
+def test_effective_broker_input_bytes_per_token_resolves_default_and_validates() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    broker_config = config["evaluate"]["isolation"]["broker"]
+    broker_config.pop("input_bytes_per_token")
+
+    assert docker.profile.effective_broker_input_bytes_per_token(config) == 3
+
+    broker_config["input_bytes_per_token"] = 2
+    assert docker.profile.effective_broker_input_bytes_per_token(config) == 2
+
+    for invalid_value in (0, -1, True, 1.5, "3"):
+        broker_config["input_bytes_per_token"] = invalid_value
+        with pytest.raises(docker.profile.DockerProfileError, match="input_bytes_per_token"):
+            docker.profile.effective_broker_input_bytes_per_token(config)
+
+
 @pytest.mark.parametrize("invalid_value", [0, -1, True, 1.5, "3"])
 def test_broker_env_rejects_invalid_input_bytes_per_token(invalid_value) -> None:
     config = copy.deepcopy(mh.DEFAULTS)

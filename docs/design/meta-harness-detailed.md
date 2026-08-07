@@ -702,7 +702,7 @@ PR 作成時点で記録されるが、この時点では状態は `evaluated` �
 | `suite_id`       | `<target>` に対応するシナリオスイート識別子（例: `claude-harness`, `skill:<name>`）                                                         |
 | `scenario_hash`  | シナリオ YAML ファイル本体の sha256                                                                                                         |
 | `suite_hash`     | suite 内の全シナリオファイルの `scenario_hash` をファイル名順にソートし連結した文字列の sha256                                              |
-| `evaluator_hash` | evaluator本体・Docker実行境界（broker / profile / isolation / process runner / Dockerfile）の正本 + scoring関連config値（`scoring.*`）+ scenario 不在時に fallback する実行設定（`evaluate.allowed_tools` / `permission_mode` / `model`、`scenario_run.max_output_tokens_default`）+ コスト比較可能性に影響する config（`judge.tool` / `judge.model` / `judge.effort`、`evaluate.isolation.broker.pricing_upper_bound_usd_per_million`、`evaluate.isolation.broker.model_allowlist`、`scenario_run.max_budget_usd_default`、Issue #261 PR2）を、安定した相対パス順で連結したsha256 |
+| `evaluator_hash` | evaluator本体・Docker実行境界（broker / profile / isolation / process runner / Dockerfile）の正本 + scoring関連config値（`scoring.*`）+ scenario 不在時に fallback する実行設定（`evaluate.allowed_tools` / `permission_mode` / `model`、`scenario_run.max_output_tokens_default`）+ コスト比較可能性に影響する config（`judge.tool` / `judge.model` / `judge.effort`、`evaluate.isolation.broker.pricing_upper_bound_usd_per_million`、`evaluate.isolation.broker.model_allowlist`、`evaluate.isolation.broker.input_bytes_per_token`、`scenario_run.max_budget_usd_default`、Issue #261 PR2、Issue #356）を、安定した相対パス順で連結したsha256 |
 
 ### 1-3. `scenario.schema.json`
 

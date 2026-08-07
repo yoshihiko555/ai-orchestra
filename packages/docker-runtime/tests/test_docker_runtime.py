@@ -758,6 +758,21 @@ def test_broker_settings_defaults_input_bytes_per_token_when_env_is_unset(
         broker.DEFAULT_INPUT_BYTES_PER_TOKEN,
     )
 
+    assert value == 1
+
+
+def test_broker_environment_uses_explicit_meta_harness_input_bytes_per_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generic_name, legacy_name = broker.INPUT_BYTES_PER_TOKEN_ENV_NAMES
+    _replace_broker_environment(monkeypatch, {generic_name: "3"})
+
+    value = broker._optional_int_env(
+        generic_name,
+        legacy_name,
+        broker.DEFAULT_INPUT_BYTES_PER_TOKEN,
+    )
+
     assert value == 3
 
 

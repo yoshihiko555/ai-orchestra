@@ -2433,9 +2433,9 @@ def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
 
     Includes settings that affect cross-run cost/quality comparability even
     when no scenario/suite file changes (Issue #261 PR2): judge tool/model/effort,
-    broker pricing upper bounds, the broker model allowlist, and the global
-    per-scenario budget default. A config-only change to any of these must
-    stale out prior evaluator_hash-scoped runs.
+    broker pricing upper bounds, the broker model allowlist, the broker
+    input-bytes-per-token coefficient, and the global per-scenario budget default.
+    A config-only change to any of these must stale out prior evaluator_hash-scoped runs.
     """
     evaluate_cfg = config.get("evaluate") or {}
     judge_cfg = config.get("judge") or {}
@@ -2461,6 +2461,9 @@ def evaluator_execution_snapshot(config: dict) -> dict[str, Any]:
         # model_allowlist "menu", so a broken/under-priced config never silently
         # produces a comparable-looking hash.
         "broker_model_allowlist": siso.docker.profile.effective_broker_model_allowlist(config),
+        "broker_input_bytes_per_token": siso.docker.profile.effective_broker_input_bytes_per_token(
+            config
+        ),
         "scenario_run_max_budget_usd_default": (config.get("scenario_run") or {}).get(
             "max_budget_usd_default"
         ),
