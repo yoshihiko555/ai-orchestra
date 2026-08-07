@@ -237,6 +237,98 @@ def test_container_git_wrapper_uses_fixed_image_git_not_itself(
     assert (runtime / "ignored-baseline.json").stat().st_mode & 0o777 == 0o644
 
 
+def test_prepare_isolated_git_snapshot_readable_by_container_user_under_restrictive_umask(
+    git_project: Path, tmp_path: Path
+) -> None:
+    """Issue #357 follow-up (bot review): `git init --bare` and the `git status` invoked by
+    `_collect_ignored_baseline_paths` create the snapshot's directories/files/index at
+    umask-masked permissions. A host running as root with e.g. `umask 077` would leave the
+    snapshot at 0700/0600, which the oracle/preparation/scenario containers (non-root
+    `--user {uid}:{gid}`) could not read at all -- unlike `wrapper_dir` and
+    `ignored-baseline.json`, which already pin a container-readable mode regardless of umask.
+    `container_paths=True` must do the same for every artifact under the snapshot repo."""
+    runtime = tmp_path / "runtime-umask"
+    runtime.mkdir()
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=git_project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    previous_umask = os.umask(0o077)
+    try:
+        siso._prepare_isolated_git(
+            worktree_dir=git_project,
+            runtime_state_dir=runtime,
+            source_commit=source_commit,
+            runner=subprocess.run,
+            container_paths=True,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    snapshot_dir = runtime / "git-snapshot"
+    assert snapshot_dir.stat().st_mode & 0o755 == 0o755
+    for root, dirs, files in os.walk(snapshot_dir):
+        for name in dirs:
+            path = Path(root) / name
+            assert path.stat().st_mode & 0o755 == 0o755, f"{path} not container-readable"
+        for name in files:
+            path = Path(root) / name
+            assert path.stat().st_mode & 0o644 == 0o644, f"{path} not container-readable"
+
+
+def test_git_wrapper_head_is_stable_across_invocation_forms(
+    git_project: Path, tmp_path: Path
+) -> None:
+    """Issue #357 regression: before the fix, the wrapper only faked HEAD for the exact
+    3-arg (`rev-parse --short HEAD`) and 2-arg (`rev-parse HEAD`) forms and fell through to
+    the real snapshot repo for any other equivalent invocation (e.g. `-C <workspace>`). An
+    agent and an oracle phrasing the same question differently could therefore observe two
+    different HEAD values for the same scenario run. The wrapper must now resolve every
+    invocation form identically, without requiring Docker or srt."""
+    runtime = tmp_path / "runtime-wrapper-consistency"
+    runtime.mkdir()
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=git_project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    wrapper_dir = siso._prepare_isolated_git(
+        worktree_dir=git_project,
+        runtime_state_dir=runtime,
+        source_commit=source_commit,
+        runner=subprocess.run,
+    )
+    wrapper = str(wrapper_dir / "git")
+
+    bare = subprocess.run(
+        [wrapper, "rev-parse", "--short", "HEAD"],
+        cwd=git_project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    dash_c = subprocess.run(
+        [wrapper, "-C", str(git_project), "rev-parse", "--short", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    assert bare and all(c in "0123456789abcdef" for c in bare)
+    assert dash_c == bare
+    # The wrapper must reflect the real, freshly created snapshot commit for every invocation
+    # form, not silently keep faking one particular form to `source_commit`.
+    assert bare != source_commit[:7]
+
+
 def test_prepare_isolated_git_records_tracked_but_ignored_file_in_baseline(
     git_project: Path, tmp_path: Path
 ) -> None:
@@ -522,7 +614,32 @@ def test_real_scenario_srt_supports_git_without_main_metadata_access(
             env=launch.env,
         )
         assert completed.returncode == 0, completed.stderr
-        assert completed.stdout.strip() == source_commit[:7]
+        # Issue #357: the wrapper no longer fakes HEAD to `source_commit` for this exact
+        # invocation form -- it must exec the real (fresh) snapshot repo HEAD instead, and that
+        # must be identical regardless of how the caller phrases the same question (e.g. with a
+        # `-C` global option, as an oracle command might).
+        bare_head = completed.stdout.strip()
+        assert bare_head and all(c in "0123456789abcdef" for c in bare_head)
+        dash_c = subprocess.run(
+            [
+                launch.executable,
+                "--settings",
+                str(launch.settings_path),
+                "git",
+                "-C",
+                str(worktree),
+                "rev-parse",
+                "--short",
+                "HEAD",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=launch.env,
+        )
+        assert dash_c.returncode == 0, dash_c.stderr
+        assert dash_c.stdout.strip() == bare_head
         readme = worktree / "README.md"
         readme.write_text(readme.read_text(encoding="utf-8") + "\nchanged\n", encoding="utf-8")
         diff = subprocess.run(

@@ -162,7 +162,14 @@
   指摘対応）。baseline JSON を書き出す `_prepare_isolated_git` 自身も、oracle コンテナが
   非 root `--user {uid}:{gid}` で read-only mount するファイルを読めるよう、書き込み直後に
   `ignored-baseline.json` のパーミッションを明示 chmod する（`container_paths` に応じ
-  0o644/0o600 固定。同 PR #351 レビュー指摘、host umask 依存の読み取り不能を防止）。
+  0o644/0o600 固定。同 PR #351 レビュー指摘、host umask 依存の読み取り不能を防止）。同様に
+  snapshot repo 本体（`git-snapshot/` 配下の全ディレクトリ・ファイル・index）も、`container_paths`
+  の場合は commands 実行と ignored-baseline 収集の完了後に再帰的に container-readable なモード
+  （dir 0o755 / file 0o644）へ pin する。以前は `rev-parse [--short] HEAD` の完全一致引数だけが
+  snapshot を経由しない fast path で `source_commit` を返していたため host umask に依存せず
+  読めていたが、Issue #357 でその fast path を廃し常に snapshot 実体を読む形へ統一したことで、
+  host が root かつ厳格な umask（例: 077）の場合に非 root コンテナから snapshot 自体が読めなく
+  なる新規の regression が生じたため（Issue #357 bot レビュー指摘対応）。
   baseline 記録の有無に関わらず (c) の symlink 無条件拒否は優先されたまま変わらない —
   ディレクトリを指す symlink が丸ごと ignore された collapsed ディレクトリ配下にある場合も、
   ベースライン記録側・オラクル走査側いずれの collapsed directory 展開ヘルパーも symlink な
@@ -170,7 +177,8 @@
   — 根拠: 詳細設計 §2-2、§4、ADR-20260714-038「再検討記録（bypassPermissions 例外）」
   「再検討記録（Issue #297 / PR #326 — bypassPermissions 対象を 4→6 シナリオへ拡張）」、
   PR #273 全レビューラウンド、Issue #350「再検討記録（ベースライン差分方式への変更）」、
-  PR #351 bot レビュー指摘対応
+  PR #351 bot レビュー指摘対応、Issue #357 bot レビュー指摘対応（snapshot repo 本体の
+  container-readable pin 追加）
 - [ ] EV-94（正常 / must）: 永続イメージ manifest 経由の image 再利用 — `ensure_scenario_image` / `ensure_broker_image` は `ImageRecipe`（context hash・build_args・docker_label・platform/target）から導出した recipe hash が manifest 記録済みで、かつ manifest 記録の `image_id` が現在 Docker に存在する image と一致する限り再ビルドを行わず、`last_used_at` のみを更新して同じ tag を返す。recipe が変化した場合、または manifest 記録と実際の Docker image が乖離（drift）している場合は再ビルドする — 根拠: `docker_runtime_image.ensure_recipe_image`（`packages/docker-runtime/lib/docker_runtime_image.py`）への委譲、`docs/design/loop-harness-isolation.md` §8 Phase 0
 - [ ] EV-95（境界 / must）: namespace 分離 — meta-harness の scenario/broker image は Docker label `ai.orchestra.meta-harness`、manifest/lock パス `.claude/meta-harness/docker-image-cache.json` / `.claude/meta-harness/docker-image-build.lock`、専用 buildx builder `meta-harness-builder` を既定として使用し、loop-harness（`ai.orchestra.loop-harness` / `.claude/loop/*` / `loop-harness-builder`）と独立した名前空間を形成する。世代 prune は同一 family（Docker label + repository）の image だけを対象とし、他プロジェクトが所有する image を削除しない — 根拠: `scenario_docker_image.py`（`DOCKER_LABEL` / `DEFAULT_MANIFEST_PATH` / `DEFAULT_LOCK_PATH` / `DEFAULT_BUILDER_NAME`）、`docs/design/loop-harness-isolation.md` §8
 - [ ] EV-96（異常 / must）: `auto_build_images: false` の fail-closed は永続イメージライフサイクル経由でも維持される — immutable な `@sha256:` digest 参照でない image 設定（タグのみ・digest 欠落等）は、共有 `ensure_recipe_image` の immutable-image 経路で拒否され、ビルドへフォールバックしない — 根拠: EV-27 の拡張、`docker_runtime_image._ensure_immutable_image`

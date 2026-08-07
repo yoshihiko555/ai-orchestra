@@ -408,6 +408,28 @@ def _scenario_runtime_read_roots() -> list[Path]:
     return iso._dedupe_paths(roots)
 
 
+def _make_snapshot_container_readable(snapshot_dir: Path) -> None:
+    """Pin every directory/file under the snapshot repo to a container-readable mode.
+
+    `git init --bare` and the `git status` in `_collect_ignored_baseline_paths` create the
+    snapshot's directories, files, and index at whatever mode the host umask allows (Issue
+    #357 bot review). A host running as root with a restrictive umask (e.g. 077) would leave
+    the snapshot at 0700/0600, unreadable by the oracle/preparation/scenario containers' non-
+    root `--user {uid}:{gid}` -- the same class of problem already handled for `wrapper_dir`
+    and `ignored-baseline.json` below. Symlinks are skipped: a bare repo created by this
+    function never legitimately contains one, and `chmod` on a symlink would follow it.
+    """
+    for root, dirs, files in os.walk(snapshot_dir):
+        root_path = Path(root)
+        if not root_path.is_symlink():
+            root_path.chmod(0o755)
+        for name in files:
+            file_path = root_path / name
+            if file_path.is_symlink():
+                continue
+            file_path.chmod(0o644)
+
+
 def _prepare_isolated_git(
     *,
     worktree_dir: Path,
@@ -480,6 +502,11 @@ def _prepare_isolated_git(
         worktree=worktree,
         git_env=git_env,
     )
+    if container_paths:
+        # Must run last among the snapshot-touching steps: it comes after the `git status`
+        # call above (whose index rewrite would otherwise reset the index back to a
+        # umask-masked mode) and before any further snapshot reads.
+        _make_snapshot_container_readable(snapshot_dir)
     ignored_baseline_path = runtime_state / _IGNORED_BASELINE_FILENAME
     ignored_baseline_path.write_text(
         json.dumps({"ignored_paths": ignored_paths}, indent=2) + "\n",
@@ -502,13 +529,17 @@ def _prepare_isolated_git(
     quoted_git = shlex.quote(wrapper_git)
     quoted_snapshot = shlex.quote(wrapper_snapshot)
     quoted_worktree = shlex.quote(wrapper_worktree)
+    # Issue #357: the wrapper used to special-case the exact-argument forms
+    # `rev-parse --short HEAD` / `rev-parse HEAD` and fake their output to
+    # `source_commit`, while any other equivalent invocation (e.g. with a `-C`
+    # global option) fell through to this same `exec` line and returned the
+    # snapshot repository's real HEAD instead. That gave two contradictory
+    # "truths" for the same question depending on how the caller phrased the
+    # command, so an agent and an oracle disagreeing on invocation form could
+    # disagree on HEAD too. Always exec the real git against the snapshot so
+    # every invocation form resolves identically and consistently.
     wrapper_path.write_text(
         "#!/bin/sh\n"
-        f'if [ "$#" -eq 3 ] && [ "$1" = rev-parse ] && '
-        f'[ "$2" = --short ] && [ "$3" = HEAD ]; then printf \'%s\\n\' '
-        f"{shlex.quote(source_commit[:7])}; exit 0; fi\n"
-        f'if [ "$#" -eq 2 ] && [ "$1" = rev-parse ] && '
-        f"[ \"$2\" = HEAD ]; then printf '%s\\n' {shlex.quote(source_commit)}; exit 0; fi\n"
         f'exec {quoted_git} --git-dir={quoted_snapshot} --work-tree={quoted_worktree} "$@"\n',
         encoding="utf-8",
     )
