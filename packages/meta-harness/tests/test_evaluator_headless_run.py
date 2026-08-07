@@ -505,6 +505,10 @@ class TestScenarioExecutionEnvelope:
             # A coefficient-only change must stale prior evaluator_hash-scoped runs
             # (Issue #356).
             {"evaluate": {"isolation": {"broker": {"input_bytes_per_token": 2}}}},
+            # A token-cap-only change must also stale prior evaluator_hash-scoped runs
+            # (Issue #356 CodeRabbit High follow-up): different max_total_tokens budgets
+            # produce runs whose cost/quality are not comparable.
+            {"evaluate": {"isolation": {"broker": {"max_total_tokens": 250000}}}},
             {"scenario_run": {"max_budget_usd_default": 54.0}},
         ],
         ids=[
@@ -512,6 +516,7 @@ class TestScenarioExecutionEnvelope:
             "model_repin",
             "broker_pricing",
             "input_bytes_per_token",
+            "max_total_tokens",
             "scenario_run_budget",
         ],
     )
@@ -558,6 +563,30 @@ class TestScenarioExecutionEnvelope:
         }
         explicit_config = json.loads(json.dumps(base_config))
         explicit_config["evaluate"]["isolation"]["broker"]["input_bytes_per_token"] = 3
+
+        before = ev.compute_configured_evaluator_hash(base_config)
+        after = ev.compute_configured_evaluator_hash(explicit_config)
+
+        assert before == after
+
+    def test_evaluator_hash_treats_unset_max_total_tokens_as_explicit_default(
+        self,
+    ) -> None:
+        base_config: dict = {
+            "judge": {"model": "claude-sonnet-5", "effort": "high"},
+            "evaluate": {
+                "model": "claude-sonnet-5",
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {"input": 3.0},
+                        "model_allowlist": ["claude-sonnet-5"],
+                    }
+                },
+            },
+            "scenario_run": {"max_budget_usd_default": 3.0},
+        }
+        explicit_config = json.loads(json.dumps(base_config))
+        explicit_config["evaluate"]["isolation"]["broker"]["max_total_tokens"] = 500000
 
         before = ev.compute_configured_evaluator_hash(base_config)
         after = ev.compute_configured_evaluator_hash(explicit_config)
