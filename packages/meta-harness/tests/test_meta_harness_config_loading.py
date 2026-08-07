@@ -20,6 +20,10 @@ mh = load_module(
     "meta_harness_common_config_loading",
     "packages/meta-harness/lib/meta_harness_common.py",
 )
+profile = load_module(
+    "meta_harness_profile_config_loading",
+    "packages/meta-harness/lib/scenario_docker_profile.py",
+)
 
 
 def test_repository_synced_config_matches_package_default() -> None:
@@ -45,6 +49,19 @@ def test_yaml_docker_image_defaults_match_python_single_source_constants() -> No
     assert isolation["broker"]["image"] == mh.DEFAULT_BROKER_IMAGE
 
 
+def test_yaml_input_bytes_per_token_default_matches_python_default() -> None:
+    repository_root = Path(__file__).resolve().parents[3]
+    package_config = repository_root / "packages/meta-harness/config/meta-harness.yaml"
+    config = yaml.safe_load(package_config.read_text(encoding="utf-8"))
+
+    yaml_value = config["evaluate"]["isolation"]["broker"][mh.BROKER_INPUT_BYTES_PER_TOKEN_KEY]
+    python_value = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+        mh.BROKER_INPUT_BYTES_PER_TOKEN_KEY
+    ]
+
+    assert yaml_value == python_value == 3
+
+
 class TestConfigLocalOverride:
     # EV-22
     def test_local_yaml_overrides_base_value(self, git_project: Path, run_meta) -> None:
@@ -58,6 +75,24 @@ class TestConfigLocalOverride:
         config = mh.load_config(git_project)
 
         assert config["retention"]["keep_generations"] == 2
+
+    def test_input_bytes_per_token_override_reaches_broker_env(
+        self, git_project: Path, run_meta
+    ) -> None:
+        run_meta("init", project=git_project, check=True)
+        local_config_dir = git_project / ".claude" / "config" / "meta-harness"
+        local_config_dir.mkdir(parents=True, exist_ok=True)
+        (local_config_dir / "meta-harness.local.yaml").write_text(
+            "evaluate:\n  isolation:\n    broker:\n      input_bytes_per_token: 2\n",
+            encoding="utf-8",
+        )
+
+        config = mh.load_config(git_project)
+        broker_env = profile.broker_env(config, "run-token", 8787)
+
+        assert config["evaluate"]["isolation"]["broker"]["input_bytes_per_token"] == 2
+        assert broker_env["DR_BROKER_INPUT_BYTES_PER_TOKEN"] == "2"
+        assert broker_env["MH_BROKER_INPUT_BYTES_PER_TOKEN"] == "2"
 
     # EV-22
     def test_unset_keys_keep_base_default(self, git_project: Path, run_meta) -> None:

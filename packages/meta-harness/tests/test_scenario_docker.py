@@ -1199,6 +1199,7 @@ def test_broker_env_sends_generic_and_legacy_contracts() -> None:
         ("DR_BROKER_STARTUP_TIMEOUT_SEC", "MH_BROKER_STARTUP_TIMEOUT_SEC"),
         ("DR_BROKER_MAX_REQUESTS", "MH_BROKER_MAX_REQUESTS"),
         ("DR_BROKER_MAX_TOTAL_TOKENS", "MH_BROKER_MAX_TOTAL_TOKENS"),
+        ("DR_BROKER_INPUT_BYTES_PER_TOKEN", "MH_BROKER_INPUT_BYTES_PER_TOKEN"),
         ("DR_BROKER_MAX_UPSTREAM_BYTES", "MH_BROKER_MAX_UPSTREAM_BYTES"),
         ("DR_PRICE_INPUT", "MH_PRICE_INPUT"),
         ("DR_PRICE_OUTPUT", "MH_PRICE_OUTPUT"),
@@ -1207,6 +1208,25 @@ def test_broker_env_sends_generic_and_legacy_contracts() -> None:
         ("DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST"),
     ):
         assert broker_env[generic_name] == broker_env[legacy_name]
+
+
+def test_broker_env_uses_default_when_input_bytes_per_token_is_null() -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["input_bytes_per_token"] = None
+
+    broker_env = docker.profile.broker_env(config, "run-token", 8787)
+
+    assert broker_env["DR_BROKER_INPUT_BYTES_PER_TOKEN"] == "3"
+    assert broker_env["MH_BROKER_INPUT_BYTES_PER_TOKEN"] == "3"
+
+
+@pytest.mark.parametrize("invalid_value", [0, -1, True, 1.5, "3"])
+def test_broker_env_rejects_invalid_input_bytes_per_token(invalid_value) -> None:
+    config = copy.deepcopy(mh.DEFAULTS)
+    config["evaluate"]["isolation"]["broker"]["input_bytes_per_token"] = invalid_value
+
+    with pytest.raises(docker.profile.DockerProfileError, match="input_bytes_per_token"):
+        docker.profile.broker_env(config, "run-token", 8787)
 
 
 @pytest.mark.parametrize(

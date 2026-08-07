@@ -1241,15 +1241,34 @@ def run_headless_scenario(
         timeout_ms = scenario.get(
             "timeout_ms", (config.get("evaluate") or {}).get("timeout_ms_default", 300000)
         )
+        evaluate_cfg = config.get("evaluate") or {}
+        launch_evaluate_cfg = {**evaluate_cfg, "timeout_ms_default": timeout_ms}
+        if mh.BROKER_MAX_TOTAL_TOKENS_KEY in budget:
+            scenario_max_total_tokens = budget[mh.BROKER_MAX_TOTAL_TOKENS_KEY]
+            if (
+                not isinstance(scenario_max_total_tokens, int)
+                or isinstance(scenario_max_total_tokens, bool)
+                or scenario_max_total_tokens < 1
+            ):
+                raise ValueError("budget.max_total_tokens must be a positive integer")
+            isolation_cfg = evaluate_cfg.get("isolation") or {}
+            broker_cfg = isolation_cfg.get("broker") or {}
+            launch_evaluate_cfg = {
+                **launch_evaluate_cfg,
+                "isolation": {
+                    **isolation_cfg,
+                    "broker": {
+                        **broker_cfg,
+                        mh.BROKER_MAX_TOTAL_TOKENS_KEY: scenario_max_total_tokens,
+                    },
+                },
+            }
         broker_budget = budget.get(
             "max_budget_usd", scenario_run_cfg.get("max_budget_usd_default", 3.0)
         )
         launch_config = {
             **config,
-            "evaluate": {
-                **(config.get("evaluate") or {}),
-                "timeout_ms_default": timeout_ms,
-            },
+            "evaluate": launch_evaluate_cfg,
             "scenario_run": {**scenario_run_cfg, "max_budget_usd_default": broker_budget},
         }
         launch = siso.resolve_scenario_isolation(

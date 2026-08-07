@@ -12,6 +12,7 @@ PR #168 レビュー指摘（Codex P1 x2）に対応:
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 from pathlib import Path
@@ -70,6 +71,45 @@ def _install_isolation_launch(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", lambda _launch: None)
     monkeypatch.setattr(ev.siso, "execution_boundary_available", lambda _config: True)
     return launch
+
+
+def _capture_launch_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario: dict,
+    config: dict,
+) -> dict:
+    launch = _install_isolation_launch(monkeypatch, tmp_path)
+    captured: dict = {}
+
+    def resolve(**kwargs):
+        captured.update(kwargs)
+        return launch
+
+    monkeypatch.setattr(ev.siso, "resolve_scenario_isolation", resolve)
+    worktree = tmp_path / "worktree"
+    staging = tmp_path / "staging"
+    instruction = tmp_path / "instruction.md"
+    worktree.mkdir()
+    staging.mkdir()
+    instruction.write_text("irrelevant", encoding="utf-8")
+
+    def fake_runner(_cmd, **kwargs):
+        kwargs["stdout"].write(b'{"type":"result","subtype":"success","is_error":false}\n')
+        return _completed()
+
+    monkeypatch.setattr(ev.sproc, "run_bounded_process_tree", fake_runner)
+    ev.run_headless_scenario(
+        scenario,
+        config,
+        worktree,
+        staging,
+        instruction,
+        main_root=tmp_path,
+        source_commit="a" * 40,
+        runner=fake_runner,
+    )
+    return captured["config"]
 
 
 class TestCheckHeadlessRunOutcome:
@@ -653,27 +693,9 @@ class TestRunHeadlessScenarioEnvironment:
     def test_effective_scenario_timeout_and_budget_reach_broker_config(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        launch = _install_isolation_launch(monkeypatch, tmp_path)
-        captured: dict = {}
-
-        def resolve(**kwargs):
-            captured.update(kwargs)
-            return launch
-
-        monkeypatch.setattr(ev.siso, "resolve_scenario_isolation", resolve)
-        worktree = tmp_path / "worktree"
-        staging = tmp_path / "staging"
-        instruction = tmp_path / "instruction.md"
-        worktree.mkdir()
-        staging.mkdir()
-        instruction.write_text("irrelevant")
-
-        def fake_runner(_cmd, **kwargs):
-            kwargs["stdout"].write(b'{"type":"result","subtype":"success","is_error":false}\n')
-            return _completed()
-
-        monkeypatch.setattr(ev.sproc, "run_bounded_process_tree", fake_runner)
-        ev.run_headless_scenario(
+        launch_config = _capture_launch_config(
+            tmp_path,
+            monkeypatch,
             {
                 "id": "s1",
                 "prompt": "irrelevant",
@@ -681,16 +703,67 @@ class TestRunHeadlessScenarioEnvironment:
                 "budget": {"max_budget_usd": 1.25},
             },
             {"evaluate": {"timeout_ms_default": 300000}},
-            worktree,
-            staging,
-            instruction,
-            main_root=tmp_path,
-            source_commit="a" * 40,
-            runner=fake_runner,
         )
 
-        assert captured["config"]["evaluate"]["timeout_ms_default"] == 900000
-        assert captured["config"]["scenario_run"]["max_budget_usd_default"] == 1.25
+        assert launch_config["evaluate"]["timeout_ms_default"] == 900000
+        assert launch_config["scenario_run"]["max_budget_usd_default"] == 1.25
+
+    def test_scenario_max_total_tokens_reaches_broker_config(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        config = copy.deepcopy(ev.mh.DEFAULTS)
+
+        launch_config = _capture_launch_config(
+            tmp_path,
+            monkeypatch,
+            {
+                "id": "s1",
+                "prompt": "irrelevant",
+                "budget": {"max_total_tokens": 750000},
+            },
+            config,
+        )
+
+        broker_config = launch_config["evaluate"]["isolation"]["broker"]
+        broker_env = ev.siso.docker.profile.broker_env(launch_config, "run-token", 8787)
+        assert broker_config["max_total_tokens"] == 750000
+        assert broker_config["max_requests"] == 64
+        assert broker_env["DR_BROKER_MAX_TOTAL_TOKENS"] == "750000"
+        assert broker_env["MH_BROKER_MAX_TOTAL_TOKENS"] == "750000"
+        assert config["evaluate"]["isolation"]["broker"]["max_total_tokens"] == 500000
+
+    def test_missing_scenario_max_total_tokens_preserves_broker_config(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        config = copy.deepcopy(ev.mh.DEFAULTS)
+
+        launch_config = _capture_launch_config(
+            tmp_path,
+            monkeypatch,
+            {"id": "s1", "prompt": "irrelevant"},
+            config,
+        )
+
+        broker_env = ev.siso.docker.profile.broker_env(launch_config, "run-token", 8787)
+        assert launch_config["evaluate"] == config["evaluate"]
+        assert broker_env["DR_BROKER_MAX_TOTAL_TOKENS"] == "500000"
+        assert broker_env["MH_BROKER_MAX_TOTAL_TOKENS"] == "500000"
+
+    @pytest.mark.parametrize("invalid_value", [0, -1, True, 1.5, "750000"])
+    def test_invalid_scenario_max_total_tokens_is_rejected(
+        self, tmp_path: Path, monkeypatch, invalid_value
+    ) -> None:
+        with pytest.raises(ValueError, match="budget.max_total_tokens"):
+            _capture_launch_config(
+                tmp_path,
+                monkeypatch,
+                {
+                    "id": "s1",
+                    "prompt": "irrelevant",
+                    "budget": {"max_total_tokens": invalid_value},
+                },
+                {},
+            )
 
     def test_raises_when_result_event_indicates_budget_exceeded(
         self, tmp_path: Path, monkeypatch

@@ -65,6 +65,8 @@ CONFIG_PATCH_DANGEROUS_SEGMENTS = frozenset({"__proto__", "constructor"})
 DEFAULT_SCENARIO_IMAGE = "ai-orchestra/meta-harness-scenario:2.1.207"
 DEFAULT_BROKER_IMAGE = "ai-orchestra/meta-harness-broker:0.1.0"
 DEFAULT_CLAUDE_VERSION_PIN = "2.1.207 (Claude Code)"
+BROKER_INPUT_BYTES_PER_TOKEN_KEY = "input_bytes_per_token"
+BROKER_MAX_TOTAL_TOKENS_KEY = "max_total_tokens"
 
 # config が読めない場合のフォールバック既定値（正本は config/meta-harness.yaml、Sec5）。
 DEFAULTS: dict[str, Any] = {
@@ -115,7 +117,8 @@ DEFAULTS: dict[str, Any] = {
                 "idle_timeout_sec": 300,
                 "startup_timeout_sec": 30,
                 "max_requests": 64,
-                "max_total_tokens": 500000,
+                BROKER_MAX_TOTAL_TOKENS_KEY: 500000,
+                BROKER_INPUT_BYTES_PER_TOKEN_KEY: 3,
                 "max_upstream_bytes": 50000000,
                 "pricing_upper_bound_usd_per_million": {
                     "input": 3.0,

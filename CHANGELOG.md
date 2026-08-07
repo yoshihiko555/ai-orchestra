@@ -8,11 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`meta-harness`: broker 入力 token 換算と scenario token 上限の設定を追加**: 新しい `evaluate.isolation.broker.input_bytes_per_token`（既定 3）で request body の bytes/token 換算を調整でき、scenario の `budget.max_total_tokens` で run ごとの累積 token 上限を上書きできる。
 - **`quality-gates`: README.md を追加**: パッケージの責務・hook 一覧・設定キー（`quality_gate.*`）を、独自 README を持つ他パッケージと同様の形式でまとめた。
 - **`codd`: scan/validate の hook 自動配線（Issue #95）**: manifest の hooks 宣言により、導入先の `.claude/settings.local.json` へ PostToolUse（編集後 scan）と PreToolUse（`git commit` 検出時 validate）が自動登録されるようになった。実動作は `codd.yaml` の新キー `hooks.scan_on_edit`（既定 `false`）/ `hooks.validate_on_commit`（`off` / `warn` / `block`、既定 `warn`）で制御し、codd 未初期化のプロジェクトでは no-op。**既定値 `warn` のため、codd 導入済みプロジェクトは次回 sync 以降、Claude Code 経由の `git commit` ごとに `codd validate` が自動実行され、error があれば警告が表示される（ブロックはしない。`validate_on_commit: off` で無効化可）。** ガード対象は Claude Code 経由の commit のみ（実 git pre-commit hook の配布は行わない）。
 
 ### Fixed
 
+- **`meta-harness`: 重量級 scenario が broker の token 予算を早期枯渇する問題を修正（Issue #356）**: request body の byte 長を token 数として 1:1 計上していた事前判定を、安全余裕付きの換算見積りへ補正した。残余超過時の fail-closed な拒否と latch は維持する。
 - **`meta-harness`: holdout シナリオ `add-phase-direct-call-confirms-ac-holdout` が noop baseline でも約 50% の確率で fail し holdout ゲートを閉塞する問題を修正（Issue #353）**: 非対話評価環境なのに「ユーザーへの明示的質問」を要求する rubric と、prompt の「返答を待たず制約をレポートに書いて進めよ」という指示の矛盾を較正した。prompt は final report 内での質問明示を義務化し、rubric は AC 判断のユーザーへの返還（直接質問または未決定・ユーザー判断待ちの明示)を pass 条件としつつ、AC の捏造・提案（ドラフト含む）・要不要の自己断定は引き続き fail にする。noop baseline の実機評価 2 回連続 3/3 pass で決定論化を確認済み。
 - **`meta-harness`: rubric_judge が一過性のインフラ要因で verdict=error になる問題を緩和し、失敗理由を追跡可能にした（Issue #354）**: judge（claude --bare）が非ゼロ終了した場合のエラーメッセージに stderr に加えて stdout の抜粋も記録されるようになった（従来は stdout が破棄され、stderr が空だと原因追跡不能だった）。また judge を実行できなかった場合（judge unavailable）に限り同一 backend で 1 回だけ自動リトライする。rubric の pass/fail 判定はリトライせず、リトライ後の失敗は従来どおり verdict=error（fail-closed）を維持する。あわせて broker の寿命上限にリトライ込みの judge 最悪時間を織り込み（scenario/oracle コンテナ個別の封じ込め上限は不変）、broker の per-run トークン形式（`mh-` prefix）を artifacts の秘匿情報マスキング対象に追加した。
 - **`codd`: validate-precommit hook が working tree ではなく git index を検証するように修正（Issue #338）**: `git add` した内容が壊れていても working tree だけ後から修正すると warn/block をすり抜けていた問題を解消。hook は commit 対象（index）のスナップショットに対して `codd validate` を実行するようになった。`git add ... && git commit` のような複合コマンドでは、hook 実行時点（コマンド実行前）の index しか検証できない旨を warn/block メッセージに注記するようになった（既知の制限）。index スナップショットには実リポジトリの commit 履歴（`GIT_DIR`/`GIT_WORK_TREE`）を伝播するようになり、`checks.drift: error` 昇格構成でも drift 検査（上流が下流より新しい、の検出）が checkout 時刻ではなく実際の commit 履歴で正しく判定されるようになった。

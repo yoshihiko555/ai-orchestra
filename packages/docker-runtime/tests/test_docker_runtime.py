@@ -608,6 +608,7 @@ def _replace_broker_environment(monkeypatch: pytest.MonkeyPatch, values: dict[st
         "DR_BROKER_STARTUP_TIMEOUT_SEC",
         "DR_BROKER_MAX_REQUESTS",
         "DR_BROKER_MAX_TOTAL_TOKENS",
+        *broker.INPUT_BYTES_PER_TOKEN_ENV_NAMES,
         "DR_BROKER_MAX_UPSTREAM_BYTES",
         "DR_PRICE_INPUT",
         "DR_PRICE_OUTPUT",
@@ -745,6 +746,55 @@ def test_broker_environment_falls_back_per_missing_generic_key(
 
     assert broker._env_value("DR_BROKER_PORT", "MH_BROKER_PORT") == "9001"
     assert broker._env_value("DR_PRICE_INPUT", "MH_PRICE_INPUT") == "15.0"
+
+
+def test_broker_settings_defaults_input_bytes_per_token_when_env_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_broker_environment(monkeypatch, {})
+
+    value = broker._optional_int_env(
+        *broker.INPUT_BYTES_PER_TOKEN_ENV_NAMES,
+        broker.DEFAULT_INPUT_BYTES_PER_TOKEN,
+    )
+
+    assert value == 3
+
+
+def test_broker_environment_prefers_generic_input_bytes_per_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generic_name, legacy_name = broker.INPUT_BYTES_PER_TOKEN_ENV_NAMES
+    _replace_broker_environment(
+        monkeypatch,
+        {
+            generic_name: "5",
+            legacy_name: "4",
+        },
+    )
+
+    value = broker._optional_int_env(
+        generic_name,
+        legacy_name,
+        broker.DEFAULT_INPUT_BYTES_PER_TOKEN,
+    )
+
+    assert value == 5
+
+
+def test_broker_environment_falls_back_to_legacy_input_bytes_per_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generic_name, legacy_name = broker.INPUT_BYTES_PER_TOKEN_ENV_NAMES
+    _replace_broker_environment(monkeypatch, {legacy_name: "4"})
+
+    value = broker._optional_int_env(
+        generic_name,
+        legacy_name,
+        broker.DEFAULT_INPUT_BYTES_PER_TOKEN,
+    )
+
+    assert value == 4
 
 
 def test_env_value_raises_key_error_when_neither_variable_is_set(

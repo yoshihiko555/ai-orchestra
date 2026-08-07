@@ -22,6 +22,10 @@ if str(_DOCKER_RUNTIME_LIB) not in sys.path:
 import docker_runtime_profile as runtime  # noqa: E402
 import meta_harness_common as mh  # noqa: E402
 
+_DEFAULT_INPUT_BYTES_PER_TOKEN = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+    mh.BROKER_INPUT_BYTES_PER_TOKEN_KEY
+]
+
 # Single source of truth for the broker env fallback prices (Issue #261 PR2 review
 # round 4): broker_env() must never hardcode its own price literals, or a
 # partial/`.local.yaml`-overridden config that nulls out one pricing key would
@@ -558,6 +562,20 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
     pricing = broker.get("pricing_upper_bound_usd_per_million") or {}
     scenario_run = config.get("scenario_run") or {}
     idle_timeout = int(broker.get("idle_timeout_sec", 300))
+    configured_input_bytes_per_token = broker.get(mh.BROKER_INPUT_BYTES_PER_TOKEN_KEY)
+    input_bytes_per_token = (
+        _DEFAULT_INPUT_BYTES_PER_TOKEN
+        if configured_input_bytes_per_token is None
+        else configured_input_bytes_per_token
+    )
+    if (
+        not isinstance(input_bytes_per_token, int)
+        or isinstance(input_bytes_per_token, bool)
+        or input_bytes_per_token < 1
+    ):
+        raise DockerProfileError(
+            "evaluate.isolation.broker.input_bytes_per_token must be a positive integer"
+        )
     model_allowlist = effective_broker_model_allowlist(config)
     model_allowlist_env: dict[str, str] = {}
     if model_allowlist:
@@ -575,7 +593,8 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
         "DR_BROKER_MAX_LIFETIME_SEC": str(broker_max_lifetime_seconds(config)),
         "DR_BROKER_STARTUP_TIMEOUT_SEC": str(broker.get("startup_timeout_sec", 30)),
         "DR_BROKER_MAX_REQUESTS": str(broker.get("max_requests", 64)),
-        "DR_BROKER_MAX_TOTAL_TOKENS": str(broker.get("max_total_tokens", 500000)),
+        "DR_BROKER_MAX_TOTAL_TOKENS": str(broker.get(mh.BROKER_MAX_TOTAL_TOKENS_KEY, 500000)),
+        "DR_BROKER_INPUT_BYTES_PER_TOKEN": str(input_bytes_per_token),
         "DR_BROKER_MAX_UPSTREAM_BYTES": str(broker.get("max_upstream_bytes", 50000000)),
         "DR_PRICE_INPUT": str(_pricing_value(pricing, "input")),
         "DR_PRICE_OUTPUT": str(_pricing_value(pricing, "output")),
@@ -588,7 +607,8 @@ def broker_env(config: dict, run_token: str, port: int) -> dict[str, str]:
         "MH_BROKER_MAX_LIFETIME_SEC": str(broker_max_lifetime_seconds(config)),
         "MH_BROKER_STARTUP_TIMEOUT_SEC": str(broker.get("startup_timeout_sec", 30)),
         "MH_BROKER_MAX_REQUESTS": str(broker.get("max_requests", 64)),
-        "MH_BROKER_MAX_TOTAL_TOKENS": str(broker.get("max_total_tokens", 500000)),
+        "MH_BROKER_MAX_TOTAL_TOKENS": str(broker.get(mh.BROKER_MAX_TOTAL_TOKENS_KEY, 500000)),
+        "MH_BROKER_INPUT_BYTES_PER_TOKEN": str(input_bytes_per_token),
         "MH_BROKER_MAX_UPSTREAM_BYTES": str(broker.get("max_upstream_bytes", 50000000)),
         "MH_PRICE_INPUT": str(_pricing_value(pricing, "input")),
         "MH_PRICE_OUTPUT": str(_pricing_value(pricing, "output")),

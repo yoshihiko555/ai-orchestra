@@ -201,13 +201,19 @@
     packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_per_missing_generic_key
     packages/docker-runtime/tests/test_docker_runtime.py::test_env_value_raises_key_error_when_neither_variable_is_set
     packages/docker-runtime/tests/test_docker_runtime.py::test_broker_settings_from_env_rejects_empty_run_token
+    packages/docker-runtime/tests/test_docker_runtime.py::test_broker_settings_defaults_input_bytes_per_token_when_env_is_unset
+    packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_prefers_generic_input_bytes_per_token
+    packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_to_legacy_input_bytes_per_token
   covered_by:
     - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_to_legacy_names
     - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_prefers_generic_names
     - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_per_missing_generic_key
     - packages/docker-runtime/tests/test_docker_runtime.py::test_env_value_raises_key_error_when_neither_variable_is_set
     - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_settings_from_env_rejects_empty_run_token
-  notes: every broker and pricing setting prefers DR_* while preserving per-key MH_* fallback; neither name set raises KeyError naming both variables; empty run token fails closed at startup.
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_settings_defaults_input_bytes_per_token_when_env_is_unset
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_prefers_generic_input_bytes_per_token
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_broker_environment_falls_back_to_legacy_input_bytes_per_token
+  notes: every broker and pricing setting prefers DR_* while preserving per-key MH_* fallback; existing settings with neither name set raise KeyError naming both variables; input_bytes_per_token alone defaults to 3 for compatibility; empty run token fails closed at startup, and invalid factor values are rejected by BrokerState coverage under EV-47.
 
 - ev_id: EV-22
   phase: 1

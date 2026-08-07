@@ -758,7 +758,8 @@ PR 作成時点で記録されるが、この時点では状態は `evaluated` �
       "properties": {
         "max_turns": { "type": "integer", "default": 30 },
         "max_budget_usd": { "type": "number", "default": 2.0 },
-        "max_output_tokens": { "type": "integer", "minimum": 1 }
+        "max_output_tokens": { "type": "integer", "minimum": 1 },
+        "max_total_tokens": { "type": "integer", "minimum": 1 }
       }
     },
     "repeat": { "type": "integer", "default": 1, "minimum": 1 }
@@ -1530,7 +1531,8 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   予算超過を行える。これを防ぐため、**brokerが独立に以下を強制する**:
   - **per-run予算強制**: brokerがレスポンスの`usage`を積算し、run予算（scenario固有値を反映した実効config
     `scenario_run.max_budget_usd_default`）を超えたら以降のリクエストを拒否する（CLIフラグとは独立の
-    hard cap）。さらに`connection.request`より前にJSON bodyを検査し、body byte数をinput tokenの保守的上限、
+    hard cap）。さらに`connection.request`より前にJSON bodyを検査し、body byte数を
+    `evaluate.isolation.broker.input_bytes_per_token`（既定3）で割った切り上げをinput tokenの保守的上限、
     `max_tokens`をoutput token上限として、残りの累積token envelopeと上限単価換算USDの双方に収まらない
     単発requestを拒否する。これにより候補からbrokerへ直接送る最初の1 requestも上限を大幅超過できない。
   - **呼び出し計上・異常検知**: brokerは全リクエスト数・累積tokenを記録し、scenarioが想定する呼び出し
@@ -2195,7 +2197,9 @@ evaluate:
       idle_timeout_sec: 300 # 親プロセス消失時の自殺までのアイドル上限
       startup_timeout_sec: 30
       max_requests: 64 # CLI 1 run の想定 envelope。超過は metadata に anomaly として記録
-      max_total_tokens: 500000
+      max_total_tokens: 500000 # scenario の budget.max_total_tokens で上書き可能
+      # 約4 bytes/token の目安に対し、コード主体の入力へ25%の安全余裕を持たせる
+      input_bytes_per_token: 3
       max_upstream_bytes: 50000000 # body + 正規化済みheaderのrun累積hard cap
       pricing_upper_bound_usd_per_million:
         # Sonnet 単価上限（1h cache write 上限込み。Issue #261 PR2）。evaluate.model/judge.model の

@@ -54,7 +54,8 @@
       "properties": {
         "max_turns": { "type": "integer", "default": 30 },
         "max_budget_usd": { "type": "number", "default": 2.0 },
-        "max_output_tokens": { "type": "integer", "minimum": 1 }
+        "max_output_tokens": { "type": "integer", "minimum": 1 },
+        "max_total_tokens": { "type": "integer", "minimum": 1 }
       }
     },
     "repeat": { "type": "integer", "default": 1, "minimum": 1 }

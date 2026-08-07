@@ -342,6 +342,11 @@
     packages/meta-harness/tests/test_claude_credentials.py
     packages/meta-harness/tests/test_scenario_broker.py
     packages/meta-harness/tests/test_scenario_docker.py::test_broker_token_is_injected_via_stdin_not_argv_or_env
+    packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_input_bytes_per_token_override_reaches_broker_env
+    packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_scenario_max_total_tokens_reaches_broker_config
+    packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_missing_scenario_max_total_tokens_preserves_broker_config
+    packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_budget_max_total_tokens_is_accepted
+    packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_budget_unknown_key_is_rejected
     packages/meta-harness/tests/test_scenario_docker_integration.py
     packages/meta-harness/tests/test_evaluator_failure_handling.py::TestBrokerMetricsForceRunError
     packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_raises_when_result_event_indicates_budget_exceeded
@@ -357,6 +362,16 @@
     - packages/meta-harness/tests/test_scenario_broker.py::test_allowed_query_uses_path_for_request_budget_validation
     - packages/meta-harness/tests/test_scenario_broker.py::test_token_envelope_latches_budget_and_rejects_following_request
     - packages/meta-harness/tests/test_scenario_broker.py::test_direct_request_budget_is_rejected_before_upstream
+    - packages/meta-harness/tests/test_scenario_broker.py::test_request_budget_uses_ceiling_byte_to_token_estimate
+    - packages/meta-harness/tests/test_scenario_broker.py::test_request_budget_rejects_when_converted_tokens_exceed_remaining_budget
+    - packages/meta-harness/tests/test_scenario_broker.py::test_request_cost_uses_converted_input_token_estimate
+    - packages/meta-harness/tests/test_scenario_broker.py::test_request_cost_rejects_when_converted_estimate_exceeds_remaining_budget
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_budget_rejection_latches_after_converted_token_overflow
+    - packages/meta-harness/tests/test_meta_harness_config_loading.py::TestConfigLocalOverride::test_input_bytes_per_token_override_reaches_broker_env
+    - packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_scenario_max_total_tokens_reaches_broker_config
+    - packages/meta-harness/tests/test_evaluator_headless_run.py::TestRunHeadlessScenarioEnvironment::test_missing_scenario_max_total_tokens_preserves_broker_config
+    - packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_budget_max_total_tokens_is_accepted
+    - packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_budget_unknown_key_is_rejected
     - packages/meta-harness/tests/test_scenario_broker.py::test_idle_watchdog_does_not_exit_during_active_request
     - packages/meta-harness/tests/test_scenario_docker.py::test_broker_session_keepalive_uses_health_endpoint
     - packages/meta-harness/tests/test_scenario_docker.py::test_broker_token_is_injected_via_stdin_not_argv_or_env
@@ -369,7 +384,8 @@
     into broker tmpfs, never candidate argv/env/disk. Header replacement,
     fixed api.anthropic.com upstream, strict beta=true query forwarding, per-run
     dummy authentication, HTTP framing rejection, exception-safe request serialization, pre-forward worst-case
-    request admission, usage-based budget cap, active-stream/host-session
+    configurable ceil(bytes/bytes-per-token) request admission, scenario-level
+    max_total_tokens override with global fallback, usage-based budget cap, active-stream/host-session
     keepalive, anomaly accounting, broker lifecycle cleanup, and broker-routed
     containerized claude-bare judge are covered.
 

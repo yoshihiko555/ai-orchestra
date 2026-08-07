@@ -77,6 +77,8 @@ evaluate:
       startup_timeout_sec: 30
       max_requests: 64
       max_total_tokens: 500000
+      # 約4 bytes/token の目安に対し、コード主体の入力へ25%の安全余裕を持たせる
+      input_bytes_per_token: 3
       max_upstream_bytes: 50000000
       pricing_upper_bound_usd_per_million:
         # Issue #261 PR2: Sonnet 単価上限に再較正（1h cache write 上限込み）。旧値は Opus 単価だった

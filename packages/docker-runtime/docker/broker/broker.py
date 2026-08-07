@@ -43,6 +43,13 @@ MAX_TOKEN_BYTES = 16_384
 MAX_USAGE_PARSE_BUFFER_BYTES = 1_000_000
 MAX_BETA_HEADER_BYTES = 1024
 UPSTREAM_SLOT_WAIT_SECONDS = 120
+INPUT_BYTES_PER_TOKEN_ENV_NAMES = (
+    "DR_BROKER_INPUT_BYTES_PER_TOKEN",
+    "MH_BROKER_INPUT_BYTES_PER_TOKEN",
+)
+# JSON/API bodies commonly average roughly four bytes per token. Three keeps a
+# 25% safety margin for code-heavy payloads while correcting the old 1:1 estimate.
+DEFAULT_INPUT_BYTES_PER_TOKEN = 3
 ALLOWED_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 # Request body fields that can attach a price multiplier to an otherwise-allowlisted
 # model (Issue #261 PR2 review round 6, High). The broker's fixed
@@ -150,6 +157,7 @@ class BrokerSettings:
     max_lifetime_seconds: int
     identity: BrokerIdentity
     model_allowlist: frozenset[str] | None = None
+    input_bytes_per_token: int = DEFAULT_INPUT_BYTES_PER_TOKEN
 
 
 def _broker_identity(namespace: str | None) -> BrokerIdentity:
@@ -198,9 +206,16 @@ class BrokerState:
         max_requests: int,
         max_total_tokens: int,
         max_upstream_bytes: int,
+        input_bytes_per_token: int = DEFAULT_INPUT_BYTES_PER_TOKEN,
         user_agent: str = DEFAULT_USER_AGENT,
         model_allowlist: frozenset[str] | None = None,
     ) -> None:
+        if (
+            not isinstance(input_bytes_per_token, int)
+            or isinstance(input_bytes_per_token, bool)
+            or input_bytes_per_token < 1
+        ):
+            raise ValueError("input_bytes_per_token must be a positive integer")
         self.run_token = run_token
         self.oauth_token = oauth_token
         self.budget_usd = budget_usd
@@ -208,6 +223,7 @@ class BrokerState:
         self.max_requests = max_requests
         self.max_total_tokens = max_total_tokens
         self.max_upstream_bytes = max_upstream_bytes
+        self.input_bytes_per_token = input_bytes_per_token
         self.user_agent = user_agent
         self.model_allowlist = model_allowlist
         self.metrics = BrokerMetrics()
@@ -291,7 +307,7 @@ class BrokerState:
             if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
                 return 429, "messages request must declare a positive max_tokens"
             output_tokens = max_tokens
-        input_tokens_upper_bound = len(body)
+        input_tokens_upper_bound = -(-len(body) // self.input_bytes_per_token)
         with self.lock:
             remaining_tokens = self.max_total_tokens - self.metrics.usage.total_tokens
             requested_tokens = input_tokens_upper_bound + output_tokens
@@ -751,6 +767,14 @@ def _int_env(name: str, legacy_name: str) -> int:
     return int(_env_value(name, legacy_name))
 
 
+def _optional_int_env(name: str, legacy_name: str, default_value: int) -> int:
+    if name in os.environ:
+        return int(os.environ[name])
+    if legacy_name in os.environ:
+        return int(os.environ[legacy_name])
+    return default_value
+
+
 def _model_allowlist_env(name: str, legacy_name: str) -> frozenset[str] | None:
     if name in os.environ:
         raw = os.environ[name]
@@ -788,6 +812,10 @@ def _broker_settings_from_env() -> BrokerSettings:
         model_allowlist=_model_allowlist_env(
             "DR_BROKER_MODEL_ALLOWLIST", "MH_BROKER_MODEL_ALLOWLIST"
         ),
+        input_bytes_per_token=_optional_int_env(
+            *INPUT_BYTES_PER_TOKEN_ENV_NAMES,
+            DEFAULT_INPUT_BYTES_PER_TOKEN,
+        ),
     )
 
 
@@ -822,6 +850,7 @@ def _serve() -> int:
         max_requests=settings.max_requests,
         max_total_tokens=settings.max_total_tokens,
         max_upstream_bytes=settings.max_upstream_bytes,
+        input_bytes_per_token=settings.input_bytes_per_token,
         user_agent=settings.identity.user_agent,
         model_allowlist=settings.model_allowlist,
     )

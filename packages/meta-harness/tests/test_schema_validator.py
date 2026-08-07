@@ -482,6 +482,28 @@ class TestScenarioSchema:
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
         assert any("permission_mode" in error for error in errors)
 
+    def test_budget_max_total_tokens_is_accepted(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "budget": {"max_total_tokens": 750000}}
+
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_budget_max_total_tokens_must_be_positive(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "budget": {"max_total_tokens": 0}}
+
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+
+        assert any("max_total_tokens" in error and "minimum 1" in error for error in errors)
+
+    def test_budget_unknown_key_is_rejected(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "budget": {"unknown_budget": 1}}
+
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+
+        assert any("additionalProperties" in error for error in errors)
+
 
 class TestRunMetadataSchema:
     _VALID = {

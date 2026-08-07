@@ -738,6 +738,98 @@ def test_request_budget_error_allows_body_without_price_modifier_fields(
     assert state.request_budget_error("/v1/messages", body) is None
 
 
+def test_request_budget_uses_ceiling_byte_to_token_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = json.dumps(
+        {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [{"content": "x" * 60}]}
+    ).encode()
+    converted_input_tokens = -(-len(body) // broker.DEFAULT_INPUT_BYTES_PER_TOKEN)
+    state = _state(
+        tmp_path,
+        monkeypatch,
+        max_total_tokens=converted_input_tokens + 1,
+    )
+
+    result = state.request_budget_error("/v1/messages", body)
+
+    assert len(body) + 1 > state.max_total_tokens
+    assert result is None
+
+
+def test_request_budget_rejects_when_converted_tokens_exceed_remaining_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = json.dumps(
+        {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [{"content": "x" * 60}]}
+    ).encode()
+    converted_input_tokens = -(-len(body) // broker.DEFAULT_INPUT_BYTES_PER_TOKEN)
+    state = _state(tmp_path, monkeypatch, max_total_tokens=converted_input_tokens)
+
+    result = state.request_budget_error("/v1/messages", body)
+
+    assert result == (429, broker.BUDGET_TOKEN_REJECT_REASON)
+    assert state.metrics.budget_rejected_count == 1
+
+
+def test_request_cost_uses_converted_input_token_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = json.dumps(
+        {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [{"content": "x" * 60}]}
+    ).encode()
+    converted_input_tokens = -(-len(body) // broker.DEFAULT_INPUT_BYTES_PER_TOKEN)
+    state = _state(
+        tmp_path,
+        monkeypatch,
+        budget_usd=converted_input_tokens + 0.5,
+        pricing=broker.Pricing(1_000_000, 0, 1_000_000, 1_000_000),
+        max_total_tokens=1_000_000,
+    )
+
+    result = state.request_budget_error("/v1/messages", body)
+
+    assert len(body) > state.budget_usd
+    assert result is None
+
+
+def test_request_cost_rejects_when_converted_estimate_exceeds_remaining_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = json.dumps(
+        {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [{"content": "x" * 60}]}
+    ).encode()
+    converted_input_tokens = -(-len(body) // broker.DEFAULT_INPUT_BYTES_PER_TOKEN)
+    state = _state(
+        tmp_path,
+        monkeypatch,
+        budget_usd=converted_input_tokens - 0.5,
+        pricing=broker.Pricing(1_000_000, 0, 1_000_000, 1_000_000),
+        max_total_tokens=1_000_000,
+    )
+
+    result = state.request_budget_error("/v1/messages", body)
+
+    assert result == (429, broker.BUDGET_COST_REJECT_REASON)
+    assert state.metrics.budget_rejected_count == 1
+
+
+def test_input_bytes_per_token_defaults_to_safe_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path, monkeypatch)
+
+    assert state.input_bytes_per_token == broker.DEFAULT_INPUT_BYTES_PER_TOKEN == 3
+
+
+@pytest.mark.parametrize("invalid_value", [0, -1, True, 1.5])
+def test_input_bytes_per_token_rejects_non_positive_or_non_integer_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_value: Any
+) -> None:
+    with pytest.raises(ValueError, match="input_bytes_per_token"):
+        _state(tmp_path, monkeypatch, input_bytes_per_token=invalid_value)
+
+
 @pytest.mark.parametrize(
     ("field", "path"),
     [
@@ -876,6 +968,33 @@ def test_direct_request_budget_is_rejected_before_upstream(
     assert state.metrics.budget_exceeded is True
     assert state.metrics.rejected_count == 1
     assert state.metrics.upstream_request_bytes == 0
+
+
+def test_http_budget_rejection_latches_after_converted_token_overflow(
+    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, state = http_broker
+
+    class UnexpectedConnection:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("over-budget request must not reach the upstream connection")
+
+    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
+    body = json.dumps(
+        {"model": "claude-test", "max_tokens": 1, "messages": [{"content": "x" * 90}]}
+    ).encode()
+    converted_input_tokens = -(-len(body) // state.input_bytes_per_token)
+    state.max_total_tokens = converted_input_tokens
+
+    status, _headers, payload = _post(server, body=body)
+
+    assert status == 429
+    assert broker.BUDGET_TOKEN_REJECT_REASON.encode() in payload
+    assert state.metrics.budget_rejected_count == 1
+    assert state.metrics.budget_exceeded is True
+    started, reason = state.begin_request()
+    assert started is False
+    assert reason == "run budget exhausted"
 
 
 def test_request_envelope_records_anomaly(tmp_path: Path, monkeypatch) -> None:
