@@ -408,6 +408,28 @@ def _scenario_runtime_read_roots() -> list[Path]:
     return iso._dedupe_paths(roots)
 
 
+def _make_snapshot_container_readable(snapshot_dir: Path) -> None:
+    """Pin every directory/file under the snapshot repo to a container-readable mode.
+
+    `git init --bare` and the `git status` in `_collect_ignored_baseline_paths` create the
+    snapshot's directories, files, and index at whatever mode the host umask allows (Issue
+    #357 bot review). A host running as root with a restrictive umask (e.g. 077) would leave
+    the snapshot at 0700/0600, unreadable by the oracle/preparation/scenario containers' non-
+    root `--user {uid}:{gid}` -- the same class of problem already handled for `wrapper_dir`
+    and `ignored-baseline.json` below. Symlinks are skipped: a bare repo created by this
+    function never legitimately contains one, and `chmod` on a symlink would follow it.
+    """
+    for root, dirs, files in os.walk(snapshot_dir):
+        root_path = Path(root)
+        if not root_path.is_symlink():
+            root_path.chmod(0o755)
+        for name in files:
+            file_path = root_path / name
+            if file_path.is_symlink():
+                continue
+            file_path.chmod(0o644)
+
+
 def _prepare_isolated_git(
     *,
     worktree_dir: Path,
@@ -480,6 +502,11 @@ def _prepare_isolated_git(
         worktree=worktree,
         git_env=git_env,
     )
+    if container_paths:
+        # Must run last among the snapshot-touching steps: it comes after the `git status`
+        # call above (whose index rewrite would otherwise reset the index back to a
+        # umask-masked mode) and before any further snapshot reads.
+        _make_snapshot_container_readable(snapshot_dir)
     ignored_baseline_path = runtime_state / _IGNORED_BASELINE_FILENAME
     ignored_baseline_path.write_text(
         json.dumps({"ignored_paths": ignored_paths}, indent=2) + "\n",

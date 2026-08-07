@@ -293,6 +293,10 @@ def test_preparation_command_uses_isolated_git_snapshot(images, tmp_path) -> Non
     # unrelated to the placeholder `source_commit` used in this test.
     head_output = (worktree / "git-head.txt").read_text().strip()
     assert head_output and all(c in "0123456789abcdef" for c in head_output)
+    # Discriminator: `source_commit[:7]` ("aaaaaaa") is also all-hex, so the shape check above
+    # alone would still pass under the old faking implementation. Assert the wrapper actually
+    # resolved the real snapshot HEAD instead of echoing the placeholder `source_commit`.
+    assert head_output != source_commit[:7]
 
 
 def test_preparation_workspace_quota_fails_closed(images, tmp_path) -> None:
@@ -392,13 +396,18 @@ def test_linked_worktree_git_is_masked_and_snapshot_wrapper_works(
         # invocation form (e.g. via a different container profile) would silently diverge.
         scenario_head = completed.stdout.strip()
         assert scenario_head and all(c in "0123456789abcdef" for c in scenario_head)
+        assert scenario_head != source_commit[:7]
         assert (worktree / "result.txt").read_text() == "exported"
         assert (worktree / ".git").is_file()
 
         oracle_name = f"mh-run-it-{secrets.token_hex(3)}-oracle"
+        # Deliberately use a different (but equivalent) invocation form from the scenario
+        # container's plain `git rev-parse --short HEAD` above. Before the fix, the wrapper
+        # only faked HEAD for the exact-argument form, so this `-C` form and the plain form
+        # would silently diverge; the fix must resolve both to the same real snapshot HEAD.
         oracle_command = docker.build_oracle_command(
             launch,
-            "git rev-parse --short HEAD",
+            "git -C /workspace rev-parse --short HEAD",
             container_name=oracle_name,
         )
         oracle = docker.sproc.run_bounded_capture(

@@ -1571,11 +1571,19 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   settings・hooks・skillsを評価する一方、`--setting-sources project,local`でuser settingsを除外する。
 - linked worktreeのGit metadataはmain repo側にあるためmountへ追加しない。scenario起動直前の
   worktreeをephemeral runtime内の独立Git snapshotへcommitし、read-only wrapper経由で公開する。
-  `git rev-parse [--short] HEAD`はmanifestの`source_commit`を返し、`git diff`等はsnapshot baselineと
-  candidate worktreeを比較する。`command_exit` oracleにもsnapshotとwrapperの2ディレクトリだけを
-  read-only mountし、同じ`GIT_DIR` / `GIT_WORK_TREE` / `PATH`を設定する（runtime全体はmountしない）。
-  preparation containerにも各command開始時点の独立snapshotとwrapperだけを同様にmountし、`setup`や
-  facet/context build内のGit参照がlinked worktreeの実`.git`へ触れずに動作するようにする。
+  wrapper経由の全てのGit呼び出し（`git rev-parse [--short] HEAD`に限らず、`-C <path>`等の
+  global option付きの等価な形式も含む）は、呼び出し形式に関わらずこのsnapshot repoの実HEADを
+  返す（Issue #357: 以前は`rev-parse HEAD` / `rev-parse --short HEAD`の完全一致引数のときだけ
+  manifestの`source_commit`へ偽装するfast pathがあり、`-C`付き等の他の等価な呼び出しはsnapshotの
+  実HEADへfall throughしていた。agentとoracleが異なる呼び出し形式でHEADを尋ねると値が食い違い、
+  `source_commit`を前提にしたoracleが擬陽性failするため、fast pathを廃し常にsnapshotの実HEADを
+  返す形へ統一した）。`source_commit`自体はmanifest/run metadata側の来歴情報として引き続き
+  記録されるが、candidate-visible Gitの応答（`rev-parse HEAD`等）には用いない。`git diff`等は
+  snapshot baselineとcandidate worktreeを比較する。`command_exit` oracleにもsnapshotとwrapperの
+  2ディレクトリだけをread-only mountし、同じ`GIT_DIR` / `GIT_WORK_TREE` / `PATH`を設定する
+  （runtime全体はmountしない）。preparation containerにも各command開始時点の独立snapshotと
+  wrapperだけを同様にmountし、`setup`やfacet/context build内のGit参照がlinked worktreeの実`.git`へ
+  触れずに動作するようにする。
 - **子孫プロセスの回収**: Dockerのcgroupにより`setsid()`で離脱した子孫を含む全プロセスを`docker rm -f`で
   確実に停止できる（スパイクS3実測: rm -f後にホスト残存プロセスゼロ）。この封じ込めと
   `events.jsonl`/`progress.log`の各10MB上限強制が整うまでscenario/oracleのprocess起動はfail-closedする。

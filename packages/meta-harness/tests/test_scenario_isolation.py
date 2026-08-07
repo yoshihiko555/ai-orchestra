@@ -237,6 +237,49 @@ def test_container_git_wrapper_uses_fixed_image_git_not_itself(
     assert (runtime / "ignored-baseline.json").stat().st_mode & 0o777 == 0o644
 
 
+def test_prepare_isolated_git_snapshot_readable_by_container_user_under_restrictive_umask(
+    git_project: Path, tmp_path: Path
+) -> None:
+    """Issue #357 follow-up (bot review): `git init --bare` and the `git status` invoked by
+    `_collect_ignored_baseline_paths` create the snapshot's directories/files/index at
+    umask-masked permissions. A host running as root with e.g. `umask 077` would leave the
+    snapshot at 0700/0600, which the oracle/preparation/scenario containers (non-root
+    `--user {uid}:{gid}`) could not read at all -- unlike `wrapper_dir` and
+    `ignored-baseline.json`, which already pin a container-readable mode regardless of umask.
+    `container_paths=True` must do the same for every artifact under the snapshot repo."""
+    runtime = tmp_path / "runtime-umask"
+    runtime.mkdir()
+    source_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=git_project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    previous_umask = os.umask(0o077)
+    try:
+        siso._prepare_isolated_git(
+            worktree_dir=git_project,
+            runtime_state_dir=runtime,
+            source_commit=source_commit,
+            runner=subprocess.run,
+            container_paths=True,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    snapshot_dir = runtime / "git-snapshot"
+    assert snapshot_dir.stat().st_mode & 0o755 == 0o755
+    for root, dirs, files in os.walk(snapshot_dir):
+        for name in dirs:
+            path = Path(root) / name
+            assert path.stat().st_mode & 0o755 == 0o755, f"{path} not container-readable"
+        for name in files:
+            path = Path(root) / name
+            assert path.stat().st_mode & 0o644 == 0o644, f"{path} not container-readable"
+
+
 def test_git_wrapper_head_is_stable_across_invocation_forms(
     git_project: Path, tmp_path: Path
 ) -> None:
