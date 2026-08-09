@@ -102,5 +102,9 @@ budget:
   # $15.00 に最終設定する（根拠・reward hacking 抑止上限である旨は create-task-issue.yaml の
   # コメント参照）。
   max_budget_usd: 15.0
+  # PR #359 追補較正（2026-08-09）: 既定 max_total_tokens=500000 では累積 token +
+  # 終盤 request の事前見積りが残余に収まらず latch する実測のため 1,500,000 へ
+  # 引き上げる（根拠は create-task-issue.yaml のコメント参照）。
+  max_total_tokens: 1500000
   max_output_tokens: 1024
 repeat: 1

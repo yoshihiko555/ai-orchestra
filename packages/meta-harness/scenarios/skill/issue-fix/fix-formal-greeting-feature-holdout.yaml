@@ -100,5 +100,9 @@ budget:
   # Issue #261 PR8（最終較正）: 最終 evaluate で ×3 とも latch した実測。train（fix-greet-none-bug）
   # と同型構成のため同水準（$15.00）へ最終設定する（根拠は create-task-issue.yaml のコメント参照）。
   max_budget_usd: 15.0
+  # PR #359 追補較正（2026-08-09）: train（fix-greet-none-bug）と同型構成で同じく
+  # 既定 max_total_tokens=500000 に収まらず latch する実測（×3）のため同水準の
+  # 1,500,000 へ引き上げる（根拠は create-task-issue.yaml のコメント参照）。
+  max_total_tokens: 1500000
   max_output_tokens: 1024
 repeat: 1
