@@ -91,7 +91,10 @@ checks:
 holdout: false
 timeout_ms: 300000
 budget:
-  max_turns: 10
+  # PR #360 追補較正（2026-08-09 夜）: 同型 holdout（fix-formal-greeting-feature）が
+  # 11 turn 目で error_max_turns ×5 の実測（上限 10 では不足）。turn 揺らぎ吸収のため
+  # 両シナリオとも 16 へ引き上げる（根拠は create-task-issue.yaml のコメント参照）。
+  max_turns: 16
   # Issue #261 PR6: 実 backend 再検証で 8 turns 時点で cost latch $3.00（=予算）に到達。
   # issue-fix は repo コンテキストが大きく per-request 前課金が高いため 6.0 に引き上げる。
   # Issue #261 PR7: bootstrap 最終検証で 9 turns 時点で $6.00 に再度 latch（実トークン 4210）。
@@ -106,5 +109,7 @@ budget:
   # 終盤 request の事前見積りが残余に収まらず latch する実測のため 1,500,000 へ
   # 引き上げる（根拠は create-task-issue.yaml のコメント参照）。
   max_total_tokens: 1500000
-  max_output_tokens: 1024
+  # PR #360 追補較正（2026-08-09 夜）: issue-create 系で応答の 1024 output token 超過
+  # error の実測があり、日本語の最終報告を含む本シナリオも同リスクのため 4096 へ。
+  max_output_tokens: 4096
 repeat: 1

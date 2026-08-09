@@ -44,7 +44,12 @@ budget:
   # gh フィクスチャの直接実行が exit 126 で失敗し、python3 経由の呼び出しが
   # allowed_tools の "Bash(gh *)" パターンに一致せず approval 待ちで turn を浪費した
   # （センシティブファイル拒否ではない）。8 -> 16 に引き上げる。
-  max_turns: 16
+  # PR #360 追補較正（2026-08-09 夜）: max_total_tokens 較正で完走可能になった結果、
+  # 17 turn 目で error_max_turns の実測（run-20260809-190028-...6bd8 は 16 上限で
+  # 17 turn 必要、baf0 は 16 以内で pass ＝境界上）。turn 数の揺らぎを吸収するため
+  # 24 へ引き上げる。暴走は max_budget_usd 15.0 / max_total_tokens 1.5M が引き続き
+  # ガードする（issue-create/issue-fix 4 シナリオ共通の追較正）。
+  max_turns: 24
   # Issue #261 PR7 追補: この train は $3.0 で pass 実績あり（据え置き）。holdout の
   # create-bug-issue-holdout は bug テンプレートの再現手順・環境記述分だけ turn が伸び、11+ turns
   # の実測が出たため 6.0 に引き上げた（create-bug-issue-holdout.yaml のコメント参照）。
@@ -63,5 +68,8 @@ budget:
   # 1,500,000 へ引き上げる（issue-create/issue-fix 全 4 シナリオ共通）。実費は
   # $0.4 前後で max_budget_usd 15.0 が引き続き実支出をガードする。
   max_total_tokens: 1500000
-  max_output_tokens: 1024
+  # PR #360 追補較正（2026-08-09 夜）: 同型の create-bug-issue-holdout で応答が
+  # 1024 output token 上限を超えて "response exceeded the 1024 output token maximum"
+  # error になる実測 ×2（issue 本文テンプレートは長文になる）。4096 へ引き上げる。
+  max_output_tokens: 4096
 repeat: 1
