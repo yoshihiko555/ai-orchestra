@@ -55,5 +55,13 @@ budget:
   # 載せた額が必要。この上限は reward hacking 抑止のための broker 安全上限（内部会計）であり、
   # 実費は全 run $0.6 未満（実支出ではない）。
   max_budget_usd: 15.0
+  # PR #359 追補較正（2026-08-09）: input_bytes_per_token=3 補正後の実測でも、累積
+  # total_tokens が 13 turn 目に ~464K（cache_read が大半）へ達し、終盤 request の
+  # 事前見積り（body ~1.3MB ≈ 448K tokens）が既定 max_total_tokens=500000 の残余に
+  # 収まらず budget latch する（例: run-20260809-135132-...-create-task-issue-a1）。
+  # 実消費見込み（~700K）+ 終盤見積りヘッドルーム（~450K）にマージンを載せて
+  # 1,500,000 へ引き上げる（issue-create/issue-fix 全 4 シナリオ共通）。実費は
+  # $0.4 前後で max_budget_usd 15.0 が引き続き実支出をガードする。
+  max_total_tokens: 1500000
   max_output_tokens: 1024
 repeat: 1
