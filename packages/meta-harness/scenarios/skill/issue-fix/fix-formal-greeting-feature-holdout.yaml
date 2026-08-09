@@ -92,7 +92,10 @@ checks:
 holdout: true
 timeout_ms: 300000
 budget:
-  max_turns: 10
+  # PR #360 追補較正（2026-08-09 夜）: 11 turn 目で error_max_turns ×5（両候補・全
+  # attempt で再現、上限 10 では不足）の実測のため 16 へ引き上げる
+  # （根拠は create-task-issue.yaml のコメント参照）。
+  max_turns: 16
   # Issue #261 PR6: fix-greet-none-bug と同型シナリオ（issue-fix、repo コンテキスト大）。
   # 同じ前課金特性のため同額へ引き上げる。
   # Issue #261 PR7: train（fix-greet-none-bug）が 9 turns 目に $6.00 latch した実測を受け、
@@ -104,5 +107,7 @@ budget:
   # 既定 max_total_tokens=500000 に収まらず latch する実測（×3）のため同水準の
   # 1,500,000 へ引き上げる（根拠は create-task-issue.yaml のコメント参照）。
   max_total_tokens: 1500000
-  max_output_tokens: 1024
+  # PR #360 追補較正（2026-08-09 夜）: issue-create 系で応答の 1024 output token 超過
+  # error の実測があり、日本語の最終報告を含む本シナリオも同リスクのため 4096 へ。
+  max_output_tokens: 4096
 repeat: 1

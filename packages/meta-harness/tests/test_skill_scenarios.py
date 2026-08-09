@@ -153,7 +153,11 @@ def test_skill_scenarios_pin_minimal_output_envelope() -> None:
             execution = ev._effective_scenario_execution(scenario, {})
 
             assert execution["allowed_tools_source"] == "scenario"
-            assert execution["max_output_tokens"] == 1024
+            # PR #361: 重量級シナリオ（issue-create/issue-fix 系）は応答が 1024 token を
+            # 超えて error になる実測から 4096 へ較正した。envelope が「シナリオ宣言値で
+            # 解決される」ことと「4096 を上限に最小限へ抑える」ことを引き続き固定する。
+            assert execution["max_output_tokens"] == scenario["budget"]["max_output_tokens"]
+            assert execution["max_output_tokens"] <= 4096
             assert execution["max_output_tokens_source"] == "scenario"
             assert "Skill" in execution["model_tools"]
 

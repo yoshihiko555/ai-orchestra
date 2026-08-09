@@ -40,7 +40,9 @@ holdout: true
 timeout_ms: 300000
 budget:
   # Issue #261 PR6 bot レビュー追撃対応: train（create-task-issue）と同型構成のため同水準へ較正。
-  max_turns: 16
+  # PR #360 追補較正（2026-08-09 夜）: 17 turn 目で error_max_turns ×3 の実測のため
+  # 24 へ引き上げる（根拠は create-task-issue.yaml のコメント参照）。
+  max_turns: 24
   # Issue #261 PR7 追補: 旧 baseline holdout 評価で 11 turns 時点で $3.00 に cost latch した実測
   # （run-20260720-010041-...create-bug-issue-holdout-a1-10babcee 等、error x3）。train
   # （create-task-issue、$3.0 で pass 実績あり）と異なり、この holdout は再現手順・環境記述を含む
@@ -55,5 +57,8 @@ budget:
   # -create-bug-issue-holdout-a1 等 ×3）のため 1,500,000 へ引き上げる
   # （根拠は create-task-issue.yaml のコメント参照）。
   max_total_tokens: 1500000
-  max_output_tokens: 1024
+  # PR #360 追補較正（2026-08-09 夜）: 12 turn 目に応答が 1024 output token 上限を
+  # 超えて error（"response exceeded the 1024 output token maximum"）×2 の実測のため
+  # 4096 へ引き上げる（run-20260809-191301 等。bug テンプレ本文は長文になる）。
+  max_output_tokens: 4096
 repeat: 1
