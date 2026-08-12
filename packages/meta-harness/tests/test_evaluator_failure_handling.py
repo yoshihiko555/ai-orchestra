@@ -456,6 +456,62 @@ def test_judge_unavailable_retries_once_and_recovers(monkeypatch, tmp_path) -> N
     assert sleeps == [ev.JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS]
 
 
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected"),
+    [
+        ("", "", True),
+        (" \n", "\t", True),
+        (
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error_max_turns",
+                    "terminal_reason": "max_turns",
+                }
+            ),
+            "",
+            False,
+        ),
+        ('{"type":"error","message":"model rejected"}', "", False),
+        ("", "docker resource error", False),
+    ],
+)
+def test_judge_launch_failure_retry_classifier_allows_only_empty_diagnostics(
+    stdout: str, stderr: str, expected: bool
+) -> None:
+    """Contracts: RETRY-CLASSIFIER-UNIT, RETRY-TRANSIENT-KEEP."""
+    assert (
+        ev._judge_launch_failure_is_retryable(returncode=1, stdout=stdout, stderr=stderr)
+        is expected
+    )
+
+
+def test_judge_error_max_turns_is_not_retried(monkeypatch, tmp_path) -> None:
+    """Contract: RETRY-DETERMINISTIC-STOP."""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    sleeps: list[float] = []
+    monkeypatch.setattr(ev.time, "sleep", sleeps.append)
+    error_max_turns = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_max_turns",
+            "terminal_reason": "max_turns",
+            "errors": ["Reached maximum number of turns (4)"],
+        }
+    )
+    runner, calls = _make_flaky_runner(
+        [subprocess.CompletedProcess([], returncode=1, stdout=error_max_turns, stderr="")]
+    )
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is True
+    assert len(calls) == 1
+    assert sleeps == []
+
+
 def test_judge_unavailable_after_retry_stays_error_with_both_reasons(monkeypatch, tmp_path) -> None:
     """リトライ後も失敗した場合は fail-closed（verdict=error）を維持し、初回・再試行の
     両方の失敗理由がメッセージに残ること（別 backend へ降格しないこと）。"""
@@ -463,8 +519,8 @@ def test_judge_unavailable_after_retry_stays_error_with_both_reasons(monkeypatch
     monkeypatch.setattr(ev.time, "sleep", lambda _s: None)
     runner, calls = _make_flaky_runner(
         [
-            subprocess.CompletedProcess([], returncode=1, stdout="boot failure A", stderr=""),
-            subprocess.CompletedProcess([], returncode=1, stdout="boot failure B", stderr=""),
+            subprocess.CompletedProcess([], returncode=1, stdout="", stderr=""),
+            subprocess.CompletedProcess([], returncode=1, stdout="", stderr=""),
         ]
     )
 
@@ -476,7 +532,7 @@ def test_judge_unavailable_after_retry_stays_error_with_both_reasons(monkeypatch
     assert verdict.backend == "claude-bare"
     assert len(calls) == 2
     assert "after retry" in verdict.reason
-    assert "boot failure A" in verdict.reason and "boot failure B" in verdict.reason
+    assert verdict.reason.count("claude --bare exited 1") == 2
 
 
 def test_judge_retry_worst_case_is_reflected_in_container_lifetime() -> None:

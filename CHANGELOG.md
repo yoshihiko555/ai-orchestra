@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`meta-harness`: rubric judge の成果物欠落と決定論的失敗を正しく分類（Issue #362）**: rubric が参照する判定材料を取得できない場合は評価欠測の `error` ではなく追跡可能な check `fail` として確定する。judge はツールなしで起動し、診断付きの決定論的失敗はリトライしない。
 - **`meta-harness`: 重量級 scenario が broker の token 予算を早期枯渇する問題を修正（Issue #356）**: request body の byte 長を token 数として 1:1 計上していた事前判定を、安全余裕付きの換算見積りへ補正した。残余超過時の fail-closed な拒否と latch は維持する。
 - **`meta-harness`: holdout シナリオ `add-phase-direct-call-confirms-ac-holdout` が noop baseline でも約 50% の確率で fail し holdout ゲートを閉塞する問題を修正（Issue #353）**: 非対話評価環境なのに「ユーザーへの明示的質問」を要求する rubric と、prompt の「返答を待たず制約をレポートに書いて進めよ」という指示の矛盾を較正した。prompt は final report 内での質問明示を義務化し、rubric は AC 判断のユーザーへの返還（直接質問または未決定・ユーザー判断待ちの明示)を pass 条件としつつ、AC の捏造・提案（ドラフト含む）・要不要の自己断定は引き続き fail にする。noop baseline の実機評価 2 回連続 3/3 pass で決定論化を確認済み。
 - **`meta-harness`: rubric_judge が一過性のインフラ要因で verdict=error になる問題を緩和し、失敗理由を追跡可能にした（Issue #354）**: judge（claude --bare）が非ゼロ終了した場合のエラーメッセージに stderr に加えて stdout の抜粋も記録されるようになった（従来は stdout が破棄され、stderr が空だと原因追跡不能だった）。また judge を実行できなかった場合（judge unavailable）に限り同一 backend で 1 回だけ自動リトライする。rubric の pass/fail 判定はリトライせず、リトライ後の失敗は従来どおり verdict=error（fail-closed）を維持する。あわせて broker の寿命上限にリトライ込みの judge 最悪時間を織り込み（scenario/oracle コンテナ個別の封じ込め上限は不変）、broker の per-run トークン形式（`mh-` prefix）を artifacts の秘匿情報マスキング対象に追加した。
