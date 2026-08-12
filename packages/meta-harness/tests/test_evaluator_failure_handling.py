@@ -432,11 +432,18 @@ def _make_flaky_runner(outcomes: list[subprocess.CompletedProcess]):
     return runner, calls
 
 
+def _write_canonical_report(worktree_dir: Path) -> None:
+    report_path = worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("candidate final response", encoding="utf-8")
+
+
 def test_judge_unavailable_retries_once_and_recovers(monkeypatch, tmp_path) -> None:
     """Issue #354: judge が一過性のインフラ要因（使い捨てコンテナ連続起動の終盤で
     claude --bare が exit 1）で実行できなかった場合、同一 backend で 1 回だけリトライして
     回復すること。数十秒後の同一コマンドが成功する実測に基づく堅牢化。"""
     monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    _write_canonical_report(tmp_path)
     sleeps: list[float] = []
     monkeypatch.setattr(ev.time, "sleep", sleeps.append)
     runner, calls = _make_flaky_runner(
@@ -456,15 +463,79 @@ def test_judge_unavailable_retries_once_and_recovers(monkeypatch, tmp_path) -> N
     assert sleeps == [ev.JUDGE_UNAVAILABLE_RETRY_DELAY_SECONDS]
 
 
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected"),
+    [
+        ("", "", True),
+        (" \n", "\t", True),
+        (
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error_max_turns",
+                    "terminal_reason": "max_turns",
+                }
+            ),
+            "",
+            False,
+        ),
+        ('{"type":"error","message":"model rejected"}', "", True),
+        ("", "docker resource error", True),
+        ("", "authentication_error: invalid api key", False),
+        ("credit balance is too low", "", False),
+        # stdout が構造化されていても stderr 側の決定論的マーカーを取りこぼさないこと
+        ('{"type":"error","message":"model rejected"}', "invalid api key", False),
+        (json.dumps({"type": "error", "error": "quota exceeded"}), "", False),
+        ("budget exhausted before launch", "", False),
+    ],
+)
+def test_judge_launch_failure_retry_classifier_denies_only_deterministic_markers(
+    stdout: str, stderr: str, expected: bool
+) -> None:
+    """Contracts: RETRY-CLASSIFIER-DENYLIST, RETRY-TRANSIENT-KEEP."""
+    assert (
+        ev._judge_launch_failure_is_retryable(returncode=1, stdout=stdout, stderr=stderr)
+        is expected
+    )
+
+
+def test_judge_error_max_turns_is_not_retried(monkeypatch, tmp_path) -> None:
+    """Contract: RETRY-DETERMINISTIC-STOP."""
+    monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    _write_canonical_report(tmp_path)
+    sleeps: list[float] = []
+    monkeypatch.setattr(ev.time, "sleep", sleeps.append)
+    error_max_turns = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_max_turns",
+            "terminal_reason": "max_turns",
+            "errors": ["Reached maximum number of turns (4)"],
+        }
+    )
+    runner, calls = _make_flaky_runner(
+        [subprocess.CompletedProcess([], returncode=1, stdout=error_max_turns, stderr="")]
+    )
+
+    verdict = ev.run_rubric_judge(
+        "irrelevant rubric", tmp_path, mh.DEFAULTS, _SCHEMA_DIR, runner=runner
+    )
+
+    assert verdict.error is True
+    assert len(calls) == 1
+    assert sleeps == []
+
+
 def test_judge_unavailable_after_retry_stays_error_with_both_reasons(monkeypatch, tmp_path) -> None:
     """リトライ後も失敗した場合は fail-closed（verdict=error）を維持し、初回・再試行の
     両方の失敗理由がメッセージに残ること（別 backend へ降格しないこと）。"""
     monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    _write_canonical_report(tmp_path)
     monkeypatch.setattr(ev.time, "sleep", lambda _s: None)
     runner, calls = _make_flaky_runner(
         [
-            subprocess.CompletedProcess([], returncode=1, stdout="boot failure A", stderr=""),
-            subprocess.CompletedProcess([], returncode=1, stdout="boot failure B", stderr=""),
+            subprocess.CompletedProcess([], returncode=1, stdout="", stderr=""),
+            subprocess.CompletedProcess([], returncode=1, stdout="", stderr=""),
         ]
     )
 
@@ -476,7 +547,7 @@ def test_judge_unavailable_after_retry_stays_error_with_both_reasons(monkeypatch
     assert verdict.backend == "claude-bare"
     assert len(calls) == 2
     assert "after retry" in verdict.reason
-    assert "boot failure A" in verdict.reason and "boot failure B" in verdict.reason
+    assert verdict.reason.count("claude --bare exited 1") == 2
 
 
 def test_judge_retry_worst_case_is_reflected_in_container_lifetime() -> None:
@@ -501,6 +572,7 @@ def test_judge_permanent_setup_failure_is_not_retried(monkeypatch, tmp_path) -> 
     セットアップ不備（retryable=False）は、10 秒待って同じ不可能な試行を繰り返さず
     即 fail-closed になること。"""
     monkeypatch.setattr(ev, "_has_bare_auth", lambda: False)
+    _write_canonical_report(tmp_path)
     monkeypatch.setattr(
         ev.time,
         "sleep",
@@ -522,6 +594,7 @@ def test_judge_rubric_fail_is_not_retried(monkeypatch, tmp_path) -> None:
     """rubric の fail 判定（passed=false）は judge 実行自体の失敗ではないためリトライしない
     こと（リトライは判定セマンティクスを変えない、の固定）。"""
     monkeypatch.setattr(ev, "_has_bare_auth", lambda: True)
+    _write_canonical_report(tmp_path)
     monkeypatch.setattr(
         ev.time,
         "sleep",

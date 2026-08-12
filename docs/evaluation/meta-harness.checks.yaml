@@ -1305,3 +1305,70 @@
     concurrent retags (ADR-20260726-045). The prior ImageCache.trusted_image_ids side cache this
     EV originally described was removed once #317 made every live caller consume .image_id
     straight from ensure_images_detailed()'s return value (PR #320 review).
+
+- ev_id: EV-100
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCodexBackend::test_prompt_limits_judge_to_provided_excerpts_without_file_reads
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_host_judge_command_disables_all_builtin_tools
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_docker_judge_uses_broker_container_without_host_api_key
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_canonical_excerpt_stays_inside_untrusted_delimiters
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCodexBackend::test_prompt_limits_judge_to_provided_excerpts_without_file_reads
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_host_judge_command_disables_all_builtin_tools
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_docker_judge_uses_broker_container_without_host_api_key
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_canonical_excerpt_stays_inside_untrusted_delimiters
+  notes: host and Docker argv disable the entire built-in tool set, while trusted prompt text limits grading to injected excerpts without file reads and keeps the canonical final response inside the nonce-delimited untrusted block.
+
+- ev_id: EV-101
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeArtifactExcerpts
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_missing_referenced_artifact_returns_check_fail_without_starting_judge
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_empty_referenced_artifact_returns_fail_without_starting_judge
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_rubric_without_file_references_still_starts_judge
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_partial_artifact_availability_still_starts_judge
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_canonical_report_starts_judge_without_regex_file_references
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_explicit_canonical_reference_is_deduplicated
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_missing_canonical_without_regex_references_returns_fail_without_starting_judge
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_canonical_evidence_starts_judge_when_regex_artifact_is_missing
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCodexBackend::test_missing_artifact_still_reports_disabled_backend_as_oracle_error
+    packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeUnknownBackend::test_missing_artifact_still_reports_unknown_backend_as_error
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeArtifactExcerpts
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_missing_referenced_artifact_returns_check_fail_without_starting_judge
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_empty_referenced_artifact_returns_fail_without_starting_judge
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_rubric_without_file_references_still_starts_judge
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeClaudeBareBackend::test_partial_artifact_availability_still_starts_judge
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_canonical_report_starts_judge_without_regex_file_references
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_explicit_canonical_reference_is_deduplicated
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_missing_canonical_without_regex_references_returns_fail_without_starting_judge
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCanonicalEvidence::test_canonical_evidence_starts_judge_when_regex_artifact_is_missing
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeCodexBackend::test_missing_artifact_still_reports_disabled_backend_as_oracle_error
+    - packages/meta-harness/tests/test_evaluator_oracles.py::TestRubricJudgeUnknownBackend::test_missing_artifact_still_reports_unknown_backend_as_error
+  notes: static backend validation precedes evidence collection; required evidence is the deduplicated union of regex-extracted rubric paths and the canonical final report. The backend starts when any evidence is available and receives unavailable paths in trusted prompt text; all-unavailable evidence produces a traceable rubric failure without launch.
+
+- ev_id: EV-102
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_launch_failure_retry_classifier_denies_only_deterministic_markers
+    packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_error_max_turns_is_not_retried
+    packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_unavailable_retries_once_and_recovers
+    packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_unavailable_after_retry_stays_error_with_both_reasons
+    packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_rubric_fail_is_not_retried
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_launch_failure_retry_classifier_denies_only_deterministic_markers
+    - packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_error_max_turns_is_not_retried
+    - packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_unavailable_retries_once_and_recovers
+    - packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_unavailable_after_retry_stays_error_with_both_reasons
+    - packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_rubric_fail_is_not_retried
+  notes: nonzero exits are retryable once by default, including empty and non-deny-listed diagnostics. Turn-exhaustion, authentication/credential, and budget/quota markers are deterministic deny-list matches; normal rubric failures and permanent setup failures retain fail-closed semantics without retry expansion.
