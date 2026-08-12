@@ -5,9 +5,27 @@ description: Holdout bug issue through a deterministic offline gh fixture.
 prompt: |
   /issue-create bug 設定読込失敗で起動できない
 
-  Include reproduction with a missing config file, expected fallback behavior, actual startup
-  failure, and Linux environment. The user has already reviewed the proposed bug issue and
-  explicitly approves creation now.
+  This is an offline, network-free evaluation harness for the issue-create skill:
+  - The user has already reviewed the proposed bug issue and explicitly approves creation now.
+  - AskUserQuestion is unavailable, and the user will provide no further input. Do not ask for
+    confirmation or end the run waiting for an answer; proceed directly to issue creation.
+  - Repository metadata is unavailable. Do not perform remote or repository lookups.
+
+  Use these reviewed bug details:
+  - Environment: Linux, running `example-app --config /etc/example-app/config.yaml`.
+  - Reproduction: remove `/etc/example-app/config.yaml`, then start the application with the
+    command above.
+  - Expected: the application falls back to built-in defaults and finishes startup.
+  - Actual: startup aborts with FileNotFoundError before the application becomes usable.
+
+  The user supplied and approved these acceptance criteria:
+  - [ ] Missing config files use built-in defaults and startup completes — verify: `pytest -q tests/test_config_loading.py -k missing_config_uses_defaults`
+  - [ ] The issue body clearly distinguishes the missing-config reproduction, expected fallback, actual startup failure, and Linux environment — judge: Each item is stated in its matching bug-template section with enough detail to reproduce the failure.
+
+  Build the complete bug-template body in `issue-body.md`. Completion requires the actual issue
+  creation call; preparing the body alone is not complete. Run exactly
+  `python3 bin/gh issue create --title "設定読込失敗で起動できない" --label bug --body-file issue-body.md`
+  and then report the result without asking another question.
 setup:
   - "mkdir -p bin .meta-harness && cp packages/meta-harness/scenarios/fixtures/fake-gh.py bin/gh && chmod +x bin/gh && rm -f .meta-harness/issue-create-call.json"
 allowed_tools:
