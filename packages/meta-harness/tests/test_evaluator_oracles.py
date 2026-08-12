@@ -33,6 +33,13 @@ def _option_values(command: list[str], option: str) -> list[str]:
     return [command[index + 1] for index, value in enumerate(command) if value == option]
 
 
+def _write_canonical_report(worktree_dir: Path, content: str = "candidate final response") -> Path:
+    report_path = worktree_dir / ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(content, encoding="utf-8")
+    return report_path
+
+
 class TestOracleCommandExit:
     @pytest.fixture(autouse=True)
     def _isolated_launch(self, tmp_path: Path, monkeypatch) -> None:
@@ -459,6 +466,7 @@ class TestRubricJudgeClaudeBareBackend:
     def test_fail_closed_when_api_key_missing(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setattr(ev, "_api_key_helper_configured", lambda: False)
+        _write_canonical_report(tmp_path)
         result = ev.run_rubric_judge(
             "rubric", tmp_path, self._CONFIG, _SCHEMA_DIR, runner=lambda *a, **k: _completed(0)
         )
@@ -473,6 +481,7 @@ class TestRubricJudgeClaudeBareBackend:
         しない（Sec14-1）。"""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setattr(ev, "_api_key_helper_configured", lambda: True)
+        _write_canonical_report(tmp_path)
 
         def fake_runner(cmd, **kwargs):
             return _completed(0, stdout=json.dumps({"passed": True, "reason": "ok"}))
@@ -487,6 +496,7 @@ class TestRubricJudgeClaudeBareBackend:
         self, tmp_path: Path, monkeypatch
     ) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+        _write_canonical_report(tmp_path)
 
         def fake_runner(cmd, **kwargs):
             tools_index = cmd.index("--allowedTools")
@@ -503,6 +513,7 @@ class TestRubricJudgeClaudeBareBackend:
     ) -> None:
         """Contract: JUDGE-TOOLLESS."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+        _write_canonical_report(tmp_path)
 
         def fake_runner(cmd, **kwargs):
             assert _option_values(cmd, "--tools") == [""]
@@ -566,8 +577,10 @@ class TestRubricJudgeClaudeBareBackend:
     def test_rubric_without_file_references_still_starts_judge(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Contract: NOFILE-RUBRIC-UNCHANGED."""
+        """Contract: NOFILE-RUBRIC-VIA-CANONICAL."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+        canonical_content = "canonical evidence starts a no-file-reference rubric"
+        _write_canonical_report(tmp_path, canonical_content)
         calls: list[list[str]] = []
 
         def fake_runner(cmd, **kwargs):
@@ -584,6 +597,8 @@ class TestRubricJudgeClaudeBareBackend:
 
         assert result.passed is True
         assert len(calls) == 1
+        prompt = calls[0][calls[0].index("-p") + 1]
+        assert canonical_content in prompt
 
     def test_partial_artifact_availability_still_starts_judge(
         self, tmp_path: Path, monkeypatch
@@ -591,6 +606,7 @@ class TestRubricJudgeClaudeBareBackend:
         """Contract: EXCERPT-VISIBILITY."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
         (tmp_path / "summary.md").write_text("candidate summary", encoding="utf-8")
+        _write_canonical_report(tmp_path)
         prompts: list[str] = []
 
         def fake_runner(cmd, **kwargs):
@@ -608,9 +624,13 @@ class TestRubricJudgeClaudeBareBackend:
         assert result.passed is True
         assert len(prompts) == 1
         assert "candidate summary" in prompts[0]
+        assert "unavailable artifacts" in prompts[0].lower()
+        assert "missing-report.md" in prompts[0]
 
     def test_fail_closed_on_nonzero_exit(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+        monkeypatch.setattr(ev.time, "sleep", lambda _seconds: None)
+        _write_canonical_report(tmp_path)
         result = ev.run_rubric_judge(
             "rubric",
             tmp_path,
@@ -623,6 +643,7 @@ class TestRubricJudgeClaudeBareBackend:
 
     def test_fail_closed_on_unparseable_stdout(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+        _write_canonical_report(tmp_path)
         result = ev.run_rubric_judge(
             "rubric",
             tmp_path,
@@ -637,6 +658,7 @@ class TestRubricJudgeClaudeBareBackend:
         self, tmp_path: Path, monkeypatch
     ) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _write_canonical_report(tmp_path)
         launch = ev.siso.ScenarioIsolationLaunch(
             executable="docker",
             settings_path=None,
@@ -677,6 +699,119 @@ class TestRubricJudgeClaudeBareBackend:
         assert captured["kwargs"]["cleanup_args"] == ["docker", "rm", "-f", "judge"]
         assert "ANTHROPIC_API_KEY" not in captured["kwargs"]["env"]
         assert not any("sk-" in part for part in captured["command"])
+
+
+class TestRubricJudgeCanonicalEvidence:
+    _CONFIG = {"judge": {"tool": "claude-bare"}}
+
+    def test_canonical_report_starts_judge_without_regex_file_references(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+        canonical_content = "DISTINCTIVE-CANONICAL-FINAL-RESPONSE"
+        _write_canonical_report(tmp_path, canonical_content)
+        prompts: list[str] = []
+
+        def fake_runner(cmd, **kwargs):
+            prompts.append(cmd[cmd.index("-p") + 1])
+            return _completed(0, stdout=json.dumps({"passed": True, "reason": "ok"}))
+
+        result = ev.run_rubric_judge(
+            "grade the candidate response",
+            tmp_path,
+            self._CONFIG,
+            _SCHEMA_DIR,
+            runner=fake_runner,
+        )
+
+        assert result.passed is True
+        assert len(prompts) == 1
+        assert canonical_content in prompts[0]
+
+    def test_explicit_canonical_reference_is_deduplicated(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+        canonical_rel = ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH.as_posix()
+        canonical_content = "CANONICAL-DEDUPE-CONTENT"
+        _write_canonical_report(tmp_path, canonical_content)
+        prompts: list[str] = []
+
+        def fake_runner(cmd, **kwargs):
+            prompts.append(cmd[cmd.index("-p") + 1])
+            return _completed(0, stdout=json.dumps({"passed": True, "reason": "ok"}))
+
+        result = ev.run_rubric_judge(
+            f"grade {canonical_rel}",
+            tmp_path,
+            self._CONFIG,
+            _SCHEMA_DIR,
+            runner=fake_runner,
+        )
+
+        assert result.passed is True
+        assert len(prompts) == 1
+        canonical_header = f"--- {canonical_rel} (candidate final response) ---"
+        assert prompts[0].count(canonical_header) == 1
+        assert f"--- {canonical_rel} ---" not in prompts[0]
+        assert prompts[0].count(canonical_content) == 1
+
+    def test_missing_canonical_without_regex_references_returns_fail_without_starting_judge(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+
+        def unexpected_runner(*args, **kwargs):
+            raise AssertionError("judge must not start without canonical evidence")
+
+        result = ev.run_rubric_judge(
+            "grade the candidate response",
+            tmp_path,
+            self._CONFIG,
+            _SCHEMA_DIR,
+            runner=unexpected_runner,
+        )
+
+        assert result.passed is False
+        assert result.error is False
+        assert ev.CANDIDATE_FINAL_REPORT_RELATIVE_PATH.as_posix() in result.reason
+
+    def test_canonical_evidence_starts_judge_when_regex_artifact_is_missing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key-for-unit-test-only")
+        _write_canonical_report(tmp_path, "canonical evidence remains available")
+        prompts: list[str] = []
+
+        def fake_runner(cmd, **kwargs):
+            prompts.append(cmd[cmd.index("-p") + 1])
+            return _completed(0, stdout=json.dumps({"passed": True, "reason": "ok"}))
+
+        result = ev.run_rubric_judge(
+            "confirm tests/test_cache.py satisfies the rubric",
+            tmp_path,
+            self._CONFIG,
+            _SCHEMA_DIR,
+            runner=fake_runner,
+        )
+
+        assert result.passed is True
+        assert len(prompts) == 1
+        assert "unavailable artifacts" in prompts[0].lower()
+        assert "tests/test_cache.py" in prompts[0]
+
+    def test_canonical_excerpt_stays_inside_untrusted_delimiters(self, tmp_path: Path) -> None:
+        canonical_content = "CANONICAL-UNTRUSTED-BOUNDARY-CONTENT"
+        _write_canonical_report(tmp_path, canonical_content)
+
+        prompt = ev._build_judge_prompt("grade the candidate response", tmp_path)
+        delimiter_matches = list(ev._JUDGE_DELIMITER_NONCE_RE.finditer(prompt))
+        actual_open = delimiter_matches[-2]
+        actual_close = delimiter_matches[-1]
+        content_index = prompt.index(canonical_content)
+
+        assert actual_open.end() < content_index < actual_close.start()
+        assert canonical_content not in prompt[: actual_open.start()]
 
 
 class TestRubricJudgeUnknownBackend:
