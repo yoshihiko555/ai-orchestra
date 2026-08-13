@@ -101,17 +101,17 @@ class TestGetAgentToolWithRealConfig:
         tool = route_config.get_agent_tool(agent_name, _REAL_CONFIG)
         assert tool in _VALID_TOOLS, f"{agent_name} の tool が不正: {tool}"
 
-    def test_specific_tools_match_config(self) -> None:
-        """cli-tools.yaml のカテゴリ分けが正しく反映されているか。"""
+    def test_all_agents_declare_explicit_tool(self) -> None:
+        """全エージェントが tool を明示宣言しているか（値の固定 assert はしない）。
+
+        `agents.*.tool` は meta-harness の promote allowlist（ADR-039）に含まれる
+        可変の運用値であり、具体値をここで固定すると昇格 PR が原理的に CI を通らない
+        （Issue #341 / PR #348 と同じ欠陥クラス。実例: PR #367 の debugger 昇格）。
+        値の妥当性は test_returns_valid_tool の enum 検証がカバーする。
+        """
         agents = _REAL_CONFIG["agents"]
-        # レビュー系は claude-direct
-        for name in ["code-reviewer", "security-reviewer", "performance-reviewer"]:
-            assert agents[name]["tool"] == "claude-direct"
-        # 実装系は codex
-        for name in ["tester", "debugger", "frontend-dev", "backend-python-dev"]:
-            assert agents[name]["tool"] == "codex"
-        # リサーチ系は antigravity
-        assert agents["researcher"]["tool"] == "antigravity"
+        for name in sorted(_AGENTS_IN_CONFIG):
+            assert "tool" in agents[name], f"{name} に tool の明示宣言がありません"
 
 
 # ---------------------------------------------------------------------------
