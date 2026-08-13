@@ -49,6 +49,13 @@ critical:
     oracle: command_exit
     command: >-
       python3 -c "import json; d=json.load(open('.meta-harness/issue-create-call.json')); assert d['label'] == 'bug'"
+  # PR #366 bot レビュー対応: train（create-task-issue）が AC 相当を critical で検証しているのに
+  # holdout が未検証だと、AC 必須ゲートを壊す候補を frontier に通しうるため同型の検証を追加する。
+  - id: bug-acceptance-criteria
+    text: "受け入れ条件が verify/judge 付きで本文に残る"
+    oracle: command_exit
+    command: >-
+      python3 -c "import json; d=json.load(open('.meta-harness/issue-create-call.json')); b=d['body']; assert '## 受け入れ条件（修正完了とみなす条件）' in b; assert 'tests/test_config_loading.py' in b; lines=b.splitlines(); assert any('— verify:' in l for l in lines); assert any('— judge:' in l for l in lines)"
 checks:
   - id: issue-body-quality
     text: "再現条件と expected/actual が区別される"

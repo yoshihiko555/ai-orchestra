@@ -112,11 +112,32 @@ def test_create_bug_holdout_declares_executable_python_gh_issue_create_command()
 
     command = _matching_command(prompt, ["python3", "bin/gh", "issue", "create"])
 
-    assert _option_value(command, "--title")
-    assert _option_value(command, "--label") == "bug"
-    assert _option_value(command, "--body-file")
+    assert command == [
+        "python3",
+        "bin/gh",
+        "issue",
+        "create",
+        "--title",
+        "設定読込失敗で起動できない",
+        "--label",
+        "bug",
+        "--body-file",
+        "issue-body.md",
+    ], f"unexpected command tokens: {command!r}"
     assert "--repo" not in command
     assert all(".meta-harness/issue-create-call.json" not in token for token in command)
+
+
+def test_create_bug_holdout_declares_completion_contract() -> None:
+    """CT-PROMPT-BUG-DONE の完了契約を識別する。"""
+    prompt = _prompt("create-bug-issue-holdout")
+
+    # 短い文言を実際の prompt 本文に結び付け、完了契約の退行を防ぐ。
+    assert "AskUserQuestion is unavailable" in prompt, f"missing input contract: {prompt!r}"
+    assert "proceed directly to issue creation" in prompt, f"missing proceed contract: {prompt!r}"
+    assert "preparing the body alone is not complete" in prompt, (
+        f"missing artifact completion contract: {prompt!r}"
+    )
 
 
 def test_fix_formal_holdout_declares_executable_python_gh_issue_view_command() -> None:
@@ -129,3 +150,14 @@ def test_fix_formal_holdout_declares_executable_python_gh_issue_view_command() -
     assert len(command) == 7
     assert len(json_fields) == 5
     assert set(json_fields) == {"number", "title", "body", "labels", "assignees"}
+
+
+def test_fix_formal_holdout_declares_completion_contract() -> None:
+    """CT-PROMPT-FFG-DONE の完了契約を識別する。"""
+    prompt = _prompt("fix-formal-greeting-feature-holdout")
+
+    # 短い文言を実際の prompt 本文に結び付け、完了契約の退行を防ぐ。
+    assert "AskUserQuestion is unavailable" in prompt, f"missing input contract: {prompt!r}"
+    assert "not a substitute" in prompt, f"missing invocation contract: {prompt!r}"
+    assert "exit 126" in prompt, f"missing noexec contract: {prompt!r}"
+    assert "python3" in prompt, f"missing Python invocation contract: {prompt!r}"
