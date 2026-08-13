@@ -6,8 +6,12 @@ prompt: |
   /issue-fix 305
 
   This is an offline, network-free evaluation harness for the issue-fix skill:
-  - `gh` is a deterministic local stub: only `gh issue view 305 --json ...` is supported and
-    returns a fixed feature issue payload. Do not attempt any other `gh` subcommand.
+  - `gh` is a deterministic local stub that returns a fixed feature issue payload. The stub is
+    on a noexec mount, so if a direct invocation reports exit 126, do not request approval or
+    try chmod; invoke it through Python as specified in step 1. Do not attempt another `gh`
+    subcommand.
+  - Reading `.meta-harness/gh-issue-fixture.json` directly is not a substitute for the actual
+    issue-view invocation. The stub must run so that its call log is produced.
   - Git write operations (branch creation, commit, push) are structurally unavailable in this
     harness (the worktree's git metadata is exposed as a read-only snapshot). Do NOT run
     `git checkout -b`, `git commit`, or `git push` -- they will fail. Instead, determine the
@@ -18,10 +22,11 @@ prompt: |
   - There are no reviewer subagents available, so skip the Phase 4 sub-agent review step
     entirely and note that omission in your final Japanese report.
   - The Phase 1 plan has already been reviewed and approved by the user; proceed straight to
-    implementation without asking a follow-up question.
+    implementation without asking a follow-up question. AskUserQuestion is unavailable, the
+    user will provide no further input, and the run must not stop waiting for confirmation.
 
   Concretely:
-  1. Read the issue via `gh issue view 305 --json number,title,body,labels,assignees`.
+  1. Read the issue by running exactly `python3 bin/gh issue view 305 --json number,title,body,labels,assignees`.
   2. Implement the requested feature in `sandbox/formatter.py` with a direct Edit (add a
      `formal=True` mode to `build_greeting` that returns "Dear {name},"; keep the existing
      default behavior unchanged).
