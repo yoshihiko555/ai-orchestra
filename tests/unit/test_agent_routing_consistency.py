@@ -111,7 +111,11 @@ class TestGetAgentToolWithRealConfig:
         """
         agents = _REAL_CONFIG["agents"]
         for name in sorted(_AGENTS_IN_CONFIG):
-            assert "tool" in agents[name], f"{name} に tool の明示宣言がありません"
+            agent_cfg = agents[name]
+            assert isinstance(agent_cfg, dict), (
+                f"{name} の設定が mapping ではありません: {type(agent_cfg).__name__}"
+            )
+            assert "tool" in agent_cfg, f"{name} に tool の明示宣言がありません"
 
 
 # ---------------------------------------------------------------------------
