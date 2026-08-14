@@ -3264,7 +3264,12 @@ PR マージ/クローズ後の `--confirm` 時に worktree を削除する。`p
    ステップ数±10%/時間±15% はコスト軸が ledger にあるため quality 基準のみ採用する簡約と
    明記する。**比較基準を「候補を含んだ後の best」から「候補を含む前の best」に修正**した
    のは、前者では best を更新した候補が常に距離 0 となり、品質改善が連続している最中でも
-   空虚な converged が成立し得る欠陥があったため（ADR-20260814-048、Issue #364））
+   空虚な converged が成立し得る欠陥があったため（ADR-20260814-048、Issue #364））。
+   この verdict 基準への追従は判定ロジックだけでなく集約実装にも及ぶ:
+   `non_holdout_summary` が返す `critical_pass` は `critical_pass_rate == 1.0`（全 critical
+   一致）ではなく、上記の verdict 基準（gate/graded 分離宣言シナリオでは gate critical
+   全達成）で算出し、graded critical に部分点を持つ適格候補が収束判定から恒久的に
+   除外されないようにする
 10. 停止条件（手順 1, 8, 9）のいずれにも該当しなければ次イテレーションへ進む
 ```
 
