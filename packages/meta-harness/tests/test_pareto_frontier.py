@@ -107,8 +107,10 @@ class TestComputeParetoFrontier:
 
     # EV-105
     def test_routing_config_quality_diff_exactly_at_margin_does_not_dominate(self) -> None:
-        a = _point("a", quality_mean=80.0 + mh.QUALITY_STRICT_MARGIN, cost_mean=100)
-        b = _point("b", quality_mean=80.0, cost_mean=100)
+        # 80.0 + 1e-6 は丸めで差が margin と厳密一致しないため、0.0 基準で
+        # 差 == QUALITY_STRICT_MARGIN を正確に表現する（> を >= に変えると fail する境界）
+        a = _point("a", quality_mean=mh.QUALITY_STRICT_MARGIN, cost_mean=100)
+        b = _point("b", quality_mean=0.0, cost_mean=100)
 
         frontier, dominated = mh.compute_pareto_frontier([a, b], target="routing-config")
 
