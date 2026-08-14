@@ -66,13 +66,13 @@
     "config/quality-gates/evaluation-set-mapping.yaml",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-08-06T15:30:22.977552+00:00",
+  "last_sync": "2026-08-14T03:53:34.061097+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
     },
     "agent-routing": {
-      "config/agent-routing/cli-tools.yaml": "b696c5144feb6444a6b5995e6034e761b2cf7610aeaddcf494fef79cb4d44827",
+      "config/agent-routing/cli-tools.yaml": "d20fdb16fea4b0222f87f935e8bac56452e26ee39ea85c815362193a3c59c48c",
       "agents/ai-architect.md": "3be893e1959d4c442abf2b7f194586de833be36afef31c2a0a62b231f05ec648",
       "agents/ai-dev.md": "308456714b203c6611c7252295bb606bcae71614db4f257ff7018ace12ae3bfd",
       "agents/api-designer.md": "87a0c1dec114a730a030acfd1a895b4fb7ed1299babd3a2e43c4ee1e928d023a",

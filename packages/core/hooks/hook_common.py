@@ -35,7 +35,7 @@ GIT_COMMAND_TIMEOUT_SECONDS = 5
 # 障害時にとにかく何か動く値を返す」こと。値が多少古くても安全網としては許容する。
 DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
 DEFAULT_CODEX_SANDBOX_ANALYSIS = "read-only"
-DEFAULT_CODEX_FLAGS = "--full-auto"
+DEFAULT_CODEX_FLAGS = ""
 # 空文字 = --model フラグを省略し、Antigravity CLI のデフォルトモデルに委ねる意図。
 DEFAULT_ANTIGRAVITY_MODEL = ""
 DEFAULT_ANTIGRAVITY_FLAGS = ""

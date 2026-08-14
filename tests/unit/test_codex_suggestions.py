@@ -118,14 +118,18 @@ class TestBuildCodexCommand:
 
         フォールバック既定値は hook_common の SSOT 定数を参照するため、
         モデル名を literal で固定せず定数と照合する（モデル変更で壊れない）。
+        DEFAULT_CODEX_FLAGS は空文字（`--full-auto` は codex exec が未知引数として
+        拒否するためフォールバックから除去済み）。空文字定数は `in` が常に真になり
+        検証が無意味化するため、ここでは「無効フラグを含まない」ことを確認する。
         """
         # 空文字定数では `in` が常に真になり検証が無意味化するため非空をガード
         assert codex_write.DEFAULT_CODEX_MODEL
-        assert codex_write.DEFAULT_CODEX_FLAGS
+        assert codex_write.DEFAULT_CODEX_FLAGS == ""
         result = codex_write._build_codex_command({})
         assert codex_write.DEFAULT_CODEX_MODEL in result
         assert codex_write.DEFAULT_CODEX_SANDBOX_ANALYSIS in result
-        assert codex_write.DEFAULT_CODEX_FLAGS in result
+        assert "--full-auto" not in result
+        assert "  " not in result
         assert "< /dev/null" in result
 
     def test_custom_config(self):
