@@ -1762,8 +1762,20 @@ penalty = ambiguities + discretion_fills + retries   # 自己申告 3 項目の�
 ```
 
 - **critical 全達成が hard gate**: `critical_pass_rate < 1.0` の場合、`verdict=fail` とし、
-  quality_score の値に関わらず frontier から除外する（§3-5）。
+  quality_score の値に関わらず frontier から除外する（§3-5）。ただし gate/graded 分離を
+  宣言したシナリオでは、`verdict=fail` の条件は **gate critical の fail のみ**となる
+  （次項。graded critical の fail は `critical_pass_rate` を下げるが verdict には影響しない）。
 - 重み（`70` / `30` / ペナルティ係数 `5`）は config `scoring.*`（§5）で調整可能とする。
+- **gate/graded critical 分離（opt-in、ADR-20260814-048、Issue #364）**: critical は
+  「gate critical」（実行成立性・回帰非破壊。fail なら従来どおり `verdict=fail` とし
+  frontier 資格を喪失する。既存の critical と同義）と「graded critical」（出来栄えの
+  段階評価。fail しても `verdict` には影響しない）に分類できる。分離を宣言したシナリオでは
+  quality の 70 点項（`critical_pass_rate`）は **graded critical の pass rate のみを分母**
+  として計算し、gate critical は verdict 専用となり quality の分母に含めない
+  （frontier 適格候補は定義上 gate 全通過のため、gate を分母に含めると定数項となり
+  実効刻み幅を希釈するだけになる）。分類はシナリオ YAML の opt-in フィールドで
+  宣言する（フィールド名は実装 PR で確定）。未宣言の既存シナリオは全 critical が gate 兼
+  quality 分母のまま（従来算出と同一）となり、後方互換を維持する。
 
 ### 3-3. rubric_judge の実行（pluggable backend 方式、2026-07-07 スパイク + レビュー反映）
 
@@ -1907,6 +1919,13 @@ cost_mean(A)    ≤ cost_mean(B)
 したがって routing-config では「同品質だが安い」候補は相手を支配せず、両方が frontier に残りうる。
 この target 分岐は routing-config にだけ適用し、その他の target は従来の弱優越 + 片軸厳密ルールを維持する。
 C-9 の paired evaluation が導入される Phase B までは緩和しない。
+
+**数値衛生ガード（ADR-20260814-048、Issue #364）**: quality の厳密優越判定（上記の `>`）には、
+浮動小数誤差による誤った支配判定を防ぐため微小マージン `1e-6` を要求する
+（`quality_mean(A) - quality_mean(B) > 1e-6` を厳密優越の条件とする）。これは分散を考慮した
+統計的 epsilon とは別物であり、統計的 epsilon の導入は見送る（実分散データが無く較正できない
+ため。品質軸に実分散が入る loop 再運転の観測項目「ノイズ起因の frontier 変動」を踏まえて
+改めて判断する）。
 
 **frontier** は、支配されない `evaluated` 候補の集合と定義する。ただし対象は
 **全 non-holdout シナリオで `verdict=pass` の候補のみ**とする（1 つでも `fail`/`error` の
@@ -2138,6 +2157,14 @@ Max subscription の利用制限応答ではない。運用上は broker metrics
   external CLI の実行ではなく、Claude-driven task が materialized routing config を読み、その解決結果に応じて
   異なる決定論的成果物を作ることを指す。意味のある品質信号に実 codex/agy 実行が不可欠と判明した場合は、
   network/backend 設計変更が必要なため実装を停止する。
+- **行動ベース品質分解能シナリオの設計原則（ADR-20260814-048、Issue #364）**: train / holdout の
+  行動ベースシナリオを追加する際は以下を満たすこと。
+  - 実効刻み幅 `70 / (graded critical 項目数 × non-holdout シナリオ数)` が
+    `loop.convergence.quality_band_pt`（既定 3pt）と `loop.quality_epsilon_pt`（既定 0.5pt）を
+    十分上回るよう、シナリオ数・graded 項目数を設計する
+  - graded critical（§3-2）は独立したエンドステート挙動のみを採点し、ルート宣言・ログ・
+    自己申告・期待ファイル形式そのものに報酬を与えない（proxy-gaming 対策）
+  - holdout は train のリネームではなく本質的に異なるバグを用いる（oracle leakage 対策）
 
 ---
 
@@ -3229,11 +3256,15 @@ PR マージ/クローズ後の `--confirm` 時に worktree を削除する。`p
    「改善あり」とする（i=1 の場合の best_quality(0) は baseline_best_quality）
 8. 発散判定: 改善なしが divergence_rounds(3) 回連続した場合 → stop(divergence) + 人間通知
 9. 収束判定（loop.convergence.enabled 既定 true）: 直近 2 イテレーションの新候補がいずれも
-   「critical 全達成 かつ quality_mean が当該反復終了時点の best_quality(i) ±
-   loop.convergence.quality_band_pt(3) 以内」→ stop(converged)
-   （比較対象は各反復終了時点の best_quality(i) であり、ループ全体の最終値ではない。
-   skill-evolution の停止条件「連続 2 回で精度±3pt」の写像。ステップ数±10%/時間±15% は
-   コスト軸が ledger にあるため quality 基準のみ採用する簡約と明記する）
+   「verdict=pass（gate/graded 分離宣言シナリオでは gate critical 全達成）かつ quality_mean が**その候補を含む前の best_quality**（当該候補自身を
+   算出に含めない best_quality(i-1) 相当の値）± loop.convergence.quality_band_pt(3) 以内」
+   → stop(converged)
+   （比較対象は各反復で当該候補を含める前の best であり、ループ全体の最終値でも当該反復の
+   best_quality(i) 自身でもない。skill-evolution の停止条件「連続 2 回で精度±3pt」の写像。
+   ステップ数±10%/時間±15% はコスト軸が ledger にあるため quality 基準のみ採用する簡約と
+   明記する。**比較基準を「候補を含んだ後の best」から「候補を含む前の best」に修正**した
+   のは、前者では best を更新した候補が常に距離 0 となり、品質改善が連続している最中でも
+   空虚な converged が成立し得る欠陥があったため（ADR-20260814-048、Issue #364））
 10. 停止条件（手順 1, 8, 9）のいずれにも該当しなければ次イテレーションへ進む
 ```
 

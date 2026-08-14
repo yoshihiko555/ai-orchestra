@@ -39,6 +39,9 @@ codd:
 | F4 | `codex.model` には allowlist が存在しない（charset regex + YAML round-trip のみ）。`antigravity.model` は `model_allowlist` 空 ⇒ 全拒否の fail-closed 実装済み | ceiling 3 key の防御は非対称。`codex.model` は実質フリーテキスト |
 | F5 | judge 隔離（`--bare`、cwd はワークツリー外、`judge.*` は `meta-harness.yaml` の別ファイル）は「コードの形」で成立しているが、これを保証するテストが無い | 将来のリファクタで自己採点が無警告で復活しうる |
 
+> **2026-08-14**: F1（品質軸がほぼ定数）は ADR-20260814-048 で対処決定（行動ベースシナリオ +
+> gate/graded critical 分離、Issue #364）。詳細は §7 Phase B を参照。
+
 ## 3. 脅威モデル要約
 
 攻撃カタログ全 12 件（A1〜A12）の詳細は本設計の元となった脅威モデリング結果を §9 の実装 handoff に
@@ -161,6 +164,13 @@ A8 排他チェック（patch XOR overlay）の第 5 入口（proposer 経路）
   コスト軸制限を緩和。
 - **前提**: C-9 の実装と、Phase A で蓄積した候補履歴に対するバックテスト
   （「C-9 なら C-2 が見逃したものを検出できたか」）。
+- **2026-08-14 進捗**: Phase A exit criteria の「human レビューで『合法性でなく実改善』と
+  判断された昇格が 1 件以上」は 7ccc promote（2026-08-14 完了）で充足済み。Phase B の
+  最初の着手として #364（品質軸の飽和解消）に取り掛かり、ADR-20260814-048 で対処方針
+  （行動ベースシナリオ + gate/graded critical 分離）を決定した。C-2 のコスト軸制限の緩和
+  （および支配ルールの変更）は従来どおり C-9 導入後の別 Issue として先送りのまま変更なし。
+  今回 dominance に導入するのは数値衛生ガード（品質優越判定への微小マージン 1e-6、浮動小数
+  誤差対策のみ）であり、C-2 の意味論自体は不変。
 
 ### Phase C — スコープ外（記録のみ）
 
