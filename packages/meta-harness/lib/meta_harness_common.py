@@ -1476,10 +1476,20 @@ def _is_dominated(candidate: dict, points: list[dict], target: str) -> bool:
     )
 
 
+# quality-strict dominance（routing-config target 限定、Sec3-5）の厳密優越判定に使う数値衛生
+# マージン。浮動小数誤差により本来同値の候補間で誤った支配判定（片方が他方を支配してしまう
+# 反転）が起きるのを防ぐ。統計的な有意差検定の epsilon とは別物で、分散を考慮しない
+# （ADR-20260814-048、ADR-20260814-049 決定 3、Issue #364）。
+QUALITY_STRICT_MARGIN = 1e-6
+
+
 def _dominates(a: dict, b: dict, target: str) -> bool:
     """a が b を支配するか（Sec3-5、target 別 dominance semantics）。"""
     if target == "routing-config":
-        return a["quality_mean"] > b["quality_mean"] and a["cost_mean"] <= b["cost_mean"]
+        return (
+            a["quality_mean"] - b["quality_mean"] > QUALITY_STRICT_MARGIN
+            and a["cost_mean"] <= b["cost_mean"]
+        )
 
     quality_ge = a["quality_mean"] >= b["quality_mean"]
     cost_le = a["cost_mean"] <= b["cost_mean"]

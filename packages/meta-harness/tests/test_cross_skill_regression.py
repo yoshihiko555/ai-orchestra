@@ -381,7 +381,51 @@ def test_non_holdout_summary_uses_legacy_runs_without_evaluation_summary() -> No
         result["run_id"] = f"run-legacy-{scenario['id']}"
         result["quality_score"] = quality
         results.append(result)
+    # verdict 基準（ADR-20260814-049 決定 3、EV-104）: critical_pass は critical_pass_rate
+    # ではなく run の verdict で判定するため、critical_pass_rate だけを 0.0 にしても
+    # critical_pass には影響しない（下の verdict 基準テストと対比）。
     results[-1]["critical_pass_rate"] = 0.0
+    events = ev._events_for_results(
+        results,
+        target=target,
+        suite_id=target,
+        suite_hash=ev.compute_suite_hash(paths),
+        evaluator_hash=ev.compute_configured_evaluator_hash(config),
+        scenario_docs=scenario_docs,
+        evaluation_id=EVALUATION_ID,
+    )
+
+    assert not mh.candidate_has_evaluation_completed(events, CAND_ID)
+    assert loop_state.non_holdout_summary(events, config, CAND_ID, target) == {
+        "quality_mean": 90.0,
+        "critical_pass": True,
+    }
+
+
+def test_non_holdout_summary_critical_pass_uses_verdict_not_critical_pass_rate() -> None:
+    """EV-104: critical_pass 集約は verdict 基準。critical_pass_rate<1.0 でも
+    verdict=pass なら適格（収束判定から恒久的に除外されない）。逆に verdict=fail の run が
+    1 件でもあれば critical_pass=False になる。"""
+    config = copy.deepcopy(mh.DEFAULTS)
+    target = "claude-harness"
+    paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, target)
+    scenario_docs = [(path, ev.load_scenario(path, SCHEMA_DIR)) for path in paths]
+    results = []
+    for quality, (_, scenario) in zip((80.0, 100.0), scenario_docs, strict=True):
+        result = _result(
+            suite_id=TARGET,
+            scenario_id=str(scenario["id"]),
+            verdict="pass",
+            cost_usd=0.1,
+            tokens=10,
+        )
+        result["run_id"] = f"run-verdict-basis-{scenario['id']}"
+        result["quality_score"] = quality
+        results.append(result)
+    # verdict=fail だが critical_pass_rate はまだ 1.0（将来の gate/graded 型を想定した合成
+    # データ）。critical_pass_rate 基準なら適格と誤判定されるが、verdict 基準では正しく
+    # 不適格になる。
+    results[-1]["verdict"] = "fail"
     events = ev._events_for_results(
         results,
         target=target,

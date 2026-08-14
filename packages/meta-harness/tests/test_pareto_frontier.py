@@ -95,6 +95,38 @@ class TestComputeParetoFrontier:
         assert frontier == ["improved"]
         assert dominated == ["baseline"]
 
+    # EV-105
+    def test_routing_config_quality_diff_within_margin_does_not_dominate(self) -> None:
+        a = _point("a", quality_mean=80.0 + 1e-7, cost_mean=100)
+        b = _point("b", quality_mean=80.0, cost_mean=100)
+
+        frontier, dominated = mh.compute_pareto_frontier([a, b], target="routing-config")
+
+        assert set(frontier) == {"a", "b"}
+        assert dominated == []
+
+    # EV-105
+    def test_routing_config_quality_diff_exactly_at_margin_does_not_dominate(self) -> None:
+        # 80.0 + 1e-6 は丸めで差が margin と厳密一致しないため、0.0 基準で
+        # 差 == QUALITY_STRICT_MARGIN を正確に表現する（> を >= に変えると fail する境界）
+        a = _point("a", quality_mean=mh.QUALITY_STRICT_MARGIN, cost_mean=100)
+        b = _point("b", quality_mean=0.0, cost_mean=100)
+
+        frontier, dominated = mh.compute_pareto_frontier([a, b], target="routing-config")
+
+        assert set(frontier) == {"a", "b"}
+        assert dominated == []
+
+    # EV-105
+    def test_routing_config_quality_diff_above_margin_dominates(self) -> None:
+        a = _point("a", quality_mean=80.0 + 2e-6, cost_mean=100)
+        b = _point("b", quality_mean=80.0, cost_mean=100)
+
+        frontier, dominated = mh.compute_pareto_frontier([a, b], target="routing-config")
+
+        assert frontier == ["a"]
+        assert dominated == ["b"]
+
     # EV-16, EV-82 regression
     def test_non_routing_target_keeps_cost_only_dominance(self) -> None:
         cheaper = _point("cheaper", quality_mean=80, cost_mean=50)

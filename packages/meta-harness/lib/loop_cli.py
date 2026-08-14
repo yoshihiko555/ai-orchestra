@@ -890,7 +890,7 @@ def _iteration_converged(
     return (
         bool(summary)
         and bool(summary["critical_pass"])
-        and abs(float(summary["quality_mean"]) - float(iteration["quality_best_after"])) <= band
+        and abs(float(summary["quality_mean"]) - float(iteration["quality_best_before"])) <= band
     )
 
 

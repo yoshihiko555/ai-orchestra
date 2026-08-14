@@ -1372,3 +1372,37 @@
     - packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_unavailable_after_retry_stays_error_with_both_reasons
     - packages/meta-harness/tests/test_evaluator_failure_handling.py::test_judge_rubric_fail_is_not_retried
   notes: nonzero exits are retryable once by default, including empty and non-deny-listed diagnostics. Turn-exhaustion, authentication/credential, and budget/quota markers are deterministic deny-list matches; normal rubric failures and permanent setup failures retain fail-closed semantics without retry expansion.
+
+- ev_id: EV-104
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_loop_cli.py::test_iteration_converged_false_when_candidate_updates_best
+    packages/meta-harness/tests/test_loop_cli.py::test_iteration_converged_true_when_candidate_stays_within_band_of_prior_best
+    packages/meta-harness/tests/test_loop_cli.py::test_four_stop_conditions_record_loop_stopped
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_non_holdout_summary_critical_pass_uses_verdict_not_critical_pass_rate
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_non_holdout_summary_uses_legacy_runs_without_evaluation_summary
+  covered_by:
+    - packages/meta-harness/tests/test_loop_cli.py::test_iteration_converged_false_when_candidate_updates_best
+    - packages/meta-harness/tests/test_loop_cli.py::test_iteration_converged_true_when_candidate_stays_within_band_of_prior_best
+    - packages/meta-harness/tests/test_loop_cli.py::test_four_stop_conditions_record_loop_stopped
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_non_holdout_summary_critical_pass_uses_verdict_not_critical_pass_rate
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_non_holdout_summary_uses_legacy_runs_without_evaluation_summary
+  notes: convergence compares each candidate against the best_quality recorded before that candidate (quality_best_before), not the best_quality after it is folded in, so a candidate that updates the best is never trivially converged; critical_pass aggregation for convergence eligibility is verdict-based (verdict==pass across non-holdout runs), not critical_pass_rate==1.0, so eligible candidates are not permanently excluded. The legacy-runs test is the strongest direct proof — a run with critical_pass_rate=0.0 but verdict=pass now yields critical_pass=True (previously False), demonstrating the fix removes the permanent-exclusion failure mode EV-104 targets.
+
+- ev_id: EV-105
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_pareto_frontier.py::TestComputeParetoFrontier::test_routing_config_quality_diff_within_margin_does_not_dominate
+    packages/meta-harness/tests/test_pareto_frontier.py::TestComputeParetoFrontier::test_routing_config_quality_diff_exactly_at_margin_does_not_dominate
+    packages/meta-harness/tests/test_pareto_frontier.py::TestComputeParetoFrontier::test_routing_config_quality_diff_above_margin_dominates
+  covered_by:
+    - packages/meta-harness/tests/test_pareto_frontier.py::TestComputeParetoFrontier::test_routing_config_quality_diff_within_margin_does_not_dominate
+    - packages/meta-harness/tests/test_pareto_frontier.py::TestComputeParetoFrontier::test_routing_config_quality_diff_exactly_at_margin_does_not_dominate
+    - packages/meta-harness/tests/test_pareto_frontier.py::TestComputeParetoFrontier::test_routing_config_quality_diff_above_margin_dominates
+  notes: routing-config quality-strict dominance requires quality_mean(A) - quality_mean(B) > 1e-6 (QUALITY_STRICT_MARGIN); differences at or below the margin do not dominate, preventing floating-point noise from flipping dominance between otherwise-equal candidates.

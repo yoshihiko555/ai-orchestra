@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`meta-harness`: loop の収束判定が品質改善の連続中にも成立し得た欠陥を修正（Issue #364）**: `converged` 判定の比較基準を、候補自身を含めた後の best ではなく候補を含む前の best に変更し、best を更新した候補が常に距離ゼロと評価されて空虚に収束停止する問題を解消した。
 - **`agent-routing`: `codex.flags` の既定値から `--full-auto` を除去**: 現行 codex CLI の `codex exec` が `--full-auto` を未知引数として拒否するため、config-driven に組み立てた Codex 呼び出しが必ず失敗していた問題を解消した。既定値は空文字となり、必要な場合は `.claude/config/agent-routing/cli-tools.local.yaml` で `codex.flags` を明示的に上書きできる。
 - **`meta-harness`: rubric judge の成果物欠落と決定論的失敗を正しく分類（Issue #362）**: rubric がファイル名を明示しなくても候補の最終応答を必ず判定材料に含め、取得できない artifact は judge に明示し、必須証拠がすべて欠落した場合は追跡可能な check `fail` とする。一過性の judge 失敗は診断の有無にかかわらず 1 回再試行し、turn 上限・認証・quota などの決定論的失敗は即時確定する。
 - **`meta-harness`: 重量級 scenario が broker の token 予算を早期枯渇する問題を修正（Issue #356）**: request body の byte 長を token 数として 1:1 計上していた事前判定を、安全余裕付きの換算見積りへ補正した。残余超過時の fail-closed な拒否と latch は維持する。
