@@ -2169,9 +2169,13 @@ Max subscription の利用制限応答ではない。運用上は broker metrics
     自己申告・期待ファイル形式そのものに報酬を与えない（proxy-gaming 対策）
   - holdout は train のリネームではなく本質的に異なるバグを用いる（oracle leakage 対策）
 - **2026-08-14（ADR-20260814-049）**: routing-config は検証専用 target と位置づける。
-  own suite は config patch の妥当性ゲートとしてのみ機能し、品質・コスト軸での自動
-  世代交代は行わない（own suite の cost はシナリオ駆動 Claude のコストであり本番
-  ルーティングコストを反映しないため）。C-2 は維持。loop 運転は今後行わない。
+  own suite は config patch の妥当性ゲートとしてのみ機能する（own suite の cost は
+  シナリオ駆動 Claude のコストであり本番ルーティングコストを反映しないため）。
+  C-2（1e-6 数値衛生ガード付き）は維持し、コスト単独の自動世代交代は発生しない。
+  品質差による dominance は機構上残るが、適格候補間の品質差は自己申告 penalty 等の
+  本番と無関係な信号のみから生じるため、品質差 dominance による世代交代が観測された
+  場合は改善ではなく異常（信号汚染）として human レビューで原因を確認する
+  （ADR-049 決定 1 / EV-106 と同一の契約）。loop 運転は今後行わない。
   promote は human ゲート判断。
 
 ---
