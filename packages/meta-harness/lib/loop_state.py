@@ -169,7 +169,7 @@ def non_holdout_summary(
         return None
     summary = {
         "quality_mean": sum(float(run["quality_score"]) for run in runs) / len(runs),
-        "critical_pass": all(float(run.get("critical_pass_rate", 0)) == 1.0 for run in runs),
+        "critical_pass": all(run.get("verdict") == "pass" for run in runs),
     }
     if not mh.candidate_has_evaluation_completed(events, cand_id):
         return summary

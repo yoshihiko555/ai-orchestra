@@ -459,12 +459,14 @@ def test_non_routing_config_failures_still_fail_stop(
             2,
         ),
         (
+            # 比較基準は「当該候補を含む前の best」（quality_best_before）。両候補とも
+            # baseline(0.0) 近傍に留まり band(3) 内で 2 連続する（EV-104）。
             "converged",
             _config(
                 proposer={"divergence_rounds": 3, "max_iterations": 5},
                 loop={"convergence": {"enabled": True, "quality_band_pt": 3, "rounds": 2}},
             ),
-            [80.0, 81.0],
+            [0.0, 0.0],
             2,
         ),
     ],
@@ -760,6 +762,41 @@ def test_overfit_candidate_is_retired_and_excluded_from_improvement(
     )
     iteration = {"cand_id": cand_id, "quality_best_after": 90.0}
     assert not loop_cli._iteration_converged(events, config, iteration, 3.0, spec.target)
+
+
+def test_iteration_converged_false_when_candidate_updates_best(git_project: Path) -> None:
+    """EV-104: 比較基準は「候補を含む前の best」(quality_best_before)。best を大きく更新した
+    候補（quality_best_before から乖離）は distance が band を超えるため converged と
+    判定されない（品質改善が連続している最中に空虚な converged が成立しない）。"""
+    config = _config()
+    mh.init_store(git_project, config)
+    spec = loop_cli._start_loop(git_project, config, "claude-harness")
+    cand_id = _register_loop_candidate(git_project, config, spec, 1)
+    for scenario_id in ("create-version-file", "summarize-readme"):
+        _append_run(git_project, config, cand_id, 50.0, scenario_id=scenario_id)
+    events = _events(git_project, config)
+
+    iteration = {"cand_id": cand_id, "quality_best_before": 0.0, "quality_best_after": 50.0}
+
+    assert not loop_cli._iteration_converged(events, config, iteration, 3.0, spec.target)
+
+
+def test_iteration_converged_true_when_candidate_stays_within_band_of_prior_best(
+    git_project: Path,
+) -> None:
+    """EV-104: 改善なし（quality_best_before との距離が band 以内）の候補は converged 適格
+    と判定される。"""
+    config = _config()
+    mh.init_store(git_project, config)
+    spec = loop_cli._start_loop(git_project, config, "claude-harness")
+    cand_id = _register_loop_candidate(git_project, config, spec, 1)
+    for scenario_id in ("create-version-file", "summarize-readme"):
+        _append_run(git_project, config, cand_id, 51.0, scenario_id=scenario_id)
+    events = _events(git_project, config)
+
+    iteration = {"cand_id": cand_id, "quality_best_before": 50.0, "quality_best_after": 51.0}
+
+    assert loop_cli._iteration_converged(events, config, iteration, 3.0, spec.target)
 
 
 def test_partial_train_run_is_not_treated_as_complete(git_project: Path) -> None:
