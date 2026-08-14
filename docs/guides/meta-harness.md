@@ -272,6 +272,12 @@ flowchart TD
 allowlist で制限される（`agents.*.tool` / `antigravity.model` は proposer 可、`codex.model` は
 human 限定。ADR-041 → 042、`design:meta-harness-proposer-routing-unlock` 参照）。
 
+> **注記（2026-08-14、ADR-20260814-049）**: `loop` の対象は skill 系 / claude-harness target
+> とする。`routing-config` は own suite が品質・コスト両軸とも本番の真実を反映する最適化
+> 信号を持たないため（最適化しても divergence 停止しか起き得ない）、loop 運転の対象には
+> しない。`routing-config` は `evaluate` / `promote`（config patch の妥当性ゲート + human
+> 判断）の検証用途に限定して使う。
+
 ---
 
 ## 7. 使い方（コマンド早見表）
