@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`agent-routing`: `codex.flags` の既定値から `--full-auto` を除去**: 現行 codex CLI の `codex exec` が `--full-auto` を未知引数として拒否するため、config-driven に組み立てた Codex 呼び出しが必ず失敗していた問題を解消した。既定値は空文字となり、必要な場合は `.claude/config/agent-routing/cli-tools.local.yaml` で `codex.flags` を明示的に上書きできる。
 - **`meta-harness`: rubric judge の成果物欠落と決定論的失敗を正しく分類（Issue #362）**: rubric がファイル名を明示しなくても候補の最終応答を必ず判定材料に含め、取得できない artifact は judge に明示し、必須証拠がすべて欠落した場合は追跡可能な check `fail` とする。一過性の judge 失敗は診断の有無にかかわらず 1 回再試行し、turn 上限・認証・quota などの決定論的失敗は即時確定する。
 - **`meta-harness`: 重量級 scenario が broker の token 予算を早期枯渇する問題を修正（Issue #356）**: request body の byte 長を token 数として 1:1 計上していた事前判定を、安全余裕付きの換算見積りへ補正した。残余超過時の fail-closed な拒否と latch は維持する。
 - **`meta-harness`: holdout シナリオ `add-phase-direct-call-confirms-ac-holdout` が noop baseline でも約 50% の確率で fail し holdout ゲートを閉塞する問題を修正（Issue #353）**: 非対話評価環境なのに「ユーザーへの明示的質問」を要求する rubric と、prompt の「返答を待たず制約をレポートに書いて進めよ」という指示の矛盾を較正した。prompt は final report 内での質問明示を義務化し、rubric は AC 判断のユーザーへの返還（直接質問または未決定・ユーザー判断待ちの明示)を pass 条件としつつ、AC の捏造・提案（ドラフト含む）・要不要の自己断定は引き続き fail にする。noop baseline の実機評価 2 回連続 3/3 pass で決定論化を確認済み。

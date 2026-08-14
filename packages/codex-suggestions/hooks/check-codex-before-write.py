@@ -118,7 +118,8 @@ def _build_codex_command(config: dict) -> str:
     model = codex.get("model", DEFAULT_CODEX_MODEL)
     sandbox = codex.get("sandbox", {}).get("analysis", DEFAULT_CODEX_SANDBOX_ANALYSIS)
     flags = codex.get("flags", DEFAULT_CODEX_FLAGS)
-    return f"`codex exec --model {model} --sandbox {sandbox} {flags} '...' < /dev/null 2>/dev/null`"
+    flags_part = f"{flags} " if flags else ""
+    return f"`codex exec --model {model} --sandbox {sandbox} {flags_part}'...' < /dev/null 2>/dev/null`"
 
 
 def main():

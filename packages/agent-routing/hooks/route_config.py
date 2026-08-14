@@ -286,9 +286,10 @@ def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> s
         model = c.get("model", DEFAULT_CODEX_MODEL)
         sandbox = c.get("sandbox", {}).get("analysis", DEFAULT_CODEX_SANDBOX_ANALYSIS)
         flags = c.get("flags", DEFAULT_CODEX_FLAGS)
+        flags_part = f"{flags} " if flags else ""
         return (
             f"[Codex CLI] Agent '{agent}' ('{trigger}') uses Codex:\n"
-            f'`codex exec --model {model} --sandbox {sandbox} {flags} "..." < /dev/null 2>/dev/null`'
+            f'`codex exec --model {model} --sandbox {sandbox} {flags_part}"..." < /dev/null 2>/dev/null`'
         )
     if tool in ("antigravity", "gemini"):
         if not is_cli_enabled("antigravity", config):

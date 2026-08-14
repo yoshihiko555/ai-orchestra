@@ -24,9 +24,9 @@ codex:
     analysis: read-only
     # 書き込み可能: 実装・修正・リファクタリング向け（ワークスペース内のファイル変更可）
     implementation: workspace-write
-  # codex exec に常に付与するフラグ
-  # --full-auto: 確認プロンプトなしで自動実行
-  flags: --full-auto
+  # codex exec に常に付与するフラグ（不要なら空文字）
+  # --full-auto は現行 codex CLI の codex exec が未知引数として拒否するため除去（2026-08-14）
+  flags: ""
   # sandbox 内では実行不可: codex 0.145 系は起動時の in-process app-server 初期化が
   # sandbox の OS 制限（EPERM）で失敗する。sandbox.excludedCommands の codex 除外も
   # 現行 Claude Code では効かないため、呼び出し側で sandbox を無効化して実行する（Issue #85）
