@@ -92,7 +92,7 @@ def test_routing_config_batch_threads_one_base_hash_to_all_attempt_metadata(
             encoding="utf-8",
         )
         checks = [{"id": "c1", "passed": True, "oracle": "command_exit", "detail": "exit=0"}]
-        return checks, [], False, []
+        return checks, [], [], False, []
 
     monkeypatch.setattr(ev, "compute_routing_config_base_hash", fake_base_hash)
     monkeypatch.setattr(ev, "_run_attempt_lifecycle", fake_lifecycle)
@@ -265,7 +265,7 @@ class TestHoldoutPhysicalSeparation:
             staging.mkdir(parents=True, exist_ok=True)
             (staging / "isolation.json").write_text(json.dumps(isolation) + "\n", encoding="utf-8")
             checks = [{"id": "c1", "passed": True, "oracle": "command_exit", "detail": "exit=0"}]
-            return checks, [], False, []
+            return checks, [], [], False, []
 
         monkeypatch.setattr(ev, "_run_attempt_lifecycle", fake_lifecycle)
 
@@ -376,7 +376,7 @@ def _run_budget_latch_attempt(
                 "message": "claude -p reported is_error=True (subtype=success)",
             },
         ]
-        return [], checks_non_critical or [], True, errors
+        return [], checks_non_critical or [], [], True, errors
 
     monkeypatch.setattr(ev, "_run_attempt_lifecycle", fake_lifecycle)
     result = ev.run_single_attempt(

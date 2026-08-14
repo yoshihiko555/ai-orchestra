@@ -70,20 +70,27 @@ path_prepend:
   - bin
 command_timeout_ms: 60000
 critical:
+  # gate（実行成立性 = 成果物の存在）: train（fix-greet-none-bug）と同一方針で転換する
+  # （ADR-20260814-050 決定4: 片方だけ転換すると _retire_if_overfit の異種スケール比較になる）。
+  - id: issue-fix-decision-exists-holdout
+    text: "issue-fix-decision.json が生成される"
+    oracle: artifact_exists
+    path: ".meta-harness/issue-fix-decision.json"
+graded:
+  # graded（出来栄え = 修正内容の複合 assert）: 単一値ハードコードでは通らない複数入力の
+  # 挙動検証。
   - id: formal-greeting-feature-implemented
     text: "formal=True で 'Dear {name},' を返すよう実装され、複数の名前でも既存挙動が維持される（単一値ハードコードでは通らない）"
     oracle: command_exit
     command: >-
       python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from formatter import build_greeting; assert build_greeting('Aoi') == 'Hello Aoi', build_greeting('Aoi'); assert build_greeting('Aoi', formal=True) == 'Dear Aoi,', build_greeting('Aoi', True); assert build_greeting('Yuki') == 'Hello Yuki', build_greeting('Yuki'); assert build_greeting('Yuki', formal=True) == 'Dear Yuki,', build_greeting('Yuki', True); assert build_greeting('Rin') == 'Hello Rin', build_greeting('Rin')"
-  - id: issue-fix-decision-exists-holdout
-    text: "issue-fix-decision.json が生成される"
-    oracle: artifact_exists
-    path: ".meta-harness/issue-fix-decision.json"
+  # graded（出来栄え = decision 内容一致）: 決定内容がラベルマッピング表と一致するか。
   - id: issue-fix-decision-matches-feature-label-policy
     text: "記録された branch/commit_message/pr_label が feature ラベルのマッピング表と一致する"
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-issue-fix-decision.py --fixture .meta-harness/gh-issue-fixture.json --artifact .meta-harness/issue-fix-decision.json
+  # graded（出来栄え = call-log 一致）: gh 呼び出しが正しい引数・fixture で行われたか。
   - id: gh-call-logged-correctly-holdout
     text: "gh issue view が正しい issue番号・--jsonフィールドで呼ばれ、serve された fixture の sha256 が記録される"
     oracle: command_exit

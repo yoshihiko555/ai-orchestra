@@ -1776,6 +1776,18 @@ penalty = ambiguities + discretion_fills + retries   # 自己申告 3 項目の�
   quality 分母のまま（従来算出と同一）となり、後方互換を維持する。
   **2026-08-14 撤回（ADR-20260814-049）**: routing-config での品質分解能用途が消滅した
   ため本分離は実装しない。skill target の suite 設計で必要性が再浮上した場合に新規設計する。
+  **2026-08-14（ADR-20260814-050）**: skill target 向けに再設計して実装。critical/graded
+  分離ではなく、`graded:` を独立した top-level リスト（機械 oracle のみ、`critical:` とは
+  別配列）として新設する形に変更した。`critical:` は従来どおり gate 専用（fail で
+  `verdict=fail`）で verdict 判定機構は無改修。graded 宣言シナリオの
+  `quality = graded_pass_rate * 100` とし、self-report penalty（§3-1）は記録・監査用に
+  `result.penalty` へ残すのみで quality には算入しない（自己申告 gaming とペナルティの
+  ±5pt 刻み非決定変動を loop の品質信号から構造的に除去する）。graded 未宣言シナリオは
+  上記の従来式（70/30 + penalty）のまま後方互換を維持する。実効刻みは
+  `100 / (graded 項目数 × non-holdout シナリオ数)`（issue-fix own suite は train 1 本・
+  graded 3 項目で 33.3pt 刻み）。routing-config 候補等の regression 評価文脈では、graded の
+  fail も suite fail として扱う **regression strict mode** を導入し、converted criticals が
+  gate から抜けた分の回帰ゲートの穴を塞ぐ。詳細は ADR-20260814-050 決定 1〜8 を参照。
 
 ### 3-3. rubric_judge の実行（pluggable backend 方式、2026-07-07 スパイク + レビュー反映）
 

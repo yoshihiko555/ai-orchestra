@@ -210,6 +210,47 @@ def test_routing_config_suite_dispatch_and_split_minimum(tmp_path: Path) -> None
     assert [path.name for path in paths] == ["holdout.yaml", "train.yaml"]
 
 
+def test_suite_rejects_mixed_graded_declaration_among_non_holdout_scenarios(
+    tmp_path: Path,
+) -> None:
+    """ADR-20260814-050 決定7: suite 内の non-holdout シナリオは graded 宣言を揃える
+    （宣言/未宣言の混在は quality_mean が異種スケールの平均になるため fail-closed で禁止）。
+    holdout シナリオは non-holdout 側の集計に含まれないため判定対象外。"""
+    package_dir = tmp_path / "meta-harness"
+    suite_dir = package_dir / "scenarios" / "skill" / "mixed-graded"
+    suite_dir.mkdir(parents=True)
+
+    def scenario(scenario_id: str, *, holdout: bool, declare_graded: bool) -> dict:
+        doc = {
+            "schema_version": "1.0",
+            "id": scenario_id,
+            "target": "skill:mixed-graded",
+            "description": scenario_id,
+            "prompt": "irrelevant",
+            "critical": [{"id": "gate", "text": "gate", "oracle": "artifact_exists", "path": "x"}],
+            "holdout": holdout,
+        }
+        if declare_graded:
+            doc["graded"] = [
+                {"id": "g1", "text": "graded", "oracle": "command_exit", "command": "true"}
+            ]
+        return doc
+
+    (suite_dir / "train-a.yaml").write_text(
+        json.dumps(scenario("mixed-a", holdout=False, declare_graded=True)), encoding="utf-8"
+    )
+    (suite_dir / "train-b.yaml").write_text(
+        json.dumps(scenario("mixed-b", holdout=False, declare_graded=False)), encoding="utf-8"
+    )
+    (suite_dir / "holdout.yaml").write_text(
+        json.dumps(scenario("mixed-holdout", holdout=True, declare_graded=True)),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="graded-declared and graded-undeclared"):
+        ev.validate_target_suite(package_dir, SCHEMA_DIR, "skill:mixed-graded")
+
+
 def test_routing_config_suite_uses_deterministic_critical_oracles() -> None:
     paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, "routing-config")
     scenarios = [ev.load_scenario(path, SCHEMA_DIR) for path in paths]

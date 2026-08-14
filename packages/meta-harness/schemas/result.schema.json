@@ -41,6 +41,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/check_result" }
     },
+    "graded": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check_result" }
+    },
+    "graded_pass_rate": { "type": "number", "minimum": 0, "maximum": 1 },
     "self_report": {
       "type": ["object", "null"],
       "additionalProperties": false,

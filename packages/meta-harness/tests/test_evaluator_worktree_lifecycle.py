@@ -288,7 +288,7 @@ class TestOracleFixtureMaterializationTiming:
         monkeypatch.setattr(ev, "_snapshot_trusted_oracle_fixtures", fake_snapshot)
         monkeypatch.setattr(ev, "_materialize_current_oracle_fixtures", fake_materialize)
 
-        _checks, _checks_nc, hard_failure, errors = ev._run_attempt_lifecycle(
+        _checks, _checks_nc, _graded, hard_failure, errors = ev._run_attempt_lifecycle(
             main_root=git_project,
             config={"evaluate": {"worktree_root": ".worktrees/meta"}},
             schema_dir=_SCHEMA_DIR,
@@ -503,7 +503,7 @@ class TestFinallyRemovalOnLifecycleFailure:
             "critical": [],
             "checks": [],
         }
-        checks, checks_non_critical, hard_failure, errors = ev._run_attempt_lifecycle(
+        checks, checks_non_critical, _graded, hard_failure, errors = ev._run_attempt_lifecycle(
             main_root=git_project,
             config={"evaluate": {"worktree_root": ".worktrees/meta"}},
             schema_dir=Path("packages/meta-harness/schemas").resolve(),
@@ -534,7 +534,7 @@ class TestFinallyRemovalOnLifecycleFailure:
         monkeypatch.setattr(ev, "apply_overlay", raising_apply_overlay)
 
         scenario = {"id": "s2", "prompt": "irrelevant", "setup": [], "critical": [], "checks": []}
-        _checks, _checks_nc, hard_failure, errors = ev._run_attempt_lifecycle(
+        _checks, _checks_nc, _graded, hard_failure, errors = ev._run_attempt_lifecycle(
             main_root=git_project,
             config={"evaluate": {"worktree_root": ".worktrees/meta"}},
             schema_dir=Path("packages/meta-harness/schemas").resolve(),
@@ -570,7 +570,7 @@ class TestFinallyRemovalOnLifecycleFailure:
 
         monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", failing_cleanup)
 
-        _checks, _checks_nc, hard_failure, errors = ev._run_attempt_lifecycle(
+        _checks, _checks_nc, _graded, hard_failure, errors = ev._run_attempt_lifecycle(
             main_root=git_project,
             config={"evaluate": {"worktree_root": ".worktrees/meta"}},
             schema_dir=_SCHEMA_DIR,
