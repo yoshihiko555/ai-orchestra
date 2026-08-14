@@ -1067,6 +1067,19 @@ def _prepare_routing_config_worktree(tmp_path: Path) -> tuple[Path, bytes]:
     return worktree, original
 
 
+def _routing_config_value(original: bytes, key_path: str) -> str:
+    """実 config の現在値を `original` から動的に導出する。
+
+    promote allowlist（agents.*.tool / antigravity.model、Phase B で codex.model）内の
+    キーの現在値をテストへハードコードすると、allowlist で許可された昇格 PR が
+    原理的に CI を通らない（Issue #341 と同型。実例: PR #367 の debugger 昇格）。
+    """
+    node = yaml.safe_load(original.decode("utf-8"))
+    for part in key_path.split("."):
+        node = node[part]
+    return node
+
+
 def test_routing_config_promotion_edits_ssot_and_mirror_only(tmp_path: Path) -> None:
     repository = Path(__file__).resolve().parents[3]
     developer_ssot = repository / cli.prm.ROUTING_CONFIG_SSOT_RELATIVE
@@ -1158,12 +1171,14 @@ def test_routing_config_promotion_without_orchestra_json_does_not_raise(tmp_path
 
 
 def test_routing_config_pr_body_uses_promotion_base_values(tmp_path: Path) -> None:
-    worktree, _original = _prepare_routing_config_worktree(tmp_path)
+    worktree, original = _prepare_routing_config_worktree(tmp_path)
+    current_model = _routing_config_value(original, "codex.model")
+    new_model = "gpt-5.3-codex" if current_model != "gpt-5.3-codex" else "gpt-5.6-sol"
     patch_items = [
         {
             "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
             "key_path": "codex.model",
-            "value": "gpt-5.3-codex",
+            "value": new_model,
         }
     ]
 
@@ -1179,21 +1194,22 @@ def test_routing_config_pr_body_uses_promotion_base_values(tmp_path: Path) -> No
     assert changes == [
         {
             "key_path": "codex.model",
-            "old": "gpt-5.6-sol",
-            "new": "gpt-5.3-codex",
+            "old": current_model,
+            "new": new_model,
         }
     ]
     assert "## Routing config changes" in body
-    assert "```text\ncodex.model: gpt-5.6-sol → gpt-5.3-codex\n```" in body
+    assert f"```text\ncodex.model: {current_model} → {new_model}\n```" in body
 
 
 def test_routing_config_changes_reject_all_no_op_patch_items(tmp_path: Path) -> None:
-    worktree, _original = _prepare_routing_config_worktree(tmp_path)
+    worktree, original = _prepare_routing_config_worktree(tmp_path)
     patch_items = [
         {
             "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
             "key_path": "codex.model",
-            "value": "gpt-5.6-sol",
+            # no-op 条件（value == 現在値）を実 config に追従させる
+            "value": _routing_config_value(original, "codex.model"),
         }
     ]
 
@@ -1204,17 +1220,20 @@ def test_routing_config_changes_reject_all_no_op_patch_items(tmp_path: Path) -> 
 def test_routing_config_changes_keep_no_op_item_when_another_item_changes(
     tmp_path: Path,
 ) -> None:
-    worktree, _original = _prepare_routing_config_worktree(tmp_path)
+    worktree, original = _prepare_routing_config_worktree(tmp_path)
+    current_model = _routing_config_value(original, "codex.model")
+    current_tool = _routing_config_value(original, "agents.debugger.tool")
+    new_tool = "auto" if current_tool != "auto" else "codex"
     patch_items = [
         {
             "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
             "key_path": "codex.model",
-            "value": "gpt-5.6-sol",
+            "value": current_model,
         },
         {
             "file": cli.prm.ROUTING_CONFIG_PATCH_FILE,
             "key_path": "agents.debugger.tool",
-            "value": "auto",
+            "value": new_tool,
         },
     ]
 
@@ -1223,13 +1242,13 @@ def test_routing_config_changes_keep_no_op_item_when_another_item_changes(
     assert changes == [
         {
             "key_path": "agents.debugger.tool",
-            "old": "codex",
-            "new": "auto",
+            "old": current_tool,
+            "new": new_tool,
         },
         {
             "key_path": "codex.model",
-            "old": "gpt-5.6-sol",
-            "new": "gpt-5.6-sol",
+            "old": current_model,
+            "new": current_model,
         },
     ]
 

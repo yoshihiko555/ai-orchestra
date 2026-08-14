@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.module_loader import load_module
 
@@ -290,6 +292,24 @@ class TestProposerPrompt:
     def test_routing_config_prompt_lists_only_phase_a_menu(self, tmp_path: Path) -> None:
         source_commit = proposer.mh.git_head(REPO_ROOT)
         assert source_commit is not None
+        # 実 config の現在値（agents.debugger.tool / antigravity.model）は promote
+        # allowlist 内の可変値であり、ハードコードすると正当な昇格 PR が CI で落ちる
+        # （Issue #341 と同型。実例: PR #367）。renderer と同じ source_commit の
+        # バイト列から動的に導出する。
+        config_bytes = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(REPO_ROOT),
+                "show",
+                f"{source_commit}:packages/agent-routing/config/cli-tools.yaml",
+            ],
+            capture_output=True,
+            check=True,
+        ).stdout
+        config_at_commit = yaml.safe_load(config_bytes.decode("utf-8"))
+        debugger_tool = config_at_commit["agents"]["debugger"]["tool"]
+        antigravity_model = config_at_commit["antigravity"]["model"]
         prompt = proposer.render_proposer_prompt(
             view_dir=tmp_path / "view",
             frontier_doc=None,
@@ -302,11 +322,11 @@ class TestProposerPrompt:
         )
 
         assert "agents.*.tool" in prompt
-        assert "agents.debugger.tool = codex" in prompt
+        assert f"agents.debugger.tool = {debugger_tool}" in prompt
         assert "allowed values: antigravity | auto | claude-direct | codex" in prompt
         assert "antigravity.model" in prompt
         assert "allowed values from model_allowlist: gemini-3.1-pro" in prompt
-        assert "current value: gemini-3.1-pro-high" in prompt
+        assert f"current value: {antigravity_model}" in prompt
         assert "codex.model" not in prompt
         assert "config_patch のみ" in prompt
         assert "proposal schema（schema_version, hypothesis, theme, config_patch" in prompt
