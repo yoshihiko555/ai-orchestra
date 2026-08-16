@@ -251,6 +251,69 @@ def test_suite_rejects_mixed_graded_declaration_among_non_holdout_scenarios(
         ev.validate_target_suite(package_dir, SCHEMA_DIR, "skill:mixed-graded")
 
 
+@pytest.mark.parametrize(
+    ("oracle", "extra_fields", "missing_field"),
+    [
+        ("command_exit", {}, "command"),
+        ("artifact_exists", {}, "path"),
+        ("json_schema", {"path": "out.json"}, "schema"),
+        ("json_schema", {"schema": "some.schema.json"}, "path"),
+    ],
+)
+def test_graded_oracle_missing_required_field_is_rejected(
+    tmp_path: Path, oracle: str, extra_fields: dict, missing_field: str
+) -> None:
+    """`graded_check_item` は schema の oracle enum のみを制約し、oracle 別必須フィールド
+    （command_exit→command 等）は `check_item` と同型の `allOf`/`if`/`then` が
+    `validate_against_schema` に無視されるため強制できない。`ev.load_scenario` が呼ぶ
+    `_validate_graded_oracle_requirements` がコード側で fail-closed に検証する。"""
+    scenario_path = tmp_path / "graded-missing-field.yaml"
+    scenario_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "id": "graded-missing-field",
+                "target": "claude-harness",
+                "description": "graded oracle missing field",
+                "prompt": "irrelevant",
+                "critical": [
+                    {"id": "gate", "text": "gate", "oracle": "artifact_exists", "path": "x"}
+                ],
+                "graded": [{"id": "g1", "text": "graded", "oracle": oracle, **extra_fields}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=missing_field):
+        ev.load_scenario(scenario_path, SCHEMA_DIR)
+
+
+def test_graded_oracle_with_required_fields_is_accepted(tmp_path: Path) -> None:
+    scenario_path = tmp_path / "graded-ok.yaml"
+    scenario_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "id": "graded-ok",
+                "target": "claude-harness",
+                "description": "graded oracle with required fields",
+                "prompt": "irrelevant",
+                "critical": [
+                    {"id": "gate", "text": "gate", "oracle": "artifact_exists", "path": "x"}
+                ],
+                "graded": [
+                    {"id": "g1", "text": "graded", "oracle": "command_exit", "command": "true"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    scenario = ev.load_scenario(scenario_path, SCHEMA_DIR)
+    assert scenario["graded"][0]["command"] == "true"
+
+
 def test_routing_config_suite_uses_deterministic_critical_oracles() -> None:
     paths = ev.validate_target_suite(PACKAGE_DIR, SCHEMA_DIR, "routing-config")
     scenarios = [ev.load_scenario(path, SCHEMA_DIR) for path in paths]

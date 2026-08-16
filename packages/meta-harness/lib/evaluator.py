@@ -2688,7 +2688,39 @@ def load_scenario(path: Path, schema_dir: Path) -> dict:
     errors = mh.validate_against_schema(data, schema, schema_dir)
     if errors:
         raise ValueError(f"scenario {path} failed schema validation: {'; '.join(errors)}")
+    _validate_graded_oracle_requirements(data, path)
     return _apply_scenario_defaults(data)
+
+
+# oracle 別必須フィールド（`_oracle_command_exit`/`_oracle_artifact_exists`/
+# `_oracle_json_schema` が実際に `check[...]` で参照するキーと一致させる）。
+_GRADED_ORACLE_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "command_exit": ("command",),
+    "artifact_exists": ("path",),
+    "json_schema": ("path", "schema"),
+}
+
+
+def _validate_graded_oracle_requirements(scenario: dict, path: Path) -> None:
+    """`graded` 各項目の oracle 別必須フィールドをコード側で fail-closed に検証する。
+
+    scenario.schema.json の `graded_check_item` は oracle を enum 制限するのみで、
+    `validate_against_schema`（allOf/if/then 非対応の実用サブセット）では
+    oracle 別の必須フィールド（例: `command_exit` に `command`）を強制できない
+    （sibling の `check_item` も同型の `allOf`/`if`/`then` を持つが、同じ理由で
+    既に死んでいる。critical 側の挙動変更は本 PR のスコープ外のため未修正）。
+    ここで検証しない場合、コストの大きいシナリオ実行後に oracle 実装内で
+    `KeyError` になり、設定ミスが run error として扱われてしまう。
+    """
+    for check in scenario.get("graded", []):
+        oracle = check.get("oracle")
+        required_fields = _GRADED_ORACLE_REQUIRED_FIELDS.get(oracle, ())
+        missing = [field for field in required_fields if field not in check]
+        if missing:
+            raise ValueError(
+                f"scenario {path}: graded check {check.get('id')!r} with oracle "
+                f"{oracle!r} is missing required field(s): {', '.join(missing)}"
+            )
 
 
 def _apply_scenario_defaults(scenario: dict) -> dict:

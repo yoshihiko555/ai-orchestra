@@ -187,3 +187,39 @@ class TestGradedUndeclaredScenario:
         # critical_pass_rate=1.0, self_report 欠落による penalty_missing_report=6（既定）
         expected = mh.quality_score(1.0, 6.0, mh.DEFAULTS)
         assert result["quality_score"] == expected
+
+
+class TestResultGradedFieldsPairContract:
+    """result.schema.json の `graded`/`graded_pass_rate` は独立した任意プロパティとして
+    定義されているため、一方だけが存在する result も schema 検証は通ってしまう
+    （`validate_against_schema` は dependentRequired 非対応）。生成側（`run_single_attempt`
+    の `if graded_declared:` 分岐）が両方を必ず対で設定することを、schema ではなくここで
+    コード契約として固定する（result.schema.json の `graded`/`graded_pass_rate` description
+    が本テストを参照している）。"""
+
+    def test_graded_declared_scenario_sets_both_fields_together(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        graded = [_check("g1", True)]
+        result = _run_attempt(
+            tmp_path,
+            monkeypatch,
+            scenario_extra=_GRADED_DECLARATION,
+            critical_passed=True,
+            graded_checks=graded,
+        )
+        assert "graded" in result
+        assert "graded_pass_rate" in result
+
+    def test_graded_undeclared_scenario_omits_both_fields_together(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result = _run_attempt(
+            tmp_path,
+            monkeypatch,
+            scenario_extra={},
+            critical_passed=True,
+            graded_checks=[],
+        )
+        assert "graded" not in result
+        assert "graded_pass_rate" not in result
