@@ -33,6 +33,8 @@ git log --oneline -5
 gh issue view {番号} --json number,title,body,labels,assignees
 ```
 
+`gh` が exit 126（実行権限なし）で失敗し、`command -v gh` の参照先が Python shebang のスクリプトなら、その参照先を同じ引数で `python3` から一度だけ実行する。`chmod` や同じ `gh` コマンドの再試行は行わない。
+
 #### 1-2. 関連コードの調査
 
 Issue の内容から関連するコードを Grep/Glob で調査する:

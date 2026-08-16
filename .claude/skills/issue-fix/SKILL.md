@@ -4,6 +4,8 @@ description: 'GitHub Issue を起点に計画→実装→テスト→レビュ�
 
   Issue の内容を読み取り、コード調査・実装計画の提示・ブランチ作成・コミットまでを行う。
 
+  gh が exit 126 となり stderr に実行対象の絶対パスが示された場合は、そのパスを直接検査し、command -v gh は実行しない。
+
   トリガー: /issue-fix
 
   '
@@ -281,6 +283,8 @@ git log --oneline -5
 ```bash
 gh issue view {番号} --json number,title,body,labels,assignees
 ```
+
+`gh` が exit 126（実行権限なし）で失敗し、`command -v gh` の参照先が Python shebang のスクリプトなら、その参照先を同じ引数で `python3` から一度だけ実行する。`chmod` や同じ `gh` コマンドの再試行は行わない。
 
 #### 1-2. 関連コードの調査
 

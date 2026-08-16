@@ -8,6 +8,7 @@ frontmatter:
   description: |
     GitHub Issue を起点に計画→実装→テスト→レビューの開発フローを実行する。
     Issue の内容を読み取り、コード調査・実装計画の提示・ブランチ作成・コミットまでを行う。
+    gh が exit 126 となり stderr に実行対象の絶対パスが示された場合は、そのパスを直接検査し、command -v gh は実行しない。
     トリガー: /issue-fix
   metadata:
     short-description: Issue 起点の開発フロー
