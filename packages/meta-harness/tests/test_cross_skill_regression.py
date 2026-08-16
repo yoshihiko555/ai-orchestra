@@ -57,8 +57,9 @@ def _result(
     verdict: str,
     cost_usd: float,
     tokens: int,
+    graded: list[dict] | None = None,
 ) -> dict:
-    return {
+    result = {
         "run_id": f"run-{suite_id.split(':')[-1]}-{scenario_id}",
         "cand_id": CAND_ID,
         "scenario_id": scenario_id,
@@ -69,6 +70,11 @@ def _result(
         "attempt": 1,
         "attempts_total": 1,
     }
+    if graded is not None:
+        result["graded"] = graded
+        passed = sum(1 for check in graded if check["passed"])
+        result["graded_pass_rate"] = (passed / len(graded)) if graded else 0.0
+    return result
 
 
 def _registration(*, proposer_cost: float = 0.0, target: str = TARGET) -> dict:
@@ -109,6 +115,7 @@ def _run_batch(
     target: str = TARGET,
     regression_verdicts: tuple[str, ...] | None = None,
     regression_budget_latched: tuple[bool, ...] | None = None,
+    regression_graded: tuple[list[dict] | None, ...] | None = None,
 ) -> tuple[dict, list[dict], list[dict]]:
     config = copy.deepcopy(mh.DEFAULTS)
     config["regression"]["max_budget_usd"] = max_budget
@@ -147,15 +154,19 @@ def _run_batch(
             ]
         verdicts = regression_verdicts or (regression_verdict,)
         latched = regression_budget_latched or tuple(False for _ in verdicts)
-        assert len(verdicts) == len(latched)
+        graded_per_run = regression_graded or tuple(None for _ in verdicts)
+        assert len(verdicts) == len(latched) == len(graded_per_run)
         results = []
-        for index, (verdict, budget_latched) in enumerate(zip(verdicts, latched, strict=True), 1):
+        for index, (verdict, budget_latched, graded) in enumerate(
+            zip(verdicts, latched, graded_per_run, strict=True), 1
+        ):
             result = _result(
                 suite_id=REGRESSION_TARGET,
                 scenario_id=scenario_id,
                 verdict=verdict,
                 cost_usd=regression_cost,
                 tokens=999,
+                graded=graded,
             )
             result["run_id"] = f"{result['run_id']}-{index}"
             if budget_latched:
@@ -216,6 +227,61 @@ def test_regression_failure_is_hard_gate_and_does_not_pollute_frontier_axes(
     assert loop_state.non_holdout_summary(events, config, CAND_ID, TARGET) is None
 
 
+def test_regression_graded_fail_is_strict_suite_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-20260814-050 決定5（regression strict mode）: regression 評価文脈では、run 自体の
+    verdict が pass でも graded checks に fail があれば suite fail として扱う（converted
+    criticals が gate から抜けた分の回帰ゲートの穴を塞ぐ）。"""
+    graded = ({"id": "g1", "passed": False, "oracle": "command_exit", "detail": "regressed"},)
+    config, _results, events = _run_batch(
+        tmp_path,
+        monkeypatch,
+        regression_verdict="pass",
+        regression_graded=(list(graded),),
+    )
+
+    summary = next(event for event in events if event["event"] == "evaluation_completed")
+    # 元 run 自体の verdict は "pass"（graded は verdict 判定機構に影響しない、決定1）が、
+    # regression suite の合成結果（suite_verdict）は strict mode により "fail" へ格上げされる。
+    assert summary["regression_results"][0]["verdict"] == "fail"
+    assert summary["regression_results"][0]["critical_pass"] is False
+    assert summary["verdict"] == "fail"
+
+
+def test_regression_graded_all_passed_keeps_suite_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """graded 宣言 run で全 graded checks が pass していれば、strict mode は介入せず suite は
+    従来どおり run の verdict に従って pass のままになる。"""
+    graded = ({"id": "g1", "passed": True, "oracle": "command_exit", "detail": "ok"},)
+    config, _results, events = _run_batch(
+        tmp_path,
+        monkeypatch,
+        regression_verdict="pass",
+        regression_graded=(list(graded),),
+    )
+
+    summary = next(event for event in events if event["event"] == "evaluation_completed")
+    assert summary["regression_results"][0]["verdict"] == "pass"
+    assert summary["regression_results"][0]["critical_pass"] is True
+    assert summary["verdict"] == "pass"
+
+
+def test_regression_graded_undeclared_run_is_unaffected_by_strict_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """graded 未宣言（"graded" キー欠落）の regression run は strict mode の対象外で、従来どおり
+    run の verdict のみで suite verdict が決まる（graded 転換前のシナリオとの後方互換）。"""
+    config, _results, events = _run_batch(
+        tmp_path, monkeypatch, regression_verdict="pass", regression_graded=(None,)
+    )
+
+    summary = next(event for event in events if event["event"] == "evaluation_completed")
+    assert summary["regression_results"][0]["critical_pass"] is True
+    assert summary["verdict"] == "pass"
+
+
 def test_routing_config_regression_failure_blocks_frontier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -263,6 +329,38 @@ def test_routing_config_budget_latch_is_frontier_neutral(
     assert points[0]["eligible"] is True
     frontier, _ = mh.compute_pareto_frontier(points, ROUTING_CONFIG_TARGET)
     assert CAND_ID in frontier
+
+
+def test_regression_graded_fail_defeats_budget_latch_neutralization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-20260814-050 決定5: budget-latch-only 中立化（EV-54）は「suite に実質的な回帰
+    シグナルが一切ない」ことが前提。latched error run と graded-fail pass run が同居する
+    suite は、graded fail という実質シグナルを持つため中立化されず suite fail のまま。
+    （見落とすと、strict mode が意図した回帰ゲートを budget latch 経路から回避できてしまう。）"""
+    graded_fail = [{"id": "g1", "passed": False, "oracle": "command_exit", "detail": "regressed"}]
+    config, _results, events = _run_batch(
+        tmp_path,
+        monkeypatch,
+        target=ROUTING_CONFIG_TARGET,
+        regression_verdicts=("error", "pass"),
+        regression_budget_latched=(True, False),
+        regression_graded=(None, graded_fail),
+    )
+
+    summary = next(event for event in events if event["event"] == "evaluation_completed")
+    # latch 中立化が働かないため suite の combined verdict は "error" のまま（latched error
+    # run が残っているため）。中立化されていれば "pass" になっていたはずの箇所が、graded fail
+    # という実質シグナルにより budget_latched_suites に載らず regression_error=True として
+    # ブロックされることを固定する（中立化されると evaluation verdict が誤って "pass" になる）。
+    assert summary["budget_latched_suites"] == []
+    assert summary["regression_results"][0]["verdict"] == "error"
+    assert summary["regression_results"][0]["critical_pass"] is False
+    assert summary["verdict"] == "error"
+
+    points = mh.aggregate_run_points(events, config, ROUTING_CONFIG_TARGET)
+    assert len(points) == 1
+    assert points[0]["eligible"] is False
 
 
 def test_budget_latch_mixed_with_non_latched_error_remains_error(

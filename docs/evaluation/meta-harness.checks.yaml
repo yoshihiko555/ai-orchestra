@@ -1406,3 +1406,61 @@
     - packages/meta-harness/tests/test_pareto_frontier.py::TestComputeParetoFrontier::test_routing_config_quality_diff_exactly_at_margin_does_not_dominate
     - packages/meta-harness/tests/test_pareto_frontier.py::TestComputeParetoFrontier::test_routing_config_quality_diff_above_margin_dominates
   notes: routing-config quality-strict dominance requires quality_mean(A) - quality_mean(B) > 1e-6 (QUALITY_STRICT_MARGIN); differences at or below the margin do not dominate, preventing floating-point noise from flipping dominance between otherwise-equal candidates.
+
+- ev_id: EV-107
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_graded_scoring.py
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_graded_scoring.py::TestGradedDeclaredScenario::test_quality_is_graded_pass_rate_times_100
+    - packages/meta-harness/tests/test_evaluator_graded_scoring.py::TestGradedDeclaredScenario::test_graded_fail_does_not_flip_verdict
+    - packages/meta-harness/tests/test_evaluator_graded_scoring.py::TestGradedDeclaredScenario::test_critical_fail_still_flips_verdict_regardless_of_graded
+    - packages/meta-harness/tests/test_evaluator_graded_scoring.py::TestGradedDeclaredScenario::test_penalty_is_recorded_but_does_not_affect_quality
+    - packages/meta-harness/tests/test_evaluator_graded_scoring.py::TestGradedUndeclaredScenario::test_uses_classic_quality_formula_and_omits_graded_fields
+  notes: graded-declared scenarios compute quality_score as graded_pass_rate * 100 and leave verdict determination (critical-only) untouched; self_report penalty is still recorded on the result but never enters the graded quality formula. graded-undeclared scenarios keep the legacy quality_score(critical_pass_rate, penalty, config) formula and omit the graded/graded_pass_rate result fields entirely.
+
+- ev_id: EV-108
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_graded_fail_is_strict_suite_fail
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_graded_all_passed_keeps_suite_pass
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_graded_undeclared_run_is_unaffected_by_strict_mode
+    packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_graded_fail_defeats_budget_latch_neutralization
+  covered_by:
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_graded_fail_is_strict_suite_fail
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_graded_all_passed_keeps_suite_pass
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_graded_undeclared_run_is_unaffected_by_strict_mode
+    - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_graded_fail_defeats_budget_latch_neutralization
+  notes: in the regression evaluation context (_evaluate_scenario_batch's regression suite loop), a graded-declared run with a failing graded check downgrades the regression suite's combined verdict to fail even though the run's own verdict stayed pass, and this propagates to evaluation_completed.verdict. Graded-undeclared runs are unaffected by strict mode and keep legacy verdict-only suite combination. _regression_suite_is_budget_latched also treats any graded fail as a substantive regression signal, so a suite mixing a latched error run with a graded-fail pass run is not neutralized by the EV-54 budget-latch-only exception.
+
+- ev_id: EV-109
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_skill_scenarios.py::test_suite_rejects_mixed_graded_declaration_among_non_holdout_scenarios
+  covered_by:
+    - packages/meta-harness/tests/test_skill_scenarios.py::test_suite_rejects_mixed_graded_declaration_among_non_holdout_scenarios
+  notes: validate_target_suite raises ValueError when non-holdout scenarios in the same suite mix graded-declared and graded-undeclared scenarios, since averaging quality_mean across the two scales would be meaningless; holdout scenarios are excluded from this check.
+
+- ev_id: EV-110
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_graded_with_machine_oracle_is_accepted
+    packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_graded_with_rubric_judge_is_rejected
+    packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_graded_min_items_violation_is_reported
+  covered_by:
+    - packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_graded_with_machine_oracle_is_accepted
+    - packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_graded_with_rubric_judge_is_rejected
+    - packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_graded_min_items_violation_is_reported
+  notes: scenario.schema.json's graded array item schema (graded_check_item) restricts the oracle enum to command_exit/artifact_exists/json_schema; a rubric_judge oracle in graded fails schema validation (enum violation) because the handwritten validator subset does not enforce allOf/if/then, so the restriction is expressed as a standalone enum instead.

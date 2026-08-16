@@ -750,6 +750,11 @@ PR 作成時点で記録されるが、この時点では状態は `evaluated` �
       "items": { "$ref": "#/$defs/check_item" },
       "default": []
     },
+    "graded": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/graded_check_item" }
+    },
     "holdout": { "type": "boolean", "default": false },
     "timeout_ms": { "type": "integer", "default": 300000 },
     "budget": {
@@ -804,10 +809,35 @@ PR 作成時点で記録されるが、この時点では状態は `evaluated` �
           "then": { "required": ["rubric"] }
         }
       ]
+    },
+    "graded_check_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text", "oracle"],
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "oracle": {
+          "type": "string",
+          "enum": ["artifact_exists", "command_exit", "json_schema"]
+        },
+        "path": { "type": "string" },
+        "command": { "type": "string" },
+        "schema": { "type": "string" }
+      }
     }
   }
 }
 ```
+
+**`graded`（ADR-20260814-050）**: `critical` とは独立した top-level リスト。任意（宣言しない
+シナリオは従来どおり）。oracle は機械的に判定可能な 3 種（`artifact_exists`/`command_exit`/
+`json_schema`）に限定し、`rubric_judge` は許可しない（enum で強制。§3-2 参照）。宣言時、
+`quality_score` は `graded_pass_rate * 100`（self_report penalty は非採点化・記録のみ）。
+oracle 別必須フィールド（`command_exit`→`command` 等）は `check_item` と同型だが、
+`validate_against_schema`（allOf/if/then 非対応の実用サブセット）では強制できないため
+`evaluator._validate_graded_oracle_requirements`（`load_scenario` 内）がコード側で
+fail-closed に検証する。
 
 **oracle 4 種のセマンティクス**:
 
@@ -871,6 +901,11 @@ evaluate 全体をブロックしないようにする。
       "type": "array",
       "items": { "$ref": "#/$defs/check_result" }
     },
+    "graded": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check_result" }
+    },
+    "graded_pass_rate": { "type": "number", "minimum": 0, "maximum": 1 },
     "self_report": {
       "type": ["object", "null"],
       "additionalProperties": false,
@@ -938,6 +973,11 @@ evaluate 全体をブロックしないようにする。
   }
 }
 ```
+
+**`graded`/`graded_pass_rate`（ADR-20260814-050）**: シナリオが `graded` を宣言した場合にのみ
+`run_single_attempt` が両方を同時に result.json へ書き込む任意プロパティ。`validate_against_schema`
+は dependentRequired 非対応のため、この対関係は schema ではなくコード契約（生成側の単一分岐 +
+`test_evaluator_graded_scoring.py::TestResultGradedFieldsPairContract`）で担保する。
 
 **error taxonomy**（`errors[].type` の意味）:
 
@@ -1776,6 +1816,18 @@ penalty = ambiguities + discretion_fills + retries   # 自己申告 3 項目の�
   quality 分母のまま（従来算出と同一）となり、後方互換を維持する。
   **2026-08-14 撤回（ADR-20260814-049）**: routing-config での品質分解能用途が消滅した
   ため本分離は実装しない。skill target の suite 設計で必要性が再浮上した場合に新規設計する。
+  **2026-08-14（ADR-20260814-050）**: skill target 向けに再設計して実装。critical/graded
+  分離ではなく、`graded:` を独立した top-level リスト（機械 oracle のみ、`critical:` とは
+  別配列）として新設する形に変更した。`critical:` は従来どおり gate 専用（fail で
+  `verdict=fail`）で verdict 判定機構は無改修。graded 宣言シナリオの
+  `quality = graded_pass_rate * 100` とし、self-report penalty（§3-1）は記録・監査用に
+  `result.penalty` へ残すのみで quality には算入しない（自己申告 gaming とペナルティの
+  ±5pt 刻み非決定変動を loop の品質信号から構造的に除去する）。graded 未宣言シナリオは
+  上記の従来式（70/30 + penalty）のまま後方互換を維持する。実効刻みは
+  `100 / (graded 項目数 × non-holdout シナリオ数)`（issue-fix own suite は train 1 本・
+  graded 3 項目で 33.3pt 刻み）。routing-config 候補等の regression 評価文脈では、graded の
+  fail も suite fail として扱う **regression strict mode** を導入し、converted criticals が
+  gate から抜けた分の回帰ゲートの穴を塞ぐ。詳細は ADR-20260814-050 決定 1〜8 を参照。
 
 ### 3-3. rubric_judge の実行（pluggable backend 方式、2026-07-07 スパイク + レビュー反映）
 

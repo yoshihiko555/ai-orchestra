@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`meta-harness`: シナリオに graded checks（段階評価）を導入し skill target の品質分解能を実現（Issue #364、ADR-20260814-050）**: シナリオ YAML に `graded:` 配列（機械 oracle のみ）を新設し、gate（`critical:`、実行成立性）と graded（出来栄えの段階評価）を分離できるようになった。graded 宣言シナリオの `quality_score` は graded checks の pass 率 × 100 で算出され、self-report penalty は記録のみで quality には反映されない。graded 未宣言シナリオは従来の算出式のまま。routing-config 候補等の regression 評価では graded の fail も suite fail として扱う（regression strict mode）。`skill:issue-fix` の 2 シナリオを gate 1 項目 + graded 3 項目に転換した。
 - **`meta-harness`: broker 入力 token 換算と scenario token 上限の設定を追加**: 新しい `evaluate.isolation.broker.input_bytes_per_token`（既定 3）で request body の bytes/token 換算を調整でき、scenario の `budget.max_total_tokens` で run ごとの累積 token 上限を上書きできる。
 - **`quality-gates`: README.md を追加**: パッケージの責務・hook 一覧・設定キー（`quality_gate.*`）を、独自 README を持つ他パッケージと同様の形式でまとめた。
 - **`codd`: scan/validate の hook 自動配線（Issue #95）**: manifest の hooks 宣言により、導入先の `.claude/settings.local.json` へ PostToolUse（編集後 scan）と PreToolUse（`git commit` 検出時 validate）が自動登録されるようになった。実動作は `codd.yaml` の新キー `hooks.scan_on_edit`（既定 `false`）/ `hooks.validate_on_commit`（`off` / `warn` / `block`、既定 `warn`）で制御し、codd 未初期化のプロジェクトでは no-op。**既定値 `warn` のため、codd 導入済みプロジェクトは次回 sync 以降、Claude Code 経由の `git commit` ごとに `codd validate` が自動実行され、error があれば警告が表示される（ブロックはしない。`validate_on_commit: off` で無効化可）。** ガード対象は Claude Code 経由の commit のみ（実 git pre-commit hook の配布は行わない）。

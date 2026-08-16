@@ -2656,6 +2656,7 @@ def validate_target_suite(package_dir: Path, schema_dir: Path, target: str) -> l
         raise ValueError(f"target is not allowlisted by a scenario suite: {target}")
     holdout_count = 0
     train_count = 0
+    non_holdout_graded_flags: set[bool] = set()
     for path in paths:
         scenario = load_scenario(path, schema_dir)
         if scenario.get("target") != target:
@@ -2667,9 +2668,17 @@ def validate_target_suite(package_dir: Path, schema_dir: Path, target: str) -> l
             holdout_count += 1
         else:
             train_count += 1
+            non_holdout_graded_flags.add("graded" in scenario)
     requires_split_suite = target.startswith("skill:") or target == "routing-config"
     if requires_split_suite and (train_count < 1 or holdout_count < 1):
         raise ValueError(f"target suite must contain train >= 1 and holdout >= 1: {target}")
+    # ADR-20260814-050 決定7: suite 内の non-holdout シナリオは graded 宣言を揃える
+    # （宣言/未宣言の混在は quality_mean が異種スケールの平均になるため fail-closed で禁止）。
+    if len(non_holdout_graded_flags) > 1:
+        raise ValueError(
+            "target suite must not mix graded-declared and graded-undeclared "
+            f"non-holdout scenarios: {target}"
+        )
     return paths
 
 
@@ -2679,7 +2688,39 @@ def load_scenario(path: Path, schema_dir: Path) -> dict:
     errors = mh.validate_against_schema(data, schema, schema_dir)
     if errors:
         raise ValueError(f"scenario {path} failed schema validation: {'; '.join(errors)}")
+    _validate_graded_oracle_requirements(data, path)
     return _apply_scenario_defaults(data)
+
+
+# oracle 別必須フィールド（`_oracle_command_exit`/`_oracle_artifact_exists`/
+# `_oracle_json_schema` が実際に `check[...]` で参照するキーと一致させる）。
+_GRADED_ORACLE_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "command_exit": ("command",),
+    "artifact_exists": ("path",),
+    "json_schema": ("path", "schema"),
+}
+
+
+def _validate_graded_oracle_requirements(scenario: dict, path: Path) -> None:
+    """`graded` 各項目の oracle 別必須フィールドをコード側で fail-closed に検証する。
+
+    scenario.schema.json の `graded_check_item` は oracle を enum 制限するのみで、
+    `validate_against_schema`（allOf/if/then 非対応の実用サブセット）では
+    oracle 別の必須フィールド（例: `command_exit` に `command`）を強制できない
+    （sibling の `check_item` も同型の `allOf`/`if`/`then` を持つが、同じ理由で
+    既に死んでいる。critical 側の挙動変更は本 PR のスコープ外のため未修正）。
+    ここで検証しない場合、コストの大きいシナリオ実行後に oracle 実装内で
+    `KeyError` になり、設定ミスが run error として扱われてしまう。
+    """
+    for check in scenario.get("graded", []):
+        oracle = check.get("oracle")
+        required_fields = _GRADED_ORACLE_REQUIRED_FIELDS.get(oracle, ())
+        missing = [field for field in required_fields if field not in check]
+        if missing:
+            raise ValueError(
+                f"scenario {path}: graded check {check.get('id')!r} with oracle "
+                f"{oracle!r} is missing required field(s): {', '.join(missing)}"
+            )
 
 
 def _apply_scenario_defaults(scenario: dict) -> dict:
@@ -3001,17 +3042,19 @@ def run_single_attempt(
     _write_metadata(run_dir, metadata)
     (run_dir / "prompt.md").write_text(scenario["prompt"] + "\n", encoding="utf-8")
 
-    checks, checks_non_critical, hard_failure, errors = _run_attempt_lifecycle_safely(
-        main_root=main_root,
-        config=config,
-        schema_dir=schema_dir,
-        package_dir=package_dir,
-        cand_dir=cand_dir,
-        manifest=manifest,
-        scenario=scenario,
-        run_id=run_id,
-        staging_dir=staging_dir,
-        runner=runner,
+    checks, checks_non_critical, graded_checks, hard_failure, errors = (
+        _run_attempt_lifecycle_safely(
+            main_root=main_root,
+            config=config,
+            schema_dir=schema_dir,
+            package_dir=package_dir,
+            cand_dir=cand_dir,
+            manifest=manifest,
+            scenario=scenario,
+            run_id=run_id,
+            staging_dir=staging_dir,
+            runner=runner,
+        )
     )
     isolation_metadata = _load_isolation_metadata(staging_dir)
     if isolation_metadata is not None:
@@ -3039,7 +3082,16 @@ def run_single_attempt(
 
     critical_pass_rate = _pass_rate(checks)
     verdict = _determine_verdict(hard_failure, checks)
-    quality = mh.quality_score(critical_pass_rate, penalty, config)
+    # graded 宣言シナリオ（ADR-20260814-050 決定2）: quality は graded_pass_rate * 100 とし、
+    # self_report penalty は quality に算入しない（記録・監査用にのみ保持）。verdict 判定
+    # 機構（_determine_verdict）は critical のみを見るため無改修（決定1）。
+    graded_declared = "graded" in scenario
+    graded_pass_rate = _pass_rate(graded_checks) if graded_declared else None
+    quality = (
+        mh.graded_quality_score(graded_pass_rate)
+        if graded_declared
+        else mh.quality_score(critical_pass_rate, penalty, config)
+    )
     _finalize_metadata(run_dir, metadata, mh.now_iso())
 
     result = {
@@ -3060,6 +3112,9 @@ def run_single_attempt(
         "claude_version": cli_capabilities.get("claude_version") or "",
         "errors": errors,
     }
+    if graded_declared:
+        result["graded"] = graded_checks
+        result["graded_pass_rate"] = graded_pass_rate
     result = _enforce_result_schema(result, schema_dir)
     if _is_budget_latched_run(
         isolation_metadata,
@@ -3107,7 +3162,7 @@ def run_single_attempt(
 
 def _run_attempt_lifecycle_safely(
     **kwargs: Any,
-) -> tuple[list[dict], list[dict], bool, list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict], bool, list[dict]]:
     """`_run_attempt_lifecycle` の外側の安全網（Sec2-5 defense in depth）。
 
     `_run_attempt_lifecycle` 自身も内部で broad except を持つが、そのガードを迂回する
@@ -3118,7 +3173,7 @@ def _run_attempt_lifecycle_safely(
     try:
         return _run_attempt_lifecycle(**kwargs)
     except Exception as exc:  # noqa: BLE001 - Sec2-5: 必ず verdict=error を記録する最終防御
-        return [], [], True, [{"stage": "unknown", "type": "run_error", "message": str(exc)}]
+        return [], [], [], True, [{"stage": "unknown", "type": "run_error", "message": str(exc)}]
 
 
 def _broker_metrics_failure(metadata: dict) -> dict[str, str] | None:
@@ -3239,11 +3294,12 @@ def _run_attempt_lifecycle(
     run_id: str,
     staging_dir: Path,
     runner: SubprocessRunner,
-) -> tuple[list[dict], list[dict], bool, list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict], bool, list[dict]]:
     """worktree 作成〜oracle 判定までを実行する。戻り値は
-    (critical 結果, 非 critical 結果, hard_failure, errors)。"""
+    (critical 結果, 非 critical 結果, graded 結果, hard_failure, errors)。"""
     checks: list[dict] = []
     checks_non_critical: list[dict] = []
+    graded_checks: list[dict] = []
     hard_failure = False
     errors: list[dict] = []
     worktree_dir: Path | None = None
@@ -3342,6 +3398,18 @@ def _run_attempt_lifecycle(
             )
             for c in scenario.get("checks", [])
         ]
+        graded_checks = [
+            run_oracle(
+                c,
+                worktree_dir,
+                config,
+                schema_dir,
+                isolation_launch=scenario_result.isolation_launch,
+                runner=runner,
+                scenario_command_timeout_ms=scenario_command_timeout_ms,
+            )
+            for c in scenario.get("graded", [])
+        ]
     except EvaluatorStageError as exc:
         hard_failure = True
         errors.append({"stage": exc.stage, "type": exc.error_type, "message": exc.message})
@@ -3382,7 +3450,7 @@ def _run_attempt_lifecycle(
                 )
         if worktree_dir is not None:
             remove_worktree(main_root, worktree_dir, runner=runner)
-    return checks, checks_non_critical, hard_failure, errors
+    return checks, checks_non_critical, graded_checks, hard_failure, errors
 
 
 def _enforce_result_schema(result: dict, schema_dir: Path) -> dict:
@@ -3705,6 +3773,14 @@ def _evaluate_scenario_batch(
         # train-only scenarios today). Resolution still succeeded, and promotion checks
         # the current phase coverage separately, so the empty phase is vacuously passing.
         suite_verdict = "pass" if not scenario_docs else _combined_result_verdict(suite_results)
+        # regression strict mode（ADR-20260814-050 決定5）: graded 転換で converted criticals
+        # が gate から抜けた分、regression 評価文脈（このループ = 他候補の変更が影響する
+        # regression suite の評価）に限り graded の fail も suite fail として扱う。own suite
+        # 評価（own_results / _determine_verdict）は無改修（決定1）。post-hoc combination
+        # 方式を採用（verdict 計算への文脈フラグ貫通は run_single_attempt の呼び出し連鎖が
+        # regression/own 両方を通るため侵襲的になり、こちらの方が単純で verdict 機構に触れない）。
+        if suite_verdict == "pass" and not _graded_all_passed(suite_results):
+            suite_verdict = "fail"
         if _regression_suite_is_budget_latched(suite_results):
             budget_latched_suites.append(suite_id)
         regression_summaries.append(
@@ -3947,8 +4023,29 @@ def _build_evaluation_completed_event(
     return event
 
 
+def _graded_all_passed(results: list[dict]) -> bool:
+    """regression strict mode（ADR-20260814-050 決定5）: いずれかの run の graded checks に
+    fail があれば False を返す。graded 未宣言（`"graded"` キー欠落）の run はここでは
+    無条件で素通りする（graded 転換前のシナリオを持つ regression suite は従来どおり verdict
+    のみで判定される）。"""
+    for result in results:
+        graded = result.get("graded")
+        if not graded:
+            continue
+        if any(not check["passed"] for check in graded):
+            return False
+    return True
+
+
 def _regression_suite_is_budget_latched(results: list[dict]) -> bool:
     if any(result.get("verdict") == "fail" for result in results):
+        return False
+    # regression strict mode（ADR-20260814-050 決定5）: graded の fail は converted criticals
+    # の代わりに suite fail を担う実質的な回帰シグナルであるため、budget-latch-only 中立化
+    # （EV-54）の対象から除外する。これを見落とすと、latched error run と graded-fail pass
+    # run が同居する suite が誤って中立化され、strict mode が意図した回帰ゲートが budget
+    # latch 経路から回避されてしまう。
+    if not _graded_all_passed(results):
         return False
     error_results = [result for result in results if result.get("verdict") == "error"]
     return bool(error_results) and all(

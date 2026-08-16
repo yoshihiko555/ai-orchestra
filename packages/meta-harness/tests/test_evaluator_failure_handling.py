@@ -137,7 +137,7 @@ class TestEachStageFailureForcesErrorVerdict:
 class TestNoCriticalChecksIsRecordedAsError:
     def test_zero_critical_checks_yields_error_verdict(self, tmp_path: Path, monkeypatch) -> None:
         def fake_lifecycle(**kwargs):
-            return [], [], False, []  # critical checks が空
+            return [], [], [], False, []  # critical checks が空
 
         monkeypatch.setattr(ev, "_run_attempt_lifecycle", fake_lifecycle)
         result, main_root = _run_attempt(tmp_path, manifest_source_commit="0" * 40)
@@ -213,7 +213,7 @@ class TestBrokerMetricsForceRunError:
         monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", lambda _launch: None)
         monkeypatch.setattr(ev, "remove_worktree", lambda *_args, **_kwargs: None)
 
-        checks, _, hard_failure, errors = ev._run_attempt_lifecycle(
+        checks, _, _graded, hard_failure, errors = ev._run_attempt_lifecycle(
             main_root=tmp_path,
             config=mh.DEFAULTS,
             schema_dir=_SCHEMA_DIR,
@@ -363,7 +363,7 @@ class TestLedgerAppendLockConflictIsDiagnosable:
     ) -> None:
         def fake_lifecycle(**kwargs):
             checks = [{"id": "c1", "passed": True, "oracle": "artifact_exists", "detail": "ok"}]
-            return checks, [], False, []
+            return checks, [], [], False, []
 
         monkeypatch.setattr(ev, "_run_attempt_lifecycle", fake_lifecycle)
 

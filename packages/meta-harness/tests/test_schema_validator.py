@@ -378,6 +378,22 @@ class TestResultSchema:
         schema = _load("result.schema.json")
         assert "claude_version" in schema["required"]
 
+    # ADR-20260814-050 決定2: graded / graded_pass_rate は任意フィールド。
+    def test_optional_graded_and_graded_pass_rate_are_valid(self) -> None:
+        schema = _load("result.schema.json")
+        instance = {
+            **self._VALID,
+            "graded": [{"id": "g1", "passed": True, "oracle": "command_exit", "detail": "ok"}],
+            "graded_pass_rate": 1.0,
+        }
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_graded_pass_rate_out_of_range_is_reported(self) -> None:
+        schema = _load("result.schema.json")
+        instance = {**self._VALID, "graded_pass_rate": 1.5}
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+        assert any("maximum" in error for error in errors)
+
 
 class TestFrontierSchema:
     def test_valid_instance_has_zero_errors(self) -> None:
@@ -503,6 +519,35 @@ class TestScenarioSchema:
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
 
         assert any("additionalProperties" in error for error in errors)
+
+    # ADR-20260814-050 決定1・決定3: graded は独立 top-level リストで、oracle は機械的検証
+    # （command_exit/artifact_exists/json_schema）のみ許可する。
+    def test_graded_with_machine_oracle_is_accepted(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {
+            **self._VALID,
+            "graded": [
+                {"id": "g1", "text": "must also pass", "oracle": "command_exit", "command": "true"}
+            ],
+        }
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_graded_with_rubric_judge_is_rejected(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {
+            **self._VALID,
+            "graded": [
+                {"id": "g1", "text": "must also pass", "oracle": "rubric_judge", "rubric": "r"}
+            ],
+        }
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+        assert any("not in enum" in error for error in errors)
+
+    def test_graded_min_items_violation_is_reported(self) -> None:
+        schema = _load("scenario.schema.json")
+        instance = {**self._VALID, "graded": []}
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+        assert any(">= 1" in error for error in errors)
 
 
 class TestRunMetadataSchema:

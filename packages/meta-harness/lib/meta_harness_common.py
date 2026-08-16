@@ -1173,6 +1173,15 @@ def quality_score(critical_pass_rate: float, penalty: float, config: dict) -> fl
     )
 
 
+def graded_quality_score(graded_pass_rate: float) -> float:
+    """graded 宣言シナリオの quality = graded_pass_rate * 100（ADR-20260814-050 決定2）。
+
+    self_report penalty は非採点化する（記録・監査用としてのみ保持し、この式には
+    一切算入しない）。graded 未宣言シナリオは従来どおり `quality_score()` を使う。
+    """
+    return graded_pass_rate * 100.0
+
+
 def latest_non_holdout_run_completed(
     events: list[dict], target: str = DEFAULT_TARGET
 ) -> dict | None:

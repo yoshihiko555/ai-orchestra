@@ -41,6 +41,17 @@
       "type": "array",
       "items": { "$ref": "#/$defs/check_result" }
     },
+    "graded": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check_result" },
+      "description": "graded 宣言シナリオ（ADR-20260814-050）でのみ result.json に出力される。evaluator の `run_single_attempt` は `graded_pass_rate` と常に対で設定する（`graded_declared` 分岐が両方を同時に result dict へ書き込む）ため、一方だけが存在する状態は生成契約違反。この対関係は `validate_against_schema`（allOf/if/then/dependentRequired 非対応の実用サブセット）では表現できないため、`test_evaluator_graded_scoring.py::TestResultGradedFieldsPairContract` がコード側契約として固定している。"
+    },
+    "graded_pass_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "`graded` と対で設定される（上記 `graded` の description 参照）。"
+    },
     "self_report": {
       "type": ["object", "null"],
       "additionalProperties": false,
