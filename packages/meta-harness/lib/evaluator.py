@@ -134,6 +134,13 @@ ZERO_COST: dict[str, Any] = {
     "duration_ms": 0,
     "total_cost_usd": 0.0,
     "num_turns": 0,
+    # Issue #378: raw cache token counts (insurance for future repricing) and the
+    # usage-source tag. `cache_neutral_cost_usd` itself is deliberately excluded from
+    # ZERO_COST: it requires broker pricing config, which `extract_cost()` does not
+    # receive, and is only attached downstream by `_apply_cache_neutral_cost()`.
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_neutral_source": "cli",
 }
 
 
@@ -1641,31 +1648,58 @@ def _count_tool_uses(events_path: Path) -> int:
     return count
 
 
-def _sum_model_usage(model_usage: dict) -> tuple[int, int]:
+def _sum_model_usage(model_usage: dict) -> tuple[int, int, int, int]:
+    """modelUsage.<model>.* を合算する（Sec14-1 注意点2、Issue #378 でキャッシュ 2 項目を追加）。
+
+    `inputTokens` / `outputTokens` に加え、`cacheCreationInputTokens` /
+    `cacheReadInputTokens` も合算する。後者はキャッシュ中立コスト軸
+    （`cache_neutral_cost_usd`、Issue #378）の usage ソース優先順位2位（modelUsage
+    フォールバック）に使う。
+    """
     input_total = 0
     output_total = 0
+    cache_creation_total = 0
+    cache_read_total = 0
     for stats in model_usage.values():
         if not isinstance(stats, dict):
             continue
         input_total += int(stats.get("inputTokens") or 0)
         output_total += int(stats.get("outputTokens") or 0)
-    return input_total, output_total
+        cache_creation_total += int(stats.get("cacheCreationInputTokens") or 0)
+        cache_read_total += int(stats.get("cacheReadInputTokens") or 0)
+    return input_total, output_total, cache_creation_total, cache_read_total
 
 
 def extract_cost(events_path: Path) -> dict:
-    """result イベントから cost を抽出する（Sec14-1 注意点2: budget 打ち切り時のフォールバック）。"""
+    """result イベントから cost を抽出する（Sec14-1 注意点2: budget 打ち切り時のフォールバック）。
+
+    Issue #378: `cache_creation_input_tokens` / `cache_read_input_tokens`（raw、単価
+    再調整時の保険）と `cache_neutral_source`（"cli" | "model_usage"。usage ソース
+    優先順位の上位2つ）も併せて抽出する。`cache_neutral_cost_usd` 自体はここでは
+    計算しない（broker pricing config を必要とするため。`_apply_cache_neutral_cost()`
+    が isolation_metadata + config を受けて計算する）。
+    """
     result_event = _find_result_event(events_path)
     if result_event is None:
         return dict(ZERO_COST)
     usage = result_event.get("usage") or {}
     input_tokens = int(usage.get("input_tokens") or 0)
     output_tokens = int(usage.get("output_tokens") or 0)
+    cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens") or 0)
+    cache_read_input_tokens = int(usage.get("cache_read_input_tokens") or 0)
+    cache_neutral_source = "cli"
     if (
         input_tokens == 0
         and output_tokens == 0
         and result_event.get("subtype") == "error_max_budget_usd"
     ):
-        input_tokens, output_tokens = _sum_model_usage(result_event.get("modelUsage") or {})
+        (
+            input_tokens,
+            output_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+        ) = _sum_model_usage(result_event.get("modelUsage") or {})
+        cache_neutral_source = "model_usage"
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -1674,6 +1708,9 @@ def extract_cost(events_path: Path) -> dict:
         "duration_ms": int(result_event.get("duration_ms") or 0),
         "total_cost_usd": float(result_event.get("total_cost_usd") or 0.0),
         "num_turns": int(result_event.get("num_turns") or 0),
+        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "cache_read_input_tokens": cache_read_input_tokens,
+        "cache_neutral_source": cache_neutral_source,
     }
 
 
@@ -3075,9 +3112,8 @@ def run_single_attempt(
     # `errors` に記録済み（hard_failure=True）。ここでの cost 抽出は error 時も
     # 可能な範囲で行い、result.json に反映する（Sec14-1）。
     events_path = staging_dir / "events.jsonl"
-    cost = _account_cost_with_broker_metrics(
-        extract_cost(events_path), isolation_metadata, scenario, config
-    )
+    cost = _apply_cache_neutral_cost(extract_cost(events_path), isolation_metadata, config)
+    cost = _account_cost_with_broker_metrics(cost, isolation_metadata, scenario, config)
     self_report, penalty = compute_self_report_and_penalty(events_path, config)
 
     critical_pass_rate = _pass_rate(checks)
@@ -3279,6 +3315,105 @@ def _account_cost_with_broker_metrics(
     return {
         **cost,
         "total_cost_usd": max(float(cost.get("total_cost_usd") or 0.0), broker_cost),
+    }
+
+
+def _cache_neutral_pricing(config: dict) -> tuple[float, float]:
+    """Resolve the input/output $/M pricing used for `cache_neutral_cost_usd`.
+
+    Reuses the same broker `pricing_upper_bound_usd_per_million` upper-bound config
+    already used for budget accounting (Issue #378, ADR-20260817-051 決定1): applying
+    a single per-candidate upper-bound price uniformly to every candidate keeps the
+    *relative* ordering (frontier/dominance) sound without needing a calibrated
+    absolute price. Falls back to `mh.DEFAULTS` when the config key is absent.
+    """
+    default_pricing = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+        "pricing_upper_bound_usd_per_million"
+    ]
+    broker_cfg = ((config.get("evaluate") or {}).get("isolation") or {}).get("broker") or {}
+    pricing = broker_cfg.get("pricing_upper_bound_usd_per_million") or default_pricing
+    input_price = float(pricing.get("input", default_pricing["input"]))
+    output_price = float(pricing.get("output", default_pricing["output"]))
+    return input_price, output_price
+
+
+def _untrusted_broker_metrics_usage(isolation_metadata: dict | None) -> dict | None:
+    """Return `isolation.broker.metrics.usage` unless the broker metrics are marked
+    untrustworthy (Issue #378: cache-neutral fallback must not read past an anomaly /
+    budget-exceeded / stale-metrics marker any more than `_account_cost_with_broker_metrics`
+    trusts `estimated_cost_usd` past one — see `_mark_isolation_metrics_stale`)."""
+    broker = isolation_metadata.get("broker") if isinstance(isolation_metadata, dict) else None
+    metrics = broker.get("metrics") if isinstance(broker, dict) else None
+    if not isinstance(metrics, dict):
+        return None
+    if metrics.get("anomaly") is True or metrics.get("budget_exceeded") is True:
+        return None
+    usage = metrics.get("usage")
+    return usage if isinstance(usage, dict) else None
+
+
+def _apply_cache_neutral_cost(
+    cost: dict[str, Any], isolation_metadata: dict | None, config: dict
+) -> dict[str, Any]:
+    """Attach the cache-neutral cost axis to `cost` (Issue #378, ADR-20260817-051).
+
+    `total_cost_usd` reflects the CLI/broker's *actual* prompt-cache-discounted spend,
+    which varies up to ~60% depending on whether the 5-minute ephemeral cache TTL was
+    still warm at evaluation time (an environment artifact, not a candidate quality
+    signal). `cache_neutral_cost_usd` re-prices every input/cache-creation/cache-read
+    token at the same input $/M (no cache discount/surcharge), making candidates
+    comparable regardless of incidental cache timing.
+
+    Usage source priority (決定2, judge コスト混入回避):
+      1. CLI result usage (already in `cost`, `cache_neutral_source == "cli"`)
+      2. modelUsage fallback (budget-latch runs, `cache_neutral_source == "model_usage"`)
+      3. broker metrics usage (`isolation.broker.metrics.usage`) — only tried when (1)
+         and (2) yielded nothing at all (all four token fields are zero, e.g. the
+         headless run crashed before emitting a `result` event). Never preferred over
+         (1)/(2) because it scopes broker-wide traffic (judge calls included), which
+         would reintroduce the exact measurement noise this axis exists to remove.
+
+    When broker metrics are also untrustworthy or absent, `cache_neutral_cost_usd`
+    stays 0.0 with `cache_neutral_source == "cli"` (matches `ZERO_COST` semantics).
+    Note: in the broker_metrics-fallback case, `cost["input_tokens"]` /
+    `cost["output_tokens"]` themselves are intentionally left untouched (they keep
+    whatever `extract_cost()` produced, typically 0) — only the new cache-neutral
+    fields absorb the broker-derived numbers. This means the raw-field "insurance" for
+    later repricing is incomplete for that rare corner case; the recomputation source
+    of truth there is the run's `metadata.json` (`isolation.broker.metrics.usage`),
+    not the persisted `cost` dict.
+    """
+    input_tokens = int(cost.get("input_tokens") or 0)
+    output_tokens = int(cost.get("output_tokens") or 0)
+    cache_creation = int(cost.get("cache_creation_input_tokens") or 0)
+    cache_read = int(cost.get("cache_read_input_tokens") or 0)
+    source = str(cost.get("cache_neutral_source") or "cli")
+
+    if input_tokens == 0 and output_tokens == 0 and cache_creation == 0 and cache_read == 0:
+        broker_usage = _untrusted_broker_metrics_usage(isolation_metadata)
+        if broker_usage is not None:
+            broker_input = int(broker_usage.get("input_tokens") or 0)
+            broker_output = int(broker_usage.get("output_tokens") or 0)
+            broker_cache_creation = int(broker_usage.get("cache_creation_input_tokens") or 0)
+            broker_cache_read = int(broker_usage.get("cache_read_input_tokens") or 0)
+            if broker_input or broker_output or broker_cache_creation or broker_cache_read:
+                input_tokens = broker_input
+                output_tokens = broker_output
+                cache_creation = broker_cache_creation
+                cache_read = broker_cache_read
+                source = "broker_metrics"
+
+    input_price, output_price = _cache_neutral_pricing(config)
+    cache_neutral_cost_usd = (
+        (input_tokens + cache_creation + cache_read) * input_price + output_tokens * output_price
+    ) / 1_000_000
+
+    return {
+        **cost,
+        "cache_creation_input_tokens": cache_creation,
+        "cache_read_input_tokens": cache_read,
+        "cache_neutral_cost_usd": cache_neutral_cost_usd,
+        "cache_neutral_source": source,
     }
 
 

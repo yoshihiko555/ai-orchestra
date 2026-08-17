@@ -145,6 +145,11 @@ DEFAULTS: dict[str, Any] = {
         "penalty_per_item": 5,
         "penalty_missing_report": 6,
     },
+    # Issue #378: the *effective* project default (config/meta-harness.yaml) moved to
+    # "cache_neutral_cost_usd", but this config-unreadable fallback intentionally stays
+    # "total_cost_usd" — it must always resolve to a field every historical ledger
+    # `cost` object actually has (cache_neutral_cost_usd is absent from pre-#378
+    # events), so a broken config never fails closed on data that predates this axis.
     "frontier": {"cost_axis": "total_cost_usd"},
     "regression": {
         "enabled": True,
@@ -1256,6 +1261,12 @@ KNOWN_COST_FIELDS = frozenset(
         "duration_ms",
         "total_cost_usd",
         "num_turns",
+        # Issue #378 (ADR-20260817-051): cache-neutral cost axis. Re-prices cache
+        # tokens at the plain input rate so candidates are comparable regardless of
+        # incidental 5-minute ephemeral prompt-cache timing.
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "cache_neutral_cost_usd",
     }
 )
 

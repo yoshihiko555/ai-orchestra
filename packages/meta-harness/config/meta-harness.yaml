@@ -127,7 +127,11 @@ scoring:
   penalty_per_item: 5
   penalty_missing_report: 6
 frontier:
-  cost_axis: total_cost_usd
+  # Issue #378 (ADR-20260817-051): 記録 total_cost_usd は 5 分 TTL の ephemeral prompt
+  # cache 実測を反映するため「直前に評価が走ったか」で最大 ~60% 変動し偽の dominance
+  # 勾配を生む（環境アーティファクト第 2 号）。cache_neutral_cost_usd は cache
+  # creation/read トークンも input 単価で一律換算し、この変動をキャンセルする
+  cost_axis: cache_neutral_cost_usd
 overlay:
   allowed_prefixes:
     - "facets/"
