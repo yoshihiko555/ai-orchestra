@@ -822,16 +822,18 @@ def test_default_budget_covers_all_registered_routing_config_regression_suites()
     # +6.0 + 18.0 = +24.0 over the prior 186.0 baseline.
     assert required_budget == pytest.approx(210.0)
     assert mh.DEFAULTS["regression"]["max_affected_suites"] >= max(suite_counts)
-    # NOTE (known gap, out of scope for this PR): `mh.DEFAULTS["regression"]["max_budget_usd"]`
+    # PR #381 review: `mh.DEFAULTS["regression"]["max_budget_usd"]`
     # (packages/meta-harness/lib/meta_harness_common.py) is a config-load-failure fallback that
-    # has historically been kept in lockstep with the effective YAML value, but
-    # packages/meta-harness/lib/** is frozen for this PR (concurrent Issue #267 work), so it
-    # still reads 186.0 here and would under-budget regression evaluation by $24 if config
-    # loading ever fails. The *effective* configured ceiling (what real runs actually use) was
-    # already bumped to 210.0 in both packages/meta-harness/config/meta-harness.yaml and
-    # .claude/config/meta-harness/meta-harness.yaml, so assert against that instead.
+    # must be kept in lockstep with the effective YAML value so regression evaluation isn't
+    # under-budgeted by $24 if config loading ever fails. Assert both sources agree and cover
+    # the real registered suite total.
     effective_config = yaml.safe_load(
         (PACKAGE_DIR / "config" / "meta-harness.yaml").read_text(encoding="utf-8")
+    )
+    assert (
+        mh.DEFAULTS["regression"]["max_budget_usd"]
+        == effective_config["regression"]["max_budget_usd"]
+        == pytest.approx(210.0)
     )
     assert effective_config["regression"]["max_budget_usd"] >= required_budget
 

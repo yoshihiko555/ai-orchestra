@@ -35,9 +35,11 @@ critical:
     path: "sandbox/validator.py"
 graded:
   # graded（出来栄え = 機能の正しさ）: 単一値ハードコードでは通らない複数入力の挙動検証。
+  # 非 ASCII 文字ケース（PR #381 レビュー指摘: `name.replace("_", "").isalnum()` のような
+  # Unicode 英数字を許容する実装が素通りしてしまうのを防ぐ）を含む。
   - id: validate-username-behavior-correct-holdout
-    text: "validate_username() が None/空文字/短すぎ/長すぎ/不正文字/正常値を正しく判定する
-      （単一値ハードコードでは通らない）"
+    text: "validate_username() が None/空文字/短すぎ/長すぎ/不正文字（記号・非ASCII）/正常値を
+      正しく判定する（単一値ハードコードでは通らない）"
     oracle: command_exit
     command: >-
       python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from validator import validate_username;
@@ -46,15 +48,18 @@ graded:
       assert validate_username('') is False, validate_username('');
       assert validate_username('ab') is False, validate_username('ab');
       assert validate_username('a' * 33) is False, validate_username('a' * 33);
-      assert validate_username('bad name!') is False, validate_username('bad name!')"
+      assert validate_username('bad name!') is False, validate_username('bad name!');
+      assert validate_username('álîcé') is False, validate_username('álîcé');
+      assert validate_username('ｕｓｅｒ１') is False, validate_username('ｕｓｅｒ１')"
   # graded（出来栄え = coding-principles「型ヒント必須」）: train と検査器を共有し、観点は
   # 型ヒントで揃える（headroom は下のネスト深度側でずらす）。
   - id: validator-type-hints-complete-holdout
-    text: "validate_username() の引数・戻り値に型ヒントが付与されている"
+    text: "validate_username() が def として定義され、引数・戻り値に型ヒントが付与されている
+      （lambda 代入など def を伴わない実装は不合格）"
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-python-type-hints.py
-      --file sandbox/validator.py
+      --file sandbox/validator.py --function validate_username
   # graded（出来栄え = coding-principles「Early Return」節: ネスト深度2以下）。train
   # （命名規約・docstring・関数長）とは観点をずらし、検査器（assert-python-conventions.py）
   # は共有する。

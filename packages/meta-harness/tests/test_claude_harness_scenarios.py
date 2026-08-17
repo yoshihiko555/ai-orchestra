@@ -90,7 +90,7 @@ class TestAssertPythonTypeHints:
             encoding="utf-8",
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
-        fixture.main(["--file", "ok.py"])
+        fixture.main(["--file", "ok.py", "--function", "slugify"])
 
     def test_fails_when_parameter_annotation_missing(self, tmp_path: Path, monkeypatch) -> None:
         fixture = _fixture("assert-python-type-hints.py")
@@ -99,7 +99,7 @@ class TestAssertPythonTypeHints:
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         with pytest.raises(AssertionError, match="missing a type annotation"):
-            fixture.main(["--file", "bad.py"])
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
 
     def test_fails_when_return_annotation_missing(self, tmp_path: Path, monkeypatch) -> None:
         fixture = _fixture("assert-python-type-hints.py")
@@ -108,7 +108,7 @@ class TestAssertPythonTypeHints:
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         with pytest.raises(AssertionError, match="missing a return type annotation"):
-            fixture.main(["--file", "bad.py"])
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
 
     def test_self_and_cls_are_exempt(self, tmp_path: Path, monkeypatch) -> None:
         fixture = _fixture("assert-python-type-hints.py")
@@ -120,7 +120,19 @@ class TestAssertPythonTypeHints:
             encoding="utf-8",
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
-        fixture.main(["--file", "ok.py"])
+        fixture.main(["--file", "ok.py", "--function", "bar"])
+
+    def test_fails_when_required_function_is_not_a_def(self, tmp_path: Path, monkeypatch) -> None:
+        """PR #381 review (P1): a candidate satisfying behavior via `slugify = lambda ...`
+        instead of `def slugify(...)` must not vacuously pass the type-hints check just because
+        `_iter_functions()` finds nothing to complain about."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "slugify = lambda title: title.lower()\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="required function 'slugify' is not defined"):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +178,36 @@ class TestAssertPythonConventions:
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         fixture.main(["--file", "f.py", "--require-snake-case"])
+
+    def test_snake_case_allows_module_level_upper_snake_case_constant(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review (P2): `coding-principles.md` requires UPPER_SNAKE_CASE for
+        constants, so a module-level constant like `_WHITESPACE_RE` must not be flagged as a
+        snake_case violation."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            "import re\n\n"
+            '_WHITESPACE_RE = re.compile(r"\\s+")\n\n\n'
+            "def collapse(text):\n"
+            '    return _WHITESPACE_RE.sub("-", text)\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture.main(["--file", "f.py", "--require-snake-case"])
+
+    def test_snake_case_still_fails_on_upper_snake_case_local_variable(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The UPPER_SNAKE_CASE carve-out only applies to module-top-level assignments; a
+        same-cased name assigned inside a function body is a regular local variable."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            "def f():\n    LOCAL_VALUE = 1\n    return LOCAL_VALUE\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="not snake_case"):
+            fixture.main(["--file", "f.py", "--require-snake-case"])
 
     def test_max_function_lines_fails_when_exceeded(self, tmp_path: Path, monkeypatch) -> None:
         fixture = _fixture("assert-python-conventions.py")
@@ -314,6 +356,62 @@ class TestAssertEffectiveConfigFlat:
                 ]
             )
 
+    def test_fails_on_unexpected_extra_key(self, tmp_path: Path, monkeypatch) -> None:
+        """PR #381 review (P2): an answer with a correct value/source_file plus an extra key
+        must not pass just because the graded fields happen to be correct."""
+        _write_train_config_pair(tmp_path)
+        answer = tmp_path / ".meta-harness" / "config-answer.json"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text(
+            '{"value": "harness-local-override-model", '
+            '"source_file": "sandbox/config/agent-routing/cli-tools.local.yaml", '
+            '"unexpected": "accepted"}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture = _fixture("assert-effective-config.py")
+        with pytest.raises(AssertionError, match="key set"):
+            fixture.main(
+                [
+                    "--base",
+                    "sandbox/config/agent-routing/cli-tools.yaml",
+                    "--local",
+                    "sandbox/config/agent-routing/cli-tools.local.yaml",
+                    "--answer",
+                    ".meta-harness/config-answer.json",
+                    "--key-path",
+                    "codex.model",
+                    "--field",
+                    "value",
+                ]
+            )
+
+    def test_fails_on_missing_key(self, tmp_path: Path, monkeypatch) -> None:
+        _write_train_config_pair(tmp_path)
+        answer = tmp_path / ".meta-harness" / "config-answer.json"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text(
+            '{"value": "harness-local-override-model"}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture = _fixture("assert-effective-config.py")
+        with pytest.raises(AssertionError, match="key set"):
+            fixture.main(
+                [
+                    "--base",
+                    "sandbox/config/agent-routing/cli-tools.yaml",
+                    "--local",
+                    "sandbox/config/agent-routing/cli-tools.local.yaml",
+                    "--answer",
+                    ".meta-harness/config-answer.json",
+                    "--key-path",
+                    "codex.model",
+                    "--field",
+                    "value",
+                ]
+            )
+
 
 def _write_holdout_config_pair(tmp_path: Path) -> None:
     base = tmp_path / "sandbox" / "config" / "agent-routing" / "cli-tools.yaml"
@@ -420,6 +518,73 @@ class TestAssertEffectiveConfigKeyed:
                 ]
             )
 
+    def test_fails_on_unexpected_top_level_key(self, tmp_path: Path, monkeypatch) -> None:
+        """PR #381 review (P2): the prompt specifies exactly the registered key_paths as the
+        answer's top-level keys; an extra top-level key must fail even when both registered
+        entries are otherwise correct."""
+        _write_holdout_config_pair(tmp_path)
+        answer = tmp_path / ".meta-harness" / "config-answer.json"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text(
+            '{"codex.model": {"value": "harness-nested-local-model", '
+            '"source_file": "sandbox/config/agent-routing/cli-tools.local.yaml"}, '
+            '"codex.sandbox.analysis": {"value": "read-only", '
+            '"source_file": "sandbox/config/agent-routing/cli-tools.yaml"}, '
+            '"unexpected.key": {"value": "x", "source_file": "y"}}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture = _fixture("assert-effective-config.py")
+        with pytest.raises(AssertionError, match="top-level"):
+            fixture.main(
+                [
+                    "--keyed",
+                    "--base",
+                    "sandbox/config/agent-routing/cli-tools.yaml",
+                    "--local",
+                    "sandbox/config/agent-routing/cli-tools.local.yaml",
+                    "--answer",
+                    ".meta-harness/config-answer.json",
+                    "--key-path",
+                    "codex.model",
+                    "--field",
+                    "both",
+                ]
+            )
+
+    def test_fails_on_unexpected_entry_key(self, tmp_path: Path, monkeypatch) -> None:
+        """An extra key inside a per-key_path entry (not just at the top level) must also
+        fail."""
+        _write_holdout_config_pair(tmp_path)
+        answer = tmp_path / ".meta-harness" / "config-answer.json"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text(
+            '{"codex.model": {"value": "harness-nested-local-model", '
+            '"source_file": "sandbox/config/agent-routing/cli-tools.local.yaml", '
+            '"unexpected": "accepted"}, '
+            '"codex.sandbox.analysis": {"value": "read-only", '
+            '"source_file": "sandbox/config/agent-routing/cli-tools.yaml"}}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture = _fixture("assert-effective-config.py")
+        with pytest.raises(AssertionError, match="entry"):
+            fixture.main(
+                [
+                    "--keyed",
+                    "--base",
+                    "sandbox/config/agent-routing/cli-tools.yaml",
+                    "--local",
+                    "sandbox/config/agent-routing/cli-tools.local.yaml",
+                    "--answer",
+                    ".meta-harness/config-answer.json",
+                    "--key-path",
+                    "codex.model",
+                    "--field",
+                    "both",
+                ]
+            )
+
 
 # ---------------------------------------------------------------------------
 # Drift detection: real scenario setup: bytes must match the fixture's known-good table
@@ -447,9 +612,9 @@ def test_real_scenario_setup_bytes_match_known_config_pair_table(scenario_id: st
 
         base_sha = hashlib.sha256(base.read_bytes()).hexdigest()
         local_sha = hashlib.sha256(local.read_bytes()).hexdigest()
-        assert (base_sha, local_sha) in fixture._KNOWN_CONFIG_PAIRS, (
+        assert (base_sha, local_sha) in fixture._KNOWN_ANSWER_HASHES, (
             f"{scenario_id}'s setup: bytes (base sha256={base_sha}, local sha256={local_sha}) "
-            "are not a key in assert-effective-config.py's _KNOWN_CONFIG_PAIRS; the setup: "
+            "are not a key in assert-effective-config.py's _KNOWN_ANSWER_HASHES; the setup: "
             "heredoc and the hardcoded table have drifted apart"
         )
 

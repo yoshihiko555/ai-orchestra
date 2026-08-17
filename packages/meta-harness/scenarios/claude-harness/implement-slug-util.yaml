@@ -33,9 +33,11 @@ critical:
     path: "sandbox/slugify.py"
 graded:
   # graded（出来栄え = 機能の正しさ）: 単一値ハードコードでは通らない複数入力の挙動検証。
+  # タブ混じりの連続空白ケース（PR #381 レビュー指摘: スペースのみを置換する実装が
+  # 素通りしてしまうのを防ぐ）を含む。
   - id: slugify-behavior-correct
-    text: "slugify() が小文字化・空白圧縮・前後ハイフン除去・連続ハイフン圧縮・空入力の
-      既定値を正しく処理する（単一値ハードコードでは通らない）"
+    text: "slugify() が小文字化・空白圧縮（タブ混在含む）・前後ハイフン除去・連続ハイフン圧縮・
+      空入力の既定値を正しく処理する（単一値ハードコードでは通らない）"
     oracle: command_exit
     command: >-
       python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from slugify import slugify;
@@ -44,23 +46,29 @@ graded:
       assert slugify('') == 'untitled', slugify('');
       assert slugify('   ') == 'untitled', slugify('   ');
       assert slugify('UPPER CASE TITLE') == 'upper-case-title', slugify('UPPER CASE TITLE');
-      assert slugify('--Leading and Trailing--') == 'leading-and-trailing', slugify('--Leading and Trailing--')"
+      assert slugify('--Leading and Trailing--') == 'leading-and-trailing', slugify('--Leading and Trailing--');
+      assert slugify('Hello\tWorld') == 'hello-world', slugify('Hello\tWorld');
+      assert slugify('Tab\t\tand  Space Mixed') == 'tab-and-space-mixed', slugify('Tab\t\tand  Space Mixed')"
   # graded（出来栄え = coding-principles「型ヒント必須」）: prompt で規約を明示していない
   # ため、ハーネス指示書の遵守度をそのまま測る。
   - id: slugify-type-hints-complete
-    text: "slugify() の引数・戻り値に型ヒントが付与されている"
+    text: "slugify() が def として定義され、引数・戻り値に型ヒントが付与されている
+      （lambda 代入など def を伴わない実装は不合格）"
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-python-type-hints.py
-      --file sandbox/slugify.py
-  # graded（出来栄え = coding-principles「命名規則」「マジックナンバー禁止」節の docstring
-  # 慣行・関数の単一責任（20行以下）」）。
+      --file sandbox/slugify.py --function slugify
+  # graded（出来栄え = coding-principles「命名規則」節の snake_case 慣行・関数の単一責任
+  # （20行以下）」）。docstring は coding-principles.md / AGENTS.md / CLAUDE.md /
+  # .claude/rules/ のいずれにも関数 docstring を要求する規約が存在しないため採点対象から
+  # 除外している（PR #381 レビュー指摘: 未定義の規約を測ると指示書品質ではなく未文書化の
+  # 好みを最適化してしまう）。
   - id: slugify-conventions-followed
-    text: "docstring がある・snake_case 命名・関数が20行以下"
+    text: "snake_case 命名・関数が20行以下"
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-python-conventions.py
-      --file sandbox/slugify.py --require-docstring --require-snake-case
+      --file sandbox/slugify.py --require-snake-case
       --max-function-lines 20
 holdout: false
 timeout_ms: 300000

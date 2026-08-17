@@ -32,10 +32,11 @@ _SUITE_HASH = cli.prm.ev.compute_suite_hash(
 )
 # ADR-20260817-052: use the merged effective config (DEFAULTS deep-merged with the real
 # packages/meta-harness/config/meta-harness.yaml, same as what `mh.load_config(git_project)`
-# resolves inside `cli.cmd_promote` for every test's tmp project), not raw `mh.DEFAULTS`. The
-# regression.max_budget_usd bump (186.0 -> 210.0) that ADR-20260817-052 needed is only reflected
-# in the YAML (packages/meta-harness/lib/** is frozen for this PR), so `mh.DEFAULTS` alone is
-# stale and would compute a different (wrong) evaluator_hash than what real promote calls see.
+# resolves inside `cli.cmd_promote` for every test's tmp project), not raw `mh.DEFAULTS`. This
+# matches real promote calls, which always resolve through `mh.load_config(...)` rather than
+# reading `mh.DEFAULTS` directly (PR #381 review: `mh.DEFAULTS["regression"]["max_budget_usd"]`
+# is now kept in lockstep with the YAML at 210.0, but the merged-config path stays the correct
+# one to assert against since that's what production code actually calls).
 _EVALUATOR_HASH = cli.prm.ev.compute_configured_evaluator_hash(
     mh.load_config(str(cli.prm._PACKAGE_DIR))
 )

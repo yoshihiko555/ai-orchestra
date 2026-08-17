@@ -5,6 +5,14 @@ Checks ``coding-principles.md``'s "型ヒント必須" rule via AST inspection: 
 parameter (except ``self``/``cls``) and every function's return type must carry an explicit
 annotation.
 
+``--function`` (one or more, required) additionally pins which function name(s) the scenario
+actually asked the candidate to implement (e.g. ``slugify``, ``validate_username``) and fails if
+none of them is defined via a ``def``/``async def``. Without this, ``_iter_functions()`` returning
+an empty list (e.g. a candidate submitting `slugify = lambda title: ...` instead of a `def`) would
+vacuously satisfy the "every function has type hints" check -- there are simply no functions to
+inspect -- letting a behavior-only submission also pass this and the sibling conventions check
+(docstring/naming/length) for free.
+
 Trust note (contrast with ``assert-issue-fix-decision.py`` / ``assert-effective-config.py``):
 this fixture inspects the very file the scenario asked the candidate to write, not a separate
 scenario-provided *expected value* the candidate could rewrite to trivially satisfy a looser
@@ -27,10 +35,16 @@ def _iter_functions(tree: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDe
     ]
 
 
-def check_type_hints(source: str, *, filename: str) -> list[str]:
+def check_type_hints(source: str, *, filename: str, required_functions: list[str]) -> list[str]:
     tree = ast.parse(source, filename=filename)
-    problems: list[str] = []
-    for fn in _iter_functions(tree):
+    functions = _iter_functions(tree)
+    defined_names = {fn.name for fn in functions}
+    problems: list[str] = [
+        f"required function '{name}' is not defined as a def (an assignment/lambda does not count)"
+        for name in required_functions
+        if name not in defined_names
+    ]
+    for fn in functions:
         args = fn.args
         positional = [*args.posonlyargs, *args.args, *args.kwonlyargs]
         variadic = [a for a in (args.vararg, args.kwarg) if a is not None]
@@ -47,13 +61,23 @@ def check_type_hints(source: str, *, filename: str) -> list[str]:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", type=Path, required=True)
+    parser.add_argument(
+        "--function",
+        action="append",
+        required=True,
+        help="required function name (repeatable); at least one must be defined via def",
+    )
     args = parser.parse_args(argv)
 
     project_root = Path(os.environ.get("AI_ORCHESTRA_DIR") or Path.cwd()).resolve()
     target = project_root / args.file
     assert target.is_file() and not target.is_symlink(), f"missing regular file: {args.file}"
 
-    problems = check_type_hints(target.read_text(encoding="utf-8"), filename=str(args.file))
+    problems = check_type_hints(
+        target.read_text(encoding="utf-8"),
+        filename=str(args.file),
+        required_functions=args.function,
+    )
     assert not problems, "missing type hints:\n" + "\n".join(problems)
 
 
