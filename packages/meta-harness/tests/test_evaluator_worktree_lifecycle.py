@@ -316,6 +316,13 @@ class TestOracleFixtureMaterializationTiming:
         1回目（ベースライン整合）は `run_headless_scenario`（内部で isolated git snapshot の
         ベースラインコミットを作成する）より前、2回目（改ざん対策の復元）は候補実行の後で
         なければならない。
+
+        `_materialize_current_oracle_fixtures` はここでは復元のみに fake し（改ざん対策の
+        「復元」自体は本テストの関心事の呼び出し順序検証のみ）、改ざんの試行検出（Issue #267
+        残スコープ、`_detect_tampered_oracle_fixtures`）は fake しない。しかし本テストの
+        `trusted_fixtures_dir`（`_TRUSTED_COPY_SENTINEL`）と worktree 側 fixtures は
+        いずれも実体が存在しないため両者の hash が一致し（"missing" 同士）、検出は発火しない
+        （`TestOracleFixtureTamperDetection` が実 fixture content で検出自体を検証する）。
         """
         call_order, _materialize_args, hard_failure, errors = (
             self._run_lifecycle_with_tracked_calls(git_project, monkeypatch)
@@ -335,7 +342,11 @@ class TestOracleFixtureMaterializationTiming:
         """改ざん対策（PR #326 round 4/5）の維持: snapshot 前 materialize を追加しても、
         候補実行後・oracle 実行前の再 materialize が引き続き存在すること。両呼び出しとも
         attempt 開始時に固定した同一の immutable copy（`_snapshot_trusted_oracle_fixtures` の
-        戻り値）を source に取ること。"""
+        戻り値）を source に取ること。
+
+        `_materialize_current_oracle_fixtures` の責務は「復元のみ」で変わらない（改ざんの
+        試行検出は `_run_attempt_lifecycle` 側が復元の直前に別途行う。`Issue #267` 残スコープ、
+        `TestOracleFixtureTamperDetection` 参照）。本テストは呼び出し順序・引数のみを検証する。"""
         call_order, materialize_args, hard_failure, errors = self._run_lifecycle_with_tracked_calls(
             git_project, monkeypatch
         )
@@ -349,6 +360,294 @@ class TestOracleFixtureMaterializationTiming:
             self._TRUSTED_COPY_SENTINEL,
             self._TRUSTED_COPY_SENTINEL,
         ]
+
+
+class TestOracleFixtureTamperDetection:
+    """Issue #267 残スコープの実 lifecycle 統合テスト: 候補実行後・oracle 直前の復元
+    materialize の直前に、worktree 側 `scenarios/fixtures/` が信頼済み内容から改ざんされて
+    いないか hash 照合し、不一致であれば attempt を hard_failure にして機械可読な識別子
+    （`oracle-fixtures-tampered:`）+ 差分パス一覧を `errors` に記録すること。検出後も復元
+    （materialize）自体は従来どおり実行されること。`_materialize_current_oracle_fixtures` /
+    `_snapshot_trusted_oracle_fixtures` は fake せず実装を実行し、実 fixture content で
+    検出そのものを検証する（`TestOracleFixtureMaterializationTiming` は呼び出し順序のみを
+    fake 経由で検証する別責務）。"""
+
+    def _make_trusted_package_dir(self, tmp_path: Path) -> Path:
+        package_dir = tmp_path / "trusted-package"
+        (package_dir / "scenarios" / "fixtures").mkdir(parents=True)
+        (package_dir / "scenarios" / "fixtures" / "trusted-fixture.py").write_text(
+            "# trusted content\n", encoding="utf-8"
+        )
+        (package_dir / "scenarios" / "fixtures" / "trusted-fixture-2.py").write_text(
+            "# trusted content 2\n", encoding="utf-8"
+        )
+        return package_dir
+
+    def _run_lifecycle_with_tamper(
+        self,
+        git_project: Path,
+        monkeypatch,
+        tmp_path: Path,
+        *,
+        tamper_fixtures=None,
+        raise_after_tamper: Exception | None = None,
+    ) -> tuple[bool, list[dict], dict[str, str]]:
+        """候補実行（`run_headless_scenario`）から `tamper_fixtures` を呼び出し、worktree の
+        fixtures ディレクトリへの改ざんを注入できるようにした上で `_run_attempt_lifecycle` を
+        実行する。2 回目の materialize 完了直後（worktree 除去より前）の fixtures 内容を
+        `restored_content` として返し、検出後も復元が行われることを検証できるようにする。
+
+        `raise_after_tamper` を指定すると、改ざん注入の直後に `run_headless_scenario` が
+        その例外を送出する（workspace export 後の result event 欠落・is_error・skill
+        activation 検証失敗等を模す）。検出・復元が `finally` 経路でも実行されることを検証する
+        （PR #380 レビュー対応、P2）。"""
+        package_dir = self._make_trusted_package_dir(tmp_path)
+
+        monkeypatch.setattr(ev, "apply_overlay", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "build_facet_and_context", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev, "run_setup_commands", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(ev.siso, "cleanup_scenario_isolation", lambda *_args, **_kwargs: None)
+
+        def fake_run_headless_scenario(_scenario, _config, worktree_dir, *_args, **_kwargs):
+            if tamper_fixtures is not None:
+                tamper_fixtures(worktree_dir)
+            if raise_after_tamper is not None:
+                raise raise_after_tamper
+            return SimpleNamespace(isolation_launch=object())
+
+        monkeypatch.setattr(ev, "run_headless_scenario", fake_run_headless_scenario)
+
+        real_materialize = ev._materialize_current_oracle_fixtures
+        materialize_call_count = 0
+        restored_content: dict[str, str] = {}
+
+        def spy_materialize(worktree_dir, trusted_fixtures_dir):
+            nonlocal materialize_call_count
+            real_materialize(worktree_dir, trusted_fixtures_dir)
+            materialize_call_count += 1
+            if materialize_call_count == 2:
+                fixtures_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+                for entry in fixtures_dir.iterdir():
+                    if entry.is_file():
+                        restored_content[entry.name] = entry.read_text(encoding="utf-8")
+
+        monkeypatch.setattr(ev, "_materialize_current_oracle_fixtures", spy_materialize)
+
+        _checks, _checks_nc, _graded, hard_failure, errors = ev._run_attempt_lifecycle(
+            main_root=git_project,
+            config={"evaluate": {"worktree_root": ".worktrees/meta"}},
+            schema_dir=_SCHEMA_DIR,
+            package_dir=package_dir,
+            cand_dir=git_project,
+            manifest={"source_commit": _git("rev-parse", "HEAD", cwd=git_project).stdout.strip()},
+            scenario={
+                "id": "s-tamper-detect",
+                "prompt": "irrelevant",
+                "setup": [],
+                "critical": [],
+                "checks": [],
+            },
+            run_id="run-test-tamper-detect",
+            staging_dir=git_project / "staging-tamper-detect",
+            runner=subprocess.run,
+        )
+        return hard_failure, errors, restored_content
+
+    def _tamper_errors(self, errors: list[dict]) -> list[dict]:
+        return [
+            e
+            for e in errors
+            if str(e.get("message", "")).startswith(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX)
+        ]
+
+    def test_tampering_marks_attempt_as_hard_failure_with_paths_recorded(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """① 改ざん（変更 + 追加 + 削除）があると attempt が hard_failure になり、errors に
+        `oracle-fixtures-tampered:` 識別子と差分パス一覧（ソート済み、内容は含めない）が
+        記録される。"""
+
+        def tamper(worktree_dir: Path) -> None:
+            fixtures_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+            (fixtures_dir / "trusted-fixture.py").write_text(
+                "# tampered: always exit 0\n", encoding="utf-8"
+            )
+            (fixtures_dir / "planted-by-candidate.py").write_text("# planted\n", encoding="utf-8")
+            (fixtures_dir / "trusted-fixture-2.py").unlink()
+
+        hard_failure, errors, _restored = self._run_lifecycle_with_tamper(
+            git_project, monkeypatch, tmp_path, tamper_fixtures=tamper
+        )
+
+        assert hard_failure is True
+        tamper_errors = self._tamper_errors(errors)
+        assert len(tamper_errors) == 1
+        assert tamper_errors[0]["stage"] == "run"
+        assert tamper_errors[0]["type"] == "run_error"
+        recorded_paths = json.loads(
+            tamper_errors[0]["message"].split(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1]
+        )
+        assert recorded_paths == [
+            "planted-by-candidate.py",
+            "trusted-fixture-2.py",
+            "trusted-fixture.py",
+        ]
+        # 改ざんされたファイルの内容そのもの（書き換え後のソース片）は message に含めない。
+        assert "always exit 0" not in tamper_errors[0]["message"]
+        assert "# planted" not in tamper_errors[0]["message"]
+
+    def test_no_tampering_leaves_attempt_unaffected(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """② 改ざんなし（noop 候補）では挙動不変（hard_failure False・tamper error 無し）。"""
+        hard_failure, errors, _restored = self._run_lifecycle_with_tamper(
+            git_project, monkeypatch, tmp_path, tamper_fixtures=None
+        )
+
+        assert hard_failure is False, errors
+        assert self._tamper_errors(errors) == []
+
+    def test_tampered_fixtures_are_still_restored_after_detection(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """③ 改ざん検出後も、従来どおり信頼済み内容へ復元されること（silent restore は維持）。"""
+
+        def tamper(worktree_dir: Path) -> None:
+            fixtures_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+            (fixtures_dir / "trusted-fixture.py").write_text(
+                "# tampered: always exit 0\n", encoding="utf-8"
+            )
+
+        hard_failure, errors, restored_content = self._run_lifecycle_with_tamper(
+            git_project, monkeypatch, tmp_path, tamper_fixtures=tamper
+        )
+
+        assert hard_failure is True, errors
+        assert restored_content["trusted-fixture.py"] == "# trusted content\n"
+        assert restored_content["trusted-fixture-2.py"] == "# trusted content 2\n"
+
+    def test_change_outside_fixtures_is_not_detected_as_tampering(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """④ fixtures 外への変更（候補が worktree の他の場所へ書き込む正当な collateral 変更相当）
+        は改ざんとして検出されない。"""
+
+        def touch_outside_fixtures(worktree_dir: Path) -> None:
+            (worktree_dir / "sandbox-output.txt").write_text(
+                "candidate side effect outside fixtures\n", encoding="utf-8"
+            )
+
+        hard_failure, errors, _restored = self._run_lifecycle_with_tamper(
+            git_project, monkeypatch, tmp_path, tamper_fixtures=touch_outside_fixtures
+        )
+
+        assert hard_failure is False, errors
+        assert self._tamper_errors(errors) == []
+
+    def test_large_tampered_file_is_detected_without_full_content_read(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """⑤（PR #380 レビュー対応、P1）候補側の大きめファイル（改ざん）を、`read_bytes()` に
+        よる全内容のメモリ保持なしに検出できること。`_snapshot_fixture_digests` はチャンク読み
+        のストリーミング sha256（`_stream_sha256`）だけを使い、候補側ファイルへ一度も
+        `Path.read_bytes()` を呼ばない（`Path.read_bytes` を呼ぶと即 fail するガードで保証する。
+        実テストでは数 MB 程度で十分)。"""
+        large_payload = b"A" * (3 * 1024 * 1024)  # 3MiB: OOM 対策の実効性を示すには十分な規模
+
+        def tamper(worktree_dir: Path) -> None:
+            fixtures_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+            (fixtures_dir / "planted-large.bin").write_bytes(large_payload)
+
+        def forbidden_read_bytes(self_path: Path, *_args, **_kwargs):
+            raise AssertionError(f"tamper detection must not read_bytes() a full file: {self_path}")
+
+        monkeypatch.setattr(Path, "read_bytes", forbidden_read_bytes)
+
+        hard_failure, errors, _restored = self._run_lifecycle_with_tamper(
+            git_project, monkeypatch, tmp_path, tamper_fixtures=tamper
+        )
+
+        assert hard_failure is True
+        tamper_errors = self._tamper_errors(errors)
+        assert len(tamper_errors) == 1
+        recorded_paths = json.loads(
+            tamper_errors[0]["message"].split(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1]
+        )
+        assert recorded_paths == ["planted-large.bin"]
+
+    def test_oversize_file_is_tampering_without_streaming_content(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """⑥（PR #380 レビュー対応、P1）`_TAMPER_DETECTION_MAX_FILE_BYTES` を超えるファイルは、
+        ストリーミング読み込み（`_stream_sha256`）すら行わずサイズだけで改ざん扱いになること
+        （trusted fixtures は全て小さいプレーンテキストのため超過の存在自体が証拠になる）。"""
+        monkeypatch.setattr(ev, "_TAMPER_DETECTION_MAX_FILE_BYTES", 1024)
+
+        def tamper(worktree_dir: Path) -> None:
+            fixtures_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+            (fixtures_dir / "planted-oversize.bin").write_bytes(b"B" * 2048)
+
+        real_stream_sha256 = ev._stream_sha256
+
+        def guarded_stream_sha256(path: Path, *args, **kwargs):
+            if path.name == "planted-oversize.bin":
+                raise AssertionError("oversize file must not be streamed for digesting")
+            return real_stream_sha256(path, *args, **kwargs)
+
+        monkeypatch.setattr(ev, "_stream_sha256", guarded_stream_sha256)
+
+        hard_failure, errors, _restored = self._run_lifecycle_with_tamper(
+            git_project, monkeypatch, tmp_path, tamper_fixtures=tamper
+        )
+
+        assert hard_failure is True
+        tamper_errors = self._tamper_errors(errors)
+        assert len(tamper_errors) == 1
+        recorded_paths = json.loads(
+            tamper_errors[0]["message"].split(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1]
+        )
+        assert recorded_paths == ["planted-oversize.bin"]
+
+    def test_tampering_is_detected_and_restored_even_when_run_headless_scenario_raises(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """⑦（PR #380 レビュー対応、P2）候補プロセス exit 0 → workspace export 後に
+        `run_headless_scenario` が例外を送出しても、改ざんの検出・記録・復元は必ず実行される
+        こと。かつ、その例外由来の既存 `errors` エントリ（`stage: "unknown"`）も失われず共存
+        すること。"""
+
+        def tamper(worktree_dir: Path) -> None:
+            fixtures_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+            (fixtures_dir / "trusted-fixture.py").write_text(
+                "# tampered: always exit 0\n", encoding="utf-8"
+            )
+
+        hard_failure, errors, restored_content = self._run_lifecycle_with_tamper(
+            git_project,
+            monkeypatch,
+            tmp_path,
+            tamper_fixtures=tamper,
+            raise_after_tamper=RuntimeError("result event missing"),
+        )
+
+        assert hard_failure is True
+        tamper_errors = self._tamper_errors(errors)
+        assert len(tamper_errors) == 1
+        assert tamper_errors[0]["stage"] == "run"
+        assert tamper_errors[0]["type"] == "run_error"
+        recorded_paths = json.loads(
+            tamper_errors[0]["message"].split(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1]
+        )
+        assert recorded_paths == ["trusted-fixture.py"]
+
+        non_tamper_errors = [e for e in errors if e not in tamper_errors]
+        assert len(non_tamper_errors) == 1
+        assert non_tamper_errors[0]["stage"] == "unknown"
+        assert non_tamper_errors[0]["type"] == "run_error"
+        assert non_tamper_errors[0]["message"] == "result event missing"
+
+        # 検出後も、従来どおり信頼済み内容へ復元されること（silent restore は維持）。
+        assert restored_content["trusted-fixture.py"] == "# trusted content\n"
 
 
 class TestPreSnapshotMaterializeBaselineIntegration:

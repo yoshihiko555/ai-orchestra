@@ -532,6 +532,21 @@ def _ensure_bridge_artifact_ignored(worktree_dir: Path) -> None:
 
 _ORACLE_FIXTURES_RELATIVE_DIR = Path("scenarios") / "fixtures"
 _TRUSTED_ORACLE_FIXTURES_STAGING_DIRNAME = "trusted-oracle-fixtures"
+# Issue #267 残スコープ: 改ざん検出の errors エントリに含める機械可読な識別子。
+# `result.schema.json` の error_item は type を enum で固定しているため（`run_error` 等の
+# 既存値を流用）、新しい type 値を作らずこの固定 prefix を message 先頭に置いて識別する。
+# 差分パスの抽出は `json.loads(message.split(_ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1])`
+# を想定するため、prefix の直後には常に差分パスの JSON 配列（`json.dumps(..., ensure_ascii=False)`）
+# だけを続け、日本語の説明文などは挟まない（PR #380 レビュー対応、P2: カンマ区切りはファイル名
+# 自体にカンマを含む候補制御パスと曖昧になり機械可読性が壊れるため）。
+_ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX = "oracle-fixtures-tampered:"
+# 改ざん検出の候補側ファイルを全文メモリ保持しないための上限（PR #380 レビュー対応、P1:
+# candidate-controlled な worktree 側ファイルは Docker workspace 上限（512MB 近く）まで
+# 巨大化しうり、read_bytes() で全内容を辞書に持つと evaluator プロセスが OOM する）。
+# trusted oracle fixtures は全て小さいプレーンテキストのため、この上限を超えるファイルの
+# 存在自体が改ざんの証拠になる。内容を読まずサイズだけで「改ざん」と判定してよい。
+_TAMPER_DETECTION_MAX_FILE_BYTES = 10 * 1024 * 1024
+_TAMPER_DETECTION_CHUNK_BYTES = 1024 * 1024
 
 
 def _snapshot_trusted_oracle_fixtures(package_dir: Path, staging_dir: Path) -> Path:
@@ -622,6 +637,84 @@ def _materialize_current_oracle_fixtures(worktree_dir: Path, trusted_fixtures_di
         raise EvaluatorStageError(
             "overlay_apply", "overlay_error", f"could not materialize oracle fixtures: {exc}"
         ) from exc
+
+
+def _stream_sha256(path: Path, *, chunk_size: int = _TAMPER_DETECTION_CHUNK_BYTES) -> str:
+    """`path` の内容を全文メモリ保持せず、チャンク読みで sha256 を求める（PR #380 レビュー
+    対応、P1）。候補が worktree 内に書き込むファイルはサイズ上限がないため、`read_bytes()`
+    で一括読み込みすると evaluator プロセス自体が OOM しうる。"""
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _snapshot_fixture_digests(directory: Path) -> dict[str, str]:
+    """`{相対パス: digest}` を返す。改ざん検出専用の比較用スナップショットであり、
+    `_hash_directory_tree`（evaluator_hash 計算と共用、`compute_evaluator_hash` 参照）とは
+    独立に保つ（PR #380 レビュー対応、P1）。
+
+    - シンボリックリンクは追従せず内容を読まない（trusted fixtures はシンボリックリンクを
+      含まないため、存在自体が改ざんの証拠になる。加えてデバイスファイル等への symlink を
+      辿って無限読み込みするリスクを回避する）。
+    - `_TAMPER_DETECTION_MAX_FILE_BYTES` を超えるファイルも内容を読まない。trusted oracle
+      fixtures は全て小さいプレーンテキストのため、この上限超過も改ざんの証拠になる。
+    - 上記いずれにも該当しないファイルはチャンク読みのストリーミング sha256（`_stream_sha256`）
+      で digest 化し、内容そのものはどの辞書にも保持しない。
+    """
+    if not directory.is_dir():
+        return {}
+    digests: dict[str, str] = {}
+    for path in directory.rglob("*"):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        rel = path.relative_to(directory).as_posix()
+        if path.is_symlink():
+            digests[rel] = "tamper-sentinel:symlink-rejected"
+            continue
+        size = path.stat().st_size
+        if size > _TAMPER_DETECTION_MAX_FILE_BYTES:
+            digests[rel] = f"tamper-sentinel:oversize:{size}"
+            continue
+        digests[rel] = _stream_sha256(path)
+    return digests
+
+
+def _detect_tampered_oracle_fixtures(worktree_dir: Path, trusted_fixtures_dir: Path) -> list[str]:
+    """候補実行後・oracle 直前の復元 materialize の直前に、worktree 側 `scenarios/fixtures/`
+    が信頼済み内容（`trusted_fixtures_dir`）から変更されていないか確認する（Issue #267 残
+    スコープ）。
+
+    `_materialize_current_oracle_fixtures` は改ざんを黙って復元するだけで、改ざんの試行自体は
+    検出・記録されない。復元により oracle 判定自体は守られるが、無検出のままだと proposer 由来の
+    候補が改ざん隣接戦略をノーペナルティで探索し続けられ、学習ループへの誤信号になる
+    （reward hacking、b10a 実例 2026-08-17）。ここでは復元の直前に一致確認し、不一致であれば
+    差分のあった相対パス一覧（ソート済み、内容は含めない）を返す。呼び出し側はこれを
+    hard_failure として記録したうえで、従来どおり復元を実行する。
+
+    raise-the-bar な対策であり完全な閉鎖ではない: 意図的な敵対者が改ざん利用後に原状復帰すれば
+    この検出は回避できる。call-log 偽造・read 制限による完全閉鎖は Phase C 前ゲートとして
+    Issue #267 に残る。
+
+    比較基準は「候補実行直前の状態」= `trusted_fixtures_dir`（1 回目の snapshot 前 materialize
+    により、この時点の worktree 側は既にこの内容と一致している）。既存シナリオの `setup`
+    コマンド・`scenarios/fixtures/*.py` 自身・facet/context build のいずれも
+    `scenarios/fixtures/` へ書き込まないことを確認済みのため、trusted_fixtures_dir をそのまま
+    ベースラインとして使える（1 回目 materialize から候補実行までの間に fixtures が変化する
+    正当な経路はない）。
+
+    比較は `_snapshot_fixture_digests` によるファイル単位の digest map で行う（候補側
+    worktree の内容を丸ごとメモリ保持する `_hash_directory_tree` は evaluator_hash 計算専用に
+    残し、この検出経路では使わない。PR #380 レビュー対応、P1: OOM 対策）。
+    """
+    worktree_fixtures_dir = (
+        worktree_dir / "packages" / "meta-harness" / _ORACLE_FIXTURES_RELATIVE_DIR
+    )
+    current = _snapshot_fixture_digests(worktree_fixtures_dir)
+    trusted = _snapshot_fixture_digests(trusted_fixtures_dir)
+    changed = {rel for rel in set(current) | set(trusted) if current.get(rel) != trusted.get(rel)}
+    return sorted(changed)
 
 
 def remove_worktree(
@@ -3493,28 +3586,54 @@ def _run_attempt_lifecycle(
             runner=runner,
         )
         instruction_path = package_dir / "config" / "self-report-instruction.md"
-        scenario_result = run_headless_scenario(
-            scenario,
-            config,
-            worktree_dir,
-            staging_dir,
-            instruction_path,
-            main_root=main_root,
-            source_commit=manifest["source_commit"],
-            runner=runner,
-        )
-        if isinstance(scenario_result.isolation_launch, siso.ScenarioIsolationLaunch):
-            _persist_refreshed_isolation_metadata(scenario_result.isolation_launch, staging_dir)
-        _write_candidate_final_report_artifact(worktree_dir, staging_dir / "events.jsonl")
-        # 候補は bypassPermissions 下で worktree 全体に Write 可能であり、`command_exit` oracle
-        # （collateral-scope の実装自体を含む）は候補と同じ worktree にある
-        # `scenarios/fixtures/*.py` を実行する。候補がこのファイルを「常に成功」する内容へ
-        # 書き換えれば、outcome チェックと collateral-scope チェックの両方（同一スクリプトが
-        # 両方の subcommand を実装しているため）を自分自身の改変ごと隠して通過できてしまう
-        # （PR #326 レビュー round 4, Codex P1）。候補の実行が完全に終わった直後・oracle 実行の
-        # 直前に信頼済みハーネスの内容（attempt 開始時に固定した immutable copy）へ復元する
-        # ことで、候補による改変が oracle 判定へ一切影響しないようにする。
-        _materialize_current_oracle_fixtures(worktree_dir, trusted_fixtures_dir)
+        # `run_headless_scenario` は候補プロセスの workspace export 後に、result event 欠落・
+        # is_error・skill activation 検証失敗等で例外を送出しうる。その場合でも候補は既に
+        # worktree へ書き込みを終えているため、改ざんの試行検出・記録・復元を必ず行う
+        # 必要がある。このため検出・復元を `finally` に置き、候補の成否/例外に関わらず実行
+        # されるようにする（PR #380 レビュー対応、P2）。
+        try:
+            scenario_result = run_headless_scenario(
+                scenario,
+                config,
+                worktree_dir,
+                staging_dir,
+                instruction_path,
+                main_root=main_root,
+                source_commit=manifest["source_commit"],
+                runner=runner,
+            )
+            if isinstance(scenario_result.isolation_launch, siso.ScenarioIsolationLaunch):
+                _persist_refreshed_isolation_metadata(scenario_result.isolation_launch, staging_dir)
+            _write_candidate_final_report_artifact(worktree_dir, staging_dir / "events.jsonl")
+        finally:
+            # 候補は bypassPermissions 下で worktree 全体に Write 可能であり、`command_exit`
+            # oracle（collateral-scope の実装自体を含む）は候補と同じ worktree にある
+            # `scenarios/fixtures/*.py` を実行する。候補がこのファイルを「常に成功」する内容へ
+            # 書き換えれば、outcome チェックと collateral-scope チェックの両方（同一スクリプトが
+            # 両方の subcommand を実装しているため）を自分自身の改変ごと隠して通過できてしまう
+            # （PR #326 レビュー round 4, Codex P1）。候補の実行が完全に終わった直後・oracle
+            # 実行の直前に信頼済みハーネスの内容（attempt 開始時に固定した immutable copy）へ
+            # 復元することで、候補による改変が oracle 判定へ一切影響しないようにする。
+            #
+            # この復元は改ざんを黙って隠してしまうため、復元の直前に改ざんの試行自体を検出し
+            # hard_failure として記録する（Issue #267 残スコープ）。記録後も復元は従来どおり
+            # 実行し、後続の oracle・collateral 診断は壊さない。
+            tampered_fixture_paths = _detect_tampered_oracle_fixtures(
+                worktree_dir, trusted_fixtures_dir
+            )
+            if tampered_fixture_paths:
+                hard_failure = True
+                errors.append(
+                    {
+                        "stage": "run",
+                        "type": "run_error",
+                        "message": (
+                            f"{_ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX} "
+                            + json.dumps(tampered_fixture_paths, ensure_ascii=False)
+                        ),
+                    }
+                )
+            _materialize_current_oracle_fixtures(worktree_dir, trusted_fixtures_dir)
         scenario_command_timeout_ms = scenario.get("command_timeout_ms", DEFAULT_COMMAND_TIMEOUT_MS)
         checks = [
             run_oracle(

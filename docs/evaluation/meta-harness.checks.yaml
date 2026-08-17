@@ -1523,3 +1523,26 @@
     - packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cost_with_all_cache_neutral_fields_is_valid
     - packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cache_neutral_source_rejects_unknown_value
   notes: the four new cost fields (cache_creation_input_tokens, cache_read_input_tokens, cache_neutral_cost_usd, cache_neutral_source) are all optional on both the result schema and the ledger event schema's cost object; pre-#378 ledger lines and result payloads carrying only the legacy 7-key cost object continue to validate unchanged after the schema update.
+
+- ev_id: EV-118
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_tampering_marks_attempt_as_hard_failure_with_paths_recorded
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_no_tampering_leaves_attempt_unaffected
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_tampered_fixtures_are_still_restored_after_detection
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_change_outside_fixtures_is_not_detected_as_tampering
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_large_tampered_file_is_detected_without_full_content_read
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_oversize_file_is_tampering_without_streaming_content
+    packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_tampering_is_detected_and_restored_even_when_run_headless_scenario_raises
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_tampering_marks_attempt_as_hard_failure_with_paths_recorded
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_no_tampering_leaves_attempt_unaffected
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_tampered_fixtures_are_still_restored_after_detection
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_change_outside_fixtures_is_not_detected_as_tampering
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_large_tampered_file_is_detected_without_full_content_read
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_oversize_file_is_tampering_without_streaming_content
+    - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_tampering_is_detected_and_restored_even_when_run_headless_scenario_raises
+  notes: oracle-fixture tamper detection is fail-closed (hard_failure -> verdict=error) and runs regardless of candidate success/exception because it lives in the `finally` of the `run_headless_scenario` try block; the message uses a fixed `oracle-fixtures-tampered:` prefix followed by a JSON array of sorted diff paths (not comma-joined, to stay unambiguous against candidate-controlled filenames); worktree-side files are digested via chunked streaming sha256 and never fully read into memory, and files over `_TAMPER_DETECTION_MAX_FILE_BYTES` or symlinks are treated as tampering by size/type alone without being opened.
