@@ -390,11 +390,17 @@ class TestOracleFixtureTamperDetection:
         tmp_path: Path,
         *,
         tamper_fixtures=None,
+        raise_after_tamper: Exception | None = None,
     ) -> tuple[bool, list[dict], dict[str, str]]:
         """候補実行（`run_headless_scenario`）から `tamper_fixtures` を呼び出し、worktree の
         fixtures ディレクトリへの改ざんを注入できるようにした上で `_run_attempt_lifecycle` を
         実行する。2 回目の materialize 完了直後（worktree 除去より前）の fixtures 内容を
-        `restored_content` として返し、検出後も復元が行われることを検証できるようにする。"""
+        `restored_content` として返し、検出後も復元が行われることを検証できるようにする。
+
+        `raise_after_tamper` を指定すると、改ざん注入の直後に `run_headless_scenario` が
+        その例外を送出する（workspace export 後の result event 欠落・is_error・skill
+        activation 検証失敗等を模す）。検出・復元が `finally` 経路でも実行されることを検証する
+        （PR #380 レビュー対応、P2）。"""
         package_dir = self._make_trusted_package_dir(tmp_path)
 
         monkeypatch.setattr(ev, "apply_overlay", lambda *_args, **_kwargs: None)
@@ -405,6 +411,8 @@ class TestOracleFixtureTamperDetection:
         def fake_run_headless_scenario(_scenario, _config, worktree_dir, *_args, **_kwargs):
             if tamper_fixtures is not None:
                 tamper_fixtures(worktree_dir)
+            if raise_after_tamper is not None:
+                raise raise_after_tamper
             return SimpleNamespace(isolation_launch=object())
 
         monkeypatch.setattr(ev, "run_headless_scenario", fake_run_headless_scenario)
@@ -476,11 +484,8 @@ class TestOracleFixtureTamperDetection:
         assert len(tamper_errors) == 1
         assert tamper_errors[0]["stage"] == "run"
         assert tamper_errors[0]["type"] == "run_error"
-        recorded_paths = (
-            tamper_errors[0]["message"]
-            .split(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1]
-            .strip()
-            .split(", ")
+        recorded_paths = json.loads(
+            tamper_errors[0]["message"].split(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1]
         )
         assert recorded_paths == [
             "planted-by-candidate.py",
@@ -538,6 +543,111 @@ class TestOracleFixtureTamperDetection:
 
         assert hard_failure is False, errors
         assert self._tamper_errors(errors) == []
+
+    def test_large_tampered_file_is_detected_without_full_content_read(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """⑤（PR #380 レビュー対応、P1）候補側の大きめファイル（改ざん）を、`read_bytes()` に
+        よる全内容のメモリ保持なしに検出できること。`_snapshot_fixture_digests` はチャンク読み
+        のストリーミング sha256（`_stream_sha256`）だけを使い、候補側ファイルへ一度も
+        `Path.read_bytes()` を呼ばない（`Path.read_bytes` を呼ぶと即 fail するガードで保証する。
+        実テストでは数 MB 程度で十分)。"""
+        large_payload = b"A" * (3 * 1024 * 1024)  # 3MiB: OOM 対策の実効性を示すには十分な規模
+
+        def tamper(worktree_dir: Path) -> None:
+            fixtures_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+            (fixtures_dir / "planted-large.bin").write_bytes(large_payload)
+
+        def forbidden_read_bytes(self_path: Path, *_args, **_kwargs):
+            raise AssertionError(f"tamper detection must not read_bytes() a full file: {self_path}")
+
+        monkeypatch.setattr(Path, "read_bytes", forbidden_read_bytes)
+
+        hard_failure, errors, _restored = self._run_lifecycle_with_tamper(
+            git_project, monkeypatch, tmp_path, tamper_fixtures=tamper
+        )
+
+        assert hard_failure is True
+        tamper_errors = self._tamper_errors(errors)
+        assert len(tamper_errors) == 1
+        recorded_paths = json.loads(
+            tamper_errors[0]["message"].split(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1]
+        )
+        assert recorded_paths == ["planted-large.bin"]
+
+    def test_oversize_file_is_tampering_without_streaming_content(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """⑥（PR #380 レビュー対応、P1）`_TAMPER_DETECTION_MAX_FILE_BYTES` を超えるファイルは、
+        ストリーミング読み込み（`_stream_sha256`）すら行わずサイズだけで改ざん扱いになること
+        （trusted fixtures は全て小さいプレーンテキストのため超過の存在自体が証拠になる）。"""
+        monkeypatch.setattr(ev, "_TAMPER_DETECTION_MAX_FILE_BYTES", 1024)
+
+        def tamper(worktree_dir: Path) -> None:
+            fixtures_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+            (fixtures_dir / "planted-oversize.bin").write_bytes(b"B" * 2048)
+
+        real_stream_sha256 = ev._stream_sha256
+
+        def guarded_stream_sha256(path: Path, *args, **kwargs):
+            if path.name == "planted-oversize.bin":
+                raise AssertionError("oversize file must not be streamed for digesting")
+            return real_stream_sha256(path, *args, **kwargs)
+
+        monkeypatch.setattr(ev, "_stream_sha256", guarded_stream_sha256)
+
+        hard_failure, errors, _restored = self._run_lifecycle_with_tamper(
+            git_project, monkeypatch, tmp_path, tamper_fixtures=tamper
+        )
+
+        assert hard_failure is True
+        tamper_errors = self._tamper_errors(errors)
+        assert len(tamper_errors) == 1
+        recorded_paths = json.loads(
+            tamper_errors[0]["message"].split(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1]
+        )
+        assert recorded_paths == ["planted-oversize.bin"]
+
+    def test_tampering_is_detected_and_restored_even_when_run_headless_scenario_raises(
+        self, git_project: Path, monkeypatch, tmp_path: Path
+    ) -> None:
+        """⑦（PR #380 レビュー対応、P2）候補プロセス exit 0 → workspace export 後に
+        `run_headless_scenario` が例外を送出しても、改ざんの検出・記録・復元は必ず実行される
+        こと。かつ、その例外由来の既存 `errors` エントリ（`stage: "unknown"`）も失われず共存
+        すること。"""
+
+        def tamper(worktree_dir: Path) -> None:
+            fixtures_dir = worktree_dir / "packages" / "meta-harness" / "scenarios" / "fixtures"
+            (fixtures_dir / "trusted-fixture.py").write_text(
+                "# tampered: always exit 0\n", encoding="utf-8"
+            )
+
+        hard_failure, errors, restored_content = self._run_lifecycle_with_tamper(
+            git_project,
+            monkeypatch,
+            tmp_path,
+            tamper_fixtures=tamper,
+            raise_after_tamper=RuntimeError("result event missing"),
+        )
+
+        assert hard_failure is True
+        tamper_errors = self._tamper_errors(errors)
+        assert len(tamper_errors) == 1
+        assert tamper_errors[0]["stage"] == "run"
+        assert tamper_errors[0]["type"] == "run_error"
+        recorded_paths = json.loads(
+            tamper_errors[0]["message"].split(ev._ORACLE_FIXTURES_TAMPER_MESSAGE_PREFIX, 1)[1]
+        )
+        assert recorded_paths == ["trusted-fixture.py"]
+
+        non_tamper_errors = [e for e in errors if e not in tamper_errors]
+        assert len(non_tamper_errors) == 1
+        assert non_tamper_errors[0]["stage"] == "unknown"
+        assert non_tamper_errors[0]["type"] == "run_error"
+        assert non_tamper_errors[0]["message"] == "result event missing"
+
+        # 検出後も、従来どおり信頼済み内容へ復元されること（silent restore は維持）。
+        assert restored_content["trusted-fixture.py"] == "# trusted content\n"
 
 
 class TestPreSnapshotMaterializeBaselineIntegration:

@@ -1473,12 +1473,21 @@ worktree 全体に Write 可能であり、既存候補の再評価では worktr
 （TOCTOU 対策。2 回の呼び出しの間に信頼済み `package_dir` 側が外部更新されても、ベースラインと
 復元内容が食い違わない）。
 
-**改ざんの試行検出（Issue #267 残スコープ、2026-08-17）**: 上記 2. の復元は改ざんを黙って
-隠してしまい、改ざんの試行そのものは検出・記録されない。これは学習ループへの誤信号（proposer
-由来の候補が改ざん隣接戦略をノーペナルティで探索し続けられる）を招く（reward hacking、b10a
-実例。PR #374 参照）。そこで 2. の復元の直前、`_detect_tampered_oracle_fixtures` が worktree
-側 `scenarios/fixtures/` と信頼済み immutable copy を `_hash_directory_tree`（materialize-time
-の内容を evaluator hash へ折り込むのに既に使っている関数、§1-2）で比較する。
+**改ざんの試行検出（Issue #267 残スコープ、2026-08-17。PR #380 レビュー対応で比較方式・
+実行経路・message 符号化を改修）**: 上記 2. の復元は改ざんを黙って隠してしまい、改ざんの試行
+そのものは検出・記録されない。これは学習ループへの誤信号（proposer 由来の候補が改ざん隣接
+戦略をノーペナルティで探索し続けられる）を招く（reward hacking、b10a 実例。PR #374 参照）。
+そこで 2. の復元の直前、`_detect_tampered_oracle_fixtures` が worktree 側
+`scenarios/fixtures/` と信頼済み immutable copy をファイル単位の digest map
+（`_snapshot_fixture_digests`）で比較する。materialize-time の内容を evaluator hash へ折り
+込む `_hash_directory_tree`（§1-2）は evaluator_hash 計算専用のまま維持し、この検出経路では
+使わない: candidate-controlled な worktree 側ファイルは Docker workspace 上限（512MB 近く）
+まで巨大化しうるため、`_hash_directory_tree` のように `read_bytes()` で全内容をメモリに載せる
+と evaluator プロセス自体が OOM しうる（PR #380 レビュー、P1）。`_snapshot_fixture_digests` は
+ファイルごとに `_TAMPER_DETECTION_MAX_FILE_BYTES`（10MiB）超過なら内容を読まずサイズだけで
+「改ざん」と扱い（trusted fixtures は全て小さいプレーンテキストのため、超過の存在自体が証拠に
+なる）、シンボリックリンクも追従せず同様に「改ざん」と扱う。それ以外のファイルはチャンク読みの
+ストリーミング sha256 で digest 化し、内容そのものはどの辞書にも保持しない。
 
 - 比較基準は「候補実行直前の状態」= 信頼済み immutable copy。既存シナリオの `setup`
   コマンド・`scenarios/fixtures/*.py` 自身・facet/context build のいずれも
@@ -1486,12 +1495,21 @@ worktree 全体に Write 可能であり、既存候補の再評価では worktr
   ブロックおよび fixture script 本体の走査で確認）、1 回目の materialize から候補実行までの
   間に fixtures が変化する正当な経路はなく、immutable copy をそのままベースラインとして
   比較できる。
+- 検出・記録・復元は `run_headless_scenario` 呼び出しを覆う `try`/`finally` の `finally` 側で
+  実行する。候補プロセス自体は exit 0 でも workspace export 後に `run_headless_scenario` が
+  result event 欠落・is_error・skill activation 検証失敗等で例外を送出しうるが、その場合も
+  候補は既に worktree へ書き込みを終えているため、成否/例外を問わず検出・復元へ必ず到達させる
+  （PR #380 レビュー、P2）。例外時は `finally` での改ざん記録 → 例外の再送出 → 呼び出し元の
+  `except Exception` による `stage: "unknown"` 等の記録、の順で両方の `errors` エントリが
+  失われず共存する。
 - 不一致であれば差分のあった相対パス一覧（ソート済み、ファイル内容は含めない）を求め、
   attempt を hard_failure にする。`result.json` の `errors` は既存の error_item スキーマ
   （`stage`/`type`/`message`、`type` は enum 固定）に乗せ、新しいスキーマフィールドは
   追加しない。`type: "run_error"` の `message` 先頭に固定 prefix `oracle-fixtures-tampered:`
-  を置き、続けて差分パスをカンマ区切りで列挙することで、スキーマ変更なしに機械可読な識別子と
-  証跡パスの両方を確保する。
+  を置き、続けて差分パスを JSON 配列（`json.dumps(paths, ensure_ascii=False)`）として
+  列挙することで、スキーマ変更なしに機械可読な識別子と証跡パスの両方を確保する（カンマ区切り
+  はファイル名自体にカンマを含む候補制御パスと曖昧になるため、PR #380 レビュー、P2 で JSON
+  配列へ変更）。
 - 検出後も、後続の oracle・collateral 診断を壊さないよう、復元（materialize）自体は従来どおり
   実行する。hard_failure により verdict は `pass` にならない経路（`_determine_verdict`）に
   必ず入る。
