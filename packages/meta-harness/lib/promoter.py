@@ -155,10 +155,10 @@ def promote_candidate(
         )
         _check_promoted_diff_secret_scan(preflight.worktree_dir, preflight.manifest)
         _build_facets_and_context(preflight.worktree_dir)
-        _run_verify_command(preflight.worktree_dir, config)
         _record_skill_promotion_changelog(
             preflight.worktree_dir, preflight.cand_id, preflight.manifest
         )
+        _run_verify_command(preflight.worktree_dir, config)
         _commit_promotion(preflight.worktree_dir, preflight.cand_id, preflight.title)
         _revalidate_before_pr(main_root, config, project_dir, cand_id, schema_dir)
         _push_branch(preflight.worktree_dir, preflight.branch)
@@ -1155,6 +1155,12 @@ def _worktree_installed_packages(worktree_dir: Path) -> list[str]:
 
     root 側の状態ではなく worktree 側（promote 対象コミットの状態）を読む必要があるため、
     ここでは常に `worktree_dir` 配下のファイルのみを参照する。
+
+    ファイル自体が存在しない場合は「構成なし」として空リストを返す（既存挙動を維持）。
+    一方、ファイルが存在して読み込めたにもかかわらず `installed_packages` が
+    欠落・非 list・非 str 要素であれば、facet build 対象が黙って減る（＝一部パッケージの
+    facet が再生成されないまま promote が成立する）事故を防ぐため fail-closed でエラーにする
+    （PR #377 レビュー指摘）。
     """
     orchestra_json_path = worktree_dir / ".claude" / "orchestra.json"
     if not orchestra_json_path.is_file():
@@ -1163,10 +1169,14 @@ def _worktree_installed_packages(worktree_dir: Path) -> list[str]:
         data = json.loads(orchestra_json_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise PromotionRuntimeError(f"could not read {orchestra_json_path}: {exc}") from exc
-    packages = data.get("installed_packages")
-    if not isinstance(packages, list):
-        return []
-    return [str(item) for item in packages]
+    if not isinstance(data, dict) or "installed_packages" not in data:
+        raise PromotionRuntimeError(f"{orchestra_json_path} is missing 'installed_packages'")
+    packages = data["installed_packages"]
+    if not isinstance(packages, list) or not all(isinstance(item, str) for item in packages):
+        raise PromotionRuntimeError(
+            f"{orchestra_json_path}: 'installed_packages' must be a list of strings"
+        )
+    return list(packages)
 
 
 def _facet_build_targets(worktree_dir: Path) -> list[str]:
@@ -1272,16 +1282,33 @@ def _insert_unreleased_changed_entry(text: str, entry_line: str) -> str:
         insert_at = subsection_end
         while insert_at > changed_idx + 1 and lines[insert_at - 1].strip() == "":
             insert_at -= 1
+        lines = _ensure_trailing_newline_before(lines, insert_at)
         new_lines = lines[:insert_at] + [entry_line] + lines[insert_at:]
         return "".join(new_lines)
     # `### Changed` セクションがまだ無い場合は Unreleased セクション末尾に新設する。
     insert_at = section_end
     while insert_at > unreleased_idx + 1 and lines[insert_at - 1].strip() == "":
         insert_at -= 1
+    lines = _ensure_trailing_newline_before(lines, insert_at)
     prefix_blank = "" if insert_at == unreleased_idx + 1 else "\n"
     block = f"{prefix_blank}{CHANGELOG_CHANGED_HEADING}\n\n{entry_line}"
     new_lines = lines[:insert_at] + [block] + lines[insert_at:]
     return "".join(new_lines)
+
+
+def _ensure_trailing_newline_before(lines: list[str], insert_at: int) -> list[str]:
+    """`insert_at` 直前の行が改行で終わっていなければ補う。
+
+    CHANGELOG.md の末尾に改行がないまま `### Changed` セクション末尾（= ファイル末尾）へ
+    挿入すると、既存行の末尾と新規エントリの先頭が同一行として連結されてしまう
+    （PR #377 レビュー指摘）。挿入前に直前行を正規化して分離する。
+    """
+    if insert_at == 0:
+        return lines
+    prev_line = lines[insert_at - 1]
+    if prev_line.endswith("\n"):
+        return lines
+    return lines[: insert_at - 1] + [f"{prev_line}\n"] + lines[insert_at:]
 
 
 def _find_heading_index(
@@ -1605,8 +1632,8 @@ def _build_pr_body(
     based_on_runs = _based_on_runs(events, cand_id)
     target = str(manifest.get("target") or "")
     changelog_checklist_line = (
-        "- [x] CHANGELOG.md `Unreleased` was auto-inserted for this skill promotion "
-        "(Gap (b)) — review wording, do not duplicate."
+        "- [ ] CHANGELOG.md `Unreleased`: auto-inserted draft entry — review the wording and "
+        "pruning per changelog-policy before merge."
         if target.startswith("skill:")
         else "- [ ] CHANGELOG.md `Unreleased` is updated if user-visible behavior changes."
     )

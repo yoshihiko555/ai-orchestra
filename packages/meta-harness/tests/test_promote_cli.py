@@ -647,6 +647,51 @@ def test_promote_opens_pr_without_marking_candidate_promoted(
     assert "--auto-merge" not in pr_create
 
 
+def test_promote_records_changelog_before_running_verify_command(
+    git_project: Path, git_run, tmp_path: Path, monkeypatch
+) -> None:
+    """CHANGELOG 自動追記は verify_command 実行より前に行う必要がある。
+
+    `promote.verify_command` が自動生成された CHANGELOG.md の Unreleased エントリを検証できる
+    ようにするため（PR #377 レビュー指摘）。
+    """
+    cand_id = _prepare_promotable_candidate(git_project, git_run, tmp_path)
+    call_order: list[str] = []
+
+    def fake_worktree(_project_dir: Path, _branch: str, worktree_dir: Path) -> None:
+        worktree_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_run(args, **kwargs):
+        if args[:3] == ["git", "diff", "--quiet"]:
+            return _completed(args)
+        if args[:3] == ["gh", "pr", "create"]:
+            return _completed(args, stdout="https://github.example/pr/1\n")
+        return _completed(args)
+
+    def fake_build_facets(_worktree: Path) -> None:
+        call_order.append("build_facets")
+
+    def fake_record_changelog(_worktree: Path, _cand_id: str, _manifest: dict) -> None:
+        call_order.append("record_changelog")
+
+    def fake_verify(_worktree: Path, _config: dict) -> None:
+        call_order.append("verify")
+
+    monkeypatch.setattr(cli.prm, "_ref_exists", lambda _project, _ref: True)
+    monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
+    monkeypatch.setattr(cli.prm, "_create_promotion_worktree", fake_worktree)
+    monkeypatch.setattr(cli.prm, "_build_facets_and_context", fake_build_facets)
+    monkeypatch.setattr(cli.prm, "_record_skill_promotion_changelog", fake_record_changelog)
+    monkeypatch.setattr(cli.prm, "_run_verify_command", fake_verify)
+    monkeypatch.setattr(cli.prm, "_run", fake_run)
+
+    exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
+
+    assert exit_code == cli.EXIT_OK
+    assert call_order == ["build_facets", "record_changelog", "verify"]
+
+
 def test_failed_promote_cleans_worktree_and_branch_then_retry_succeeds(
     git_project: Path, git_run, tmp_path: Path, monkeypatch
 ) -> None:
@@ -1871,6 +1916,50 @@ def test_facet_build_targets_defaults_to_claude_without_orchestra_json(tmp_path:
     assert cli.prm._facet_build_targets(worktree) == ["claude"]
 
 
+def _write_orchestra_json(worktree: Path, payload: object) -> Path:
+    orchestra_json_dir = worktree / ".claude"
+    orchestra_json_dir.mkdir(parents=True, exist_ok=True)
+    orchestra_json_path = orchestra_json_dir / "orchestra.json"
+    orchestra_json_path.write_text(json.dumps(payload), encoding="utf-8")
+    return orchestra_json_path
+
+
+def test_worktree_installed_packages_fails_closed_on_missing_key(tmp_path: Path) -> None:
+    worktree = tmp_path / "installed-packages-worktree"
+    worktree.mkdir()
+    _write_orchestra_json(worktree, {})
+
+    with pytest.raises(cli.prm.PromotionRuntimeError, match="missing 'installed_packages'"):
+        cli.prm._worktree_installed_packages(worktree)
+
+
+def test_worktree_installed_packages_fails_closed_on_non_list(tmp_path: Path) -> None:
+    worktree = tmp_path / "installed-packages-worktree"
+    worktree.mkdir()
+    _write_orchestra_json(worktree, {"installed_packages": "demo-pkg"})
+
+    with pytest.raises(cli.prm.PromotionRuntimeError, match="must be a list of strings"):
+        cli.prm._worktree_installed_packages(worktree)
+
+
+def test_worktree_installed_packages_fails_closed_on_non_str_element(tmp_path: Path) -> None:
+    worktree = tmp_path / "installed-packages-worktree"
+    worktree.mkdir()
+    _write_orchestra_json(worktree, {"installed_packages": ["demo-pkg", 123]})
+
+    with pytest.raises(cli.prm.PromotionRuntimeError, match="must be a list of strings"):
+        cli.prm._worktree_installed_packages(worktree)
+
+
+def test_worktree_installed_packages_returns_empty_without_orchestra_json(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "installed-packages-worktree"
+    worktree.mkdir()
+
+    assert cli.prm._worktree_installed_packages(worktree) == []
+
+
 def test_facet_build_targets_skips_package_without_manifest(tmp_path: Path) -> None:
     worktree = _prepare_facet_targets_worktree(
         tmp_path, installed_packages=["demo-pkg"], manifest_missing=True
@@ -2067,6 +2156,22 @@ _CHANGELOG_MISSING_UNRELEASED = (
     "# Changelog\n\n## [0.3.2] - 2026-07-28\n\n### Added\n\n- old release bullet\n"
 )
 
+# `### Changed` セクションが CHANGELOG の末尾で、かつファイルが改行で終わっていないケース
+# （PR #377 レビュー指摘: 挿入項目が既存の最終行と連結されてしまうバグの再現用）。
+_CHANGELOG_WITH_CHANGED_NO_TRAILING_NEWLINE = (
+    "# Changelog\n\n"
+    "## [Unreleased]\n\n"
+    "### Added\n\n"
+    "- existing added bullet\n\n"
+    "### Changed\n\n"
+    "- existing changed bullet"
+)
+
+# `### Changed` セクションが未作成で、`## [Unreleased]` セクション自体が末尾かつ改行なしのケース。
+_CHANGELOG_WITHOUT_CHANGED_NO_TRAILING_NEWLINE = (
+    "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- existing added bullet"
+)
+
 _SKILL_MANIFEST = {
     "target": "skill:example-skill",
     "description": "Improve the example skill output quality.",
@@ -2173,6 +2278,45 @@ def test_record_skill_promotion_changelog_fails_closed_without_unreleased_headin
         cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, _SKILL_MANIFEST)
 
 
+def test_record_skill_promotion_changelog_separates_entry_without_trailing_newline(
+    tmp_path: Path,
+) -> None:
+    """`### Changed` セクション末尾がファイル末尾かつ改行なしでも、既存項目と連結しない。"""
+    worktree = tmp_path / "changelog-worktree"
+    worktree.mkdir()
+    changelog_path = _write_changelog(worktree, _CHANGELOG_WITH_CHANGED_NO_TRAILING_NEWLINE)
+
+    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, _SKILL_MANIFEST)
+
+    text = changelog_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    existing_idx = lines.index("- existing changed bullet")
+    slug = cli.prm._cand_slug(_CAND_ID)
+    entry_idx = next(i for i, line in enumerate(lines) if slug in line)
+    assert existing_idx != entry_idx
+    assert lines[existing_idx] == "- existing changed bullet"
+    assert f"meta-harness promotion `{slug}`" in lines[entry_idx]
+
+
+def test_record_skill_promotion_changelog_creates_section_without_trailing_newline(
+    tmp_path: Path,
+) -> None:
+    """`### Changed` セクション新設時も、改行なしファイル末尾で既存項目と連結しない。"""
+    worktree = tmp_path / "changelog-worktree"
+    worktree.mkdir()
+    changelog_path = _write_changelog(worktree, _CHANGELOG_WITHOUT_CHANGED_NO_TRAILING_NEWLINE)
+
+    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, _SKILL_MANIFEST)
+
+    text = changelog_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    existing_idx = lines.index("- existing added bullet")
+    assert lines[existing_idx] == "- existing added bullet"
+    assert text.count("### Changed") == 1
+    slug = cli.prm._cand_slug(_CAND_ID)
+    assert f"meta-harness promotion `{slug}`" in text
+
+
 def test_build_pr_body_checklist_reflects_skill_auto_insert(tmp_path: Path) -> None:
     frontier_doc = {"points": [{"cand_id": _CAND_ID, "quality_mean": 91.0, "cost_mean": 100.0}]}
 
@@ -2185,5 +2329,7 @@ def test_build_pr_body_checklist_reflects_skill_auto_insert(tmp_path: Path) -> N
     )
 
     assert "auto-inserted" in skill_body
+    assert "- [ ] CHANGELOG.md `Unreleased`: auto-inserted draft entry" in skill_body
+    assert "- [x]" not in skill_body
     assert "auto-inserted" not in routing_body
     assert "- [ ] CHANGELOG.md `Unreleased` is updated" in routing_body
