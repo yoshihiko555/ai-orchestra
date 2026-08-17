@@ -48,5 +48,15 @@
     "id": "collapses-internal-double-hyphen",
     "args": ["Hello--World"],
     "expected": "hello-world"
+  },
+  {
+    "id": "newline-as-whitespace",
+    "args": ["Hello\nWorld"],
+    "expected": "hello-world"
+  },
+  {
+    "id": "whitespace-adjacent-to-existing-hyphen",
+    "args": ["Hello -- World"],
+    "expected": "hello-world"
   }
 ]

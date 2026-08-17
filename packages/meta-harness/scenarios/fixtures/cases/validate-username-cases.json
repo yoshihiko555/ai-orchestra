@@ -35,8 +35,13 @@
     "expected": true
   },
   {
-    "id": "invalid-symbol",
-    "args": ["bad name!"],
+    "id": "invalid-whitespace-only",
+    "args": ["bad name"],
+    "expected": false
+  },
+  {
+    "id": "invalid-punctuation-only",
+    "args": ["badname!"],
     "expected": false
   },
   {

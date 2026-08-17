@@ -47,7 +47,16 @@ comparison side):
    ``posixpath.normpath()`` maps ``sandbox/.../cli-tools.local.yaml/`` onto the same normalized
    string as the real file, but a POSIX trailing slash means "this must be a directory" -- the
    winning config is an ordinary file, so a ``source_file`` answer with a trailing slash never
-   actually names it and must fail rather than hash-match its way to a pass.
+   actually names it and must fail rather than hash-match its way to a pass. Any ``..`` path
+   segment is likewise rejected *before* normalization (PR #381 review, round 5): the same
+   ``normpath()`` collapse that cancels a redundant ``./`` also collapses a traversal like
+   ``does-not-exist/../sandbox/config/agent-routing/cli-tools.local.yaml`` down to the expected
+   normalized string, but the literal answer names a path whose leading segment
+   (``does-not-exist/``) does not actually exist -- it only hash-matches by lexical accident, not
+   because it resolves to the winning file. The prompt asks for a real, direct relative path to
+   that file, not a ``..``-laden path that happens to cancel out; requiring no ``..`` segment at
+   all is deliberately stricter than "resolves to the right file" so a legitimate direct answer
+   is never penalized while every accidental- or deliberate-traversal answer is rejected.
    The ``value`` field is never path-normalized (it is an opaque config value, not a path).
 4. Wrap as a single-key JSON object (``{"value": ...}`` or ``{"source_file": ...}``) and serialize
    with ``json.dumps(obj, sort_keys=True, separators=(",", ":"))`` (sorted keys, no incidental
@@ -98,6 +107,13 @@ def _normalize_field_value(field: str, raw_value: Any) -> str:
             f"source_file {text!r} ends with a trailing slash; the winning config is an "
             "ordinary file, never a directory, and normalizing away the slash before comparing "
             "would let a directory-shaped answer collapse onto a real file's expected hash"
+        )
+        assert ".." not in text.split("/"), (
+            f"source_file {text!r} contains a '..' path segment; posixpath.normpath() would "
+            "collapse it down to the expected normalized string by lexical accident even though "
+            "the literal answer names a path (e.g. through a nonexistent leading directory) "
+            "that does not actually resolve to the winning file -- the answer must be a real, "
+            "direct relative path to it"
         )
         text = posixpath.normpath(text)
     return text

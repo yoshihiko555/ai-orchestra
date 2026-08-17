@@ -352,6 +352,54 @@ class TestAssertPythonTypeHints:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         fixture.main(["--file", "ok.py", "--function", "slugify"])
 
+    def test_fails_when_required_function_is_decorated(self, tmp_path: Path, monkeypatch) -> None:
+        """PR #381 review, round 5 (P1): a decorator on the required function's own `def` is not
+        an `Assign` and does not rebind the module-level name, so it was invisible to every
+        rebinding check even though it can replace what actually runs at the name -- e.g. a
+        decorator that discards the well-annotated wrapped function and returns an unannotated
+        `lambda` instead, leaving `slugify.__annotations__` effectively empty at runtime while
+        the visible `def slugify(title: str) -> str:` still looks fully annotated to this
+        fixture."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "def strips_annotations(fn):\n"
+            "    return lambda title: fn(title)\n\n\n"
+            "@strips_annotations\n"
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return title.lower()\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(
+            AssertionError, match="required function 'slugify' must not be decorated"
+        ):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
+    def test_leading_positional_self_is_exempt_but_second_positional_self_is_not(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 5 (P2): the self/cls exemption previously applied by name alone
+        to *any* argument of a non-static method, so a real, explicitly-passed *second*
+        positional parameter happening to be named `self` was wrongly exempted even though
+        Python never implicitly binds anything to it -- only the true (leading) receiver
+        parameter (here named `instance`, not `self`) is implicitly bound. The exemption must
+        apply only to the leading positional parameter."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "class Helper:\n"
+            "    def transform(instance: object, prefix: str, self) -> str:\n"
+            '        """Doc."""\n'
+            "        return prefix + self\n\n\n"
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return Helper().transform(title, title)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="parameter 'self' is missing a type annotation"):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
 
 # ---------------------------------------------------------------------------
 # assert-python-conventions.py
@@ -471,7 +519,7 @@ class TestAssertPythonConventions:
         `*X`) never tripped the check even though `coding-principles.md`'s naming rule draws no
         exception for variadic parameters."""
         fixture = _fixture("assert-python-conventions.py")
-        (tmp_path / "f.py").write_text("def f(*X, **Y):\n    return X, Y\n", encoding="utf-8")
+        (tmp_path / "f.py").write_text("def forward(*X, **Y):\n    return X, Y\n", encoding="utf-8")
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         with pytest.raises(AssertionError, match="parameter 'X' is not a meaningful snake_case"):
             fixture.main(["--file", "f.py", "--require-snake-case"])
@@ -479,12 +527,31 @@ class TestAssertPythonConventions:
     def test_snake_case_passes_with_snake_case_vararg_and_kwarg(
         self, tmp_path: Path, monkeypatch
     ) -> None:
+        # Function name is `forward`, not the single-char `f` used elsewhere in this file for
+        # brevity: round 5 (P2) added a single-character check for function names too, so a
+        # positive (must-pass) test needs a name that clears that bar (see
+        # `test_snake_case_fails_on_single_char_function_name` below for the negative case).
         fixture = _fixture("assert-python-conventions.py")
         (tmp_path / "f.py").write_text(
-            "def f(*args, **kwargs):\n    return args, kwargs\n", encoding="utf-8"
+            "def forward(*args, **kwargs):\n    return args, kwargs\n", encoding="utf-8"
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         fixture.main(["--file", "f.py", "--require-snake-case"])
+
+    def test_snake_case_fails_on_single_char_function_name(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 5 (P2): the single-character "not meaningful" check previously
+        applied to parameters and variables only; a single-character *function* name like
+        `def x(...)` passed undetected even though `coding-principles.md`'s naming rule draws no
+        distinction between a function name and any other identifier."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            'def x(value: str) -> str:\n    """Doc."""\n    return value\n', encoding="utf-8"
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="function name 'x' is a single character"):
+            fixture.main(["--file", "f.py", "--require-snake-case"])
 
     def test_max_function_lines_fails_when_exceeded(self, tmp_path: Path, monkeypatch) -> None:
         fixture = _fixture("assert-python-conventions.py")
@@ -600,6 +667,30 @@ class TestAssertPythonConventions:
         with pytest.raises(AssertionError, match="nesting depth"):
             fixture.main(["--file", "f.py", "--max-nesting-depth", "2"])
 
+    def test_max_nesting_depth_counts_try_except_star(self, tmp_path: Path, monkeypatch) -> None:
+        """PR #381 review, round 5 (P2): Python 3.11+'s `try`/`except*` parses to `ast.TryStar`,
+        a distinct node type from plain `ast.Try` (`except`), so it was invisible to
+        `_NESTING_NODES` and a candidate could dodge the nesting-depth check entirely by writing
+        an equivalently deep chain of nested `try`/`except*` blocks instead of `if`/`elif`."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            "def validate(name):\n"
+            "    try:\n"
+            "        try:\n"
+            "            try:\n"
+            "                return True\n"
+            "            except* ValueError:\n"
+            "                return False\n"
+            "        except* TypeError:\n"
+            "            return False\n"
+            "    except* KeyError:\n"
+            "        return False\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="nesting depth"):
+            fixture.main(["--file", "f.py", "--max-nesting-depth", "2"])
+
 
 # ---------------------------------------------------------------------------
 # assert-effective-config.py
@@ -693,6 +784,42 @@ class TestAssertEffectiveConfigFlat:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         fixture = _fixture("assert-effective-config.py")
         with pytest.raises(AssertionError, match="trailing slash"):
+            fixture.main(
+                [
+                    "--base",
+                    "sandbox/config/agent-routing/cli-tools.yaml",
+                    "--local",
+                    "sandbox/config/agent-routing/cli-tools.local.yaml",
+                    "--answer",
+                    ".meta-harness/config-answer.json",
+                    "--key-path",
+                    "codex.model",
+                    "--field",
+                    "source_file",
+                ]
+            )
+
+    def test_fails_when_source_file_contains_a_dot_dot_segment(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 5 (P2): `posixpath.normpath()` collapses
+        `does-not-exist/../sandbox/config/agent-routing/cli-tools.local.yaml` down to the same
+        normalized string as the real file, so without an explicit rejection this path -- whose
+        leading segment does not actually exist -- would hash-match the real file's expected
+        value by lexical accident. A `..` segment must be rejected before normalization, not
+        silently collapsed away."""
+        _write_train_config_pair(tmp_path)
+        answer = tmp_path / ".meta-harness" / "config-answer.json"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text(
+            '{"value": "harness-local-override-model", '
+            '"source_file": '
+            '"does-not-exist/../sandbox/config/agent-routing/cli-tools.local.yaml"}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture = _fixture("assert-effective-config.py")
+        with pytest.raises(AssertionError, match="'\\.\\.' path segment"):
             fixture.main(
                 [
                     "--base",
@@ -1103,6 +1230,58 @@ class TestAssertFunctionBehavior:
             fixture.main(
                 ["--module", "mod.py", "--function", "validate_username", "--cases", cases]
             )
+
+    def test_stops_after_first_per_case_timeout(self, tmp_path: Path, monkeypatch) -> None:
+        """PR #381 review, round 5 (P1): re-attempting every remaining case against a per-case
+        timeout after one case has already timed out (e.g. a hanging candidate call) can itself
+        overrun the scenario's overall command timeout -- `check_behavior()` must fail fast after
+        the *first* timeout instead of paying the per-case timeout again for every case that
+        follows it."""
+        fixture = _fixture("assert-function-behavior.py")
+        monkeypatch.setattr(fixture, "_CASE_TIMEOUT_SECONDS", 1)
+        module = (
+            "import time\n\n\n"
+            "def slugify(title: str) -> str:\n"
+            "    time.sleep(5)\n"
+            "    return title.lower()\n"
+        )
+        (tmp_path / "mod.py").write_text(module, encoding="utf-8")
+        cases = (
+            '[{"id": "hangs", "args": ["Hello World"], "expected": "hello-world"}, '
+            '{"id": "never-runs", "args": ["Other"], "expected": "other"}]'
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError) as excinfo:
+            fixture.main(["--module", "mod.py", "--function", "slugify", "--cases", cases])
+        message = str(excinfo.value)
+        assert "hangs" in message
+        assert "timed out" in message
+        assert "never-runs" not in message
+
+    def test_stops_after_cumulative_case_runtime_exceeds_the_oracle_budget(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 5 (P1): a per-case timeout alone cannot catch a candidate whose
+        individual calls each complete *under* the per-case timeout but whose cumulative runtime
+        across many cases would still overrun the scenario's overall command timeout.
+        `check_behavior()` must also stop once cumulative elapsed time crosses
+        `_CASE_BUDGET_SECONDS`, skipping any remaining cases rather than running them all to
+        completion."""
+        fixture = _fixture("assert-function-behavior.py")
+        monkeypatch.setattr(fixture, "_CASE_BUDGET_SECONDS", 0)
+        (tmp_path / "mod.py").write_text(self._OK_MODULE, encoding="utf-8")
+        cases = (
+            '[{"id": "first", "args": ["Hello World"], "expected": "hello-world"}, '
+            '{"id": "second", "args": ["already-lower"], "expected": "already-lower"}, '
+            '{"id": "third", "args": ["Another Title"], "expected": "another-title"}]'
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError) as excinfo:
+            fixture.main(["--module", "mod.py", "--function", "slugify", "--cases", cases])
+        message = str(excinfo.value)
+        assert "oracle budget" in message
+        assert "second" not in message
+        assert "third" not in message
 
 
 # ---------------------------------------------------------------------------

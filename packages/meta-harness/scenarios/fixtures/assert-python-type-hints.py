@@ -24,7 +24,18 @@ one more construct to trace -- ``_has_single_module_level_def_binding()`` conser
 the *entire* module AST (``ast.walk``) and rejects the submission if the name is bound anywhere
 by anything other than a qualifying module-level ``def``. A legitimate implementation has no
 reason to rebind its own required function name anywhere else in the file, so this is
-effectively false-positive-free while ending the whack-a-mole for good.
+effectively false-positive-free while ending the whack-a-mole for good; and (4) a decorator on
+the required function's own ``def`` (PR #381 review, round 5, P1) -- a decorator application
+(``@decorator\ndef slugify(...): ...``) is not an ``Assign`` and does not rebind the module-level
+name to a different AST node at all, so it was invisible to every check above even though it can
+replace what actually runs at the name (e.g. a decorator that discards the wrapped function and
+returns an unannotated ``lambda`` instead) while leaving the well-annotated, undecorated-looking
+``def`` fully intact for this fixture to approve. Rather than trying to evaluate what a decorator
+does at runtime -- the same open-ended, never-ending game as tracing control flow -- this fixture
+closes the whole class at once: **a required function's top-level ``def`` may carry zero
+decorators.** A legitimate ``slugify``/``validate_username`` implementation has no reason to be
+decorated (these are plain, self-contained functions per the scenario prompts), so this is
+false-positive-free the same way the rebinding checks are.
 
 Trust note (contrast with ``assert-issue-fix-decision.py`` / ``assert-effective-config.py``):
 this fixture inspects the very file the scenario asked the candidate to write, not a separate
@@ -173,22 +184,58 @@ def _has_single_module_level_def_binding(tree: ast.Module, name: str) -> bool:
     return True
 
 
+def _required_function_problems(tree: ast.Module, name: str) -> list[str]:
+    """Existence checks for one ``--function`` name: sole module-level def binding, undecorated.
+
+    Kept as two independent checks with distinct messages (PR #381 review, round 5, P1) rather
+    than folded into ``_has_single_module_level_def_binding()``: a decorated def *is* the sole
+    module-level binding of the name in AST terms (no other node rebinds it), so conflating the
+    two checks under the existing "not the sole module-level def binding" message would be
+    inaccurate about what actually disqualified the submission.
+    """
+    if not _has_single_module_level_def_binding(tree, name):
+        return [
+            f"required function '{name}' is not the sole module-level def binding of that name "
+            "(a class method, nested def, or any other rebinding anywhere in the file -- "
+            "including inside an if/try/with branch -- disqualifies it)"
+        ]
+    def_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    )
+    if def_node.decorator_list:
+        return [
+            f"required function '{name}' must not be decorated (found "
+            f"{len(def_node.decorator_list)} decorator(s) on its def) -- a decorator can "
+            "replace what actually runs at the name (e.g. discard the annotated function and "
+            "return an unannotated one instead) without rebinding the module-level name, so "
+            "none of the rebinding checks above would ever see it"
+        ]
+    return []
+
+
 def check_type_hints(source: str, *, filename: str, required_functions: list[str]) -> list[str]:
     tree = ast.parse(source, filename=filename)
     functions_with_context = _iter_functions_with_context(tree)
-    problems: list[str] = [
-        f"required function '{name}' is not the sole module-level def binding of that name "
-        "(a class method, nested def, or any other rebinding anywhere in the file -- including "
-        "inside an if/try/with branch -- disqualifies it)"
-        for name in required_functions
-        if not _has_single_module_level_def_binding(tree, name)
-    ]
+    problems: list[str] = []
+    for name in required_functions:
+        problems.extend(_required_function_problems(tree, name))
     for fn, is_method in functions_with_context:
         args = fn.args
         positional = [*args.posonlyargs, *args.args, *args.kwonlyargs]
         variadic = [a for a in (args.vararg, args.kwarg) if a is not None]
+        # Only the function's leading positional parameter can ever be an implicitly-bound
+        # `self`/`cls` receiver (PR #381 review, round 3 introduced the is_method exemption;
+        # round 5 (P2) scoped it to this leading position only) -- naming a *later* parameter,
+        # a keyword-only parameter, or a variadic `*args`/`**kwargs` catch-all `self`/`cls` does
+        # not make Python implicitly bind anything to it, so those still require an explicit
+        # annotation like any other parameter.
+        leading_positional = (
+            args.posonlyargs[0] if args.posonlyargs else (args.args[0] if args.args else None)
+        )
         for arg in [*positional, *variadic]:
-            if is_method and arg.arg in ("self", "cls"):
+            if is_method and arg is leading_positional and arg.arg in ("self", "cls"):
                 continue
             if arg.annotation is None:
                 problems.append(f"{fn.name}: parameter '{arg.arg}' is missing a type annotation")

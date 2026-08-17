@@ -6,7 +6,12 @@ items without duplicating the AST plumbing:
 
 - ``--require-docstring``: every function has a non-empty docstring.
 - ``--require-snake-case``: function names and assigned variable/parameter names are
-  ``snake_case`` and not a single meaningless character. This applies to ``for``/``async for``
+  ``snake_case`` and not a single meaningless character. Function names are also checked for the
+  single-character case, not just parameters and variables (PR #381 review, round 5): the
+  ``coding-principles.md`` naming rule's "意味のある名前" requirement draws no distinction
+  between a function name and any other identifier, but the length check was previously applied
+  to parameters/variables only, so a helper defined as ``def x(...)`` and called from the
+  required function passed undetected. This applies to ``for``/``async for``
   loop targets too: ``coding-principles.md`` requires meaningful names (e.g. ``user_count`` over
   ``x``) and defines no loop-variable carve-out, so a single-character loop target is flagged like
   any other single-character variable (PR #381 review). Variadic parameters (``*args``/
@@ -22,10 +27,14 @@ items without duplicating the AST plumbing:
   the same name).
 - ``--max-function-lines N``: no function body spans more than ``N`` source lines.
 - ``--max-nesting-depth N``: no function nests control-flow blocks (``if``/``for``/``while``/
-  ``try``/``with``/``match``) deeper than ``N`` levels (rewarding an early-return style over deep
-  nesting). ``match``/``case`` (PR #381 review, round 3) counts the same as any other
-  control-flow block -- a candidate could otherwise dodge the nesting-depth check entirely by
-  writing an equivalently deep chain of nested ``match`` statements instead of ``if``/``elif``.
+  ``try``/``except*``/``with``/``match``) deeper than ``N`` levels (rewarding an early-return
+  style over deep nesting). ``match``/``case`` (PR #381 review, round 3) counts the same as any
+  other control-flow block -- a candidate could otherwise dodge the nesting-depth check entirely
+  by writing an equivalently deep chain of nested ``match`` statements instead of ``if``/``elif``.
+  Python 3.11+'s ``try``/``except*`` (``ast.TryStar``, PR #381 review, round 5) counts too --
+  it is a distinct AST node type from plain ``ast.Try`` (``except``), so it was invisible to
+  ``_NESTING_NODES`` until added explicitly; a candidate could otherwise dodge the check the same
+  way an omitted ``match`` would have let it.
   An ``elif`` chain counts as a single level, not one level per ``elif``: ``ast`` represents
   ``elif`` as a nested ``If`` inside the parent ``If``'s ``orelse``, indistinguishable in node
   type from an ``if`` written inside an explicit ``else:`` block, so this is detected via column
@@ -54,6 +63,7 @@ _NESTING_NODES = (
     ast.AsyncFor,
     ast.While,
     ast.Try,
+    ast.TryStar,
     ast.With,
     ast.AsyncWith,
     ast.Match,
@@ -128,6 +138,8 @@ def _check_snake_case(tree: ast.AST) -> list[str]:
     for fn in _iter_functions(tree):
         if not _SNAKE_CASE.match(fn.name):
             problems.append(f"function name '{fn.name}' is not snake_case")
+        elif len(fn.name.lstrip("_")) <= 1:
+            problems.append(f"function name '{fn.name}' is a single character (not meaningful)")
         args = fn.args
         variadic = [a for a in (args.vararg, args.kwarg) if a is not None]
         for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs, *variadic]:

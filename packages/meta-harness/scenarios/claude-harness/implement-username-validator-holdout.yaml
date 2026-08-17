@@ -48,11 +48,14 @@ graded:
   # 残りの assertion を一つも評価せず exit 0 のまま通過できた。1ケース=1子プロセスに分離
   # した assert-function-behavior.py 経由で実行し、この抜け道を構造的に塞ぐ
   # （slugify と同一の設計・同一 fixture、詳細はそちらのコメント参照）。
+  # 空白のみ含む不正ケースと句読記号のみ含む不正ケースを分離（PR #381 第5巡レビュー指摘:
+  # 唯一の不正 ASCII ケースが空白と `!` を同時に含んでいたため、どちらか一方だけを拒否する
+  # 不完全な実装（例: `!` だけ拒否し空白を許容）も通ってしまうのを防ぐ）。
   - id: validate-username-behavior-correct-holdout
-    text: "validate_username() が None/空文字/短すぎ/長すぎ/不正文字（記号・非ASCII）/正常値
-      （境界長3・32、大文字混在・数字始まり・アンダースコア始まり含む）を正しく判定する
-      （単一値ハードコードでは通らない。SystemExit/os._exit による早期終了も子プロセス
-      隔離により通過できない）"
+    text: "validate_username() が None/空文字/短すぎ/長すぎ/不正文字（空白のみ・記号のみ・
+      非ASCII、それぞれ独立したケースで検証）/正常値（境界長3・32、大文字混在・数字始まり・
+      アンダースコア始まり含む）を正しく判定する（単一値ハードコードでは通らない。
+      SystemExit/os._exit による早期終了も子プロセス隔離により通過できない）"
     oracle: command_exit
     command: >-
       python3 packages/meta-harness/scenarios/fixtures/assert-function-behavior.py

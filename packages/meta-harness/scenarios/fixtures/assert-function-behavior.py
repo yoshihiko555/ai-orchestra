@@ -40,6 +40,15 @@ Case format: a JSON list of objects, each ``{"args": [...], "expected": <value>}
 ``"id"`` names the case in failure output). ``--cases`` accepts either a path (resolved against
 ``AI_ORCHESTRA_DIR``, mirroring every other fixture in this suite) to a JSON file, or an inline
 JSON list on the command line.
+
+Total-runtime budget (PR #381 review, round 5, P1): the case loop is otherwise unbounded --
+running every case serially with no cap on total elapsed time can overrun the scenario's own
+``command_timeout_ms`` (60s) before this script ever gets a chance to report a normal graded
+failure, so the outer harness kills the process mid-run and records a hard ``oracle_error``
+instead of the graded fail this fixture is supposed to produce. See ``_CASE_TIMEOUT_SECONDS``/
+``_CASE_BUDGET_SECONDS`` above the case-runner template for the two-part fix (fail fast on the
+first per-case timeout; cap cumulative runtime separately for a candidate whose calls each stay
+just under the per-case timeout).
 """
 
 from __future__ import annotations
@@ -49,10 +58,29 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-_CASE_TIMEOUT_SECONDS = 10
+# Both bounds exist to keep this fixture's *total* worst-case runtime under the scenario's
+# ``command_timeout_ms: 60000`` (PR #381 review, round 5, P1): a case-serial oracle with no
+# upper bound on total time can overrun the scenario's outer timeout before it ever gets to
+# report a normal graded failure, turning what should be a graded fail into a hard
+# `oracle_error` when the outer harness kills the process mid-run. Two failure shapes need two
+# different bounds:
+# - A hanging/blocked candidate call (e.g. an infinite loop) is caught by
+#   ``_CASE_TIMEOUT_SECONDS`` per subprocess, and ``check_behavior()`` stops immediately after
+#   the *first* such timeout (see its "stopping after first timeout" break) rather than
+#   re-attempting the remaining cases against a candidate that has already demonstrated it can
+#   hang -- worst case ~5s total.
+# - A candidate whose calls each complete just *under* the per-case timeout (so no individual
+#   call ever times out) is instead caught by ``_CASE_BUDGET_SECONDS``: checked after every
+#   case regardless of outcome, it stops the loop once cumulative runtime crosses the budget.
+#   Worst case total is bounded by ``_CASE_BUDGET_SECONDS`` plus one more in-flight case's
+#   ``_CASE_TIMEOUT_SECONDS`` (the budget check only runs *between* cases) -- 45s + 5s = 50s,
+#   comfortably under the 60s scenario timeout regardless of how many cases a case file adds.
+_CASE_TIMEOUT_SECONDS = 5
+_CASE_BUDGET_SECONDS = 45
 
 _CASE_RUNNER_TEMPLATE = """\
 import importlib.util, json
@@ -102,7 +130,7 @@ def _run_case(
             timeout=_CASE_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return {"error": f"timed out after {_CASE_TIMEOUT_SECONDS}s"}
+        return {"error": f"timed out after {_CASE_TIMEOUT_SECONDS}s", "timed_out": True}
 
     if proc.returncode != 0:
         stderr_lines = proc.stderr.strip().splitlines()
@@ -143,6 +171,7 @@ def check_behavior(
     )
 
     problems: list[str] = []
+    started = time.monotonic()
     for index, case in enumerate(cases):
         case_id = case.get("id", f"case[{index}]")
         args = case["args"]
@@ -150,16 +179,43 @@ def check_behavior(
         outcome = _run_case(python_executable, module_path, function, args)
         if "error" in outcome:
             problems.append(f"{case_id}: {outcome['error']}")
-            continue
-        # Compare canonical JSON, not Python `!=` (PR #381 review, round 4 follow-up): Python
-        # treats `1 == True` and `0 == False`, so a candidate returning `1`/`0` instead of the
-        # required `True`/`False` would otherwise silently pass. `json.dumps` distinguishes them
-        # (`"true"` vs `"1"`), matching the strict `is True`/`is False` identity the earlier
-        # single-process oracle used to enforce.
-        if json.dumps(outcome["result"], sort_keys=True) != json.dumps(expected, sort_keys=True):
+            if outcome.get("timed_out"):
+                # Fail fast rather than paying up to `_CASE_TIMEOUT_SECONDS` again for every
+                # remaining case against a candidate that has already demonstrated it can hang
+                # (PR #381 review, round 5, P1; see the module-level bounds comment).
+                skipped = len(cases) - index - 1
+                problems.append(
+                    f"stopping after {case_id}'s timeout to stay within the scenario's overall "
+                    f"command timeout budget ({skipped} remaining case(s) skipped)"
+                )
+                break
+        else:
+            # Compare canonical JSON, not Python `!=` (PR #381 review, round 4 follow-up):
+            # Python treats `1 == True` and `0 == False`, so a candidate returning `1`/`0`
+            # instead of the required `True`/`False` would otherwise silently pass. `json.dumps`
+            # distinguishes them (`"true"` vs `"1"`), matching the strict `is True`/`is False`
+            # identity the earlier single-process oracle used to enforce.
+            if json.dumps(outcome["result"], sort_keys=True) != json.dumps(
+                expected, sort_keys=True
+            ):
+                problems.append(
+                    f"{case_id}: {function}(*{args!r}) == {outcome['result']!r}, "
+                    f"expected {expected!r}"
+                )
+
+        elapsed = time.monotonic() - started
+        is_last_case = index == len(cases) - 1
+        if elapsed > _CASE_BUDGET_SECONDS and not is_last_case:
+            # Catches the failure shape a per-case timeout cannot: a candidate whose individual
+            # calls each complete under `_CASE_TIMEOUT_SECONDS` but whose cumulative runtime
+            # across many cases would still overrun the scenario's outer timeout (PR #381
+            # review, round 5, P1; see the module-level bounds comment).
+            skipped = len(cases) - index - 1
             problems.append(
-                f"{case_id}: {function}(*{args!r}) == {outcome['result']!r}, expected {expected!r}"
+                f"stopping after {case_id}: cumulative case runtime {elapsed:.1f}s exceeded the "
+                f"{_CASE_BUDGET_SECONDS}s oracle budget ({skipped} remaining case(s) skipped)"
             )
+            break
     return problems
 
 
