@@ -34,10 +34,13 @@ critical:
 graded:
   # graded（出来栄え = 機能の正しさ）: 単一値ハードコードでは通らない複数入力の挙動検証。
   # タブ混じりの連続空白ケース（PR #381 レビュー指摘: スペースのみを置換する実装が
-  # 素通りしてしまうのを防ぐ）を含む。
+  # 素通りしてしまうのを防ぐ）と、タブのみの空白入力ケース（PR #381 第3巡レビュー指摘:
+  # `''` と `'   '` だけを特別扱いし、他は `re.sub(r"\s+", "-", ...).strip("-")` する実装が
+  # `slugify('\t\t')` に空文字を返すのを見逃さないよう追加）を含む。
   - id: slugify-behavior-correct
     text: "slugify() が小文字化・空白圧縮（タブ混在含む）・前後ハイフン除去・連続ハイフン圧縮
-      （内部の連続ハイフン含む）・空入力の既定値を正しく処理する（単一値ハードコードでは通らない）"
+      （内部の連続ハイフン含む）・空入力の既定値（タブのみの入力含む）を正しく処理する
+      （単一値ハードコードでは通らない）"
     oracle: command_exit
     command: >-
       python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from slugify import slugify;
@@ -45,6 +48,7 @@ graded:
       assert slugify('  Multiple   Spaces  ') == 'multiple-spaces', slugify('  Multiple   Spaces  ');
       assert slugify('') == 'untitled', slugify('');
       assert slugify('   ') == 'untitled', slugify('   ');
+      assert slugify('\t\t') == 'untitled', slugify('\t\t');
       assert slugify('UPPER CASE TITLE') == 'upper-case-title', slugify('UPPER CASE TITLE');
       assert slugify('--Leading and Trailing--') == 'leading-and-trailing', slugify('--Leading and Trailing--');
       assert slugify('Hello\tWorld') == 'hello-world', slugify('Hello\tWorld');

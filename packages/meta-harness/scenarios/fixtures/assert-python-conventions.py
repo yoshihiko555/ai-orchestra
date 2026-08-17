@@ -17,7 +17,10 @@ items without duplicating the AST plumbing:
   the same name).
 - ``--max-function-lines N``: no function body spans more than ``N`` source lines.
 - ``--max-nesting-depth N``: no function nests control-flow blocks (``if``/``for``/``while``/
-  ``try``/``with``) deeper than ``N`` levels (rewarding an early-return style over deep nesting).
+  ``try``/``with``/``match``) deeper than ``N`` levels (rewarding an early-return style over deep
+  nesting). ``match``/``case`` (PR #381 review, round 3) counts the same as any other
+  control-flow block -- a candidate could otherwise dodge the nesting-depth check entirely by
+  writing an equivalently deep chain of nested ``match`` statements instead of ``if``/``elif``.
   An ``elif`` chain counts as a single level, not one level per ``elif``: ``ast`` represents
   ``elif`` as a nested ``If`` inside the parent ``If``'s ``orelse``, indistinguishable in node
   type from an ``if`` written inside an explicit ``else:`` block, so this is detected via column
@@ -40,7 +43,16 @@ from pathlib import Path
 
 _SNAKE_CASE = re.compile(r"^_?[a-z][a-z0-9_]*$")
 _UPPER_SNAKE_CASE = re.compile(r"^_?[A-Z][A-Z0-9_]*$")
-_NESTING_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.With, ast.AsyncWith)
+_NESTING_NODES = (
+    ast.If,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.Try,
+    ast.With,
+    ast.AsyncWith,
+    ast.Match,
+)
 
 
 def _iter_functions(tree: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -57,6 +69,21 @@ def _check_docstrings(tree: ast.AST) -> list[str]:
     ]
 
 
+def _collect_name_targets(target: ast.expr) -> list[ast.Name]:
+    """Recursively collect ``ast.Name`` store targets from a (possibly tuple/list/starred)
+    assignment target, e.g. ``A, B = ...`` or ``A, (B, C) = ...``."""
+    if isinstance(target, ast.Name):
+        return [target]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[ast.Name] = []
+        for elt in target.elts:
+            names.extend(_collect_name_targets(elt))
+        return names
+    if isinstance(target, ast.Starred):
+        return _collect_name_targets(target.value)
+    return []
+
+
 def _collect_module_level_constant_ids(tree: ast.AST) -> set[int]:
     """``id()`` of each ``ast.Name`` store target assigned directly at module top-level.
 
@@ -65,6 +92,12 @@ def _collect_module_level_constant_ids(tree: ast.AST) -> set[int]:
     ``tree.body`` itself (the module's direct statement list) count as module-level constants; a
     same-cased name reassigned inside a function body is a regular local variable and must still
     follow ``snake_case``.
+
+    Tuple/list/starred assignment targets are unpacked recursively (PR #381 review, round 3):
+    ``WHITESPACE_RE, HYPHEN_RE = re.compile(...), re.compile(...)`` is a legitimate way to define
+    two module constants in one statement, and previously only a bare ``ast.Name`` target was
+    recognized, so both names in a tuple-unpack were misreported as non-constant ``snake_case``
+    violations.
 
     Returns node identities (``id()``) rather than name strings: a set of names would let a
     module-level ``VALUE = 1`` permanently mark the bare string ``"VALUE"`` as an already-checked
@@ -77,7 +110,8 @@ def _collect_module_level_constant_ids(tree: ast.AST) -> set[int]:
     ids: set[int] = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
-            ids.update(id(target) for target in node.targets if isinstance(target, ast.Name))
+            for target in node.targets:
+                ids.update(id(name) for name in _collect_name_targets(target))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             ids.add(id(node.target))
     return ids

@@ -33,11 +33,22 @@ comparison side):
 1. Coerce the field value to ``str`` (mirrors the pre-existing ``str(answer.get(...))`` coercion,
    so ``None``/non-string JSON values still compare deterministically).
 2. ``.strip()`` leading/trailing whitespace.
-3. Wrap as a single-key JSON object (``{"value": ...}`` or ``{"source_file": ...}``) and serialize
+3. For the ``source_file`` field only (PR #381 review, round 3): run the stripped string through
+   ``posixpath.normpath()``. The scenario prompt only asks for *some* correct relative path to the
+   winning config file, e.g. ``sandbox/config/agent-routing/cli-tools.local.yaml`` and
+   ``./sandbox/config/agent-routing/cli-tools.local.yaml`` name the same file and must hash
+   identically. ``posixpath`` (not ``os.path``) is used deliberately: the scenario's paths are
+   always POSIX-style regardless of the host OS running the harness. This only cancels redundant
+   tokens already present in the literal string (a leading ``./``, doubled ``/``, interior ``.``
+   segments, and textual ``a/b/../c`` -> ``a/c`` collapse) -- it does not resolve the path against
+   the filesystem, follow symlinks, or make it absolute, so it cannot be used to smuggle in a path
+   that doesn't actually name the same file.
+   The ``value`` field is never path-normalized (it is an opaque config value, not a path).
+4. Wrap as a single-key JSON object (``{"value": ...}`` or ``{"source_file": ...}``) and serialize
    with ``json.dumps(obj, sort_keys=True, separators=(",", ":"))`` (sorted keys, no incidental
    whitespace -- irrelevant for a single-key object today, but keeps the spec stable if a future
    revision hashes multi-key objects).
-4. ``hashlib.sha256(canonical.encode("utf-8")).hexdigest()``.
+5. ``hashlib.sha256(canonical.encode("utf-8")).hexdigest()``.
 
 Residual limitation (still Issue #267, same class as ``assert-issue-fix-decision.py``'s note):
 this hashing only closes the *fixture-source* leak. The candidate's `git worktree` checkout also
@@ -62,18 +73,32 @@ import argparse
 import hashlib
 import json
 import os
+import posixpath
 from pathlib import Path
 from typing import Any
 
 _ANSWER_FIELDS = ("value", "source_file")
 
 
+def _normalize_field_value(field: str, raw_value: Any) -> str:
+    """Coerce and normalize one answer field per the module docstring's "Normalization spec".
+
+    ``source_file`` gets an additional POSIX path normalization pass (PR #381 review, round 3)
+    so that equivalent relative-path spellings (e.g. a redundant leading ``./``) compare equal;
+    ``value`` is an opaque config value and is only stripped, never path-normalized.
+    """
+    text = str(raw_value).strip()
+    if field == "source_file" and text:
+        text = posixpath.normpath(text)
+    return text
+
+
 def _normalized_field_hash(field: str, raw_value: Any) -> str:
-    """sha256 of the normalized ``{field: str(raw_value).strip()}`` JSON object.
+    """sha256 of the normalized ``{field: ...}`` JSON object.
 
     See the module docstring's "Normalization spec" for the exact steps this implements.
     """
-    normalized_value = str(raw_value).strip()
+    normalized_value = _normalize_field_value(field, raw_value)
     canonical = json.dumps({field: normalized_value}, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

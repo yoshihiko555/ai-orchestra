@@ -133,13 +133,15 @@ class TestAssertPythonTypeHints:
     def test_fails_when_required_function_is_not_a_def(self, tmp_path: Path, monkeypatch) -> None:
         """PR #381 review (P1): a candidate satisfying behavior via `slugify = lambda ...`
         instead of `def slugify(...)` must not vacuously pass the type-hints check just because
-        `_iter_functions()` finds nothing to complain about."""
+        `_iter_functions_with_context()` finds nothing to complain about."""
         fixture = _fixture("assert-python-type-hints.py")
         (tmp_path / "bad.py").write_text(
             "slugify = lambda title: title.lower()\n", encoding="utf-8"
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
-        with pytest.raises(AssertionError, match="required function 'slugify' is not defined"):
+        with pytest.raises(
+            AssertionError, match="required function 'slugify' is not the final module-level"
+        ):
             fixture.main(["--file", "bad.py", "--function", "slugify"])
 
     def test_fails_when_required_function_is_only_a_class_method_or_nested_def(
@@ -160,7 +162,63 @@ class TestAssertPythonTypeHints:
             encoding="utf-8",
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
-        with pytest.raises(AssertionError, match="required function 'slugify' is not defined"):
+        with pytest.raises(
+            AssertionError, match="required function 'slugify' is not the final module-level"
+        ):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
+    def test_fails_when_def_is_shadowed_by_later_lambda_reassignment(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 3 (P1): a real `def slugify(title: str) -> str: ...` must not
+        satisfy the existence check if a later top-level statement immediately rebinds the name
+        to an unannotated `lambda` -- the behavior oracle runs the *final* module binding, not
+        whichever `def` happened to appear first."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return title.lower()\n\n\n"
+            "slugify = lambda title: title.lower()\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(
+            AssertionError, match="required function 'slugify' is not the final module-level"
+        ):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
+    def test_passes_when_def_is_reassigned_to_itself_or_wrapped_by_a_later_def(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The final-binding check must not falsely reject a legitimate module structure where
+        the required name's last top-level statement is still a `def` (e.g. a decorator-less
+        re-`def` after an unrelated import), not every `def` followed by *any* later statement."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "ok.py").write_text(
+            "import re\n\n\n"
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            '    return re.sub(r"\\s+", "-", title.lower()).strip("-")\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture.main(["--file", "ok.py", "--function", "slugify"])
+
+    def test_self_named_parameter_on_a_free_function_still_requires_annotation(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 3 (P1): naming a module-level (non-method) function's real
+        parameter `self` must not exempt it from the annotation requirement -- the self/cls
+        carve-out is for actual class methods only, identified by the function's immediate AST
+        parent being a `ClassDef`, not by parameter name alone."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            'def slugify(self) -> str:\n    """Doc."""\n    return self.lower()\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="parameter 'self' is missing a type annotation"):
             fixture.main(["--file", "bad.py", "--function", "slugify"])
 
 
@@ -256,6 +314,24 @@ class TestAssertPythonConventions:
         with pytest.raises(AssertionError, match="not snake_case"):
             fixture.main(["--file", "f.py", "--require-snake-case"])
 
+    def test_snake_case_allows_module_level_tuple_unpacked_constants(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 3 (P2): `WHITESPACE_RE, HYPHEN_RE = re.compile(...),
+        re.compile(...)` is a legitimate way to define two module constants in one statement.
+        Only a bare `ast.Name` assign target was previously recognized as a module-level
+        constant, so both names in a tuple-unpack were misreported as `snake_case` violations."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            "import re\n\n"
+            'WHITESPACE_RE, HYPHEN_RE = re.compile(r"\\s+"), re.compile(r"-+")\n\n\n'
+            "def collapse(text):\n"
+            '    return HYPHEN_RE.sub("-", WHITESPACE_RE.sub("-", text))\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture.main(["--file", "f.py", "--require-snake-case"])
+
     def test_max_function_lines_fails_when_exceeded(self, tmp_path: Path, monkeypatch) -> None:
         fixture = _fixture("assert-python-conventions.py")
         body = "\n".join(f"    y = y + {i}" for i in range(30))
@@ -347,6 +423,29 @@ class TestAssertPythonConventions:
         with pytest.raises(AssertionError, match="nesting depth"):
             fixture.main(["--file", "f.py", "--max-nesting-depth", "1"])
 
+    def test_max_nesting_depth_counts_nested_match_statements(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 3 (P2): `_NESTING_NODES` previously omitted `ast.Match`, so a
+        candidate could dodge the nesting-depth check entirely by writing an equivalently deep
+        chain of nested `match` statements instead of sequential `if`s."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            "def validate(name):\n"
+            "    match name:\n"
+            "        case str():\n"
+            "            match len(name):\n"
+            "                case n if n >= 3:\n"
+            "                    match n:\n"
+            "                        case m if m <= 32:\n"
+            "                            return True\n"
+            "    return False\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="nesting depth"):
+            fixture.main(["--file", "f.py", "--max-nesting-depth", "2"])
+
 
 # ---------------------------------------------------------------------------
 # assert-effective-config.py
@@ -388,6 +487,38 @@ class TestAssertEffectiveConfigFlat:
                 "codex.model",
                 "--field",
                 "value",
+            ]
+        )
+
+    def test_passes_when_source_file_has_a_redundant_leading_dot_slash(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 3 (P2): the prompt only requires *some* correct relative path,
+        so `./sandbox/config/agent-routing/cli-tools.local.yaml` names the same file as
+        `sandbox/config/agent-routing/cli-tools.local.yaml` and must hash identically instead of
+        being penalized for the redundant `./` prefix."""
+        _write_train_config_pair(tmp_path)
+        answer = tmp_path / ".meta-harness" / "config-answer.json"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text(
+            '{"value": "harness-local-override-model", '
+            '"source_file": "./sandbox/config/agent-routing/cli-tools.local.yaml"}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture = _fixture("assert-effective-config.py")
+        fixture.main(
+            [
+                "--base",
+                "sandbox/config/agent-routing/cli-tools.yaml",
+                "--local",
+                "sandbox/config/agent-routing/cli-tools.local.yaml",
+                "--answer",
+                ".meta-harness/config-answer.json",
+                "--key-path",
+                "codex.model",
+                "--field",
+                "source_file",
             ]
         )
 
