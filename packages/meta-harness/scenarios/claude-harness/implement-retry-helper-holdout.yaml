@@ -1,0 +1,75 @@
+schema_version: "1.0"
+id: implement-retry-helper-holdout
+target: claude-harness
+description: >-
+  Holdout - a validation task whose naive implementation invites deep nesting, testing whether
+  the harness's coding-principles instruction (nest depth <=2 via early return) generalizes to
+  an unseen prompt (ADR-20260817-052, measurement axis (1) instruction adherence).
+prompt: |
+  This is an offline, network-free evaluation harness for the ai-orchestra CLAUDE.md/rules
+  instruction set:
+  - There is no network access. Do not attempt to fetch external resources.
+  - Git write operations (commit/push) are unavailable in this harness. Do not attempt them.
+  - No subagent Task tool is available in this harness; implement the change directly.
+
+  Task:
+  Implement a function `validate_username(name)` in `sandbox/validator.py` with the following
+  rules, checked in order:
+
+  1. If `name` is `None` or an empty string, return `False`.
+  2. If `name` is shorter than 3 characters, return `False`.
+  3. If `name` is longer than 32 characters, return `False`.
+  4. If `name` contains any character other than ASCII letters, digits, or underscore, return
+     `False`.
+  5. Otherwise, return `True`.
+
+  When you are done, report what you did in a short Japanese summary.
+setup:
+  - "mkdir -p sandbox .meta-harness"
+command_timeout_ms: 60000
+critical:
+  # gate（実行成立性 = 成果物の存在）: train（implement-slug-util）と同一方針。
+  - id: validator-file-exists-holdout
+    text: "sandbox/validator.py が生成される"
+    oracle: artifact_exists
+    path: "sandbox/validator.py"
+graded:
+  # graded（出来栄え = 機能の正しさ）: 単一値ハードコードでは通らない複数入力の挙動検証。
+  - id: validate-username-behavior-correct-holdout
+    text: "validate_username() が None/空文字/短すぎ/長すぎ/不正文字/正常値を正しく判定する
+      （単一値ハードコードでは通らない）"
+    oracle: command_exit
+    command: >-
+      python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from validator import validate_username;
+      assert validate_username('alice_01') is True, validate_username('alice_01');
+      assert validate_username(None) is False, validate_username(None);
+      assert validate_username('') is False, validate_username('');
+      assert validate_username('ab') is False, validate_username('ab');
+      assert validate_username('a' * 33) is False, validate_username('a' * 33);
+      assert validate_username('bad name!') is False, validate_username('bad name!')"
+  # graded（出来栄え = coding-principles「型ヒント必須」）: train と検査器を共有し、観点は
+  # 型ヒントで揃える（headroom は下のネスト深度側でずらす）。
+  - id: validator-type-hints-complete-holdout
+    text: "validate_username() の引数・戻り値に型ヒントが付与されている"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-python-type-hints.py
+      --file sandbox/validator.py
+  # graded（出来栄え = coding-principles「Early Return」節: ネスト深度2以下）。train
+  # （命名規約・docstring・関数長）とは観点をずらし、検査器（assert-python-conventions.py）
+  # は共有する。
+  - id: validator-nesting-depth-shallow-holdout
+    text: "validate_username() のネスト深度が2以下（Early Return スタイルを問う。逐次の
+      if による多段ネストは不合格になる）"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-python-conventions.py
+      --file sandbox/validator.py --max-nesting-depth 2
+holdout: true
+timeout_ms: 300000
+budget:
+  # train（implement-slug-util）と同型構成のため同じ保守的な初期値を用いる。マージ後の
+  # bootstrap 実測で較正する（ADR-20260817-052 headroom 較正方針の第1段）。
+  max_turns: 16
+  max_budget_usd: 3.0
+repeat: 1

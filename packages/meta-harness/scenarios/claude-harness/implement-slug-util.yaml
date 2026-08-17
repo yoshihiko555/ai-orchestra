@@ -1,0 +1,74 @@
+schema_version: "1.0"
+id: implement-slug-util
+target: claude-harness
+description: >-
+  素朴な文字列変換タスクを解かせ、ハーネスの指示書（coding-principles: 型ヒント・命名規約・
+  関数長）を prompt で明示せずに守れるかを測る（ADR-20260817-052、測定軸①指示遵守）。
+prompt: |
+  This is an offline, network-free evaluation harness for the ai-orchestra CLAUDE.md/rules
+  instruction set:
+  - There is no network access. Do not attempt to fetch external resources.
+  - Git write operations (commit/push) are unavailable in this harness. Do not attempt them.
+  - No subagent Task tool is available in this harness; implement the change directly.
+
+  タスク:
+  `sandbox/slugify.py` に、タイトル文字列を URL スラグに変換する関数 `slugify(title)` を
+  実装してください。仕様:
+
+  - 英大文字は小文字に変換する
+  - 連続する空白（スペース・タブ等）は 1 個のハイフンに変換する
+  - 先頭・末尾のハイフンは除去する
+  - 連続するハイフンは 1 個に圧縮する
+  - 空文字列、または空白文字のみの文字列が渡された場合は "untitled" を返す
+
+  実装が完了したら、簡潔な日本語で作業内容を報告してください。
+setup:
+  - "mkdir -p sandbox .meta-harness"
+command_timeout_ms: 60000
+critical:
+  # gate（実行成立性 = 成果物の存在）: 出来栄えは graded 側が担当する（ADR-20260817-052）。
+  - id: slugify-file-exists
+    text: "sandbox/slugify.py が生成される"
+    oracle: artifact_exists
+    path: "sandbox/slugify.py"
+graded:
+  # graded（出来栄え = 機能の正しさ）: 単一値ハードコードでは通らない複数入力の挙動検証。
+  - id: slugify-behavior-correct
+    text: "slugify() が小文字化・空白圧縮・前後ハイフン除去・連続ハイフン圧縮・空入力の
+      既定値を正しく処理する（単一値ハードコードでは通らない）"
+    oracle: command_exit
+    command: >-
+      python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from slugify import slugify;
+      assert slugify('Hello World') == 'hello-world', slugify('Hello World');
+      assert slugify('  Multiple   Spaces  ') == 'multiple-spaces', slugify('  Multiple   Spaces  ');
+      assert slugify('') == 'untitled', slugify('');
+      assert slugify('   ') == 'untitled', slugify('   ');
+      assert slugify('UPPER CASE TITLE') == 'upper-case-title', slugify('UPPER CASE TITLE');
+      assert slugify('--Leading and Trailing--') == 'leading-and-trailing', slugify('--Leading and Trailing--')"
+  # graded（出来栄え = coding-principles「型ヒント必須」）: prompt で規約を明示していない
+  # ため、ハーネス指示書の遵守度をそのまま測る。
+  - id: slugify-type-hints-complete
+    text: "slugify() の引数・戻り値に型ヒントが付与されている"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-python-type-hints.py
+      --file sandbox/slugify.py
+  # graded（出来栄え = coding-principles「命名規則」「マジックナンバー禁止」節の docstring
+  # 慣行・関数の単一責任（20行以下）」）。
+  - id: slugify-conventions-followed
+    text: "docstring がある・snake_case 命名・関数が20行以下"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-python-conventions.py
+      --file sandbox/slugify.py --require-docstring --require-snake-case
+      --max-function-lines 20
+holdout: false
+timeout_ms: 300000
+budget:
+  # 既存 claude-harness シナリオ（create-version-file/summarize-readme）の既定値を踏襲した
+  # 保守的な初期値。本シナリオは単一ファイル実装のみで issue-fix 系のような重い repo
+  # コンテキストを持たないため軽量想定だが、マージ後の bootstrap 実測で較正する
+  # （ADR-20260817-052 headroom 較正方針の第1段）。
+  max_turns: 16
+  max_budget_usd: 3.0
+repeat: 1

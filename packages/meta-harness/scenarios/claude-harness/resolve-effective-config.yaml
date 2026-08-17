@@ -1,0 +1,74 @@
+schema_version: "1.0"
+id: resolve-effective-config
+target: claude-harness
+description: >-
+  base/local の 2 段 config マージ問題を、config-loading ルールの存在を一切教えずに解かせ、
+  誤誘導耐性（矛盾する値のうちどちらが実効値かを自力で正しく判定できるか）を測る
+  （ADR-20260817-052、測定軸④誤誘導耐性）。
+prompt: |
+  This is an offline, network-free evaluation harness. There is no network access, git write
+  operations (commit/push) are unavailable, and no subagent Task tool is available in this
+  harness; work directly.
+
+  タスク:
+  `sandbox/config/agent-routing/` の下に、`cli-tools.yaml` と `cli-tools.local.yaml` という
+  2つの設定ファイルがあります。両ファイルを読み、`codex.model` の実効的な（実際に使われる
+  べき）値と、その根拠（どちらのファイルの値が優先されたか）を判定してください。
+
+  判定結果を `.meta-harness/config-answer.json` に、以下の形式の単一の JSON オブジェクトとして
+  書き出してください（キーはこの2つのみ）:
+
+  ```json
+  {"value": "<実効的な codex.model の値>", "source_file": "<優先されたファイルの相対パス>"}
+  ```
+
+  書き出したら、簡潔な日本語で判定の根拠を報告してください。
+setup:
+  - |
+    mkdir -p sandbox/config/agent-routing .meta-harness
+    cat > sandbox/config/agent-routing/cli-tools.yaml <<'YAMLEOF'
+    codex:
+      model: harness-base-model
+      sandbox:
+        analysis: read-only
+    YAMLEOF
+    cat > sandbox/config/agent-routing/cli-tools.local.yaml <<'YAMLEOF'
+    codex:
+      model: harness-local-override-model
+    YAMLEOF
+    rm -f .meta-harness/config-answer.json
+command_timeout_ms: 60000
+critical:
+  # gate（実行成立性 = 成果物の存在）: 正誤は graded 側が担当する（ADR-20260817-052）。
+  - id: config-answer-exists
+    text: "config-answer.json が生成される"
+    oracle: artifact_exists
+    path: ".meta-harness/config-answer.json"
+graded:
+  # graded（出来栄え = 実効値の正誤）: local が優先されることを正しく判定できているか。
+  - id: config-answer-value-correct
+    text: "value が local ファイル優先の実効値と一致する"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-effective-config.py
+      --base sandbox/config/agent-routing/cli-tools.yaml
+      --local sandbox/config/agent-routing/cli-tools.local.yaml
+      --answer .meta-harness/config-answer.json --key-path codex.model --field value
+  # graded（出来栄え = 根拠の正誤）: どちらのファイルが優先されたかを正しく指せているか。
+  - id: config-answer-source-correct
+    text: "source_file が local ファイルのパスを正しく指している"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-effective-config.py
+      --base sandbox/config/agent-routing/cli-tools.yaml
+      --local sandbox/config/agent-routing/cli-tools.local.yaml
+      --answer .meta-harness/config-answer.json --key-path codex.model --field source_file
+holdout: false
+timeout_ms: 300000
+budget:
+  # 既存 claude-harness シナリオの既定値を踏襲した保守的な初期値。読み取り＋短い JSON 出力の
+  # 軽量タスクだが、マージ後の bootstrap 実測で較正する
+  # （ADR-20260817-052 headroom 較正方針の第1段）。
+  max_turns: 16
+  max_budget_usd: 3.0
+repeat: 1
