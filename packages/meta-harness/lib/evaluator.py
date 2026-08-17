@@ -3332,8 +3332,15 @@ def _cache_neutral_pricing(config: dict) -> tuple[float, float]:
     ]
     broker_cfg = ((config.get("evaluate") or {}).get("isolation") or {}).get("broker") or {}
     pricing = broker_cfg.get("pricing_upper_bound_usd_per_million") or default_pricing
-    input_price = float(pricing.get("input", default_pricing["input"]))
-    output_price = float(pricing.get("output", default_pricing["output"]))
+    # None-aware fallback (PR #379 review, P2): a `.local.yaml` override that nulls out
+    # a single pricing key (e.g. `pricing_upper_bound_usd_per_million: {input: null}`)
+    # leaves the key *present* with value `None` after `_deep_merge`, so `dict.get(key,
+    # default)` would return `None` verbatim and crash `float(None)`. Mirrors
+    # `scenario_docker_profile._pricing_value`'s explicit None-check.
+    input_raw = pricing.get("input")
+    output_raw = pricing.get("output")
+    input_price = float(input_raw if input_raw is not None else default_pricing["input"])
+    output_price = float(output_raw if output_raw is not None else default_pricing["output"])
     return input_price, output_price
 
 

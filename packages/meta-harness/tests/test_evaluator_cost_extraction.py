@@ -401,3 +401,93 @@ class TestApplyCacheNeutralCost:
             "pricing_upper_bound_usd_per_million"
         ]["input"]
         assert result["cache_neutral_cost_usd"] == pytest.approx(default_input_price)
+
+    def test_falls_back_to_defaults_pricing_when_input_key_is_null(self) -> None:
+        """PR #379 review (P2): a `.local.yaml` override that nulls a single pricing
+        key leaves the key *present* with value `None` after `_deep_merge`, so a plain
+        `dict.get(key, default)` returns `None` verbatim and crashes `float(None)`.
+        Mirrors `scenario_docker_profile._pricing_value`'s explicit None-check."""
+        cost = {
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_neutral_source": "cli",
+        }
+        config = {
+            "evaluate": {
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {
+                            "input": None,
+                            "output": 10.0,
+                        }
+                    }
+                }
+            }
+        }
+        result = ev._apply_cache_neutral_cost(cost, None, config)
+        default_input_price = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+            "pricing_upper_bound_usd_per_million"
+        ]["input"]
+        assert result["cache_neutral_cost_usd"] == pytest.approx(default_input_price)
+
+    def test_falls_back_to_defaults_pricing_when_output_key_is_null(self) -> None:
+        cost = {
+            "input_tokens": 0,
+            "output_tokens": 1_000_000,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_neutral_source": "cli",
+        }
+        config = {
+            "evaluate": {
+                "isolation": {
+                    "broker": {
+                        "pricing_upper_bound_usd_per_million": {
+                            "input": 2.0,
+                            "output": None,
+                        }
+                    }
+                }
+            }
+        }
+        result = ev._apply_cache_neutral_cost(cost, None, config)
+        default_output_price = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+            "pricing_upper_bound_usd_per_million"
+        ]["output"]
+        assert result["cache_neutral_cost_usd"] == pytest.approx(default_output_price)
+
+    def test_falls_back_to_defaults_pricing_when_both_keys_missing(self) -> None:
+        cost = {
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_neutral_source": "cli",
+        }
+        config = {
+            "evaluate": {"isolation": {"broker": {"pricing_upper_bound_usd_per_million": {}}}}
+        }
+        result = ev._apply_cache_neutral_cost(cost, None, config)
+        default_input_price = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+            "pricing_upper_bound_usd_per_million"
+        ]["input"]
+        assert result["cache_neutral_cost_usd"] == pytest.approx(default_input_price)
+
+    def test_falls_back_to_defaults_pricing_when_pricing_section_is_null(self) -> None:
+        cost = {
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_neutral_source": "cli",
+        }
+        config = {
+            "evaluate": {"isolation": {"broker": {"pricing_upper_bound_usd_per_million": None}}}
+        }
+        result = ev._apply_cache_neutral_cost(cost, None, config)
+        default_input_price = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
+            "pricing_upper_bound_usd_per_million"
+        ]["input"]
+        assert result["cache_neutral_cost_usd"] == pytest.approx(default_input_price)
