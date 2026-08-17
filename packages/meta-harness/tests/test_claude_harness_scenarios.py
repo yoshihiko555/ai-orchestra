@@ -63,7 +63,7 @@ def test_claude_harness_suite_validates_and_declares_graded_consistently() -> No
         "create-version-file",
         "summarize-readme",
         "implement-slug-util",
-        "implement-retry-helper-holdout",
+        "implement-username-validator-holdout",
         "resolve-effective-config",
         "resolve-nested-override-holdout",
     }
@@ -111,10 +111,18 @@ class TestAssertPythonTypeHints:
             fixture.main(["--file", "bad.py", "--function", "slugify"])
 
     def test_self_and_cls_are_exempt(self, tmp_path: Path, monkeypatch) -> None:
+        """`self`/`cls` params stay exempt from the annotation requirement even for a class
+        method sitting alongside the module-level required function (PR #381 review (P1) moved
+        the *existence* check to module-level defs only; the per-function hint-completeness
+        loop below still walks every function, including class methods, so the self/cls
+        exemption must keep working there)."""
         fixture = _fixture("assert-python-type-hints.py")
         (tmp_path / "ok.py").write_text(
+            "def bar(name: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return name\n\n\n"
             "class Foo:\n"
-            "    def bar(self, name: str) -> str:\n"
+            "    def method(self, name: str) -> str:\n"
             '        """Doc."""\n'
             "        return name\n",
             encoding="utf-8",
@@ -129,6 +137,27 @@ class TestAssertPythonTypeHints:
         fixture = _fixture("assert-python-type-hints.py")
         (tmp_path / "bad.py").write_text(
             "slugify = lambda title: title.lower()\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="required function 'slugify' is not defined"):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
+    def test_fails_when_required_function_is_only_a_class_method_or_nested_def(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review (P1): a decoy class method (or nested def) named after the required
+        function must not satisfy the existence check while the actual module attribute used at
+        import time is an unannotated `slugify = lambda ...` -- `defined_names` previously came
+        from `ast.walk()`, which finds class methods and nested defs alongside module-level
+        ones, so such a decoy could vacuously pass."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "class Decoy:\n"
+            "    def slugify(self, title: str) -> str:\n"
+            '        """Doc."""\n'
+            "        return title\n\n\n"
+            "slugify = lambda title: title.lower()\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         with pytest.raises(AssertionError, match="required function 'slugify' is not defined"):
@@ -170,14 +199,18 @@ class TestAssertPythonConventions:
         with pytest.raises(AssertionError, match="single character"):
             fixture.main(["--file", "f.py", "--require-snake-case"])
 
-    def test_snake_case_exempts_for_loop_targets(self, tmp_path: Path, monkeypatch) -> None:
+    def test_snake_case_still_checks_for_loop_targets(self, tmp_path: Path, monkeypatch) -> None:
+        """PR #381 review (P2): `coding-principles.md` defines no loop-variable carve-out for
+        the "meaningful variable names" rule, so a single-character `for` target must still be
+        flagged like any other single-character variable."""
         fixture = _fixture("assert-python-conventions.py")
         (tmp_path / "f.py").write_text(
             "def total(values):\n    result = 0\n    for x in values:\n        result += x\n    return result\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
-        fixture.main(["--file", "f.py", "--require-snake-case"])
+        with pytest.raises(AssertionError, match="single character"):
+            fixture.main(["--file", "f.py", "--require-snake-case"])
 
     def test_snake_case_allows_module_level_upper_snake_case_constant(
         self, tmp_path: Path, monkeypatch
@@ -204,6 +237,20 @@ class TestAssertPythonConventions:
         fixture = _fixture("assert-python-conventions.py")
         (tmp_path / "f.py").write_text(
             "def f():\n    LOCAL_VALUE = 1\n    return LOCAL_VALUE\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="not snake_case"):
+            fixture.main(["--file", "f.py", "--require-snake-case"])
+
+    def test_snake_case_still_flags_local_variable_shadowing_module_constant(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review (P2): a module-level `VALUE = 1` must not permanently mark the bare
+        name "VALUE" as an already-checked constant; a later, unrelated function-local
+        `VALUE = 2` is a different scope and must still be flagged."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            "VALUE = 1\n\n\ndef f():\n    VALUE = 2\n    return VALUE\n", encoding="utf-8"
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         with pytest.raises(AssertionError, match="not snake_case"):
@@ -255,6 +302,50 @@ class TestAssertPythonConventions:
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         fixture.main(["--file", "f.py", "--max-nesting-depth", "2"])
+
+    def test_max_nesting_depth_counts_elif_chain_as_one_level(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review (P2): `ast` represents an `elif` chain as nested `If` nodes inside
+        each other's `orelse`, indistinguishable in node type from an `if` written inside an
+        explicit `else:` block. A shallow, functionally correct `if/elif/elif/else` chain must
+        not be penalized as if each `elif` added a further nesting level."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            "def validate(name):\n"
+            "    if not name:\n"
+            "        return False\n"
+            "    elif len(name) < 3:\n"
+            "        return False\n"
+            "    elif len(name) > 32:\n"
+            "        return False\n"
+            "    else:\n"
+            "        return True\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture.main(["--file", "f.py", "--max-nesting-depth", "1"])
+
+    def test_max_nesting_depth_still_penalizes_if_nested_inside_explicit_else(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The `elif`-chain carve-out is scoped to true `elif` (same indentation column as the
+        `if` it continues); an `if` written inside an explicit `else:` block is genuinely one
+        level deeper and must still count as extra nesting."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            "def validate(name):\n"
+            "    if not name:\n"
+            "        return False\n"
+            "    else:\n"
+            "        if len(name) < 3:\n"
+            "            return False\n"
+            "    return True\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="nesting depth"):
+            fixture.main(["--file", "f.py", "--max-nesting-depth", "1"])
 
 
 # ---------------------------------------------------------------------------
@@ -696,11 +787,11 @@ def test_implement_slug_util_graded_commands_pass_against_known_good_solution(
     _run_graded_commands("implement-slug-util", tmp_path, {"sandbox/slugify.py": _SLUGIFY_SOLUTION})
 
 
-def test_implement_retry_helper_holdout_graded_commands_pass_against_known_good_solution(
+def test_implement_username_validator_holdout_graded_commands_pass_against_known_good_solution(
     tmp_path: Path,
 ) -> None:
     _run_graded_commands(
-        "implement-retry-helper-holdout",
+        "implement-username-validator-holdout",
         tmp_path,
         {"sandbox/validator.py": _VALIDATOR_SOLUTION},
     )

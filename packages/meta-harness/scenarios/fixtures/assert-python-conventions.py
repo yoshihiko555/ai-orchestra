@@ -6,14 +6,24 @@ items without duplicating the AST plumbing:
 
 - ``--require-docstring``: every function has a non-empty docstring.
 - ``--require-snake-case``: function names and assigned variable/parameter names are
-  ``snake_case`` and not a single meaningless character (``for``/``async for`` loop targets are
-  exempt, matching the "ループ変数除く" carve-out). Module-top-level constant assignments (e.g.
-  ``_WHITESPACE_RE = re.compile(...)``) may instead be ``UPPER_SNAKE_CASE``, per
+  ``snake_case`` and not a single meaningless character. This applies to ``for``/``async for``
+  loop targets too: ``coding-principles.md`` requires meaningful names (e.g. ``user_count`` over
+  ``x``) and defines no loop-variable carve-out, so a single-character loop target is flagged like
+  any other single-character variable (PR #381 review). Module-top-level constant assignments
+  (e.g. ``_WHITESPACE_RE = re.compile(...)``) may instead be ``UPPER_SNAKE_CASE``, per
   ``coding-principles.md``'s constant-naming rule; the same name reassigned inside a function
-  body still must be ``snake_case``.
+  body still must be ``snake_case`` (scope is determined per-assignment-node, not by name alone,
+  so a module-level constant no longer shadows-and-skips a later function-local reassignment of
+  the same name).
 - ``--max-function-lines N``: no function body spans more than ``N`` source lines.
 - ``--max-nesting-depth N``: no function nests control-flow blocks (``if``/``for``/``while``/
   ``try``/``with``) deeper than ``N`` levels (rewarding an early-return style over deep nesting).
+  An ``elif`` chain counts as a single level, not one level per ``elif``: ``ast`` represents
+  ``elif`` as a nested ``If`` inside the parent ``If``'s ``orelse``, indistinguishable in node
+  type from an ``if`` written inside an explicit ``else:`` block, so this is detected via column
+  offset (a true ``elif`` keeps the same indentation column as the ``if``/``elif`` it continues;
+  see ``_is_elif_chain_link()``) rather than penalizing a shallow, functionally correct
+  ``if/elif/elif/...`` implementation as if it were sequentially nested (PR #381 review).
 
 Trust note: like ``assert-python-type-hints.py``, this fixture inspects the file the candidate
 was asked to write. There is no separate scenario-provided expected value to tamper with, so
@@ -47,38 +57,35 @@ def _check_docstrings(tree: ast.AST) -> list[str]:
     ]
 
 
-def _collect_loop_targets(tree: ast.AST) -> set[str]:
-    targets: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.For, ast.AsyncFor)):
-            targets.update(name.id for name in ast.walk(node.target) if isinstance(name, ast.Name))
-    return targets
-
-
-def _collect_module_level_assigned_names(tree: ast.AST) -> set[str]:
-    """Names assigned directly at module top-level (not inside a function/class/branch).
+def _collect_module_level_constant_ids(tree: ast.AST) -> set[int]:
+    """``id()`` of each ``ast.Name`` store target assigned directly at module top-level.
 
     ``coding-principles.md`` requires module-level constants to be ``UPPER_SNAKE_CASE``, which
     conflicts with the general ``snake_case`` variable-naming check below. Only names assigned in
     ``tree.body`` itself (the module's direct statement list) count as module-level constants; a
     same-cased name reassigned inside a function body is a regular local variable and must still
     follow ``snake_case``.
+
+    Returns node identities (``id()``) rather than name strings: a set of names would let a
+    module-level ``VALUE = 1`` permanently mark the bare string ``"VALUE"`` as an already-checked
+    constant, silently skipping a later, unrelated function-local ``VALUE = 2`` that should still
+    be flagged for using UPPER_SNAKE_CASE outside module scope (PR #381 review). Each store
+    occurrence is judged by its own AST identity, not by name alone.
     """
     if not isinstance(tree, ast.Module):
         return set()
-    names: set[str] = set()
+    ids: set[int] = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
-            names.update(target.id for target in node.targets if isinstance(target, ast.Name))
+            ids.update(id(target) for target in node.targets if isinstance(target, ast.Name))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            names.add(node.target.id)
-    return names
+            ids.add(id(node.target))
+    return ids
 
 
 def _check_snake_case(tree: ast.AST) -> list[str]:
     problems: list[str] = []
-    loop_targets = _collect_loop_targets(tree)
-    module_constants = _collect_module_level_assigned_names(tree)
+    module_constant_ids = _collect_module_level_constant_ids(tree)
     for fn in _iter_functions(tree):
         if not _SNAKE_CASE.match(fn.name):
             problems.append(f"function name '{fn.name}' is not snake_case")
@@ -91,15 +98,22 @@ def _check_snake_case(tree: ast.AST) -> list[str]:
                     f"{fn.name}: parameter '{arg.arg}' is not a meaningful snake_case name"
                 )
 
-    seen: set[str] = set()
+    # Dedupe by (name, is_module_constant) rather than by name alone: a module-level constant
+    # and a same-named function-local variable are different scopes and must be judged
+    # independently (PR #381 review; see `_collect_module_level_constant_ids()` docstring).
+    seen: set[tuple[str, bool]] = set()
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)):
             continue
         name = node.id
-        if name in seen or name == "_" or name in loop_targets:
+        if name == "_":
             continue
-        seen.add(name)
-        if name in module_constants and _UPPER_SNAKE_CASE.match(name):
+        is_module_constant = id(node) in module_constant_ids and bool(_UPPER_SNAKE_CASE.match(name))
+        key = (name, is_module_constant)
+        if key in seen:
+            continue
+        seen.add(key)
+        if is_module_constant:
             continue
         if not _SNAKE_CASE.match(name):
             problems.append(f"variable name '{name}' is not snake_case")
@@ -122,10 +136,31 @@ def _check_max_function_lines(tree: ast.AST, max_lines: int) -> list[str]:
     return problems
 
 
+def _is_elif_chain_link(parent: ast.AST, child: ast.AST) -> bool:
+    """True if ``child`` is the sole ``elif`` continuation of an ``if``/``elif`` ``parent``.
+
+    ``ast`` represents ``elif`` as a nested ``If`` inside the parent ``If``'s ``orelse`` --
+    indistinguishable in node *type* from an ``if`` written inside an explicit ``else:`` block
+    (e.g. ``else:\\n    if b: ...``), which genuinely is one nesting level deeper. The two are
+    told apart by column offset: a true ``elif`` keeps the same indentation column as the
+    ``if``/``elif`` it continues, while an ``if`` nested inside ``else:`` is indented one level
+    deeper (PR #381 review: an ``if``/``elif``/``elif``/... chain must count as a single level,
+    not accrue one extra level per ``elif``).
+    """
+    if not (isinstance(parent, ast.If) and isinstance(child, ast.If)):
+        return False
+    if parent.orelse != [child]:
+        return False
+    return child.col_offset == parent.col_offset
+
+
 def _max_nesting_depth(node: ast.AST, depth: int) -> int:
     deepest = depth
     for child in ast.iter_child_nodes(node):
-        next_depth = depth + 1 if isinstance(child, _NESTING_NODES) else depth
+        if _is_elif_chain_link(node, child):
+            next_depth = depth
+        else:
+            next_depth = depth + 1 if isinstance(child, _NESTING_NODES) else depth
         deepest = max(deepest, _max_nesting_depth(child, next_depth))
     return deepest
 

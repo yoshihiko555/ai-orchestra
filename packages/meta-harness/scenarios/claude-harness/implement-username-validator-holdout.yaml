@@ -1,5 +1,5 @@
 schema_version: "1.0"
-id: implement-retry-helper-holdout
+id: implement-username-validator-holdout
 target: claude-harness
 description: >-
   Holdout - a validation task whose naive implementation invites deep nesting, testing whether
@@ -36,10 +36,12 @@ critical:
 graded:
   # graded（出来栄え = 機能の正しさ）: 単一値ハードコードでは通らない複数入力の挙動検証。
   # 非 ASCII 文字ケース（PR #381 レビュー指摘: `name.replace("_", "").isalnum()` のような
-  # Unicode 英数字を許容する実装が素通りしてしまうのを防ぐ）を含む。
+  # Unicode 英数字を許容する実装が素通りしてしまうのを防ぐ）と、許容長の境界値（PR #381
+  # レビュー指摘: `len(name) <= 3` / `len(name) >= 32` のような off-by-one が不合格側の
+  # 2文字・33文字だけでは検出できないのを防ぐため、合格側の最小長3・最大長32を追加）を含む。
   - id: validate-username-behavior-correct-holdout
-    text: "validate_username() が None/空文字/短すぎ/長すぎ/不正文字（記号・非ASCII）/正常値を
-      正しく判定する（単一値ハードコードでは通らない）"
+    text: "validate_username() が None/空文字/短すぎ/長すぎ/不正文字（記号・非ASCII）/正常値
+      （境界長3・32含む）を正しく判定する（単一値ハードコードでは通らない）"
     oracle: command_exit
     command: >-
       python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from validator import validate_username;
@@ -48,6 +50,8 @@ graded:
       assert validate_username('') is False, validate_username('');
       assert validate_username('ab') is False, validate_username('ab');
       assert validate_username('a' * 33) is False, validate_username('a' * 33);
+      assert validate_username('a' * 3) is True, validate_username('a' * 3);
+      assert validate_username('a' * 32) is True, validate_username('a' * 32);
       assert validate_username('bad name!') is False, validate_username('bad name!');
       assert validate_username('álîcé') is False, validate_username('álîcé');
       assert validate_username('ｕｓｅｒ１') is False, validate_username('ｕｓｅｒ１')"

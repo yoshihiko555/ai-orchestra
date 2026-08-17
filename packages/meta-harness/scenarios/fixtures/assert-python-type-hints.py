@@ -35,14 +35,26 @@ def _iter_functions(tree: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDe
     ]
 
 
+def _iter_module_level_functions(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Return only defs that are direct children of the module (not class methods/nested defs).
+
+    A candidate could otherwise satisfy the "required function is defined" check with a decoy
+    class method or nested def (e.g. ``class Decoy: def slugify(self, ...): ...``) while the
+    actual module attribute used at import time is an unannotated ``slugify = lambda ...``. The
+    scenario asks for a module-level function, so only module-level defs count as satisfying it.
+    """
+    return [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
 def check_type_hints(source: str, *, filename: str, required_functions: list[str]) -> list[str]:
     tree = ast.parse(source, filename=filename)
     functions = _iter_functions(tree)
-    defined_names = {fn.name for fn in functions}
+    module_level_names = {fn.name for fn in _iter_module_level_functions(tree)}
     problems: list[str] = [
-        f"required function '{name}' is not defined as a def (an assignment/lambda does not count)"
+        f"required function '{name}' is not defined as a module-level def "
+        "(a class method, nested def, or assignment/lambda does not count)"
         for name in required_functions
-        if name not in defined_names
+        if name not in module_level_names
     ]
     for fn in functions:
         args = fn.args

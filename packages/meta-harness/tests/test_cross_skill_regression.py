@@ -499,11 +499,20 @@ def test_non_holdout_summary_uses_legacy_runs_without_evaluation_summary() -> No
     # ADR-20260817-052: claude-harness now legitimately carries more than 2 scenarios (train +
     # holdout mixed). `non_holdout_summary`'s legacy fallback requires coverage of *every*
     # non-holdout scenario in the current real suite (loop_state._attempt_group_complete via
-    # `expected_ids`), so this covers all of them rather than a fixed-size subset. A uniform
-    # quality per run keeps the expected mean (90.0) independent of how many scenarios exist.
+    # `expected_ids`), so this covers all of them rather than a fixed-size subset.
     scenario_docs = [item for item in all_docs if not item[1]["holdout"]]
+    assert len(scenario_docs) >= 2, "test needs >=2 non-holdout scenarios to exercise averaging"
+    # PR #381 review (P2): a uniform quality_score across every run would let a regression that
+    # returns only the first or last run's score (instead of averaging all of them) still
+    # incidentally match the expected mean. Vary the first and last run's score (80.0/100.0,
+    # remaining runs 90.0) so only a true average reproduces the expected value, and compute
+    # that expected value from the assigned scores rather than hardcoding it.
+    quality_scores = [90.0] * len(scenario_docs)
+    quality_scores[0] = 80.0
+    quality_scores[-1] = 100.0
+    expected_quality_mean = sum(quality_scores) / len(quality_scores)
     results = []
-    for _, scenario in scenario_docs:
+    for (_, scenario), quality_score in zip(scenario_docs, quality_scores):
         result = _result(
             suite_id=TARGET,
             scenario_id=str(scenario["id"]),
@@ -512,7 +521,7 @@ def test_non_holdout_summary_uses_legacy_runs_without_evaluation_summary() -> No
             tokens=10,
         )
         result["run_id"] = f"run-legacy-{scenario['id']}"
-        result["quality_score"] = 90.0
+        result["quality_score"] = quality_score
         results.append(result)
     # verdict 基準（ADR-20260814-049 決定 3、EV-104）: critical_pass は critical_pass_rate
     # ではなく run の verdict で判定するため、critical_pass_rate だけを 0.0 にしても
@@ -530,7 +539,7 @@ def test_non_holdout_summary_uses_legacy_runs_without_evaluation_summary() -> No
 
     assert not mh.candidate_has_evaluation_completed(events, CAND_ID)
     assert loop_state.non_holdout_summary(events, config, CAND_ID, target) == {
-        "quality_mean": 90.0,
+        "quality_mean": expected_quality_mean,
         "critical_pass": True,
     }
 

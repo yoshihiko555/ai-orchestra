@@ -36,8 +36,8 @@ graded:
   # タブ混じりの連続空白ケース（PR #381 レビュー指摘: スペースのみを置換する実装が
   # 素通りしてしまうのを防ぐ）を含む。
   - id: slugify-behavior-correct
-    text: "slugify() が小文字化・空白圧縮（タブ混在含む）・前後ハイフン除去・連続ハイフン圧縮・
-      空入力の既定値を正しく処理する（単一値ハードコードでは通らない）"
+    text: "slugify() が小文字化・空白圧縮（タブ混在含む）・前後ハイフン除去・連続ハイフン圧縮
+      （内部の連続ハイフン含む）・空入力の既定値を正しく処理する（単一値ハードコードでは通らない）"
     oracle: command_exit
     command: >-
       python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from slugify import slugify;
@@ -48,7 +48,8 @@ graded:
       assert slugify('UPPER CASE TITLE') == 'upper-case-title', slugify('UPPER CASE TITLE');
       assert slugify('--Leading and Trailing--') == 'leading-and-trailing', slugify('--Leading and Trailing--');
       assert slugify('Hello\tWorld') == 'hello-world', slugify('Hello\tWorld');
-      assert slugify('Tab\t\tand  Space Mixed') == 'tab-and-space-mixed', slugify('Tab\t\tand  Space Mixed')"
+      assert slugify('Tab\t\tand  Space Mixed') == 'tab-and-space-mixed', slugify('Tab\t\tand  Space Mixed');
+      assert slugify('Hello--World') == 'hello-world', slugify('Hello--World')"
   # graded（出来栄え = coding-principles「型ヒント必須」）: prompt で規約を明示していない
   # ため、ハーネス指示書の遵守度をそのまま測る。
   - id: slugify-type-hints-complete
