@@ -145,7 +145,14 @@ codd:
         "tool_uses": { "type": "integer", "minimum": 0 },
         "duration_ms": { "type": "integer", "minimum": 0 },
         "total_cost_usd": { "type": "number", "minimum": 0 },
-        "num_turns": { "type": "integer", "minimum": 0 }
+        "num_turns": { "type": "integer", "minimum": 0 },
+        "cache_creation_input_tokens": { "type": "integer", "minimum": 0 },
+        "cache_read_input_tokens": { "type": "integer", "minimum": 0 },
+        "cache_neutral_cost_usd": { "type": "number", "minimum": 0 },
+        "cache_neutral_source": {
+          "type": "string",
+          "enum": ["cli", "model_usage", "broker_metrics"]
+        }
       }
     },
     "candidate_registered": {
@@ -1070,7 +1077,8 @@ legacy は後方互換のため残置する。skill target が legacy を読む�
 （§2-7 で算出）と一致しない場合、対象の `frontier-<target-slug>.json` は陳腐化しているとみなし、`orchex meta status` は
 「suite/evaluator が更新されたため frontier の再評価が必要」旨を警告する。`cost_axis` は
 config `frontier.cost_axis`（§5）の値をスナップショットしたものであり、`points[].cost_mean` が
-どの指標（例: `total_tokens` / `total_cost_usd`）の平均かを一意に示す。
+どの指標（例: `total_tokens` / `total_cost_usd` / `cache_neutral_cost_usd`、Issue #378）の
+平均かを一意に示す。
 
 ### 1-6. `run.metadata.schema.json`
 
@@ -1494,9 +1502,10 @@ cd <worktree> && CLAUDE_CODE_MAX_OUTPUT_TOKENS=<budget.max_output_tokens> \
   hooks も発火する**（2.1.201 で確認）。これにより、候補ハーネスの facet/config オーバーレイが
   worktree に適用済みであれば、`claude -p` の実行がそのまま「候補ハーネスの被評価系」になる。
   meta-harness が evaluator 側で追加の注入機構を持つ必要はない。
-- 最終 `result` イベントから `total_cost_usd` / `usage`（input/output tokens）/ `duration_ms` /
-  `num_turns` を抽出できることを確認済み（`ledger.event.schema.json` の `cost` def のフィールド名は
-  これに対応する）。
+- 最終 `result` イベントから `total_cost_usd` / `usage`（input/output tokens、
+  Issue #378 以降は `cache_creation_input_tokens` / `cache_read_input_tokens` も含む）/
+  `duration_ms` / `num_turns` を抽出できることを確認済み（`ledger.event.schema.json` の
+  `cost` def のフィールド名はこれに対応する）。
 - `--max-budget-usd` / `--max-turns` は print モードのネイティブ budget 強制フラグである。
   meta-harness 側で独自のタイムアウト・ターン数監視を実装する必要はない。
 - `--no-session-persistence` によりステートレス実行にする。セッション履歴が他の run に汚染される
@@ -1950,6 +1959,19 @@ frontier 候補や promotion 検討中の候補は、単発評価の偶然の高
 `MetaHarnessRootError` を raise して frontier 計算全体を fail-closed に止める。legacy ledger に
 `total_cost_usd` の無い run がある場合の remediation は、その store の purge または再評価である。
 
+**Issue #378（ADR-20260817-051）**: 実効設定の既定は `total_cost_usd` から
+`cache_neutral_cost_usd` へ切り替わった。`total_cost_usd` は 5 分 TTL の ephemeral prompt
+cache 実測（`cache_creation`/`cache_read` の単価差）をそのまま反映するため、直前に評価が
+走っていたかで最大 ~60% 変動し、候補の質・効率と無関係な dominance 勾配を生む。
+`cache_neutral_cost_usd` は cache creation/read トークンも新規 input と同一の input 単価で
+一律換算し、この変動をキャンセルする。usage は CLI result usage → `modelUsage` フォールバック
+（budget latch 時）→ `isolation.broker.metrics.usage`（前2つが完全に空の場合のみの最終
+フォールバック。judge コスト混入回避のため優先度は最低）の順で解決する。budget 会計
+（`total_cost_usd` を用いる予算判定・latch 判定）は本切替の対象外で無改修。Python 側
+`meta_harness_common.DEFAULTS["frontier"]["cost_axis"]`（config 読み込み失敗時の fallback）
+は意図的に `total_cost_usd` のまま据え置く（`cache_neutral_cost_usd` は本 ADR 以前の ledger
+イベントに存在しないため）。詳細は ADR-20260817-051 を参照。
+
 ### 3-5. Pareto 判定の定義
 
 候補 A が候補 B を**支配する**とは、以下がすべて成り立つことをいう。
@@ -2358,7 +2380,10 @@ scoring:
   penalty_per_item: 5
   penalty_missing_report: 6
 frontier:
-  cost_axis: total_cost_usd # 全 target 共通。欠落 run は 0 補完せず frontier 計算を fail-closed
+  # Issue #378（ADR-20260817-051）: total_cost_usd は 5 分 TTL ephemeral cache 実測で
+  # 最大 ~60% 変動するため cache_neutral_cost_usd（cache token を input 単価で一律換算）
+  # へ切替。全 target 共通。欠落 run は 0 補完せず frontier 計算を fail-closed
+  cost_axis: cache_neutral_cost_usd
 overlay:
   allowed_prefixes:
     - "facets/"

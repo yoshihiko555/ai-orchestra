@@ -1096,7 +1096,7 @@
   covered_by:
     - packages/meta-harness/tests/test_pareto_frontier.py::TestCostAxisValidation::test_default_cost_axis_is_total_cost_usd
     - packages/meta-harness/tests/test_pareto_frontier.py::TestCostAxisValidation::test_missing_default_cost_key_in_run_raises_with_run_id
-  notes: total_cost_usd is the global default and a missing selected field hard-raises with the affected run id instead of defaulting to zero.
+  notes: total_cost_usd remains the code-baked DEFAULTS fallback (used when config load itself fails); the distributed config's effective frontier.cost_axis is cache_neutral_cost_usd as of Issue #378 / ADR-20260817-051 (see EV-115/EV-116). A missing selected field still hard-raises with the affected run id instead of defaulting to zero, for either axis.
 
 - ev_id: EV-84
   phase: 3
@@ -1464,3 +1464,62 @@
     - packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_graded_with_rubric_judge_is_rejected
     - packages/meta-harness/tests/test_schema_validator.py::TestScenarioSchema::test_graded_min_items_violation_is_reported
   notes: scenario.schema.json's graded array item schema (graded_check_item) restricts the oracle enum to command_exit/artifact_exists/json_schema; a rubric_judge oracle in graded fails schema validation (enum violation) because the handwritten validator subset does not enforce allOf/if/then, so the restriction is expressed as a standalone enum instead.
+
+- ev_id: EV-115
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_computes_from_cli_sourced_cost
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_config_missing_key
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_input_key_is_null
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_output_key_is_null
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_both_keys_missing
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_pricing_section_is_null
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_computes_from_cli_sourced_cost
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_config_missing_key
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_input_key_is_null
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_output_key_is_null
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_both_keys_missing
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_pricing_section_is_null
+  notes: cache_neutral_cost_usd = ((input_tokens + cache_creation_input_tokens + cache_read_input_tokens) * input_price + output_tokens * output_price) / 1e6, where input_price/output_price come from evaluate.isolation.broker.pricing_upper_bound_usd_per_million.input/.output with an explicit None-check fallback to mh.DEFAULTS per key (a `.local.yaml` override that nulls a single key, or omits/nulls the whole section, must not crash float(None); PR #379 review, P2).
+
+- ev_id: EV-116
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_preserves_model_usage_source_tag
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_broker_metrics_usage_when_all_tokens_zero
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_does_not_use_broker_metrics_when_cli_data_present
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_zero_when_no_source_available
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_skips_broker_metrics_when_anomaly_flagged
+    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_skips_broker_metrics_when_budget_exceeded_flagged
+  covered_by:
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_preserves_model_usage_source_tag
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_broker_metrics_usage_when_all_tokens_zero
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_does_not_use_broker_metrics_when_cli_data_present
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_zero_when_no_source_available
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_skips_broker_metrics_when_anomaly_flagged
+    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_skips_broker_metrics_when_budget_exceeded_flagged
+  notes: usage source priority is cli > model_usage > broker_metrics; broker_metrics is only consulted when the cli/model_usage-sourced token fields are all zero, and is treated as untrustworthy (skipped) when isolation.broker.metrics.anomaly or budget_exceeded is set, matching the trust boundary already applied to total_cost_usd accounting. The chosen source is recorded on cache_neutral_source.
+
+- ev_id: EV-117
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_legacy_run_completed_cost_round_trips_and_validates
+    packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_legacy_cost_without_cache_neutral_fields_is_still_valid
+    packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cost_with_all_cache_neutral_fields_is_valid
+    packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cache_neutral_source_rejects_unknown_value
+  covered_by:
+    - packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_legacy_run_completed_cost_round_trips_and_validates
+    - packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_legacy_cost_without_cache_neutral_fields_is_still_valid
+    - packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cost_with_all_cache_neutral_fields_is_valid
+    - packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cache_neutral_source_rejects_unknown_value
+  notes: the four new cost fields (cache_creation_input_tokens, cache_read_input_tokens, cache_neutral_cost_usd, cache_neutral_source) are all optional on both the result schema and the ledger event schema's cost object; pre-#378 ledger lines and result payloads carrying only the legacy 7-key cost object continue to validate unchanged after the schema update.

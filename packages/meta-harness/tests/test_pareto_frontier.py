@@ -204,6 +204,13 @@ def _run_completed(
             "duration_ms": 1,
             "total_cost_usd": 0.01,
             "num_turns": 1,
+            # Issue #378: the repository's synced package config now defaults
+            # `frontier.cost_axis` to "cache_neutral_cost_usd" (mh.DEFAULTS itself
+            # deliberately stays "total_cost_usd" for legacy-ledger fallback safety —
+            # see meta_harness_common.py). Tests that exercise the real CLI against a
+            # freshly-initialized project (`TestFrontierCliRebuildVsCache` etc.) read
+            # that synced default, so this fixture needs both fields populated.
+            "cache_neutral_cost_usd": 0.01,
         },
         "attempt": attempt,
         "attempts_total": attempts_total,
@@ -806,6 +813,19 @@ class TestCostAxisValidation:
             assert "total_cost_usd" in str(exc)
         else:
             raise AssertionError("missing cost field should raise MetaHarnessRootError")
+
+    # Issue #378 (ADR-20260817-051): cache_neutral_cost_usd (+ raw cache token fields)
+    # must be accepted as a valid frontier.cost_axis by the KNOWN_COST_FIELDS allowlist.
+    def test_cache_neutral_cost_usd_is_a_valid_cost_axis(self) -> None:
+        config = {**mh.DEFAULTS, "frontier": {"cost_axis": "cache_neutral_cost_usd"}}
+        event = _run_completed("c1", quality_score=90)
+        event["cost"]["cache_neutral_cost_usd"] = 0.5
+        points = mh.aggregate_run_points(_evaluated([event]), config)
+        assert points[0]["cost_mean"] == 0.5
+
+    def test_cache_token_raw_fields_are_valid_cost_axes(self) -> None:
+        for field in ("cache_creation_input_tokens", "cache_read_input_tokens"):
+            assert field in mh.KNOWN_COST_FIELDS
 
     def test_cli_frontier_exits_2_for_invalid_cost_axis(self, git_project: Path, run_meta) -> None:
         run_meta("init", project=git_project, check=True)

@@ -151,6 +151,9 @@ def _append_run(
             "duration_ms": 1,
             "total_cost_usd": 0.01,
             "num_turns": 1,
+            # Issue #378: real-project synced config now defaults frontier.cost_axis to
+            # cache_neutral_cost_usd; this fixture feeds the real CLI in these tests.
+            "cache_neutral_cost_usd": 0.01,
         },
         "attempt": 1,
         "attempts_total": 1,

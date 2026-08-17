@@ -38,7 +38,14 @@
         "tool_uses": { "type": "integer", "minimum": 0 },
         "duration_ms": { "type": "integer", "minimum": 0 },
         "total_cost_usd": { "type": "number", "minimum": 0 },
-        "num_turns": { "type": "integer", "minimum": 0 }
+        "num_turns": { "type": "integer", "minimum": 0 },
+        "cache_creation_input_tokens": { "type": "integer", "minimum": 0 },
+        "cache_read_input_tokens": { "type": "integer", "minimum": 0 },
+        "cache_neutral_cost_usd": { "type": "number", "minimum": 0 },
+        "cache_neutral_source": {
+          "type": "string",
+          "enum": ["cli", "model_usage", "broker_metrics"]
+        }
       }
     },
     "candidate_registered": {

@@ -134,7 +134,7 @@
       "agents/reverse-coordinator.md": "b4ba084e8d03e158ed5ab4d44b93655de2044a1506c22319df5a6bbf2ab6c574"
     },
     "meta-harness": {
-      "config/meta-harness/meta-harness.yaml": "9719570c7ffc183935ddc8b7f7aaf31360bf3faecdae5a36e64ad4b501a16619"
+      "config/meta-harness/meta-harness.yaml": "327105550cd6959f851483da7120b068b9cb6dc870e5254698a726624989e0fd"
     },
     "quality-gates": {
       "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95"
