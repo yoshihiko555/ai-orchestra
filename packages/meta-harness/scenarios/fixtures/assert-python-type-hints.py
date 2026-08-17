@@ -111,9 +111,11 @@ def _has_single_module_level_def_binding(tree: ast.Module, name: str) -> bool:
     position, any nesting depth -- via: an ``Assign``/``AnnAssign``/``AugAssign`` target, an
     ``import``/``from ... import`` alias, a ``class`` statement, a ``for``/``async for`` loop
     target, a ``with`` target, a comprehension target, an ``except ... as`` name, a ``global``/
-    ``nonlocal`` declaration, a walrus (``:=``) target, or another ``def``/``async def`` (nested
-    or otherwise) sharing the name. Only a bare module-level ``def``/``async def`` -- the actual
-    top-level statement, not merely "a def somewhere" -- counts as the qualifying binding.
+    ``nonlocal`` declaration, a walrus (``:=``) target, a ``match``/``case`` capture pattern
+    (``case slugify:``/``case [*slugify]:``/``case {**slugify}:``), a ``type`` statement
+    (``type slugify = ...``), or another ``def``/``async def`` (nested or otherwise) sharing the
+    name. Only a bare module-level ``def``/``async def`` -- the actual top-level statement, not
+    merely "a def somewhere" -- counts as the qualifying binding.
     """
     top_level_defs = [
         node
@@ -158,6 +160,15 @@ def _has_single_module_level_def_binding(tree: ast.Module, name: str) -> bool:
                 return False
         elif isinstance(node, ast.NamedExpr):
             if isinstance(node.target, ast.Name) and node.target.id == name:
+                return False
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            if node.name == name:
+                return False
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest == name:
+                return False
+        elif isinstance(node, ast.TypeAlias):
+            if isinstance(node.name, ast.Name) and node.name.id == name:
                 return False
     return True
 

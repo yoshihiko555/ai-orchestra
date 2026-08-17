@@ -30,6 +30,12 @@ subprocess's exit code alone as a signal of success:
   exit inside one case's call cannot swallow any other case's evaluation -- unlike a single
   shared process where the first ``SystemExit(0)`` also killed the assertions after it.
 
+Result comparison is done on the *canonical JSON serialization* of the result and the expected
+value, not Python ``!=``: Python treats ``1 == True`` and ``0 == False``, so a candidate returning
+``1``/``0`` instead of the required ``True``/``False`` would otherwise silently pass a case whose
+``expected`` is a boolean. ``json.dumps`` distinguishes them (``"true"`` vs ``"1"``), matching the
+strict ``is True``/``is False`` identity the earlier single-process oracle used to enforce.
+
 Case format: a JSON list of objects, each ``{"args": [...], "expected": <value>}`` (an optional
 ``"id"`` names the case in failure output). ``--cases`` accepts either a path (resolved against
 ``AI_ORCHESTRA_DIR``, mirroring every other fixture in this suite) to a JSON file, or an inline
@@ -145,7 +151,12 @@ def check_behavior(
         if "error" in outcome:
             problems.append(f"{case_id}: {outcome['error']}")
             continue
-        if outcome["result"] != expected:
+        # Compare canonical JSON, not Python `!=` (PR #381 review, round 4 follow-up): Python
+        # treats `1 == True` and `0 == False`, so a candidate returning `1`/`0` instead of the
+        # required `True`/`False` would otherwise silently pass. `json.dumps` distinguishes them
+        # (`"true"` vs `"1"`), matching the strict `is True`/`is False` identity the earlier
+        # single-process oracle used to enforce.
+        if json.dumps(outcome["result"], sort_keys=True) != json.dumps(expected, sort_keys=True):
             problems.append(
                 f"{case_id}: {function}(*{args!r}) == {outcome['result']!r}, expected {expected!r}"
             )

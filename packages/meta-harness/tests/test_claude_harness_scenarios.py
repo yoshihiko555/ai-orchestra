@@ -271,6 +271,49 @@ class TestAssertPythonTypeHints:
         ):
             fixture.main(["--file", "bad.py", "--function", "slugify"])
 
+    def test_fails_when_only_binding_is_a_match_case_capture(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Advisor follow-up (post round-4): a `match`/`case` capture pattern
+        (`case slugify:`) rebinds the module-level name via `ast.MatchAs`, which the whole-module
+        walk must also treat as a disqualifying binding, not just the constructs enumerated in
+        the initial round-4 pass."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return title.lower()\n\n\n"
+            "match 1:\n"
+            "    case slugify:\n"
+            "        pass\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(
+            AssertionError, match="required function 'slugify' is not the sole module-level"
+        ):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
+    def test_fails_when_only_binding_is_a_type_alias_statement(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Advisor follow-up (post round-4): a `type slugify = ...` statement (Python 3.12+)
+        rebinds the module-level name via `ast.TypeAlias`, which the whole-module walk must also
+        treat as a disqualifying binding."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return title.lower()\n\n\n"
+            "type slugify = str\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(
+            AssertionError, match="required function 'slugify' is not the sole module-level"
+        ):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
     def test_staticmethod_self_and_cls_are_not_exempt(self, tmp_path: Path, monkeypatch) -> None:
         """PR #381 review, round 4 (P2): unlike an ordinary instance method or `@classmethod`,
         `@staticmethod` never receives an implicitly-bound `self`/`cls` -- naming a static
@@ -1042,6 +1085,24 @@ class TestAssertFunctionBehavior:
             fixture.main(["--module", "mod.py", "--function", "slugify", "--cases", self._CASES])
         assert "basic" in str(excinfo.value)
         assert "already-lower" not in str(excinfo.value)
+
+    def test_fails_when_bool_expected_is_satisfied_by_an_int(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Advisor follow-up (post round-4): comparing with Python `!=` lets `1 == True` and
+        `0 == False` conflate an int result with a bool `expected`, silently passing a candidate
+        that returns `1`/`0` instead of the required `True`/`False` -- a regression from the old
+        oracle's strict `is True`/`is False` identity check. Comparison must be on the canonical
+        JSON serialization instead, which distinguishes `true` from `1`."""
+        fixture = _fixture("assert-function-behavior.py")
+        module = "def validate_username(name: str) -> int:\n    return 1 if name else 0\n"
+        (tmp_path / "mod.py").write_text(module, encoding="utf-8")
+        cases = '[{"id": "truthy", "args": ["alice"], "expected": true}]'
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="truthy"):
+            fixture.main(
+                ["--module", "mod.py", "--function", "validate_username", "--cases", cases]
+            )
 
 
 # ---------------------------------------------------------------------------
