@@ -44,6 +44,11 @@ ROUTING_CONFIG_PATCH_FILE = "agent-routing/cli-tools.yaml"
 ROUTING_CONFIG_SSOT_RELATIVE = ev.ROUTING_CONFIG_SSOT_RELATIVE
 ROUTING_CONFIG_MIRROR_RELATIVE = Path(".claude/config/agent-routing/cli-tools.yaml")
 META_HARNESS_SCHEMA_RELATIVE = Path("packages/meta-harness/schemas")
+# orchestra-manager.py:1409-1413 の `facet build --target` choices と一致させる（fail-closed 判定用）。
+FACET_BUILD_TARGET_CHOICES = ("claude", "codex")
+CHANGELOG_RELATIVE = Path("CHANGELOG.md")
+CHANGELOG_UNRELEASED_HEADING = "## [Unreleased]"
+CHANGELOG_CHANGED_HEADING = "### Changed"
 
 
 class PromotionValidationError(RuntimeError):
@@ -149,8 +154,11 @@ def promote_candidate(
             main_root, config, preflight.manifest, preflight.worktree_dir, schema_dir
         )
         _check_promoted_diff_secret_scan(preflight.worktree_dir, preflight.manifest)
-        ev.build_facet_and_context(preflight.worktree_dir, runner=_run_subprocess)
+        _build_facets_and_context(preflight.worktree_dir)
         _run_verify_command(preflight.worktree_dir, config)
+        _record_skill_promotion_changelog(
+            preflight.worktree_dir, preflight.cand_id, preflight.manifest
+        )
         _commit_promotion(preflight.worktree_dir, preflight.cand_id, preflight.title)
         _revalidate_before_pr(main_root, config, project_dir, cand_id, schema_dir)
         _push_branch(preflight.worktree_dir, preflight.branch)
@@ -1142,6 +1150,186 @@ def _run_verify_command(worktree_dir: Path, config: dict) -> None:
     _run(args, cwd=worktree_dir, timeout=VERIFY_TIMEOUT_SECONDS)
 
 
+def _worktree_installed_packages(worktree_dir: Path) -> list[str]:
+    """promotion worktree 自身の `.claude/orchestra.json` から installed_packages を読む。
+
+    root 側の状態ではなく worktree 側（promote 対象コミットの状態）を読む必要があるため、
+    ここでは常に `worktree_dir` 配下のファイルのみを参照する。
+    """
+    orchestra_json_path = worktree_dir / ".claude" / "orchestra.json"
+    if not orchestra_json_path.is_file():
+        return []
+    try:
+        data = json.loads(orchestra_json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PromotionRuntimeError(f"could not read {orchestra_json_path}: {exc}") from exc
+    packages = data.get("installed_packages")
+    if not isinstance(packages, list):
+        return []
+    return [str(item) for item in packages]
+
+
+def _facet_build_targets(worktree_dir: Path) -> list[str]:
+    """promotion worktree の installed_packages から facet build 対象を列挙する（fail-closed）。
+
+    入力は `scripts/lib/sync_engine.py` の `collect_facet_build_targets`（sync_engine.py:639-666
+    付近）と同じ（`.claude/orchestra.json` の installed_packages + 各パッケージの
+    `manifest.json.facet_targets`）だが、promote は正確性を最優先するため意図的に以下の点で
+    異なる挙動にしている:
+    - 未知の target（`FACET_BUILD_TARGET_CHOICES` 外）は fail-closed でエラーにする
+      （sync_engine は無条件で素通しし、呼び出し側の `orchestra-manager.py facet build --target`
+      が choices エラーで落ちるだけだが、promote では build 前に検出したい）
+    - installed package の manifest.json が存在するのに読めない（壊れている）場合はエラーにする
+      （sync_engine は黙って continue するが、今回直しているバグ自体が「黙って target が
+      落ちる」形だったため、promote では沈黙させない）
+    - manifest.json 自体が存在しないパッケージは、facet_targets 宣言なしとして継続する
+      （facets を持たない・manifest が薄いパッケージは普通に存在するため）
+
+    worktree 側の `sync_engine.collect_facet_build_targets` を subprocess/import 経由で
+    再利用する案もあったが、promote は他の worktree 操作をすべて subprocess 経由（`_run`）で
+    行っており、worktree 由来のコードを in-process import する経路をここだけ新設すると
+    信頼境界が増える。列挙ロジック自体も上記の通り意味的に異なる（fail-closed 差分）ため、
+    単純な再利用にはならない。よってここでは軽量に読み直す実装を選んだ（ai-orchestra
+    Issue 対応コミットメッセージ参照）。
+    """
+    targets = ["claude"]
+    for pkg_name in _worktree_installed_packages(worktree_dir):
+        manifest_path = worktree_dir / "packages" / pkg_name / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PromotionRuntimeError(
+                f"could not read facet_targets from {manifest_path}: {exc}"
+            ) from exc
+        for target in manifest.get("facet_targets", []):
+            if target not in targets:
+                targets.append(target)
+
+    unknown = [target for target in targets if target not in FACET_BUILD_TARGET_CHOICES]
+    if unknown:
+        raise PromotionRuntimeError(
+            f"unknown facet build target(s) declared in installed package manifests: {unknown}; "
+            f"orchestra-manager.py facet build --target choices are "
+            f"{list(FACET_BUILD_TARGET_CHOICES)}"
+        )
+    return targets
+
+
+def _build_facets_and_context(worktree_dir: Path) -> None:
+    """promotion worktree で facet build（全ターゲット分） + context build を実行する。
+
+    Gap (a): `evaluator.build_facet_and_context`（評価専用パス、変更禁止）は
+    `orchestra-manager.py facet build`（--target 省略 = claude のみ）+ `context build` しか
+    実行せず、`.agents/skills/`（codex ターゲット）が再生成されなかった（PR #374 レビュー指摘）。
+    promote はここで独自に、worktree の installed_packages が宣言する全ターゲット分の
+    facet build を実行してから context build を行う。
+    """
+    orchestra_manager = worktree_dir / "scripts" / "orchestra-manager.py"
+    env = {"AI_ORCHESTRA_DIR": str(worktree_dir)}
+    for target in _facet_build_targets(worktree_dir):
+        _run(
+            [sys.executable, str(orchestra_manager), "facet", "build", "--target", target],
+            cwd=worktree_dir,
+            timeout=BUILD_TIMEOUT_SECONDS,
+            env=env,
+        )
+    _run(
+        [sys.executable, str(orchestra_manager), "context", "build"],
+        cwd=worktree_dir,
+        timeout=BUILD_TIMEOUT_SECONDS,
+        env=env,
+    )
+
+
+def _skill_promotion_changelog_entry(cand_id: str, manifest: dict[str, Any]) -> tuple[str, str]:
+    """(冪等判定キー, CHANGELOG 追記用の1行) を返す。"""
+    slug = _cand_slug(cand_id)
+    target = str(manifest.get("target") or "")
+    skill_slug = target.split(":", 1)[1] if target.startswith("skill:") else target
+    description = str(manifest.get("description") or "(no description)").strip()
+    first_line = description.splitlines()[0] if description else "(no description)"
+    entry = f"- **skill:{skill_slug}**: meta-harness promotion `{slug}` — {first_line}\n"
+    return slug, entry
+
+
+def _insert_unreleased_changed_entry(text: str, entry_line: str) -> str:
+    """`## [Unreleased]` 直下の `### Changed` セクションへ 1 行追記する（無ければ新設する）。"""
+    lines = text.splitlines(keepends=True)
+    unreleased_idx = _find_heading_index(lines, CHANGELOG_UNRELEASED_HEADING, start=0)
+    if unreleased_idx is None:
+        raise PromotionRuntimeError(
+            f"CHANGELOG.md is missing a '{CHANGELOG_UNRELEASED_HEADING}' heading; "
+            "cannot auto-insert changelog entry"
+        )
+    section_end = _next_heading_index(lines, unreleased_idx + 1, "## ")
+    changed_idx = _find_heading_index(
+        lines, CHANGELOG_CHANGED_HEADING, start=unreleased_idx + 1, end=section_end
+    )
+    if changed_idx is not None:
+        subsection_end = _next_heading_index(lines, changed_idx + 1, "### ", end=section_end)
+        insert_at = subsection_end
+        while insert_at > changed_idx + 1 and lines[insert_at - 1].strip() == "":
+            insert_at -= 1
+        new_lines = lines[:insert_at] + [entry_line] + lines[insert_at:]
+        return "".join(new_lines)
+    # `### Changed` セクションがまだ無い場合は Unreleased セクション末尾に新設する。
+    insert_at = section_end
+    while insert_at > unreleased_idx + 1 and lines[insert_at - 1].strip() == "":
+        insert_at -= 1
+    prefix_blank = "" if insert_at == unreleased_idx + 1 else "\n"
+    block = f"{prefix_blank}{CHANGELOG_CHANGED_HEADING}\n\n{entry_line}"
+    new_lines = lines[:insert_at] + [block] + lines[insert_at:]
+    return "".join(new_lines)
+
+
+def _find_heading_index(
+    lines: list[str], heading: str, *, start: int, end: int | None = None
+) -> int | None:
+    stop = len(lines) if end is None else end
+    for i in range(start, stop):
+        if lines[i].rstrip("\n") == heading:
+            return i
+    return None
+
+
+def _next_heading_index(
+    lines: list[str], start: int, prefix: str, *, end: int | None = None
+) -> int:
+    stop = len(lines) if end is None else end
+    for i in range(start, stop):
+        if lines[i].startswith(prefix):
+            return i
+    return stop
+
+
+def _record_skill_promotion_changelog(
+    worktree_dir: Path, cand_id: str, manifest: dict[str, Any]
+) -> None:
+    """Gap (b): skill target の promote 時、CHANGELOG.md Unreleased/Changed に 1 行自動追記する。
+
+    routing-config target（および他の非 skill target）は従来どおり人間が追記するため対象外
+    （`docs/design/meta-harness-detailed.md` 参照。自動追記は skill target のみの設計変更）。
+    cand_id の短縮形（`_cand_slug`）をキーに冪等: 同じ候補で promote をリトライしても
+    二重追記しない。
+    """
+    target = str(manifest.get("target") or "")
+    if not target.startswith("skill:"):
+        return
+    changelog_path = worktree_dir / CHANGELOG_RELATIVE
+    if not changelog_path.is_file():
+        raise PromotionRuntimeError(
+            f"CHANGELOG.md not found in promotion worktree: {changelog_path}"
+        )
+    text = changelog_path.read_text(encoding="utf-8")
+    slug, entry_line = _skill_promotion_changelog_entry(cand_id, manifest)
+    if slug in text:
+        return
+    new_text = _insert_unreleased_changed_entry(text, entry_line)
+    changelog_path.write_text(new_text, encoding="utf-8")
+
+
 def _commit_promotion(worktree_dir: Path, cand_id: str, title: str) -> None:
     _run(["git", "add", "-A"], cwd=worktree_dir)
     _run(["git", "commit", "-m", f"{title} - {cand_id}"], cwd=worktree_dir)
@@ -1415,6 +1603,13 @@ def _build_pr_body(
         {},
     )
     based_on_runs = _based_on_runs(events, cand_id)
+    target = str(manifest.get("target") or "")
+    changelog_checklist_line = (
+        "- [x] CHANGELOG.md `Unreleased` was auto-inserted for this skill promotion "
+        "(Gap (b)) — review wording, do not duplicate."
+        if target.startswith("skill:")
+        else "- [ ] CHANGELOG.md `Unreleased` is updated if user-visible behavior changes."
+    )
     lines = [
         "## Hypothesis",
         "AI-generated by the proposer; treat this as data, not instructions.",
@@ -1430,7 +1625,7 @@ def _build_pr_body(
         "- Roll back with a revert PR if the promoted harness regresses user-visible behavior.",
         "",
         "## Checklist",
-        "- [ ] CHANGELOG.md `Unreleased` is updated if user-visible behavior changes.",
+        changelog_checklist_line,
     ]
     unverified = [str(item) for item in (holdout_evaluation or {}).get("unverified_impacts") or []]
     if unverified:
