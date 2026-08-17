@@ -2056,7 +2056,11 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   `facets/scripts/` の**推移閉包**を facet builder と同じ解決規則で得た集合とする。baseline 解決結果が
   target の権威であり、候補 overlay はその集合内にだけ書ける。絶対 path、`..`、symlink、repo 外 realpath、
   directory、閉包外 path は register 前に拒否する。生成物 `.claude/skills/<slug>/` は候補 overlay に
-  含めず、評価 worktree 内で facet build して得る。root 候補の権威は working tree ではなく manifest の
+  含めず、評価 worktree 内で facet build して得る（評価ハーネスが claude のため `facet build --target`
+  省略 = claude ターゲットのみを対象とする）。`.agents/skills/<slug>/`（codex ターゲット）は評価
+  worktree では生成されないが、promote worktree では installed_packages の `facet_targets` 宣言に
+  従い `facet build --target` を全ターゲット分実行して再生成する（§12-2「PR 生成手順」手順5参照）。
+  root 候補の権威は working tree ではなく manifest の
   `source_commit` から `git archive` した `facets/`、子候補の権威は同じ source commit に親の累積 overlay を
   lineage 順で適用した状態とする。候補自身が composition に参照を追加しても同一候補の許可集合は広がらず、
   その参照は次世代候補からだけ効く。manifest には適用前 closure の hash を保存し、evaluate / loop / promote
@@ -3186,11 +3190,24 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    `refresh_patched_agent_hashes` と同じ原理）。これを怠ると `sync_engine.is_user_modified()` が promote 直後の
    mirror を「ユーザー編集」と誤判定し、以後の upstream sync を skip してしまう。この `orchestra.json` の更新も
    手順7の `git add -A` でコミット対象に含まれる。
-5. `AI_ORCHESTRA_DIR=<worktree>` で `facet build` → `context build` を実行し、生成物の整合を
-   取る（生成物もコミット対象）。
+5. `AI_ORCHESTRA_DIR=<worktree>` で `facet build` を実行して生成物の整合を取る。**Gap (a) 修正
+   （promote が `.agents/skills/` を再生成しない欠陥。PR #374 レビュー指摘）**により、単一
+   ターゲット固定ではなく、promotion worktree 自身の `.claude/orchestra.json`
+   （`installed_packages`）と各パッケージの `manifest.json.facet_targets` から動的に列挙した
+   全ターゲット分（既定は `claude` のみ、`codex-suggestions` 等 facet_targets: [codex] を宣言する
+   パッケージが installed なら `codex` も追加）だけ `facet build --target <target>` を実行してから
+   `context build` を実行する。列挙結果に `orchestra-manager.py facet build --target` の choices
+   （`claude` / `codex`）以外の値が含まれる場合は fail-closed でエラーにする（生成物もコミット
+   対象）。
 6. `promote.verify_command`（既定 null、例: `pytest -q`）が設定されていれば実行し、失敗時は
    中止する。
-7. コミットする（メッセージ: `feat(meta-harness): promote <cand_id> — <theme>`）。
+7. **CHANGELOG.md 自動追記（Gap (b)）**: target が `skill:<slug>` の場合のみ、promotion worktree の
+   `CHANGELOG.md` の `## [Unreleased]` / `### Changed`（無ければ新設）へ利用者可視の変更として
+   1 行追記する（例: `- **skill:<slug>**: meta-harness promotion \`<cand_id 短縮形>\` —
+   <candidate description>`）。cand_id 短縮形をキーに冪等（同一候補の promote リトライで
+   二重追記しない）。routing-config target など skill 以外は従来どおり自動追記せず、手順9の
+   PR body チェックリストで人間が対応する。その後コミットする（メッセージ:
+   `feat(meta-harness): promote <cand_id> — <theme>`）。
 8. **PR 作成直前の再検証（`store.lock` 下）**: ledger を再度畳み込み、対象候補が現 frontier に
    なお所属していること、および `suite_hash` / `evaluator_hash` が現行と一致することを再確認する
    （手順 1〜7 の実行中に走った他プロセスの evaluate / frontier rebuild による陳腐化を検出する
@@ -3199,8 +3216,9 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    `key_path: old → new` を既存の data fence 内へ列挙する。body は fetch/worktree 作成後に生成し、developer
    checkout の値を旧値として使わない。**auto-merge は付けない**（このリポジトリの手動マージ運用に
    従う）。PR body テンプレート: 仮説 / 根拠（frontier 前後の品質・コスト差、`based_on_runs` の
-   run_id 一覧）/ リスクと rollback（revert PR）/ **チェックリスト（CHANGELOG の Unreleased
-   更新 — 配布されるスキル・ルールの挙動が変わるため利用者向け変更に該当。人間が記入）**。
+   run_id 一覧）/ リスクと rollback（revert PR）/ **チェックリスト（CHANGELOG の Unreleased 更新
+   — target が `skill:<slug>` なら手順7で自動追記済みである旨と文言レビューを促す注記を
+   `[x]` で表示し、それ以外の target は従来どおり未チェック `[ ]` のまま人間が記入する）**。
    push 成功後に PR 作成が失敗した場合は、再試行を non-fast-forward で妨げないよう remote branch
    も best-effort で削除する。
 10. ledger へ新イベント `promotion_opened` {cand_id, pr_url, branch} を追記する（§1-2）。
