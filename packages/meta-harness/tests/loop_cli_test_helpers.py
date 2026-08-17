@@ -193,6 +193,19 @@ def _append_evaluation_summary(
     )
 
 
+def _non_holdout_claude_harness_scenario_ids() -> list[str]:
+    """The real claude-harness suite grows over time (ADR-20260817-052 added 4 scenarios), so
+    tests must discover the *current* non-holdout scenario id set instead of pinning the
+    original 2-scenario suite -- otherwise a candidate's fabricated evaluation only ever covers
+    a strict subset of the real own_suite scope and never reaches a genuinely-complete frontier
+    entry (own_run_ids completeness is checked against the real suite, unstubbed)."""
+    paths = loop_cli.ev.discover_scenario_paths(
+        loop_cli.ev.scenario_suite_dir(loop_cli._PACKAGE_DIR, "claude-harness")
+    )
+    scenarios = [loop_cli.ev.load_scenario(path, loop_cli._SCHEMA_DIR) for path in paths]
+    return [str(scenario["id"]) for scenario in scenarios if not scenario["holdout"]]
+
+
 def _install_pipeline(monkeypatch, project: Path, config: dict, qualities: list[float]) -> None:
     def propose(_main_root, _config, _project_dir, spec, iteration):
         return _register_loop_candidate(project, config, spec, iteration)
@@ -205,7 +218,7 @@ def _install_pipeline(monkeypatch, project: Path, config: dict, qualities: list[
             for event in _events(project, config)
             if event.get("cand_id") == cand_id and event.get("event") == "candidate_registered"
         )
-        for scenario_id in ("create-version-file", "summarize-readme"):
+        for scenario_id in _non_holdout_claude_harness_scenario_ids():
             _append_run(
                 project,
                 config,

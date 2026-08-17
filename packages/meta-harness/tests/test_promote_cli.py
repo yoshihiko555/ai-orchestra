@@ -30,7 +30,15 @@ _PROMOTE_BRANCH = "meta/promote-20260709-010000-promote-abcd"
 _SUITE_HASH = cli.prm.ev.compute_suite_hash(
     cli.prm.ev.validate_target_suite(cli.prm._PACKAGE_DIR, cli.prm._SCHEMA_DIR, "claude-harness")
 )
-_EVALUATOR_HASH = cli.prm.ev.compute_configured_evaluator_hash(mh.DEFAULTS)
+# ADR-20260817-052: use the merged effective config (DEFAULTS deep-merged with the real
+# packages/meta-harness/config/meta-harness.yaml, same as what `mh.load_config(git_project)`
+# resolves inside `cli.cmd_promote` for every test's tmp project), not raw `mh.DEFAULTS`. The
+# regression.max_budget_usd bump (186.0 -> 210.0) that ADR-20260817-052 needed is only reflected
+# in the YAML (packages/meta-harness/lib/** is frozen for this PR), so `mh.DEFAULTS` alone is
+# stale and would compute a different (wrong) evaluator_hash than what real promote calls see.
+_EVALUATOR_HASH = cli.prm.ev.compute_configured_evaluator_hash(
+    mh.load_config(str(cli.prm._PACKAGE_DIR))
+)
 
 
 def _sample_sk_key(key_kind: str | None = None) -> str:
@@ -199,6 +207,118 @@ def _append_run(
     )
 
 
+def _append_full_holdout_coverage(
+    git_project: Path,
+    cand_id: str,
+    *,
+    verdict: str = "pass",
+    quality: float = 90.0,
+    suite_hash: str = _SUITE_HASH,
+    evaluator_hash: str = _EVALUATOR_HASH,
+    evaluation_id: str | None = None,
+) -> list[str]:
+    """Fabricate a full-coverage claude-harness holdout batch: one `run_completed` event per
+    (real holdout scenario, attempt 1..repeat_frontier).
+
+    ADR-20260817-052 gave claude-harness real holdout scenarios (previously it had none, so
+    `promoter._evaluation_covers_current_holdouts`'s per-suite `expected` set was always empty
+    and vacuously satisfied by a single placeholder run -- see `_append_run`'s
+    ``scenario_id="holdout"``). With real holdout scenarios registered, that function now
+    requires exact coverage: every (scenario_id, scenario_hash) pair from the current suite's
+    holdout scenarios, each with attempts `{1..repeat_frontier}` and matching
+    `attempts_total`. This helper builds exactly that shape instead of the single fake run.
+    """
+    config = mh.load_config(git_project)
+    manifest = mh.read_candidate_manifest(git_project, config, cand_id)
+    assert manifest is not None
+    repeat = int(config["evaluate"]["repeat_frontier"])
+    paths = cli.prm.ev.validate_target_suite(
+        cli.prm._PACKAGE_DIR, cli.prm._SCHEMA_DIR, "claude-harness"
+    )
+    holdout_scenarios = [
+        (path, scenario)
+        for path in paths
+        for scenario in [cli.prm.ev.load_scenario(path, cli.prm._SCHEMA_DIR)]
+        if scenario.get("holdout")
+    ]
+    run_ids: list[str] = []
+    for path, scenario in holdout_scenarios:
+        scenario_id = str(scenario["id"])
+        scenario_hash = cli.prm.ev.compute_scenario_hash(path)
+        for attempt in range(1, repeat + 1):
+            run_id = f"run-holdout-{scenario_id}-a{attempt}"
+            run_ids.append(run_id)
+            mh.append_ledger_event(
+                git_project,
+                config,
+                {
+                    "event": "run_completed",
+                    "ts": mh.now_iso(),
+                    "schema_version": "1.0",
+                    "run_id": run_id,
+                    "cand_id": cand_id,
+                    "scenario_id": scenario_id,
+                    "target": "claude-harness",
+                    "suite_id": "claude-harness",
+                    "suite_hash": suite_hash,
+                    "scenario_hash": scenario_hash,
+                    "evaluator_hash": evaluator_hash,
+                    "verdict": verdict,
+                    "quality_score": quality,
+                    "critical_pass_rate": 1.0 if verdict == "pass" else 0.0,
+                    "cost": {
+                        "input_tokens": 50,
+                        "output_tokens": 50,
+                        "total_tokens": 100,
+                        "tool_uses": 0,
+                        "duration_ms": 1,
+                        "total_cost_usd": 0.01,
+                        "num_turns": 1,
+                        # Issue #378: real-project synced config now defaults
+                        # frontier.cost_axis to cache_neutral_cost_usd; this fixture feeds the
+                        # real CLI in these tests.
+                        "cache_neutral_cost_usd": 0.01,
+                    },
+                    "attempt": attempt,
+                    "attempts_total": repeat,
+                    "holdout": True,
+                },
+            )
+    events = mh.read_ledger_events(git_project, config)
+    # Same batch pairing rule as `_append_run`: reuse the batch number of the preceding
+    # non-holdout call (counts only non-holdout run_completed events, unaffected by the holdout
+    # runs just appended above).
+    batch_number = sum(
+        event.get("event") == "run_completed" and not event.get("holdout") for event in events
+    )
+    resolved_evaluation_id = evaluation_id or f"eval-20260709-010000-{batch_number:08x}"
+    mh.append_ledger_event(
+        git_project,
+        config,
+        {
+            "event": "evaluation_completed",
+            "ts": mh.now_iso(),
+            "schema_version": "1.0",
+            "evaluation_id": resolved_evaluation_id,
+            "cand_id": cand_id,
+            "target": "claude-harness",
+            "holdout": True,
+            "own_run_ids": run_ids,
+            "own_suite_hash": suite_hash,
+            "evaluator_hash": evaluator_hash,
+            "own_critical_pass": verdict == "pass",
+            "regression_results": [],
+            "verdict": verdict,
+            "unverified_impacts": [],
+            "evaluation_base_commit": manifest["source_commit"],
+            "impacted_targets": [],
+            "impact_input_hash": "c" * 64,
+            "regression_cost_usd": 0.0,
+        },
+    )
+    return run_ids
+
+
 def _register_child_candidate(
     git_project: Path,
     tmp_path: Path,
@@ -238,7 +358,7 @@ def _register_child_candidate(
 def _prepare_promotable_candidate(git_project: Path, git_run, tmp_path: Path) -> str:
     cand_id = _register_candidate(git_project, git_run, tmp_path)
     _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
-    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+    _append_full_holdout_coverage(git_project, cand_id)
     return cand_id
 
 
@@ -273,7 +393,7 @@ def test_promote_rejects_candidate_outside_frontier(
 ) -> None:
     cand_id = _register_candidate(git_project, git_run, tmp_path)
     _append_run(git_project, cand_id, run_id="run-fail", verdict="fail", holdout=False)
-    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+    _append_full_holdout_coverage(git_project, cand_id)
 
     monkeypatch.setattr(cli.prm, "_ref_exists", lambda _project, _ref: True)
     monkeypatch.setattr(cli.prm, "_run", lambda args, **kwargs: _completed(args))
@@ -378,7 +498,7 @@ def test_promote_rejects_candidate_with_secret_in_overlay(
         overlay_content=f"# Example\n\nleaked {_sample_sk_key()}\n",
     )
     _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
-    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+    _append_full_holdout_coverage(git_project, cand_id)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
 
@@ -398,7 +518,7 @@ def test_promote_scans_non_utf8_overlay_for_secrets(
         overlay_content=(b"\xff# Example\n\nleaked " + _sample_sk_key().encode() + b"\n"),
     )
     _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
-    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+    _append_full_holdout_coverage(git_project, cand_id)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
 
@@ -418,7 +538,7 @@ def test_promote_rejects_secret_in_pr_description(
         description=f"leaked {_sample_sk_key('proj')}",
     )
     _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
-    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+    _append_full_holdout_coverage(git_project, cand_id)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
 
@@ -434,7 +554,7 @@ def test_promote_rejects_secret_in_candidate_id(
     cand_id = f"cand-20260709-010001-{_sample_sk_key('ant').lower()}"
     _register_candidate(git_project, git_run, tmp_path, cand_id=cand_id)
     _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
-    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+    _append_full_holdout_coverage(git_project, cand_id)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
 
@@ -454,7 +574,7 @@ def test_promote_rejects_secret_in_overlay_path(
         overlay_rel=f"facets/{_sample_sk_key('ant')}/SKILL.md",
     )
     _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
-    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+    _append_full_holdout_coverage(git_project, cand_id)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
 
@@ -474,7 +594,7 @@ def test_promote_rejects_secret_in_constructed_pr_body(
         based_on_runs=[_sample_sk_key("ant")],
     )
     _append_run(git_project, cand_id, run_id="run-non-holdout", holdout=False)
-    _append_run(git_project, cand_id, run_id="run-holdout", holdout=True)
+    _append_full_holdout_coverage(git_project, cand_id)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
 
