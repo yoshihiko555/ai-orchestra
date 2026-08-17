@@ -6,8 +6,12 @@ prompt: |
   /issue-fix 301
 
   This is an offline, network-free evaluation harness for the issue-fix skill:
-  - `gh` is a deterministic local stub: only `gh issue view 301 --json ...` is supported and
-    returns a fixed bug issue payload. Do not attempt any other `gh` subcommand.
+  - `gh` is a deterministic local stub that returns a fixed bug issue payload. The stub is
+    on a noexec mount, so if a direct invocation reports exit 126, do not request approval or
+    try chmod; invoke it through Python as specified in step 1. Do not attempt another `gh`
+    subcommand.
+  - Reading `.meta-harness/gh-issue-fixture.json` directly is not a substitute for the actual
+    issue-view invocation. The stub must run so that its call log is produced.
   - Git write operations (branch creation, commit, push) are structurally unavailable in this
     harness (the worktree's git metadata is exposed as a read-only snapshot). Do NOT run
     `git checkout -b`, `git commit`, or `git push` -- they will fail. Instead, determine the
@@ -21,7 +25,7 @@ prompt: |
     implementation without asking a follow-up question.
 
   Concretely:
-  1. Read the issue via `gh issue view 301 --json number,title,body,labels,assignees`.
+  1. Read the issue by running exactly `python3 bin/gh issue view 301 --json number,title,body,labels,assignees`.
   2. Fix the reported bug in `sandbox/greeter.py` with a direct Edit (add a None-name guard
      that returns "Hello, Guest"; keep the existing non-None behavior unchanged).
   3. Determine the branch name and commit message you would use for this fix, following the
