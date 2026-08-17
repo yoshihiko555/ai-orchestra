@@ -124,6 +124,46 @@ class TestLedgerEventSchemaOneOf:
         "regression_cost_usd": 0.0,
     }
 
+    # Issue #378 (ADR-20260817-051): a pre-#378 `run_completed` ledger line (7-key
+    # `cost`, no cache-neutral fields) must still round-trip through
+    # `read_ledger_events_strict()` and validate cleanly against the updated schema.
+    def test_legacy_run_completed_cost_round_trips_and_validates(self, tmp_path: Path) -> None:
+        legacy_event = {
+            "event": "run_completed",
+            "ts": "2026-01-01T00:00:00+09:00",
+            "schema_version": "1.0",
+            "run_id": "run-legacy-scn-a1-abcd1234",
+            "cand_id": "cand-legacy",
+            "scenario_id": "scn",
+            "target": "claude-harness",
+            "suite_id": "claude-harness",
+            "suite_hash": "a" * 64,
+            "scenario_hash": "b" * 64,
+            "evaluator_hash": "c" * 64,
+            "verdict": "pass",
+            "quality_score": 90.0,
+            "critical_pass_rate": 1.0,
+            "cost": {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "total_tokens": 2,
+                "tool_uses": 0,
+                "duration_ms": 1,
+                "total_cost_usd": 0.01,
+                "num_turns": 1,
+            },
+            "attempt": 1,
+            "attempts_total": 1,
+            "holdout": False,
+        }
+        mh.append_ledger_event(tmp_path, mh.DEFAULTS, legacy_event)
+
+        events = mh.read_ledger_events_strict(tmp_path, mh.DEFAULTS)
+
+        assert events == [legacy_event]
+        schema = _load("ledger.event.schema.json")
+        assert mh.validate_against_schema(events[0], schema, SCHEMA_DIR) == []
+
     def test_candidate_registered_matches_exactly_one_branch(self) -> None:
         schema = _load("ledger.event.schema.json")
         instance = {
@@ -393,6 +433,37 @@ class TestResultSchema:
         instance = {**self._VALID, "graded_pass_rate": 1.5}
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
         assert any("maximum" in error for error in errors)
+
+    # Issue #378 (ADR-20260817-051): pre-#378 result/ledger `cost` objects only have the
+    # original 7 keys. The 4 new cache-neutral fields must be optional so those legacy
+    # instances keep validating (back-compat guard for `additionalProperties: false`).
+    def test_legacy_cost_without_cache_neutral_fields_is_still_valid(self) -> None:
+        schema = _load("result.schema.json")
+        assert mh.validate_against_schema(self._VALID, schema, SCHEMA_DIR) == []
+        assert "cache_neutral_cost_usd" not in self._VALID["cost"]
+
+    def test_cost_with_all_cache_neutral_fields_is_valid(self) -> None:
+        schema = _load("result.schema.json")
+        instance = {
+            **self._VALID,
+            "cost": {
+                **self._VALID["cost"],
+                "cache_creation_input_tokens": 60011,
+                "cache_read_input_tokens": 292951,
+                "cache_neutral_cost_usd": 1.088307,
+                "cache_neutral_source": "cli",
+            },
+        }
+        assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
+
+    def test_cache_neutral_source_rejects_unknown_value(self) -> None:
+        schema = _load("result.schema.json")
+        instance = {
+            **self._VALID,
+            "cost": {**self._VALID["cost"], "cache_neutral_source": "unknown"},
+        }
+        errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
+        assert any("not in enum" in e for e in errors)
 
 
 class TestFrontierSchema:

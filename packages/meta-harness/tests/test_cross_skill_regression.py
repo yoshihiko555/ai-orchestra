@@ -664,6 +664,34 @@ def test_broker_cost_includes_judge_and_fail_closed_fallback(tmp_path: Path) -> 
     assert stale["total_cost_usd"] == pytest.approx(1.5)
 
 
+# Issue #378 (ADR-20260817-051): budget accounting (`_account_cost_with_broker_metrics`,
+# `total_cost_usd`) must stay untouched by the cache-neutral cost axis. This test asserts
+# that behavior is unchanged while confirming cache-neutral fields pass through the
+# broker-metrics accounting step unmodified (it only ever touches `total_cost_usd`).
+def test_broker_cost_accounting_leaves_cache_neutral_fields_untouched() -> None:
+    cli_cost = {
+        **_cost(0.2, tokens=20),
+        "cache_creation_input_tokens": 100,
+        "cache_read_input_tokens": 200,
+        "cache_neutral_cost_usd": 0.05,
+        "cache_neutral_source": "cli",
+    }
+    scenario = {"budget": {"max_budget_usd": 1.5}}
+
+    accounted = ev._account_cost_with_broker_metrics(
+        cli_cost,
+        {"broker": {"metrics": {"estimated_cost_usd": 0.7}}},
+        scenario,
+        mh.DEFAULTS,
+    )
+
+    assert accounted["total_cost_usd"] == pytest.approx(0.7)
+    assert accounted["cache_creation_input_tokens"] == 100
+    assert accounted["cache_read_input_tokens"] == 200
+    assert accounted["cache_neutral_cost_usd"] == pytest.approx(0.05)
+    assert accounted["cache_neutral_source"] == "cli"
+
+
 def test_train_and_holdout_batches_share_evaluation_id_and_regression_budget(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
