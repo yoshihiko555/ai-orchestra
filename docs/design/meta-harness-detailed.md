@@ -1449,6 +1449,58 @@ filtered view しか見ていないため通常発生しないが、CLI 側で�
 9. `git worktree remove --force` に続けて `git worktree prune` を実行する。**この手順は成功・失敗
    に関わらず finally で必ず実行する**（§2-5）。
 
+### 2-1-1. oracle fixtures の materialize と改ざん対策（PR #326/#340/#346、Issue #267）
+
+`command_exit` oracle（collateral-scope 実装自体を含む）は候補と同じ worktree にある
+`packages/meta-harness/scenarios/fixtures/*.py` を実行する。候補は bypassPermissions 下で
+worktree 全体に Write 可能であり、既存候補の再評価では worktree が候補登録時点の古い
+`source_commit` から checkout されるため、この fixture も当時のものになりうる（新しい
+サブコマンドを持たず落ちる、PR #326 レビュー round 4）。このため、attempt 開始時に固定した
+信頼済み fixture の immutable copy（`_snapshot_trusted_oracle_fixtures`）を worktree 側へ
+上書き materialize（`_materialize_current_oracle_fixtures`）する処理を、次の2箇所で行う。
+
+1. **snapshot 前**（worktree 作成直後・ヘッドレス実行より前）: isolated git snapshot の
+   ベースラインコミットへ現行の信頼済み fixture を含める。これが無いと、fixture 改修後に
+   古い `source_commit` の候補を再評価した際、2 回目の materialize による差分が「候補による
+   tracked 変更」として collateral-scope oracle に検出され、noop 候補ですら決定論的に fail
+   する（Issue #340）。
+2. **候補実行後・oracle 実行前**: 候補が fixture スクリプトを改ざんしても、oracle 判定前に
+   信頼済み内容へ復元する。候補実行前だけに materialize すると、outcome/collateral 両チェック
+   （同一スクリプトが両方の subcommand を実装している）を自分自身の改変ごと隠して通過できて
+   しまう（PR #326 レビュー round 4, Codex P1）。
+
+両 materialize とも、attempt 開始時に固定した同一の immutable copy を source に取る
+（TOCTOU 対策。2 回の呼び出しの間に信頼済み `package_dir` 側が外部更新されても、ベースラインと
+復元内容が食い違わない）。
+
+**改ざんの試行検出（Issue #267 残スコープ、2026-08-17）**: 上記 2. の復元は改ざんを黙って
+隠してしまい、改ざんの試行そのものは検出・記録されない。これは学習ループへの誤信号（proposer
+由来の候補が改ざん隣接戦略をノーペナルティで探索し続けられる）を招く（reward hacking、b10a
+実例。PR #374 参照）。そこで 2. の復元の直前、`_detect_tampered_oracle_fixtures` が worktree
+側 `scenarios/fixtures/` と信頼済み immutable copy を `_hash_directory_tree`（materialize-time
+の内容を evaluator hash へ折り込むのに既に使っている関数、§1-2）で比較する。
+
+- 比較基準は「候補実行直前の状態」= 信頼済み immutable copy。既存シナリオの `setup`
+  コマンド・`scenarios/fixtures/*.py` 自身・facet/context build のいずれも
+  `scenarios/fixtures/` へ書き込まないことを確認済みのため（全 scenario yaml の setup
+  ブロックおよび fixture script 本体の走査で確認）、1 回目の materialize から候補実行までの
+  間に fixtures が変化する正当な経路はなく、immutable copy をそのままベースラインとして
+  比較できる。
+- 不一致であれば差分のあった相対パス一覧（ソート済み、ファイル内容は含めない）を求め、
+  attempt を hard_failure にする。`result.json` の `errors` は既存の error_item スキーマ
+  （`stage`/`type`/`message`、`type` は enum 固定）に乗せ、新しいスキーマフィールドは
+  追加しない。`type: "run_error"` の `message` 先頭に固定 prefix `oracle-fixtures-tampered:`
+  を置き、続けて差分パスをカンマ区切りで列挙することで、スキーマ変更なしに機械可読な識別子と
+  証跡パスの両方を確保する。
+- 検出後も、後続の oracle・collateral 診断を壊さないよう、復元（materialize）自体は従来どおり
+  実行する。hard_failure により verdict は `pass` にならない経路（`_determine_verdict`）に
+  必ず入る。
+
+**raise-the-bar であり完全な閉鎖ではない**: この検出は「復元直前の状態」だけを見るため、
+意図的な敵対者が改ざんを利用した後に自ら原状復帰すれば回避できる。call-log 偽造や read
+制限による完全な閉鎖（証拠の書込域外移動 + read 制限）は、無人 loop 運転（Phase C）の前に
+必須のゲートとして Issue #267 に残る。
+
 ### 2-2. シナリオ実行コマンド（確認済み仕様に基づく確定形）
 
 隔離実行の全体像（候補コンテナ・broker sidecar・API の関係）は次の通り（ADR-20260712-035）。
