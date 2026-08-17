@@ -172,8 +172,13 @@ DEFAULTS: dict[str, Any] = {
         # Issue #297: bumped 174.0 -> 186.0 after registering 2 task-state scenarios
         # (add-phase-with-agreed-ac train + add-phase-direct-call-confirms-ac-holdout
         # holdout, max_budget_usd 3.0 each; +12.0 across the default/frontier phases).
+        # ADR-20260817-052 (PR #381 review): bumped 186.0 -> 210.0 to keep this Python
+        # fallback (used when config/meta-harness.yaml fails to load) in sync with the YAML
+        # value, which was already raised to 210.0 for the claude-harness suite's 2 train +
+        # 2 holdout additions (+2*3.0*repeat_default(1) train + 2*3.0*repeat_frontier(3)
+        # holdout = +24.0). Kept in lockstep with the YAML per the ledger convention above.
         "max_affected_suites": 7,
-        "max_budget_usd": 186.0,
+        "max_budget_usd": 210.0,
     },
     "overlay": {
         "allowed_prefixes": ["facets/"],

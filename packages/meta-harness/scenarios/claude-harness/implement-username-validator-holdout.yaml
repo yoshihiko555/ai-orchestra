@@ -1,0 +1,90 @@
+schema_version: "1.0"
+id: implement-username-validator-holdout
+target: claude-harness
+description: >-
+  Holdout - a validation task whose naive implementation invites deep nesting, testing whether
+  the harness's coding-principles instruction (nest depth <=2 via early return) generalizes to
+  an unseen prompt (ADR-20260817-052, measurement axis (1) instruction adherence).
+prompt: |
+  This is an offline, network-free evaluation harness for the ai-orchestra CLAUDE.md/rules
+  instruction set:
+  - There is no network access. Do not attempt to fetch external resources.
+  - Git write operations (commit/push) are unavailable in this harness. Do not attempt them.
+  - No subagent Task tool is available in this harness; implement the change directly.
+
+  Task:
+  Implement a function `validate_username(name)` in `sandbox/validator.py` with the following
+  rules, checked in order:
+
+  1. If `name` is `None` or an empty string, return `False`.
+  2. If `name` is shorter than 3 characters, return `False`.
+  3. If `name` is longer than 32 characters, return `False`.
+  4. If `name` contains any character other than ASCII letters, digits, or underscore, return
+     `False`.
+  5. Otherwise, return `True`.
+
+  When you are done, report what you did in a short Japanese summary.
+setup:
+  - "mkdir -p sandbox .meta-harness"
+command_timeout_ms: 60000
+critical:
+  # gate（実行成立性 = 成果物の存在）: train（implement-slug-util）と同一方針。
+  - id: validator-file-exists-holdout
+    text: "sandbox/validator.py が生成される"
+    oracle: artifact_exists
+    path: "sandbox/validator.py"
+graded:
+  # graded（出来栄え = 機能の正しさ）: 単一値ハードコードでは通らない複数入力の挙動検証。
+  # 非 ASCII 文字ケース（PR #381 レビュー指摘: `name.replace("_", "").isalnum()` のような
+  # Unicode 英数字を許容する実装が素通りしてしまうのを防ぐ）と、許容長の境界値（PR #381
+  # レビュー指摘: `len(name) <= 3` / `len(name) >= 32` のような off-by-one が不合格側の
+  # 2文字・33文字だけでは検出できないのを防ぐため、合格側の最小長3・最大長32を追加）、
+  # および許可文字の正常系網羅（PR #381 第3巡レビュー指摘: 小文字始まり・小文字のみの
+  # `alice_01` だけでは `^[a-z][a-z0-9_]*$` のような先頭文字を小文字限定する実装や
+  # `[a-z0-9_]+` の実装も全 assertion を通ってしまうため、大文字混在・数字始まり・
+  # アンダースコア始まりの合格ケースも追加）を含む。
+  # PR #381 第4巡レビュー指摘、P1: 旧方式は候補関数と assertion 群を同一プロセスで実行して
+  # いたため、`validate_username()` 内で `raise SystemExit(0)` / `os._exit(0)` するだけで
+  # 残りの assertion を一つも評価せず exit 0 のまま通過できた。1ケース=1子プロセスに分離
+  # した assert-function-behavior.py 経由で実行し、この抜け道を構造的に塞ぐ
+  # （slugify と同一の設計・同一 fixture、詳細はそちらのコメント参照）。
+  # 空白のみ含む不正ケースと句読記号のみ含む不正ケースを分離（PR #381 第5巡レビュー指摘:
+  # 唯一の不正 ASCII ケースが空白と `!` を同時に含んでいたため、どちらか一方だけを拒否する
+  # 不完全な実装（例: `!` だけ拒否し空白を許容）も通ってしまうのを防ぐ）。
+  - id: validate-username-behavior-correct-holdout
+    text: "validate_username() が None/空文字/短すぎ/長すぎ/不正文字（空白のみ・記号のみ・
+      非ASCII、それぞれ独立したケースで検証）/正常値（境界長3・32、大文字混在・数字始まり・
+      アンダースコア始まり含む）を正しく判定する（単一値ハードコードでは通らない。
+      SystemExit/os._exit による早期終了も子プロセス隔離により通過できない）"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-function-behavior.py
+      --module sandbox/validator.py --function validate_username
+      --cases packages/meta-harness/scenarios/fixtures/cases/validate-username-cases.json
+  # graded（出来栄え = coding-principles「型ヒント必須」）: train と検査器を共有し、観点は
+  # 型ヒントで揃える（headroom は下のネスト深度側でずらす）。
+  - id: validator-type-hints-complete-holdout
+    text: "validate_username() が def として定義され、引数・戻り値に型ヒントが付与されている
+      （lambda 代入など def を伴わない実装は不合格）"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-python-type-hints.py
+      --file sandbox/validator.py --function validate_username
+  # graded（出来栄え = coding-principles「Early Return」節: ネスト深度2以下）。train
+  # （命名規約・docstring・関数長）とは観点をずらし、検査器（assert-python-conventions.py）
+  # は共有する。
+  - id: validator-nesting-depth-shallow-holdout
+    text: "validate_username() のネスト深度が2以下（Early Return スタイルを問う。逐次の
+      if による多段ネストは不合格になる）"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-python-conventions.py
+      --file sandbox/validator.py --max-nesting-depth 2
+holdout: true
+timeout_ms: 300000
+budget:
+  # train（implement-slug-util）と同型構成のため同じ保守的な初期値を用いる。マージ後の
+  # bootstrap 実測で較正する（ADR-20260817-052 headroom 較正方針の第1段）。
+  max_turns: 16
+  max_budget_usd: 3.0
+repeat: 1

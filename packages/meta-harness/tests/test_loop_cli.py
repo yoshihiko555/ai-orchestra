@@ -17,6 +17,7 @@ _append_run = helpers._append_run
 _config = helpers._config
 _events = helpers._events
 _install_pipeline = helpers._install_pipeline
+_non_holdout_claude_harness_scenario_ids = helpers._non_holdout_claude_harness_scenario_ids
 _register_loop_candidate = helpers._register_loop_candidate
 _stub_evaluation_complete = helpers._stub_evaluation_complete
 _write_manifest = helpers._write_manifest
@@ -557,7 +558,7 @@ def test_resume_orphan_without_run_evaluates_before_recording(
         if holdout:
             return []
         calls.append(candidate)
-        for scenario_id in ("create-version-file", "summarize-readme"):
+        for scenario_id in _non_holdout_claude_harness_scenario_ids():
             _append_run(git_project, config, candidate, 70.0, scenario_id=scenario_id)
         return [{"verdict": "pass"}]
 
@@ -584,7 +585,7 @@ def test_resume_orphan_with_run_records_without_reevaluation(
     mh.init_store(git_project, config)
     spec = loop_cli._start_loop(git_project, config, "claude-harness")
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(git_project, config, cand_id, 75.0, scenario_id=scenario_id)
     loop_cli._stop_loop(git_project, config, spec, "interrupted")
     restored = loop_cli._restore_loop(git_project, config, spec.loop_id, None)
@@ -737,11 +738,11 @@ def test_overfit_candidate_is_retired_and_excluded_from_improvement(
             "created_by": "human",
         },
     )
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(git_project, config, baseline_id, 90.0, scenario_id=scenario_id)
     spec = loop_cli._start_loop(git_project, config, "claude-harness")
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(git_project, config, cand_id, 95.0, scenario_id=scenario_id)
     monkeypatch.setattr(
         loop_cli,
@@ -772,7 +773,7 @@ def test_iteration_converged_false_when_candidate_updates_best(git_project: Path
     mh.init_store(git_project, config)
     spec = loop_cli._start_loop(git_project, config, "claude-harness")
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(git_project, config, cand_id, 50.0, scenario_id=scenario_id)
     events = _events(git_project, config)
 
@@ -790,7 +791,7 @@ def test_iteration_converged_true_when_candidate_stays_within_band_of_prior_best
     mh.init_store(git_project, config)
     spec = loop_cli._start_loop(git_project, config, "claude-harness")
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(git_project, config, cand_id, 51.0, scenario_id=scenario_id)
     events = _events(git_project, config)
 
@@ -810,17 +811,22 @@ def test_partial_train_run_is_not_treated_as_complete(git_project: Path) -> None
     scenarios = [loop_cli.ev.load_scenario(path, loop_cli._SCHEMA_DIR) for path in paths]
     suite_hash = loop_cli.ev.compute_suite_hash(paths)
     evaluator_hash = loop_cli.ev.compute_configured_evaluator_hash(config)
-    for scenario in scenarios:
-        assert scenario["holdout"] is False
-    _append_run(
-        git_project,
-        config,
-        cand_id,
-        80.0,
-        scenario_id=scenarios[0]["id"],
-        suite_hash=suite_hash,
-        evaluator_hash=evaluator_hash,
-    )
+    # ADR-20260817-052: the real claude-harness suite now legitimately mixes train (holdout is
+    # False) and holdout scenarios, so this asserts on the non-holdout subset rather than
+    # requiring every scenario in the suite to be non-holdout.
+    non_holdout = [scenario for scenario in scenarios if scenario["holdout"] is False]
+    assert len(non_holdout) >= 2, "need at least 2 non-holdout scenarios to test partial coverage"
+
+    for scenario in non_holdout[:-1]:
+        _append_run(
+            git_project,
+            config,
+            cand_id,
+            80.0,
+            scenario_id=scenario["id"],
+            suite_hash=suite_hash,
+            evaluator_hash=evaluator_hash,
+        )
     assert not loop_cli._evaluation_complete(
         _events(git_project, config), config, spec.target, cand_id, holdout=False
     )
@@ -830,7 +836,7 @@ def test_partial_train_run_is_not_treated_as_complete(git_project: Path) -> None
         config,
         cand_id,
         80.0,
-        scenario_id=scenarios[1]["id"],
+        scenario_id=non_holdout[-1]["id"],
         suite_hash=suite_hash,
         evaluator_hash=evaluator_hash,
     )
@@ -936,7 +942,7 @@ def test_stale_hash_run_does_not_change_loop_quality_or_frontier(git_project: Pa
     mh.init_store(git_project, config)
     spec = loop_cli._start_loop(git_project, config, "claude-harness")
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(git_project, config, cand_id, 50.0, scenario_id=scenario_id)
     _append_run(
         git_project,
@@ -962,7 +968,7 @@ def test_wrong_scenario_hash_run_fails_closed_in_frontier(git_project: Path) -> 
     mh.init_store(git_project, config)
     spec = loop_cli._start_loop(git_project, config, "claude-harness")
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(
             git_project,
             config,
@@ -981,7 +987,7 @@ def test_malformed_state_event_fails_closed_in_frontier(git_project: Path) -> No
     mh.init_store(git_project, config)
     spec = loop_cli._start_loop(git_project, config, "claude-harness")
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(git_project, config, cand_id, 100.0, scenario_id=scenario_id)
     mh.append_ledger_event(
         git_project,
@@ -1012,7 +1018,7 @@ def test_stale_historical_run_can_support_valid_terminal_transition(git_project:
             "created_by": "human",
         },
     )
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(
             git_project,
             config,
@@ -1037,7 +1043,7 @@ def test_stale_historical_run_can_support_valid_terminal_transition(git_project:
     )
     spec = loop_cli._start_loop(git_project, config, "claude-harness")
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(git_project, config, cand_id, 90.0, scenario_id=scenario_id)
 
     assert loop_cli._candidate_on_frontier(git_project, config, spec.target, cand_id)
@@ -1048,7 +1054,7 @@ def test_run_after_terminal_state_preserves_terminal_warning_semantics(git_proje
     mh.init_store(git_project, config)
     spec = loop_cli._start_loop(git_project, config, "claude-harness")
     cand_id = _register_loop_candidate(git_project, config, spec, 1)
-    for scenario_id in ("create-version-file", "summarize-readme"):
+    for scenario_id in _non_holdout_claude_harness_scenario_ids():
         _append_run(git_project, config, cand_id, 80.0, scenario_id=scenario_id)
     mh.append_ledger_event(
         git_project,

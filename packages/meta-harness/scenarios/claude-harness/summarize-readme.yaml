@@ -11,11 +11,24 @@ prompt: |
 setup: []
 command_timeout_ms: 60000
 critical:
+  # gate（実行成立性 = 成果物の存在）: 内容の正誤は graded 側が担当する
+  # （ADR-20260817-052、既存2本の最小転換。挙動の意味は変えない）。
   - id: summary-file-exists
     text: "summary.md が生成され、内容が空でないこと"
     oracle: artifact_exists
     path: "summary.md"
+graded:
+  # graded（出来栄え = prompt 自身が課した制約の遵守）: 「200 words 以内」は prompt に
+  # 既にある指示だが、これまで機械検証されていなかった（モデルがしばしば超過するため
+  # headroom を持つ）。転換で新規に graded 化する。
+  - id: summary-within-word-limit
+    text: "summary.md が 200 words 以内であること"
+    oracle: command_exit
+    command: "test $(wc -w < summary.md) -le 200"
 checks:
+  # gate に据え置かず checks に残す理由: リポジトリ非破壊はガードレール的性質が強く、
+  # ADR-20260814-050 の分類原則（gate=実行成立性）にも graded（出来栄え）にも厳密には
+  # 一致しない。挙動の意味を変えない最小転換として現状維持する。
   - id: summary-file-nontrivial-size
     text: "summary.md が最低限の分量（20 バイト以上）を持つこと"
     oracle: command_exit

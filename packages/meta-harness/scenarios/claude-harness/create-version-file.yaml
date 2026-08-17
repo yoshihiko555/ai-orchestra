@@ -11,6 +11,14 @@ prompt: |
 setup: []
 command_timeout_ms: 60000
 critical:
+  # gate（実行成立性 = 成果物の存在）: 内容の正誤は graded 側が担当する
+  # （ADR-20260817-052、既存2本の最小転換。挙動の意味は変えない）。
+  - id: version-file-exists
+    text: "VERSION が生成される"
+    oracle: artifact_exists
+    path: "VERSION"
+graded:
+  # graded（出来栄え = 内容の正誤）: 転換前の critical そのまま（command は無改修）。
   - id: version-file-matches-head
     text: "VERSION の内容が git rev-parse --short HEAD の出力と一致すること"
     oracle: command_exit

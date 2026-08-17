@@ -1,0 +1,88 @@
+schema_version: "1.0"
+id: implement-slug-util
+target: claude-harness
+description: >-
+  素朴な文字列変換タスクを解かせ、ハーネスの指示書（coding-principles: 型ヒント・命名規約・
+  関数長）を prompt で明示せずに守れるかを測る（ADR-20260817-052、測定軸①指示遵守）。
+prompt: |
+  This is an offline, network-free evaluation harness for the ai-orchestra CLAUDE.md/rules
+  instruction set:
+  - There is no network access. Do not attempt to fetch external resources.
+  - Git write operations (commit/push) are unavailable in this harness. Do not attempt them.
+  - No subagent Task tool is available in this harness; implement the change directly.
+
+  タスク:
+  `sandbox/slugify.py` に、タイトル文字列を URL スラグに変換する関数 `slugify(title)` を
+  実装してください。仕様:
+
+  - 英大文字は小文字に変換する
+  - 連続する空白（スペース・タブ等）は 1 個のハイフンに変換する
+  - 先頭・末尾のハイフンは除去する
+  - 連続するハイフンは 1 個に圧縮する
+  - 空文字列、または空白文字のみの文字列が渡された場合は "untitled" を返す
+
+  実装が完了したら、簡潔な日本語で作業内容を報告してください。
+setup:
+  - "mkdir -p sandbox .meta-harness"
+command_timeout_ms: 60000
+critical:
+  # gate（実行成立性 = 成果物の存在）: 出来栄えは graded 側が担当する（ADR-20260817-052）。
+  - id: slugify-file-exists
+    text: "sandbox/slugify.py が生成される"
+    oracle: artifact_exists
+    path: "sandbox/slugify.py"
+graded:
+  # graded（出来栄え = 機能の正しさ）: 単一値ハードコードでは通らない複数入力の挙動検証。
+  # タブ混じりの連続空白ケース（PR #381 レビュー指摘: スペースのみを置換する実装が
+  # 素通りしてしまうのを防ぐ）と、タブのみの空白入力ケース（PR #381 第3巡レビュー指摘:
+  # `''` と `'   '` だけを特別扱いし、他は `re.sub(r"\s+", "-", ...).strip("-")` する実装が
+  # `slugify('\t\t')` に空文字を返すのを見逃さないよう追加）を含む。各ケースは子プロセス
+  # 隔離済みの assert-function-behavior.py 経由で実行する（PR #381 第4巡レビュー指摘、P1:
+  # 旧方式は候補関数と assertion 群を同一プロセスで実行していたため、`slugify()` 内で
+  # `raise SystemExit(0)` / `os._exit(0)` するだけで残りの assertion を一つも評価せず
+  # exit 0 のまま通過できた。1ケース=1子プロセスに分離し、呼び出しが正常 return して結果
+  # JSON を出力した場合のみそのケースを合格とすることで、この抜け道を構造的に塞ぐ）。
+  # 改行を空白として扱うケースと、空白と既存ハイフンが隣接するケース（PR #381 第5巡レビュー
+  # 指摘: それぞれ `[ \t]+` のみを置換する実装、および先にハイフン圧縮してから空白置換する
+  # 実装が全ケースを通ってしまうのを防ぐ）も含む。
+  - id: slugify-behavior-correct
+    text: "slugify() が小文字化・空白圧縮（タブ・改行混在含む）・前後ハイフン除去・連続ハイフン
+      圧縮（内部の連続ハイフン、空白置換後に生じる連続ハイフン含む）・空入力の既定値
+      （タブのみの入力含む）を正しく処理する（単一値ハードコードでは通らない。SystemExit/
+      os._exit による早期終了も子プロセス隔離により通過できない）"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-function-behavior.py
+      --module sandbox/slugify.py --function slugify
+      --cases packages/meta-harness/scenarios/fixtures/cases/slugify-cases.json
+  # graded（出来栄え = coding-principles「型ヒント必須」）: prompt で規約を明示していない
+  # ため、ハーネス指示書の遵守度をそのまま測る。
+  - id: slugify-type-hints-complete
+    text: "slugify() が def として定義され、引数・戻り値に型ヒントが付与されている
+      （lambda 代入など def を伴わない実装は不合格）"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-python-type-hints.py
+      --file sandbox/slugify.py --function slugify
+  # graded（出来栄え = coding-principles「命名規則」節の snake_case 慣行・関数の単一責任
+  # （20行以下）」）。docstring は coding-principles.md / AGENTS.md / CLAUDE.md /
+  # .claude/rules/ のいずれにも関数 docstring を要求する規約が存在しないため採点対象から
+  # 除外している（PR #381 レビュー指摘: 未定義の規約を測ると指示書品質ではなく未文書化の
+  # 好みを最適化してしまう）。
+  - id: slugify-conventions-followed
+    text: "snake_case 命名・関数が20行以下"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-python-conventions.py
+      --file sandbox/slugify.py --require-snake-case
+      --max-function-lines 20
+holdout: false
+timeout_ms: 300000
+budget:
+  # 既存 claude-harness シナリオ（create-version-file/summarize-readme）の既定値を踏襲した
+  # 保守的な初期値。本シナリオは単一ファイル実装のみで issue-fix 系のような重い repo
+  # コンテキストを持たないため軽量想定だが、マージ後の bootstrap 実測で較正する
+  # （ADR-20260817-052 headroom 較正方針の第1段）。
+  max_turns: 16
+  max_budget_usd: 3.0
+repeat: 1

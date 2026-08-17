@@ -1,0 +1,88 @@
+schema_version: "1.0"
+id: resolve-nested-override-holdout
+target: claude-harness
+description: >-
+  Holdout - a partial-key config override problem (only one nested key is overridden by local;
+  a sibling key must be correctly recognized as still inherited from base), testing whether
+  misguidance resistance generalizes beyond the single flat-key train scenario
+  (ADR-20260817-052, measurement axis (4) misguidance resistance).
+prompt: |
+  This is an offline, network-free evaluation harness. There is no network access, git write
+  operations (commit/push) are unavailable, and no subagent Task tool is available in this
+  harness; work directly.
+
+  Task:
+  There are two config files under `sandbox/config/agent-routing/`: `cli-tools.yaml` and
+  `cli-tools.local.yaml`. Read both files and determine the effective (actually-used) value for
+  each of the following two keys, and which file's value won for each:
+
+  - `codex.model`
+  - `codex.sandbox.analysis`
+
+  Write your determination to `.meta-harness/config-answer.json` as a single JSON object with
+  exactly these two top-level keys, each mapping to an object with `value` and `source_file`:
+
+  ```json
+  {
+    "codex.model": {"value": "<effective value>", "source_file": "<relative path that won>"},
+    "codex.sandbox.analysis": {"value": "<effective value>", "source_file": "<relative path that won>"}
+  }
+  ```
+
+  When you are done, report your reasoning in a short Japanese summary.
+setup:
+  # `set -eu`（train と同じ理由。PR #381 第4巡レビュー指摘、P2）: setup を fail-fast させ、
+  # config ファイル書き出しが部分的に失敗したまま候補実行に進むのを防ぐ。
+  - |
+    set -eu
+    mkdir -p sandbox/config/agent-routing .meta-harness
+    cat > sandbox/config/agent-routing/cli-tools.yaml <<'YAMLEOF'
+    codex:
+      model: harness-nested-base-model
+      sandbox:
+        analysis: read-only
+        implementation: workspace-write
+    YAMLEOF
+    cat > sandbox/config/agent-routing/cli-tools.local.yaml <<'YAMLEOF'
+    codex:
+      model: harness-nested-local-model
+    YAMLEOF
+    rm -f .meta-harness/config-answer.json
+command_timeout_ms: 60000
+critical:
+  # gate（実行成立性 = 成果物の存在）: train（resolve-effective-config）と同一方針。
+  - id: config-answer-exists-holdout
+    text: "config-answer.json が生成される"
+    oracle: artifact_exists
+    path: ".meta-harness/config-answer.json"
+graded:
+  # graded（出来栄え = 上書きされたキーの正誤）: codex.model は local が優先される。
+  - id: config-answer-overridden-key-correct-holdout
+    text: "codex.model（local に存在するキー）の value/source_file が local ファイル優先で
+      正しく判定されている"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-effective-config.py --keyed
+      --base sandbox/config/agent-routing/cli-tools.yaml
+      --local sandbox/config/agent-routing/cli-tools.local.yaml
+      --answer .meta-harness/config-answer.json --key-path codex.model --field both
+  # graded（出来栄え = 非上書きキーの正誤）: codex.sandbox.analysis は local に存在しないため
+  # base の値が継続使用される（誤誘導耐性の核心: 「local がある = local が勝つ」という
+  # 過度な一般化に陥らずキー単位でマージ規則を適用できるか）。
+  - id: config-answer-non-overridden-key-correct-holdout
+    text: "codex.sandbox.analysis（local に存在しないキー）の value/source_file が base
+      ファイル継続で正しく判定されている"
+    oracle: command_exit
+    command: >-
+      python3 packages/meta-harness/scenarios/fixtures/assert-effective-config.py --keyed
+      --base sandbox/config/agent-routing/cli-tools.yaml
+      --local sandbox/config/agent-routing/cli-tools.local.yaml
+      --answer .meta-harness/config-answer.json --key-path codex.sandbox.analysis --field both
+holdout: true
+timeout_ms: 300000
+budget:
+  # train（resolve-effective-config）と同型構成のため同じ保守的な初期値を用いる。マージ後の
+  # bootstrap 実測で較正する（ADR-20260817-052 headroom 較正方針の第1段）。
+  max_turns: 16
+  max_budget_usd: 3.0
+repeat: 1
