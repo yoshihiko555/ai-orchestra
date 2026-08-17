@@ -2,6 +2,8 @@
 
 - assert-python-type-hints.py / assert-python-conventions.py の pass/fail 両方向
 - assert-effective-config.py の pass/fail/tamper 両方向（train=flat 形式・holdout=keyed 形式）
+- assert-function-behavior.py の pass/fail 両方向（正常実装 pass・SystemExit(0)/os._exit(0)
+  による早期終了 fail・1ケースのみ不正 fail・ケース隔離検証、PR #381 第4巡レビュー対応）
 - 実シナリオの setup: が書き出す config ペアの sha256 が assert-effective-config.py の
   既知テーブルと一致すること（setup: heredoc とハードコードされたハッシュのドリフト検出）
 - suite 全体が schema 検証・train/graded 宣言の一貫性チェックを通ること
@@ -140,7 +142,8 @@ class TestAssertPythonTypeHints:
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         with pytest.raises(
-            AssertionError, match="required function 'slugify' is not the final module-level"
+            AssertionError,
+            match="required function 'slugify' is not the sole module-level def binding",
         ):
             fixture.main(["--file", "bad.py", "--function", "slugify"])
 
@@ -163,7 +166,8 @@ class TestAssertPythonTypeHints:
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         with pytest.raises(
-            AssertionError, match="required function 'slugify' is not the final module-level"
+            AssertionError,
+            match="required function 'slugify' is not the sole module-level def binding",
         ):
             fixture.main(["--file", "bad.py", "--function", "slugify"])
 
@@ -184,7 +188,8 @@ class TestAssertPythonTypeHints:
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         with pytest.raises(
-            AssertionError, match="required function 'slugify' is not the final module-level"
+            AssertionError,
+            match="required function 'slugify' is not the sole module-level def binding",
         ):
             fixture.main(["--file", "bad.py", "--function", "slugify"])
 
@@ -220,6 +225,89 @@ class TestAssertPythonTypeHints:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         with pytest.raises(AssertionError, match="parameter 'self' is missing a type annotation"):
             fixture.main(["--file", "bad.py", "--function", "slugify"])
+
+    def test_fails_when_def_is_shadowed_by_a_branch_conditional_reassignment(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 4 (P1): a real `def slugify(title: str) -> str: ...` must not
+        satisfy the existence check if a later top-level `if` branch rebinds the name to an
+        unannotated `lambda` -- `if`/`try`/`with` blocks are not separate scopes in Python, so a
+        rebinding one branch deep still overrides the module-level name just as a straight-line
+        reassignment would. The round-3 fix only scanned direct `tree.body` statements and missed
+        this one construct deep; the round-4 fix walks the whole module AST instead of tracing
+        control flow, so it should catch this without needing an `if`-specific carve-out."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return title.lower()\n\n\n"
+            "if True:\n"
+            "    slugify = lambda title: title.lower()\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(
+            AssertionError, match="required function 'slugify' is not the sole module-level"
+        ):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
+    def test_fails_when_only_binding_is_a_for_loop_target(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """The whole-module walk (PR #381 review, round 4) must also catch a `for` loop target
+        rebinding the required name, not just `if`/`try`/`with` blocks and direct assignment."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return title.lower()\n\n\n"
+            "for slugify in [slugify]:\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(
+            AssertionError, match="required function 'slugify' is not the sole module-level"
+        ):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
+    def test_staticmethod_self_and_cls_are_not_exempt(self, tmp_path: Path, monkeypatch) -> None:
+        """PR #381 review, round 4 (P2): unlike an ordinary instance method or `@classmethod`,
+        `@staticmethod` never receives an implicitly-bound `self`/`cls` -- naming a static
+        method's real parameter `self` must not exempt it from the annotation requirement."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "bad.py").write_text(
+            "class Helper:\n"
+            "    @staticmethod\n"
+            "    def transform(self) -> str:\n"
+            '        """Doc."""\n'
+            "        return self.lower()\n\n\n"
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return Helper.transform(title)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="parameter 'self' is missing a type annotation"):
+            fixture.main(["--file", "bad.py", "--function", "slugify"])
+
+    def test_classmethod_cls_is_still_exempt(self, tmp_path: Path, monkeypatch) -> None:
+        """The round-4 `@staticmethod` carve-out must not overreach into `@classmethod`, which
+        genuinely does receive an implicitly-bound `cls`."""
+        fixture = _fixture("assert-python-type-hints.py")
+        (tmp_path / "ok.py").write_text(
+            "class Helper:\n"
+            "    @classmethod\n"
+            "    def transform(cls, title: str) -> str:\n"
+            '        """Doc."""\n'
+            "        return title.lower()\n\n\n"
+            "def slugify(title: str) -> str:\n"
+            '    """Doc."""\n'
+            "    return Helper.transform(title)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture.main(["--file", "ok.py", "--function", "slugify"])
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +416,29 @@ class TestAssertPythonConventions:
             "def collapse(text):\n"
             '    return HYPHEN_RE.sub("-", WHITESPACE_RE.sub("-", text))\n',
             encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture.main(["--file", "f.py", "--require-snake-case"])
+
+    def test_snake_case_checks_vararg_and_kwarg_parameter_names(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """PR #381 review, round 4 (P2): the parameter scan previously only walked
+        `posonlyargs`/`args`/`kwonlyargs`, so a non-snake_case `*args`/`**kwargs` name (e.g.
+        `*X`) never tripped the check even though `coding-principles.md`'s naming rule draws no
+        exception for variadic parameters."""
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text("def f(*X, **Y):\n    return X, Y\n", encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="parameter 'X' is not a meaningful snake_case"):
+            fixture.main(["--file", "f.py", "--require-snake-case"])
+
+    def test_snake_case_passes_with_snake_case_vararg_and_kwarg(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        fixture = _fixture("assert-python-conventions.py")
+        (tmp_path / "f.py").write_text(
+            "def f(*args, **kwargs):\n    return args, kwargs\n", encoding="utf-8"
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
         fixture.main(["--file", "f.py", "--require-snake-case"])
@@ -521,6 +632,38 @@ class TestAssertEffectiveConfigFlat:
                 "source_file",
             ]
         )
+
+    def test_fails_when_source_file_has_a_trailing_slash(self, tmp_path: Path, monkeypatch) -> None:
+        """PR #381 review, round 4 (P2): `posixpath.normpath()` maps a trailing-slash path onto
+        the same normalized string as the real file (e.g.
+        `sandbox/config/agent-routing/cli-tools.local.yaml/`), so without an explicit rejection
+        this nonexistent, directory-shaped path would hash-match the real file's expected value.
+        A trailing slash must be rejected before normalization, not silently collapsed away."""
+        _write_train_config_pair(tmp_path)
+        answer = tmp_path / ".meta-harness" / "config-answer.json"
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.write_text(
+            '{"value": "harness-local-override-model", '
+            '"source_file": "sandbox/config/agent-routing/cli-tools.local.yaml/"}',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture = _fixture("assert-effective-config.py")
+        with pytest.raises(AssertionError, match="trailing slash"):
+            fixture.main(
+                [
+                    "--base",
+                    "sandbox/config/agent-routing/cli-tools.yaml",
+                    "--local",
+                    "sandbox/config/agent-routing/cli-tools.local.yaml",
+                    "--answer",
+                    ".meta-harness/config-answer.json",
+                    "--key-path",
+                    "codex.model",
+                    "--field",
+                    "source_file",
+                ]
+            )
 
     def test_fails_when_value_wrongly_prefers_base(self, tmp_path: Path, monkeypatch) -> None:
         _write_train_config_pair(tmp_path)
@@ -806,6 +949,99 @@ class TestAssertEffectiveConfigKeyed:
                     "both",
                 ]
             )
+
+
+# ---------------------------------------------------------------------------
+# assert-function-behavior.py
+# ---------------------------------------------------------------------------
+
+
+class TestAssertFunctionBehavior:
+    """PR #381 review, round 4 (P1): the behavior oracle must isolate each case in its own
+    subprocess so a candidate function calling `SystemExit(0)`/`os._exit(0)` cannot short-circuit
+    the whole check by terminating the shared oracle process with exit 0 (see the fixture's
+    module docstring for the full design rationale)."""
+
+    _OK_MODULE = 'def slugify(title: str) -> str:\n    return title.lower().replace(" ", "-")\n'
+    _SYSTEM_EXIT_MODULE = (
+        "def slugify(title: str) -> str:\n    raise SystemExit(0)\n    return title\n"
+    )
+    _OS_EXIT_MODULE = (
+        "import os\n\n\ndef slugify(title: str) -> str:\n    os._exit(0)\n    return title\n"
+    )
+    _ONE_CASE_WRONG_MODULE = (
+        "def slugify(title: str) -> str:\n"
+        '    if title == "Hello World":\n'
+        '        return "wrong"\n'
+        '    return title.lower().replace(" ", "-")\n'
+    )
+    _CASES = (
+        '[{"id": "basic", "args": ["Hello World"], "expected": "hello-world"}, '
+        '{"id": "already-lower", "args": ["already-lower"], "expected": "already-lower"}]'
+    )
+
+    def test_passes_with_a_correct_implementation(self, tmp_path: Path, monkeypatch) -> None:
+        fixture = _fixture("assert-function-behavior.py")
+        (tmp_path / "mod.py").write_text(self._OK_MODULE, encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture.main(["--module", "mod.py", "--function", "slugify", "--cases", self._CASES])
+
+    def test_fails_when_function_calls_system_exit_zero(self, tmp_path: Path, monkeypatch) -> None:
+        """A `raise SystemExit(0)` inside the candidate function must not vacuously pass just
+        because the isolated subprocess it runs in also exits 0 -- the print of the result
+        payload never executes, so there is nothing on stdout to satisfy this case."""
+        fixture = _fixture("assert-function-behavior.py")
+        (tmp_path / "mod.py").write_text(self._SYSTEM_EXIT_MODULE, encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="printed nothing"):
+            fixture.main(["--module", "mod.py", "--function", "slugify", "--cases", self._CASES])
+
+    def test_fails_when_function_calls_os_exit_zero(self, tmp_path: Path, monkeypatch) -> None:
+        """Same defense as `SystemExit(0)`, but for `os._exit(0)`, which bypasses even Python's
+        own exception-based unwinding."""
+        fixture = _fixture("assert-function-behavior.py")
+        (tmp_path / "mod.py").write_text(self._OS_EXIT_MODULE, encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="printed nothing"):
+            fixture.main(["--module", "mod.py", "--function", "slugify", "--cases", self._CASES])
+
+    def test_fails_when_only_one_case_is_wrong(self, tmp_path: Path, monkeypatch) -> None:
+        """A single wrong case among several correct ones must still fail the whole check, and
+        the failure message must name the offending case."""
+        fixture = _fixture("assert-function-behavior.py")
+        (tmp_path / "mod.py").write_text(self._ONE_CASE_WRONG_MODULE, encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError, match="basic"):
+            fixture.main(["--module", "mod.py", "--function", "slugify", "--cases", self._CASES])
+
+    def test_reads_cases_from_a_project_root_relative_file(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        fixture = _fixture("assert-function-behavior.py")
+        (tmp_path / "mod.py").write_text(self._OK_MODULE, encoding="utf-8")
+        (tmp_path / "cases.json").write_text(self._CASES, encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        fixture.main(["--module", "mod.py", "--function", "slugify", "--cases", "cases.json"])
+
+    def test_isolates_an_early_exit_in_one_case_from_a_later_correct_case(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Each case must run in its own subprocess: an early exit while evaluating the first
+        case must not prevent a correct implementation's later case from ever being evaluated
+        (and passing)."""
+        fixture = _fixture("assert-function-behavior.py")
+        module = (
+            "def slugify(title: str) -> str:\n"
+            '    if title == "Hello World":\n'
+            "        raise SystemExit(0)\n"
+            '    return title.lower().replace(" ", "-")\n'
+        )
+        (tmp_path / "mod.py").write_text(module, encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(tmp_path))
+        with pytest.raises(AssertionError) as excinfo:
+            fixture.main(["--module", "mod.py", "--function", "slugify", "--cases", self._CASES])
+        assert "basic" in str(excinfo.value)
+        assert "already-lower" not in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

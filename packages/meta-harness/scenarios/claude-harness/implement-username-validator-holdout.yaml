@@ -43,26 +43,21 @@ graded:
   # `alice_01` だけでは `^[a-z][a-z0-9_]*$` のような先頭文字を小文字限定する実装や
   # `[a-z0-9_]+` の実装も全 assertion を通ってしまうため、大文字混在・数字始まり・
   # アンダースコア始まりの合格ケースも追加）を含む。
+  # PR #381 第4巡レビュー指摘、P1: 旧方式は候補関数と assertion 群を同一プロセスで実行して
+  # いたため、`validate_username()` 内で `raise SystemExit(0)` / `os._exit(0)` するだけで
+  # 残りの assertion を一つも評価せず exit 0 のまま通過できた。1ケース=1子プロセスに分離
+  # した assert-function-behavior.py 経由で実行し、この抜け道を構造的に塞ぐ
+  # （slugify と同一の設計・同一 fixture、詳細はそちらのコメント参照）。
   - id: validate-username-behavior-correct-holdout
     text: "validate_username() が None/空文字/短すぎ/長すぎ/不正文字（記号・非ASCII）/正常値
       （境界長3・32、大文字混在・数字始まり・アンダースコア始まり含む）を正しく判定する
-      （単一値ハードコードでは通らない）"
+      （単一値ハードコードでは通らない。SystemExit/os._exit による早期終了も子プロセス
+      隔離により通過できない）"
     oracle: command_exit
     command: >-
-      python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from validator import validate_username;
-      assert validate_username('alice_01') is True, validate_username('alice_01');
-      assert validate_username(None) is False, validate_username(None);
-      assert validate_username('') is False, validate_username('');
-      assert validate_username('ab') is False, validate_username('ab');
-      assert validate_username('a' * 33) is False, validate_username('a' * 33);
-      assert validate_username('a' * 3) is True, validate_username('a' * 3);
-      assert validate_username('a' * 32) is True, validate_username('a' * 32);
-      assert validate_username('bad name!') is False, validate_username('bad name!');
-      assert validate_username('álîcé') is False, validate_username('álîcé');
-      assert validate_username('ｕｓｅｒ１') is False, validate_username('ｕｓｅｒ１');
-      assert validate_username('Alice_01') is True, validate_username('Alice_01');
-      assert validate_username('123') is True, validate_username('123');
-      assert validate_username('_ab') is True, validate_username('_ab')"
+      python3 packages/meta-harness/scenarios/fixtures/assert-function-behavior.py
+      --module sandbox/validator.py --function validate_username
+      --cases packages/meta-harness/scenarios/fixtures/cases/validate-username-cases.json
   # graded（出来栄え = coding-principles「型ヒント必須」）: train と検査器を共有し、観点は
   # 型ヒントで揃える（headroom は下のネスト深度側でずらす）。
   - id: validator-type-hints-complete-holdout

@@ -24,7 +24,12 @@ prompt: |
 
   書き出したら、簡潔な日本語で判定の根拠を報告してください。
 setup:
+  # `set -eu`（PR #381 第4巡レビュー指摘、P2）: この setup ブロックは複数行を `/bin/sh -c` に
+  # 渡す。`set -eu` が無いと `mkdir`/heredoc 書き込みのいずれかが失敗しても最後の `rm -f` が
+  # 成功すれば setup 全体が exit 0 になり、config ファイルが欠けた状態のまま候補実行に進んで
+  # しまう（環境準備障害が setup_error にならず品質失敗として記録される）。
   - |
+    set -eu
     mkdir -p sandbox/config/agent-routing .meta-harness
     cat > sandbox/config/agent-routing/cli-tools.yaml <<'YAMLEOF'
     codex:

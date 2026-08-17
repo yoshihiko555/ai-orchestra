@@ -36,24 +36,22 @@ graded:
   # タブ混じりの連続空白ケース（PR #381 レビュー指摘: スペースのみを置換する実装が
   # 素通りしてしまうのを防ぐ）と、タブのみの空白入力ケース（PR #381 第3巡レビュー指摘:
   # `''` と `'   '` だけを特別扱いし、他は `re.sub(r"\s+", "-", ...).strip("-")` する実装が
-  # `slugify('\t\t')` に空文字を返すのを見逃さないよう追加）を含む。
+  # `slugify('\t\t')` に空文字を返すのを見逃さないよう追加）を含む。各ケースは子プロセス
+  # 隔離済みの assert-function-behavior.py 経由で実行する（PR #381 第4巡レビュー指摘、P1:
+  # 旧方式は候補関数と assertion 群を同一プロセスで実行していたため、`slugify()` 内で
+  # `raise SystemExit(0)` / `os._exit(0)` するだけで残りの assertion を一つも評価せず
+  # exit 0 のまま通過できた。1ケース=1子プロセスに分離し、呼び出しが正常 return して結果
+  # JSON を出力した場合のみそのケースを合格とすることで、この抜け道を構造的に塞ぐ）。
   - id: slugify-behavior-correct
     text: "slugify() が小文字化・空白圧縮（タブ混在含む）・前後ハイフン除去・連続ハイフン圧縮
       （内部の連続ハイフン含む）・空入力の既定値（タブのみの入力含む）を正しく処理する
-      （単一値ハードコードでは通らない）"
+      （単一値ハードコードでは通らない。SystemExit/os._exit による早期終了も子プロセス
+      隔離により通過できない）"
     oracle: command_exit
     command: >-
-      python3 -B -c "import sys; sys.path.insert(0, 'sandbox'); from slugify import slugify;
-      assert slugify('Hello World') == 'hello-world', slugify('Hello World');
-      assert slugify('  Multiple   Spaces  ') == 'multiple-spaces', slugify('  Multiple   Spaces  ');
-      assert slugify('') == 'untitled', slugify('');
-      assert slugify('   ') == 'untitled', slugify('   ');
-      assert slugify('\t\t') == 'untitled', slugify('\t\t');
-      assert slugify('UPPER CASE TITLE') == 'upper-case-title', slugify('UPPER CASE TITLE');
-      assert slugify('--Leading and Trailing--') == 'leading-and-trailing', slugify('--Leading and Trailing--');
-      assert slugify('Hello\tWorld') == 'hello-world', slugify('Hello\tWorld');
-      assert slugify('Tab\t\tand  Space Mixed') == 'tab-and-space-mixed', slugify('Tab\t\tand  Space Mixed');
-      assert slugify('Hello--World') == 'hello-world', slugify('Hello--World')"
+      python3 packages/meta-harness/scenarios/fixtures/assert-function-behavior.py
+      --module sandbox/slugify.py --function slugify
+      --cases packages/meta-harness/scenarios/fixtures/cases/slugify-cases.json
   # graded（出来栄え = coding-principles「型ヒント必須」）: prompt で規約を明示していない
   # ため、ハーネス指示書の遵守度をそのまま測る。
   - id: slugify-type-hints-complete

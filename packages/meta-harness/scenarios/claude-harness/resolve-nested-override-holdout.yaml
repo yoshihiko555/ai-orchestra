@@ -31,7 +31,10 @@ prompt: |
 
   When you are done, report your reasoning in a short Japanese summary.
 setup:
+  # `set -eu`（train と同じ理由。PR #381 第4巡レビュー指摘、P2）: setup を fail-fast させ、
+  # config ファイル書き出しが部分的に失敗したまま候補実行に進むのを防ぐ。
   - |
+    set -eu
     mkdir -p sandbox/config/agent-routing .meta-harness
     cat > sandbox/config/agent-routing/cli-tools.yaml <<'YAMLEOF'
     codex:

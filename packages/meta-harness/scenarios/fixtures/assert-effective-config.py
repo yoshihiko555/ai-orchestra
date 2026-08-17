@@ -42,7 +42,12 @@ comparison side):
    tokens already present in the literal string (a leading ``./``, doubled ``/``, interior ``.``
    segments, and textual ``a/b/../c`` -> ``a/c`` collapse) -- it does not resolve the path against
    the filesystem, follow symlinks, or make it absolute, so it cannot be used to smuggle in a path
-   that doesn't actually name the same file.
+   that doesn't actually name the same file. A trailing ``/`` is rejected *before* normalization
+   rather than being silently collapsed away (PR #381 review, round 4):
+   ``posixpath.normpath()`` maps ``sandbox/.../cli-tools.local.yaml/`` onto the same normalized
+   string as the real file, but a POSIX trailing slash means "this must be a directory" -- the
+   winning config is an ordinary file, so a ``source_file`` answer with a trailing slash never
+   actually names it and must fail rather than hash-match its way to a pass.
    The ``value`` field is never path-normalized (it is an opaque config value, not a path).
 4. Wrap as a single-key JSON object (``{"value": ...}`` or ``{"source_file": ...}``) and serialize
    with ``json.dumps(obj, sort_keys=True, separators=(",", ":"))`` (sorted keys, no incidental
@@ -89,6 +94,11 @@ def _normalize_field_value(field: str, raw_value: Any) -> str:
     """
     text = str(raw_value).strip()
     if field == "source_file" and text:
+        assert not text.endswith("/"), (
+            f"source_file {text!r} ends with a trailing slash; the winning config is an "
+            "ordinary file, never a directory, and normalizing away the slash before comparing "
+            "would let a directory-shaped answer collapse onto a real file's expected hash"
+        )
         text = posixpath.normpath(text)
     return text
 

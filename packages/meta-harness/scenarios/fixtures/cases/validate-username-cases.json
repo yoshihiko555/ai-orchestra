@@ -1,0 +1,67 @@
+[
+  {
+    "id": "valid-lowercase-with-digits-and-underscore",
+    "args": ["alice_01"],
+    "expected": true
+  },
+  {
+    "id": "none-input",
+    "args": [null],
+    "expected": false
+  },
+  {
+    "id": "empty-string",
+    "args": [""],
+    "expected": false
+  },
+  {
+    "id": "too-short",
+    "args": ["ab"],
+    "expected": false
+  },
+  {
+    "id": "too-long-33-chars",
+    "args": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "expected": false
+  },
+  {
+    "id": "min-boundary-3-chars",
+    "args": ["aaa"],
+    "expected": true
+  },
+  {
+    "id": "max-boundary-32-chars",
+    "args": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "expected": true
+  },
+  {
+    "id": "invalid-symbol",
+    "args": ["bad name!"],
+    "expected": false
+  },
+  {
+    "id": "non-ascii-accented",
+    "args": ["álîcé"],
+    "expected": false
+  },
+  {
+    "id": "non-ascii-fullwidth",
+    "args": ["ｕｓｅｒ１"],
+    "expected": false
+  },
+  {
+    "id": "uppercase-mixed",
+    "args": ["Alice_01"],
+    "expected": true
+  },
+  {
+    "id": "digits-only",
+    "args": ["123"],
+    "expected": true
+  },
+  {
+    "id": "leading-underscore",
+    "args": ["_ab"],
+    "expected": true
+  }
+]

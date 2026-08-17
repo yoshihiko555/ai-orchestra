@@ -1,0 +1,52 @@
+[
+  {
+    "id": "lowercases-and-hyphenates",
+    "args": ["Hello World"],
+    "expected": "hello-world"
+  },
+  {
+    "id": "collapses-multiple-spaces",
+    "args": ["  Multiple   Spaces  "],
+    "expected": "multiple-spaces"
+  },
+  {
+    "id": "empty-string-defaults",
+    "args": [""],
+    "expected": "untitled"
+  },
+  {
+    "id": "whitespace-only-defaults",
+    "args": ["   "],
+    "expected": "untitled"
+  },
+  {
+    "id": "tabs-only-defaults",
+    "args": ["\t\t"],
+    "expected": "untitled"
+  },
+  {
+    "id": "upper-case-title",
+    "args": ["UPPER CASE TITLE"],
+    "expected": "upper-case-title"
+  },
+  {
+    "id": "strips-leading-trailing-hyphens",
+    "args": ["--Leading and Trailing--"],
+    "expected": "leading-and-trailing"
+  },
+  {
+    "id": "tab-as-whitespace",
+    "args": ["Hello\tWorld"],
+    "expected": "hello-world"
+  },
+  {
+    "id": "mixed-tab-and-space-runs",
+    "args": ["Tab\t\tand  Space Mixed"],
+    "expected": "tab-and-space-mixed"
+  },
+  {
+    "id": "collapses-internal-double-hyphen",
+    "args": ["Hello--World"],
+    "expected": "hello-world"
+  }
+]

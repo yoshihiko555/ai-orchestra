@@ -9,7 +9,12 @@ items without duplicating the AST plumbing:
   ``snake_case`` and not a single meaningless character. This applies to ``for``/``async for``
   loop targets too: ``coding-principles.md`` requires meaningful names (e.g. ``user_count`` over
   ``x``) and defines no loop-variable carve-out, so a single-character loop target is flagged like
-  any other single-character variable (PR #381 review). Module-top-level constant assignments
+  any other single-character variable (PR #381 review). Variadic parameters (``*args``/
+  ``**kwargs``) are checked too (PR #381 review, round 4): the parameter scan previously only
+  walked ``posonlyargs``/``args``/``kwonlyargs``, so a candidate could name a catch-all positional
+  or keyword parameter something like ``*X`` and never trip the snake_case check even though
+  ``coding-principles.md``'s naming rule draws no such exception for variadic parameters.
+  Module-top-level constant assignments
   (e.g. ``_WHITESPACE_RE = re.compile(...)``) may instead be ``UPPER_SNAKE_CASE``, per
   ``coding-principles.md``'s constant-naming rule; the same name reassigned inside a function
   body still must be ``snake_case`` (scope is determined per-assignment-node, not by name alone,
@@ -124,7 +129,8 @@ def _check_snake_case(tree: ast.AST) -> list[str]:
         if not _SNAKE_CASE.match(fn.name):
             problems.append(f"function name '{fn.name}' is not snake_case")
         args = fn.args
-        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+        variadic = [a for a in (args.vararg, args.kwarg) if a is not None]
+        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs, *variadic]:
             if arg.arg in ("self", "cls"):
                 continue
             if not _SNAKE_CASE.match(arg.arg) or len(arg.arg.lstrip("_")) <= 1:
