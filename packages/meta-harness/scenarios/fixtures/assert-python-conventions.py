@@ -57,16 +57,20 @@ from pathlib import Path
 
 _SNAKE_CASE = re.compile(r"^_?[a-z][a-z0-9_]*$")
 _UPPER_SNAKE_CASE = re.compile(r"^_?[A-Z][A-Z0-9_]*$")
-_NESTING_NODES = (
-    ast.If,
-    ast.For,
-    ast.AsyncFor,
-    ast.While,
-    ast.Try,
-    ast.TryStar,
-    ast.With,
-    ast.AsyncWith,
-    ast.Match,
+_NESTING_NODES = tuple(
+    node_type
+    for node_type in (
+        ast.If,
+        ast.For,
+        ast.AsyncFor,
+        ast.While,
+        ast.Try,
+        getattr(ast, "TryStar", None),
+        ast.With,
+        ast.AsyncWith,
+        getattr(ast, "Match", None),
+    )
+    if node_type is not None
 )
 
 
