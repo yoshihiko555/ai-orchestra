@@ -37,6 +37,14 @@ decorators.** A legitimate ``slugify``/``validate_username`` implementation has 
 decorated (these are plain, self-contained functions per the scenario prompts), so this is
 false-positive-free the same way the rebinding checks are.
 
+Runtime compatibility note: this fixture executes inside the scenario container's Debian 12 /
+Python 3.11 runtime. Any ``ast`` attribute introduced after Python 3.11 (for example,
+``ast.TypeAlias`` in 3.12) must use ``getattr(ast, "Name", None)`` feature detection instead of
+direct attribute access; otherwise ``AttributeError`` can crash the checker and produce a false
+``fail`` grade. Apply the same defense to attributes already present in 3.11, such as
+``ast.TryStar`` and ``ast.Match`` (added in 3.11 and 3.10), so a future base-image Python downgrade
+cannot reintroduce this failure class.
+
 Trust note (contrast with ``assert-issue-fix-decision.py`` / ``assert-effective-config.py``):
 this fixture inspects the very file the scenario asked the candidate to write, not a separate
 scenario-provided *expected value* the candidate could rewrite to trivially satisfy a looser
@@ -51,6 +59,14 @@ import argparse
 import ast
 import os
 from pathlib import Path
+
+_MATCH_NAME_NODES = tuple(
+    node_type
+    for node_type in (getattr(ast, "MatchAs", None), getattr(ast, "MatchStar", None))
+    if node_type is not None
+)
+_MATCH_MAPPING_NODE = getattr(ast, "MatchMapping", None)
+_TYPE_ALIAS_NODE = getattr(ast, "TypeAlias", None)
 
 
 def _is_staticmethod(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -172,13 +188,13 @@ def _has_single_module_level_def_binding(tree: ast.Module, name: str) -> bool:
         elif isinstance(node, ast.NamedExpr):
             if isinstance(node.target, ast.Name) and node.target.id == name:
                 return False
-        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+        elif isinstance(node, _MATCH_NAME_NODES):
             if node.name == name:
                 return False
-        elif isinstance(node, ast.MatchMapping):
+        elif _MATCH_MAPPING_NODE is not None and isinstance(node, _MATCH_MAPPING_NODE):
             if node.rest == name:
                 return False
-        elif isinstance(node, ast.TypeAlias):
+        elif _TYPE_ALIAS_NODE is not None and isinstance(node, _TYPE_ALIAS_NODE):
             if isinstance(node.name, ast.Name) and node.name.id == name:
                 return False
     return True
