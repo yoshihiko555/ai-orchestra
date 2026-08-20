@@ -4030,9 +4030,9 @@ def _evaluate_scenario_batch(
             )
         )
         regression_cost += sum(float(result["cost"]["total_cost_usd"]) for result in suite_results)
-        # A suite can legitimately have no scenarios in one phase (claude-harness has
-        # train-only scenarios today). Resolution still succeeded, and promotion checks
-        # the current phase coverage separately, so the empty phase is vacuously passing.
+        # A suite can legitimately have no scenarios in one phase. Resolution still
+        # succeeded, and promotion checks the current phase coverage separately, so the
+        # empty phase is vacuously passing.
         suite_verdict = "pass" if not scenario_docs else _combined_result_verdict(suite_results)
         # regression strict mode（ADR-20260814-050 決定5）: graded 転換で converted criticals
         # が gate から抜けた分、regression 評価文脈（このループ = 他候補の変更が影響する
