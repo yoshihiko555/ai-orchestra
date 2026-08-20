@@ -155,10 +155,15 @@ def promote_candidate(
         _apply_candidate_overlay(
             main_root, config, preflight.manifest, preflight.worktree_dir, schema_dir
         )
+        _check_candidate_overlay_has_effective_changes(preflight.worktree_dir, preflight.manifest)
         _check_promoted_diff_secret_scan(preflight.worktree_dir, preflight.manifest)
         _build_facets_and_context(preflight.worktree_dir)
         _record_skill_promotion_changelog(
-            preflight.worktree_dir, preflight.cand_id, preflight.manifest
+            preflight.worktree_dir,
+            preflight.cand_id,
+            preflight.manifest,
+            main_root=main_root,
+            config=config,
         )
         _run_verify_command(preflight.worktree_dir, config)
         _commit_promotion(preflight.worktree_dir, preflight.cand_id, preflight.title)
@@ -1264,30 +1269,122 @@ def _is_changelog_auto_insert_target(target: str) -> bool:
     return target.startswith("skill:") or target in CHANGELOG_AUTO_INSERT_TARGETS
 
 
-def _changelog_overlay_files_summary(manifest: dict[str, Any]) -> str:
+def _check_candidate_overlay_has_effective_changes(
+    worktree_dir: Path, manifest: dict[str, Any]
+) -> None:
+    """CHANGELOG 自動追記で隠れる file-overlay の no-op candidate を拒否する。
+
+    routing-config 向け `_routing_config_changes_from_base` の no-op guard と同じ目的だが、
+    file-overlay は適用後の実効差分を promotion worktree で確認する必要がある。
+    """
+    target = str(manifest.get("target") or "")
+    if not _is_changelog_auto_insert_target(target):
+        return
+    completed = _run(["git", "status", "--porcelain"], cwd=worktree_dir, check=False)
+    if completed.returncode != 0:
+        raise PromotionRuntimeError(
+            completed.stderr.strip() or "git status failed while checking candidate overlay changes"
+        )
+    if completed.stdout.strip():
+        return
+    raise PromotionValidationError(
+        "noop candidate has no effective changes to promote: overlay is empty or identical "
+        "to the promotion base"
+    )
+
+
+def _changed_overlay_files(
+    cand_id: str,
+    manifest: dict[str, Any],
+    main_root: Path | None,
+    config: dict | None,
+) -> list[str]:
+    """親と同一の inherited overlay を除き、今回変更された候補ファイルを返す。
+
+    親候補または store 解決情報が無い場合は、既存の standalone / 3 引数呼び出しとの
+    後方互換のため manifest の全ファイルへフォールバックする。読取失敗も表示対象に含める。
+    """
+    files = sorted(str(path) for path in manifest.get("overlay_files") or [])
+    parent_id = manifest.get("parent_id")
+    if not parent_id or main_root is None or config is None:
+        return files
+
+    candidates_dir = mh.candidates_dir(main_root, config)
+    candidate_overlay = candidates_dir / cand_id / "overlay"
+    parent_overlay = candidates_dir / str(parent_id) / "overlay"
+    changed_files: list[str] = []
+    for path in files:
+        candidate_path = candidate_overlay / path
+        parent_path = parent_overlay / path
+        try:
+            candidate_bytes = candidate_path.read_bytes()
+        except OSError:
+            changed_files.append(path)
+            continue
+        if parent_path.is_symlink() or not parent_path.is_file():
+            changed_files.append(path)
+            continue
+        try:
+            parent_bytes = parent_path.read_bytes()
+        except OSError:
+            changed_files.append(path)
+            continue
+        if candidate_bytes != parent_bytes:
+            changed_files.append(path)
+    return changed_files
+
+
+def _markdown_code_span(text: str) -> str:
+    """バックチックを含み得る非信頼 overlay path を安全な Markdown code span にする。"""
+    longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest_run + 1)
+    if text.startswith("`") or text.endswith("`"):
+        return f"{fence} {text} {fence}"
+    return f"{fence}{text}{fence}"
+
+
+def _changelog_overlay_files_summary(
+    manifest: dict[str, Any],
+    *,
+    main_root: Path | None = None,
+    config: dict | None = None,
+    cand_id: str | None = None,
+) -> str:
     """`claude-harness` target の CHANGELOG エントリへ添える overlay 対象ファイル名の要約。
 
     どの facet ファイルが変わった promotion かレビュー時に一目で分かるよう、candidate
     manifest の必須フィールド `overlay_files` を昇順で最大
-    `CHANGELOG_OVERLAY_FILES_DISPLAY_LIMIT` 件だけ列挙する。
+    `CHANGELOG_OVERLAY_FILES_DISPLAY_LIMIT` 件だけ列挙する。候補と store 情報が揃う場合は
+    親から継承しただけのファイルを除外し、無い standalone 呼び出しは従来の全件表示へ戻す。
     """
-    files = sorted(str(path) for path in manifest.get("overlay_files") or [])
+    files = (
+        _changed_overlay_files(cand_id, manifest, main_root, config)
+        if cand_id is not None
+        else sorted(str(path) for path in manifest.get("overlay_files") or [])
+    )
     if not files:
         return ""
     shown = files[:CHANGELOG_OVERLAY_FILES_DISPLAY_LIMIT]
     remaining = len(files) - len(shown)
-    summary = ", ".join(f"`{path}`" for path in shown)
+    summary = ", ".join(_markdown_code_span(path) for path in shown)
     if remaining > 0:
         summary += f", and {remaining} more"
     return summary
 
 
-def _skill_promotion_changelog_entry(cand_id: str, manifest: dict[str, Any]) -> tuple[str, str]:
+def _skill_promotion_changelog_entry(
+    cand_id: str,
+    manifest: dict[str, Any],
+    *,
+    main_root: Path | None = None,
+    config: dict | None = None,
+) -> tuple[str, str]:
     """(冪等判定キー, CHANGELOG 追記用の1行) を返す。
 
     target が `skill:<slug>` の場合は従来どおりスキル名を主語にする。`claude-harness`
     の場合はスキル名の代わりに overlay 対象ファイル名を添え、どの facet が変わった
-    promotion か分かるようにする。
+    promotion か分かるようにする。任意の store 情報があれば親からの未変更継承を除外し、
+    無ければ既存呼び出しとの互換性のため manifest の全件を使う。
     """
     slug = _cand_slug(cand_id)
     target = str(manifest.get("target") or "")
@@ -1297,7 +1394,9 @@ def _skill_promotion_changelog_entry(cand_id: str, manifest: dict[str, Any]) -> 
         skill_slug = target.split(":", 1)[1]
         entry = f"- **skill:{skill_slug}**: meta-harness promotion `{slug}` — {first_line}\n"
         return slug, entry
-    overlay_summary = _changelog_overlay_files_summary(manifest)
+    overlay_summary = _changelog_overlay_files_summary(
+        manifest, cand_id=cand_id, main_root=main_root, config=config
+    )
     suffix = f" (overlay: {overlay_summary})" if overlay_summary else ""
     entry = f"- **{target}**: meta-harness promotion `{slug}` — {first_line}{suffix}\n"
     return slug, entry
@@ -1371,7 +1470,12 @@ def _next_heading_index(
 
 
 def _record_skill_promotion_changelog(
-    worktree_dir: Path, cand_id: str, manifest: dict[str, Any]
+    worktree_dir: Path,
+    cand_id: str,
+    manifest: dict[str, Any],
+    *,
+    main_root: Path | None = None,
+    config: dict | None = None,
 ) -> None:
     """Gap (b): skill / claude-harness target の promote 時、CHANGELOG.md Unreleased/Changed に
     1 行自動追記する。
@@ -1380,6 +1484,9 @@ def _record_skill_promotion_changelog(
     （`docs/design/meta-harness-detailed.md` 参照）。
     cand_id の短縮形（`_cand_slug`）をキーに冪等: 同じ候補で promote をリトライしても
     二重追記しない。
+
+    任意の store 情報がある場合は親と同一の inherited overlay を表示から除外する。
+    省略時は既存の 3 引数呼び出しとの後方互換のため manifest の全件表示へ戻す。
     """
     target = str(manifest.get("target") or "")
     if not _is_changelog_auto_insert_target(target):
@@ -1390,7 +1497,9 @@ def _record_skill_promotion_changelog(
             f"CHANGELOG.md not found in promotion worktree: {changelog_path}"
         )
     text = changelog_path.read_text(encoding="utf-8")
-    slug, entry_line = _skill_promotion_changelog_entry(cand_id, manifest)
+    slug, entry_line = _skill_promotion_changelog_entry(
+        cand_id, manifest, main_root=main_root, config=config
+    )
     if slug in text:
         return
     new_text = _insert_unreleased_changed_entry(text, entry_line)

@@ -3279,6 +3279,11 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    `.claude/config/agent-routing/cli-tools.yaml` に適用し、2 ファイルの byte equality を確認する。
    全 patch item が promotion base に対して no-op（`old == new`）である場合は PR を作らず拒否する。一部の item
    だけが no-op で他に実質変更がある場合は、そのまま許容し、per-item のスキップは行わない。
+   file-overlay も CHANGELOG 自動追記対象の `skill:<slug>` / `claude-harness` に限り、overlay 適用直後に
+   `_check_candidate_overlay_has_effective_changes` が promotion worktree の `git status --porcelain` を確認し、
+   変更が 0 件（空または promotion base と byte-identical）なら `"noop candidate has no effective changes to promote"`
+   を含む `PromotionValidationError` で拒否する。routing-config（前述の専用 guard）とその他 target は対象外で、
+   CHANGELOG の追記だけで実質変更のない commit/PR が成立することを防ぐ。
    `.claude/config/` だけの編集と `*.local.yaml` への promotion 書き込みは禁止する。tracked mirror の書き込み
    直後、promotion worktree の `.claude/orchestra.json` に `file_hashes["agent-routing"]["config/agent-routing/cli-tools.yaml"]`
    エントリが存在すれば、そのエントリをパッチ後の実バイト列の hash で更新し直す（PR #244 の agents .md 向け
@@ -3298,8 +3303,12 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    promotion worktree の `CHANGELOG.md` の `## [Unreleased]` / `### Changed`（無ければ新設）へ
    利用者可視の変更として1行追記する。`skill:<slug>` はスキル名を主語にする
    （例: `- **skill:<slug>**: meta-harness promotion \`<cand_id 短縮形>\` — <candidate description>`）。
-   `claude-harness` はスキル名の代わりに candidate manifest の `overlay_files`（昇順で最大3件、
-   超過分は `and N more`）を添え、どの facet ファイルが変わった promotion かレビュー時に分かる
+   `claude-harness` はスキル名の代わりに candidate manifest の `overlay_files` のうち、store context
+   （`main_root` + `config`）と `parent_id` が揃う場合は `_changelog_overlay_files_summary` /
+   `_changed_overlay_files` が親 candidate overlay の同一 path と byte 比較して今回の世代で新規・変更と判定した
+   ファイルのみ（byte-identical な継承 file は除外）を添え、親無しまたは store context 不在なら全
+   `overlay_files` へフォールバックする（いずれも昇順で最大3件、超過分は `and N more`）。どの facet ファイルが
+   変わった promotion かレビュー時に分かる
    ようにする（例: `- **claude-harness**: meta-harness promotion \`<cand_id 短縮形>\` —
    <candidate description> (overlay: \`facets/policies/code-quality.md\`)`）。cand_id 短縮形を
    キーに冪等（同一候補の promote リトライで二重追記しない）。routing-config target は従来どおり
