@@ -48,6 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`meta-harness`: promote が skill target 昇格時に `.agents/skills/` を再生成し CHANGELOG を自動追記するように修正**: `orchex meta promote` は promotion worktree の installed_packages が宣言する全 facet ターゲット（`claude` + `codex` 等）分の facet build を実行するようになり、`.agents/skills/` の再生成漏れを解消した。あわせて `skill:<slug>` target の promote 時は CHANGELOG.md の `Unreleased` / `Changed` セクションへ変更概要を自動追記する（同一候補での再実行は重複追記しない）。
 - **`meta-harness`: 配布 config の `frontier.cost_axis` 既定値を `total_cost_usd` から `cache_neutral_cost_usd` に変更（Issue #378、ADR-20260817-051）**: prompt cache の TTL が温まっているかどうかという環境要因（最大 6 割変動）を除いた cost 軸で候補を比較するようになった。既存 ledger を持つ環境では旧 run に新設フィールドが記録されていないため、マージ後は `orchex meta evaluate` で baseline を再実行し frontier を再 bootstrap する必要がある。
 - **`meta-harness`: `regression.max_budget_usd` の既定値を 186.0 から 210.0 に変更（ADR-20260817-052）**: claude-harness suite のシナリオ追加（指示遵守・誤誘導耐性の train/holdout 4 本 + 既存 2 本の gate/graded 転換）に伴い、regression suite 全体の予算上限を再較正した。
+- **coding-principles: 小規模タスク向け fast path を追加**: 変更先と仕様が明示された小規模タスクで専用ツールを優先し、書き込み成功後の再読込・再検証を省略する運用を明文化（リポジトリで必須化された検証は省略対象外）。
 
 ## [0.3.2] - 2026-07-28
 
