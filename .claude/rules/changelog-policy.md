@@ -39,11 +39,12 @@ CHANGELOG は自動生成ではなく PR ごとに手書きする（`## [Unrelea
 - カテゴリは `Added` / `Changed` / `Deprecated` / `Removed` / `Fixed` / `Security`。
 - 新規エントリは `## [Unreleased]` 直下の該当カテゴリに追記する。
 
-## 例外: meta-harness の skill promotion PR
+## 例外: meta-harness の skill / claude-harness promotion PR
 
-meta-harness の skill promotion PR では、promoter が `## [Unreleased]` / `### Changed` へ
-1 行のエントリを自動追記する。これは「CHANGELOG に何を書くかの判断」を自動化に委譲する
-ものではなく、あくまでドラフトの下書きである。掲載可否・粒度・文言の最終判断は、promote PR の
-チェックリスト（未チェックの `- [ ] CHANGELOG.md \`Unreleased\`: auto-inserted draft entry`）に
+meta-harness の `skill:<slug>` promotion PR と `claude-harness` promotion PR では、promoter が
+`## [Unreleased]` / `### Changed` へ 1 行のエントリを自動追記する。`routing-config` promotion PR は
+対象外であり、従来どおり人間が追記する。これは「CHANGELOG に何を書くかの判断」を自動化に委譲
+するものではなく、あくまでドラフトの下書きである。掲載可否・粒度・文言の最終判断は、promote PR
+のチェックリスト（未チェックの `- [ ] CHANGELOG.md \`Unreleased\`: auto-inserted draft entry`）に
 従って人間レビューで行う。レビュー時は本ポリシー（判定の基準・粒度・フォーマット）と照合し、
 不要なら削除、必要なら文言を整えてからマージする。

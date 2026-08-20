@@ -755,7 +755,15 @@ def test_promote_opens_pr_without_marking_candidate_promoted(
     monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(cli.prm, "_create_promotion_worktree", fake_worktree)
+    monkeypatch.setattr(
+        cli.prm,
+        "_check_candidate_overlay_has_effective_changes",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(cli.prm, "_build_facets_and_context", lambda _worktree: None)
+    monkeypatch.setattr(
+        cli.prm, "_record_skill_promotion_changelog", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(cli.prm, "_run", fake_run)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
@@ -795,7 +803,9 @@ def test_promote_records_changelog_before_running_verify_command(
     def fake_build_facets(_worktree: Path) -> None:
         call_order.append("build_facets")
 
-    def fake_record_changelog(_worktree: Path, _cand_id: str, _manifest: dict) -> None:
+    def fake_record_changelog(
+        _worktree: Path, _cand_id: str, _manifest: dict, **_kwargs: object
+    ) -> None:
         call_order.append("record_changelog")
 
     def fake_verify(_worktree: Path, _config: dict) -> None:
@@ -805,6 +815,11 @@ def test_promote_records_changelog_before_running_verify_command(
     monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(cli.prm, "_create_promotion_worktree", fake_worktree)
+    monkeypatch.setattr(
+        cli.prm,
+        "_check_candidate_overlay_has_effective_changes",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(cli.prm, "_build_facets_and_context", fake_build_facets)
     monkeypatch.setattr(cli.prm, "_record_skill_promotion_changelog", fake_record_changelog)
     monkeypatch.setattr(cli.prm, "_run_verify_command", fake_verify)
@@ -837,7 +852,15 @@ def test_failed_promote_cleans_worktree_and_branch_then_retry_succeeds(
     monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(cli.prm, "_create_promotion_worktree", fake_worktree)
+    monkeypatch.setattr(
+        cli.prm,
+        "_check_candidate_overlay_has_effective_changes",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(cli.prm, "_build_facets_and_context", lambda _worktree: None)
+    monkeypatch.setattr(
+        cli.prm, "_record_skill_promotion_changelog", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(cli.prm, "_run_verify_command", fake_verify)
     monkeypatch.setattr(cli.prm, "_commit_promotion", lambda _worktree, _cand_id, _title: None)
     monkeypatch.setattr(cli.prm, "_push_branch", lambda _worktree, _branch: None)
@@ -874,7 +897,15 @@ def test_pr_creation_failure_cleans_pushed_remote_branch(
         lambda _project, _branch, worktree: worktree.mkdir(parents=True),
     )
     monkeypatch.setattr(cli.prm, "_apply_candidate_overlay", lambda *_args: None)
+    monkeypatch.setattr(
+        cli.prm,
+        "_check_candidate_overlay_has_effective_changes",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(cli.prm, "_build_facets_and_context", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli.prm, "_record_skill_promotion_changelog", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(cli.prm, "_run_verify_command", lambda *_args: None)
     monkeypatch.setattr(cli.prm, "_commit_promotion", lambda *_args: None)
     monkeypatch.setattr(cli.prm, "_revalidate_before_pr", lambda *_args: None)
@@ -919,7 +950,15 @@ def test_pr_created_but_opened_record_fails_keeps_reservation(
         "_create_promotion_worktree",
         lambda _project, _branch, worktree: worktree.mkdir(parents=True),
     )
+    monkeypatch.setattr(
+        cli.prm,
+        "_check_candidate_overlay_has_effective_changes",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(cli.prm, "_build_facets_and_context", lambda _worktree: None)
+    monkeypatch.setattr(
+        cli.prm, "_record_skill_promotion_changelog", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(cli.prm, "_run_verify_command", lambda _worktree, _config: None)
     monkeypatch.setattr(cli.prm, "_commit_promotion", lambda _worktree, _cand_id, _title: None)
     monkeypatch.setattr(cli.prm, "_push_branch", lambda _worktree, _branch: None)
@@ -2170,6 +2209,14 @@ def test_promote_flow_invokes_facet_build_for_all_declared_targets(
     monkeypatch.setattr(cli.prm, "_check_freshness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.prm, "_find_open_pr_for_branch", lambda _project, _branch: None)
     monkeypatch.setattr(cli.prm, "_create_promotion_worktree", fake_worktree)
+    monkeypatch.setattr(
+        cli.prm,
+        "_check_candidate_overlay_has_effective_changes",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        cli.prm, "_record_skill_promotion_changelog", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(cli.prm, "_run", fake_run)
 
     exit_code = cli.cmd_promote(str(git_project), cand_id, False, False)
@@ -2301,12 +2348,76 @@ _SKILL_MANIFEST = {
     "description": "Improve the example skill output quality.",
 }
 
+_CLAUDE_HARNESS_MANIFEST = {
+    "target": "claude-harness",
+    "description": "Tighten the claude-harness coding-quality policy wording.",
+    "overlay_files": ["facets/policies/code-quality.md"],
+}
+
+_CLAUDE_HARNESS_MANIFEST_MANY_OVERLAY_FILES = {
+    "target": "claude-harness",
+    "description": "Refresh multiple claude-harness policy facets.",
+    "overlay_files": [
+        "facets/policies/code-quality.md",
+        "facets/policies/security.md",
+        "facets/instructions/coding.md",
+        "facets/instructions/testing.md",
+    ],
+}
+
 
 def _write_changelog(worktree: Path, text: str | None) -> Path:
     changelog_path = worktree / "CHANGELOG.md"
     if text is not None:
         changelog_path.write_text(text, encoding="utf-8")
     return changelog_path
+
+
+def test_candidate_overlay_check_rejects_clean_claude_harness_worktree(
+    git_project: Path, git_run
+) -> None:
+    assert git_run("status", "--porcelain", cwd=git_project).stdout.strip() == ""
+
+    with pytest.raises(
+        cli.prm.PromotionValidationError,
+        match="noop candidate has no effective changes to promote",
+    ):
+        cli.prm._check_candidate_overlay_has_effective_changes(
+            git_project, _CLAUDE_HARNESS_MANIFEST
+        )
+
+
+def test_candidate_overlay_check_accepts_modified_tracked_file(git_project: Path, git_run) -> None:
+    (git_project / "README.md").write_text("# changed\n", encoding="utf-8")
+    assert git_run("status", "--porcelain", cwd=git_project).stdout.strip()
+
+    cli.prm._check_candidate_overlay_has_effective_changes(git_project, _CLAUDE_HARNESS_MANIFEST)
+
+
+def test_candidate_overlay_check_accepts_untracked_file(git_project: Path, git_run) -> None:
+    (git_project / "overlay-added.md").write_text("new\n", encoding="utf-8")
+    assert git_run("status", "--porcelain", cwd=git_project).stdout.strip()
+
+    cli.prm._check_candidate_overlay_has_effective_changes(git_project, _CLAUDE_HARNESS_MANIFEST)
+
+
+def test_candidate_overlay_check_rejects_clean_skill_worktree(git_project: Path, git_run) -> None:
+    assert git_run("status", "--porcelain", cwd=git_project).stdout.strip() == ""
+
+    with pytest.raises(
+        cli.prm.PromotionValidationError,
+        match="noop candidate has no effective changes to promote",
+    ):
+        cli.prm._check_candidate_overlay_has_effective_changes(git_project, _SKILL_MANIFEST)
+
+
+def test_candidate_overlay_check_skips_clean_routing_config_worktree(
+    git_project: Path, git_run
+) -> None:
+    assert git_run("status", "--porcelain", cwd=git_project).stdout.strip() == ""
+    manifest = {"target": cli.prm.ROUTING_CONFIG_TARGET}
+
+    cli.prm._check_candidate_overlay_has_effective_changes(git_project, manifest)
 
 
 def test_record_skill_promotion_changelog_inserts_entry_under_changed(tmp_path: Path) -> None:
@@ -2372,13 +2483,161 @@ def test_record_skill_promotion_changelog_skips_routing_config_target(tmp_path: 
     assert not changelog_path.exists()
 
 
-def test_record_skill_promotion_changelog_skips_claude_harness_target(tmp_path: Path) -> None:
+def test_record_claude_harness_promotion_changelog_inserts_entry_with_overlay_files(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "changelog-worktree"
+    worktree.mkdir()
+    changelog_path = _write_changelog(worktree, _CHANGELOG_WITH_CHANGED)
+
+    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, _CLAUDE_HARNESS_MANIFEST)
+
+    text = changelog_path.read_text(encoding="utf-8")
+    slug = cli.prm._cand_slug(_CAND_ID)
+    assert f"meta-harness promotion `{slug}`" in text
+    assert "**claude-harness**" in text
+    assert "facets/policies/code-quality.md" in text
+    assert "- existing changed bullet" in text
+
+
+def test_markdown_code_span_uses_safe_backtick_fences() -> None:
+    assert cli.prm._markdown_code_span("foo`bar") == "``foo`bar``"
+    assert cli.prm._markdown_code_span("a``b") == "```a``b```"
+    assert cli.prm._markdown_code_span("`start") == "`` `start ``"
+    assert cli.prm._markdown_code_span("facets/policies/plain.md") == ("`facets/policies/plain.md`")
+
+
+def test_record_claude_harness_promotion_changelog_escapes_backtick_in_overlay_path(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "changelog-worktree"
+    worktree.mkdir()
+    changelog_path = _write_changelog(worktree, _CHANGELOG_WITH_CHANGED)
+    overlay_path = "facets/policies/weird`.md"
+    manifest = {**_CLAUDE_HARNESS_MANIFEST, "overlay_files": [overlay_path]}
+
+    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, manifest)
+
+    text = changelog_path.read_text(encoding="utf-8")
+    expected_span = cli.prm._markdown_code_span(overlay_path)
+    assert f"(overlay: {expected_span})" in text
+    assert f"(overlay: `{overlay_path}`)" not in text
+
+
+def test_record_claude_harness_promotion_changelog_excludes_unchanged_parent_overlay(
+    tmp_path: Path,
+) -> None:
+    main_root = tmp_path / "main-root"
+    main_root.mkdir()
+    config = mh.DEFAULTS
+    mh.init_store(main_root, config)
+    parent_id = "parent-cand"
+    parent_dir = mh.candidates_dir(main_root, config) / parent_id
+    parent_overlay = parent_dir / "overlay" / "facets" / "policies"
+    parent_overlay.mkdir(parents=True)
+    (parent_overlay / "a.md").write_text("A", encoding="utf-8")
+    (parent_overlay / "b.md").write_text("B-old", encoding="utf-8")
+    parent_manifest = {
+        "cand_id": parent_id,
+        "overlay_files": ["facets/policies/a.md", "facets/policies/b.md"],
+    }
+    (parent_dir / "manifest.json").write_text(json.dumps(parent_manifest), encoding="utf-8")
+
+    child_overlay = mh.candidates_dir(main_root, config) / _CAND_ID / "overlay"
+    child_policies = child_overlay / "facets" / "policies"
+    child_policies.mkdir(parents=True)
+    (child_policies / "a.md").write_text("A", encoding="utf-8")
+    (child_policies / "b.md").write_text("B-new", encoding="utf-8")
+    (child_policies / "c.md").write_text("new", encoding="utf-8")
+    manifest = {
+        "target": "claude-harness",
+        "description": "Refresh inherited policy facets.",
+        "parent_id": parent_id,
+        "overlay_files": [
+            "facets/policies/a.md",
+            "facets/policies/b.md",
+            "facets/policies/c.md",
+        ],
+    }
+    worktree = tmp_path / "changelog-worktree"
+    worktree.mkdir()
+    changelog_path = _write_changelog(worktree, _CHANGELOG_WITH_CHANGED)
+
+    cli.prm._record_skill_promotion_changelog(
+        worktree,
+        _CAND_ID,
+        manifest,
+        main_root=main_root,
+        config=config,
+    )
+
+    text = changelog_path.read_text(encoding="utf-8")
+    assert "facets/policies/b.md" in text
+    assert "facets/policies/c.md" in text
+    assert "facets/policies/a.md" not in text
+
+
+def test_record_claude_harness_promotion_changelog_parent_falls_back_without_store_context(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "changelog-worktree"
+    worktree.mkdir()
+    changelog_path = _write_changelog(worktree, _CHANGELOG_WITH_CHANGED)
+    manifest = {
+        **_CLAUDE_HARNESS_MANIFEST,
+        "parent_id": "parent-cand",
+        "overlay_files": ["facets/policies/a.md", "facets/policies/b.md"],
+    }
+
+    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, manifest)
+
+    text = changelog_path.read_text(encoding="utf-8")
+    assert "facets/policies/a.md" in text
+    assert "facets/policies/b.md" in text
+
+
+def test_record_claude_harness_promotion_changelog_truncates_many_overlay_files(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "changelog-worktree"
+    worktree.mkdir()
+    changelog_path = _write_changelog(worktree, _CHANGELOG_WITH_CHANGED)
+
+    cli.prm._record_skill_promotion_changelog(
+        worktree, _CAND_ID, _CLAUDE_HARNESS_MANIFEST_MANY_OVERLAY_FILES
+    )
+
+    text = changelog_path.read_text(encoding="utf-8")
+    assert "facets/policies/security.md" not in text
+    assert ", and 1 more" in text
+
+
+def test_record_claude_harness_promotion_changelog_idempotent_on_retry(tmp_path: Path) -> None:
+    worktree = tmp_path / "changelog-worktree"
+    worktree.mkdir()
+    changelog_path = _write_changelog(worktree, _CHANGELOG_WITH_CHANGED)
+
+    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, _CLAUDE_HARNESS_MANIFEST)
+    once = changelog_path.read_text(encoding="utf-8")
+    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, _CLAUDE_HARNESS_MANIFEST)
+    twice = changelog_path.read_text(encoding="utf-8")
+
+    assert once == twice
+    slug = cli.prm._cand_slug(_CAND_ID)
+    assert twice.count(slug) == 1
+
+
+def test_record_skill_promotion_changelog_still_skips_routing_config_target_only(
+    tmp_path: Path,
+) -> None:
+    """Only routing-config remains excluded from CHANGELOG auto-insert (skill: and
+    claude-harness are both in scope now)."""
     worktree = tmp_path / "changelog-worktree"
     worktree.mkdir()
     changelog_path = _write_changelog(worktree, None)
-    non_skill_manifest = {"target": "claude-harness", "description": "n/a"}
+    routing_manifest = {"target": cli.prm.ROUTING_CONFIG_TARGET, "description": "n/a"}
 
-    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, non_skill_manifest)
+    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, routing_manifest)
 
     assert not changelog_path.exists()
 
@@ -2445,6 +2704,9 @@ def test_build_pr_body_checklist_reflects_skill_auto_insert(tmp_path: Path) -> N
     frontier_doc = {"points": [{"cand_id": _CAND_ID, "quality_mean": 91.0, "cost_mean": 100.0}]}
 
     skill_body = cli.prm._build_pr_body(_CAND_ID, _SKILL_MANIFEST, frontier_doc, [])
+    claude_harness_body = cli.prm._build_pr_body(
+        _CAND_ID, _CLAUDE_HARNESS_MANIFEST, frontier_doc, []
+    )
     routing_body = cli.prm._build_pr_body(
         _CAND_ID,
         {"target": cli.prm.ROUTING_CONFIG_TARGET, "description": "n/a"},
@@ -2455,5 +2717,7 @@ def test_build_pr_body_checklist_reflects_skill_auto_insert(tmp_path: Path) -> N
     assert "auto-inserted" in skill_body
     assert "- [ ] CHANGELOG.md `Unreleased`: auto-inserted draft entry" in skill_body
     assert "- [x]" not in skill_body
+    assert "auto-inserted" in claude_harness_body
+    assert "- [ ] CHANGELOG.md `Unreleased`: auto-inserted draft entry" in claude_harness_body
     assert "auto-inserted" not in routing_body
     assert "- [ ] CHANGELOG.md `Unreleased` is updated" in routing_body

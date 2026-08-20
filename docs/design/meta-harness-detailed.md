@@ -3279,6 +3279,11 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    `.claude/config/agent-routing/cli-tools.yaml` に適用し、2 ファイルの byte equality を確認する。
    全 patch item が promotion base に対して no-op（`old == new`）である場合は PR を作らず拒否する。一部の item
    だけが no-op で他に実質変更がある場合は、そのまま許容し、per-item のスキップは行わない。
+   file-overlay も CHANGELOG 自動追記対象の `skill:<slug>` / `claude-harness` に限り、overlay 適用直後に
+   `_check_candidate_overlay_has_effective_changes` が promotion worktree の `git status --porcelain` を確認し、
+   変更が 0 件（空または promotion base と byte-identical）なら `"noop candidate has no effective changes to promote"`
+   を含む `PromotionValidationError` で拒否する。routing-config（前述の専用 guard）とその他 target は対象外で、
+   CHANGELOG の追記だけで実質変更のない commit/PR が成立することを防ぐ。
    `.claude/config/` だけの編集と `*.local.yaml` への promotion 書き込みは禁止する。tracked mirror の書き込み
    直後、promotion worktree の `.claude/orchestra.json` に `file_hashes["agent-routing"]["config/agent-routing/cli-tools.yaml"]`
    エントリが存在すれば、そのエントリをパッチ後の実バイト列の hash で更新し直す（PR #244 の agents .md 向け
@@ -3294,15 +3299,23 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    `context build` を実行する。列挙結果に `orchestra-manager.py facet build --target` の choices
    （`claude` / `codex`）以外の値が含まれる場合は fail-closed でエラーにする（生成物もコミット
    対象）。
-6. **CHANGELOG.md 自動追記（Gap (b)）**: target が `skill:<slug>` の場合のみ、promotion worktree の
-   `CHANGELOG.md` の `## [Unreleased]` / `### Changed`（無ければ新設）へ利用者可視の変更として
-   1 行追記する（例: `- **skill:<slug>**: meta-harness promotion \`<cand_id 短縮形>\` —
-   <candidate description>`）。cand_id 短縮形をキーに冪等（同一候補の promote リトライで
-   二重追記しない）。routing-config target など skill 以外は従来どおり自動追記せず、手順9の
-   PR body チェックリストで人間が対応する。**この自動追記は下書き（draft）であり、掲載可否・
-   粒度・文言の最終判断は promote PR の人間レビューに委ねる**（`changelog-policy` の例外条項参照、
-   PR #377 レビュー指摘）。`promote.verify_command` が本エントリを含む状態を検証できるよう、
-   手順7の verify_command 実行より前に追記する。
+6. **CHANGELOG.md 自動追記（Gap (b)）**: target が `skill:<slug>` または `claude-harness` の場合、
+   promotion worktree の `CHANGELOG.md` の `## [Unreleased]` / `### Changed`（無ければ新設）へ
+   利用者可視の変更として1行追記する。`skill:<slug>` はスキル名を主語にする
+   （例: `- **skill:<slug>**: meta-harness promotion \`<cand_id 短縮形>\` — <candidate description>`）。
+   `claude-harness` はスキル名の代わりに candidate manifest の `overlay_files` のうち、store context
+   （`main_root` + `config`）と `parent_id` が揃う場合は `_changelog_overlay_files_summary` /
+   `_changed_overlay_files` が親 candidate overlay の同一 path と byte 比較して今回の世代で新規・変更と判定した
+   ファイルのみ（byte-identical な継承 file は除外）を添え、親無しまたは store context 不在なら全
+   `overlay_files` へフォールバックする（いずれも昇順で最大3件、超過分は `and N more`）。どの facet ファイルが
+   変わった promotion かレビュー時に分かる
+   ようにする（例: `- **claude-harness**: meta-harness promotion \`<cand_id 短縮形>\` —
+   <candidate description> (overlay: \`facets/policies/code-quality.md\`)`）。cand_id 短縮形を
+   キーに冪等（同一候補の promote リトライで二重追記しない）。routing-config target は従来どおり
+   自動追記せず、手順9の PR body チェックリストで人間が対応する。**この自動追記は下書き（draft）
+   であり、掲載可否・粒度・文言の最終判断は promote PR の人間レビューに委ねる**
+   （`changelog-policy` の例外条項参照、PR #377 レビュー指摘）。`promote.verify_command` が
+   本エントリを含む状態を検証できるよう、手順7の verify_command 実行より前に追記する。
 7. `promote.verify_command`（既定 null、例: `pytest -q`）が設定されていれば実行し、失敗時は
    中止する。その後コミットする（メッセージ: `feat(meta-harness): promote <cand_id> — <theme>`）。
 8. **PR 作成直前の再検証（`store.lock` 下）**: ledger を再度畳み込み、対象候補が現 frontier に
@@ -3314,9 +3327,9 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    checkout の値を旧値として使わない。**auto-merge は付けない**（このリポジトリの手動マージ運用に
    従う）。PR body テンプレート: 仮説 / 根拠（frontier 前後の品質・コスト差、`based_on_runs` の
    run_id 一覧）/ リスクと rollback（revert PR）/ **チェックリスト（CHANGELOG の Unreleased 更新
-   — target が `skill:<slug>` なら手順6で自動追記済みのドラフトである旨と、掲載可否・粒度・
-   文言のレビューをマージ前に行うよう促す注記を未チェック `[ ]` で表示し、それ以外の target は
-   従来どおり未チェック `[ ]` のまま人間が記入する）**。
+   — target が `skill:<slug>` または `claude-harness` なら手順6で自動追記済みのドラフトである旨と、
+   掲載可否・粒度・文言のレビューをマージ前に行うよう促す注記を未チェック `[ ]` で表示し、
+   routing-config など残りの target は従来どおり未チェック `[ ]` のまま人間が記入する）**。
    push 成功後に PR 作成が失敗した場合は、再試行を non-fast-forward で妨げないよう remote branch
    も best-effort で削除する。
 10. ledger へ新イベント `promotion_opened` {cand_id, pr_url, branch} を追記する（§1-2）。
