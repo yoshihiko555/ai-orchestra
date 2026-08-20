@@ -3294,15 +3294,19 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    `context build` を実行する。列挙結果に `orchestra-manager.py facet build --target` の choices
    （`claude` / `codex`）以外の値が含まれる場合は fail-closed でエラーにする（生成物もコミット
    対象）。
-6. **CHANGELOG.md 自動追記（Gap (b)）**: target が `skill:<slug>` の場合のみ、promotion worktree の
-   `CHANGELOG.md` の `## [Unreleased]` / `### Changed`（無ければ新設）へ利用者可視の変更として
-   1 行追記する（例: `- **skill:<slug>**: meta-harness promotion \`<cand_id 短縮形>\` —
-   <candidate description>`）。cand_id 短縮形をキーに冪等（同一候補の promote リトライで
-   二重追記しない）。routing-config target など skill 以外は従来どおり自動追記せず、手順9の
-   PR body チェックリストで人間が対応する。**この自動追記は下書き（draft）であり、掲載可否・
-   粒度・文言の最終判断は promote PR の人間レビューに委ねる**（`changelog-policy` の例外条項参照、
-   PR #377 レビュー指摘）。`promote.verify_command` が本エントリを含む状態を検証できるよう、
-   手順7の verify_command 実行より前に追記する。
+6. **CHANGELOG.md 自動追記（Gap (b)）**: target が `skill:<slug>` または `claude-harness` の場合、
+   promotion worktree の `CHANGELOG.md` の `## [Unreleased]` / `### Changed`（無ければ新設）へ
+   利用者可視の変更として1行追記する。`skill:<slug>` はスキル名を主語にする
+   （例: `- **skill:<slug>**: meta-harness promotion \`<cand_id 短縮形>\` — <candidate description>`）。
+   `claude-harness` はスキル名の代わりに candidate manifest の `overlay_files`（昇順で最大3件、
+   超過分は `and N more`）を添え、どの facet ファイルが変わった promotion かレビュー時に分かる
+   ようにする（例: `- **claude-harness**: meta-harness promotion \`<cand_id 短縮形>\` —
+   <candidate description> (overlay: \`facets/policies/code-quality.md\`)`）。cand_id 短縮形を
+   キーに冪等（同一候補の promote リトライで二重追記しない）。routing-config target は従来どおり
+   自動追記せず、手順9の PR body チェックリストで人間が対応する。**この自動追記は下書き（draft）
+   であり、掲載可否・粒度・文言の最終判断は promote PR の人間レビューに委ねる**
+   （`changelog-policy` の例外条項参照、PR #377 レビュー指摘）。`promote.verify_command` が
+   本エントリを含む状態を検証できるよう、手順7の verify_command 実行より前に追記する。
 7. `promote.verify_command`（既定 null、例: `pytest -q`）が設定されていれば実行し、失敗時は
    中止する。その後コミットする（メッセージ: `feat(meta-harness): promote <cand_id> — <theme>`）。
 8. **PR 作成直前の再検証（`store.lock` 下）**: ledger を再度畳み込み、対象候補が現 frontier に
@@ -3314,9 +3318,9 @@ promote は「予約（reservation）」→「worktree 作業」→「PR 作成�
    checkout の値を旧値として使わない。**auto-merge は付けない**（このリポジトリの手動マージ運用に
    従う）。PR body テンプレート: 仮説 / 根拠（frontier 前後の品質・コスト差、`based_on_runs` の
    run_id 一覧）/ リスクと rollback（revert PR）/ **チェックリスト（CHANGELOG の Unreleased 更新
-   — target が `skill:<slug>` なら手順6で自動追記済みのドラフトである旨と、掲載可否・粒度・
-   文言のレビューをマージ前に行うよう促す注記を未チェック `[ ]` で表示し、それ以外の target は
-   従来どおり未チェック `[ ]` のまま人間が記入する）**。
+   — target が `skill:<slug>` または `claude-harness` なら手順6で自動追記済みのドラフトである旨と、
+   掲載可否・粒度・文言のレビューをマージ前に行うよう促す注記を未チェック `[ ]` で表示し、
+   routing-config など残りの target は従来どおり未チェック `[ ]` のまま人間が記入する）**。
    push 成功後に PR 作成が失敗した場合は、再試行を non-fast-forward で妨げないよう remote branch
    も best-effort で削除する。
 10. ledger へ新イベント `promotion_opened` {cand_id, pr_url, branch} を追記する（§1-2）。

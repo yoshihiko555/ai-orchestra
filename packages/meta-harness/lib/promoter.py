@@ -49,6 +49,8 @@ FACET_BUILD_TARGET_CHOICES = ("claude", "codex")
 CHANGELOG_RELATIVE = Path("CHANGELOG.md")
 CHANGELOG_UNRELEASED_HEADING = "## [Unreleased]"
 CHANGELOG_CHANGED_HEADING = "### Changed"
+CHANGELOG_AUTO_INSERT_TARGETS = ("claude-harness",)
+CHANGELOG_OVERLAY_FILES_DISPLAY_LIMIT = 3
 
 
 class PromotionValidationError(RuntimeError):
@@ -1253,14 +1255,51 @@ def _build_facets_and_context(worktree_dir: Path) -> None:
     )
 
 
+def _is_changelog_auto_insert_target(target: str) -> bool:
+    """CHANGELOG 自動追記の対象 target か判定する（`skill:<slug>` と `claude-harness`）。
+
+    routing-config target は従来どおり人間が追記するため対象外
+    （`docs/design/meta-harness-detailed.md` 参照）。
+    """
+    return target.startswith("skill:") or target in CHANGELOG_AUTO_INSERT_TARGETS
+
+
+def _changelog_overlay_files_summary(manifest: dict[str, Any]) -> str:
+    """`claude-harness` target の CHANGELOG エントリへ添える overlay 対象ファイル名の要約。
+
+    どの facet ファイルが変わった promotion かレビュー時に一目で分かるよう、candidate
+    manifest の必須フィールド `overlay_files` を昇順で最大
+    `CHANGELOG_OVERLAY_FILES_DISPLAY_LIMIT` 件だけ列挙する。
+    """
+    files = sorted(str(path) for path in manifest.get("overlay_files") or [])
+    if not files:
+        return ""
+    shown = files[:CHANGELOG_OVERLAY_FILES_DISPLAY_LIMIT]
+    remaining = len(files) - len(shown)
+    summary = ", ".join(f"`{path}`" for path in shown)
+    if remaining > 0:
+        summary += f", and {remaining} more"
+    return summary
+
+
 def _skill_promotion_changelog_entry(cand_id: str, manifest: dict[str, Any]) -> tuple[str, str]:
-    """(冪等判定キー, CHANGELOG 追記用の1行) を返す。"""
+    """(冪等判定キー, CHANGELOG 追記用の1行) を返す。
+
+    target が `skill:<slug>` の場合は従来どおりスキル名を主語にする。`claude-harness`
+    の場合はスキル名の代わりに overlay 対象ファイル名を添え、どの facet が変わった
+    promotion か分かるようにする。
+    """
     slug = _cand_slug(cand_id)
     target = str(manifest.get("target") or "")
-    skill_slug = target.split(":", 1)[1] if target.startswith("skill:") else target
     description = str(manifest.get("description") or "(no description)").strip()
     first_line = description.splitlines()[0] if description else "(no description)"
-    entry = f"- **skill:{skill_slug}**: meta-harness promotion `{slug}` — {first_line}\n"
+    if target.startswith("skill:"):
+        skill_slug = target.split(":", 1)[1]
+        entry = f"- **skill:{skill_slug}**: meta-harness promotion `{slug}` — {first_line}\n"
+        return slug, entry
+    overlay_summary = _changelog_overlay_files_summary(manifest)
+    suffix = f" (overlay: {overlay_summary})" if overlay_summary else ""
+    entry = f"- **{target}**: meta-harness promotion `{slug}` — {first_line}{suffix}\n"
     return slug, entry
 
 
@@ -1334,15 +1373,16 @@ def _next_heading_index(
 def _record_skill_promotion_changelog(
     worktree_dir: Path, cand_id: str, manifest: dict[str, Any]
 ) -> None:
-    """Gap (b): skill target の promote 時、CHANGELOG.md Unreleased/Changed に 1 行自動追記する。
+    """Gap (b): skill / claude-harness target の promote 時、CHANGELOG.md Unreleased/Changed に
+    1 行自動追記する。
 
-    routing-config target（および他の非 skill target）は従来どおり人間が追記するため対象外
-    （`docs/design/meta-harness-detailed.md` 参照。自動追記は skill target のみの設計変更）。
+    routing-config target は従来どおり人間が追記するため対象外
+    （`docs/design/meta-harness-detailed.md` 参照）。
     cand_id の短縮形（`_cand_slug`）をキーに冪等: 同じ候補で promote をリトライしても
     二重追記しない。
     """
     target = str(manifest.get("target") or "")
-    if not target.startswith("skill:"):
+    if not _is_changelog_auto_insert_target(target):
         return
     changelog_path = worktree_dir / CHANGELOG_RELATIVE
     if not changelog_path.is_file():
@@ -1634,7 +1674,7 @@ def _build_pr_body(
     changelog_checklist_line = (
         "- [ ] CHANGELOG.md `Unreleased`: auto-inserted draft entry — review the wording and "
         "pruning per changelog-policy before merge."
-        if target.startswith("skill:")
+        if _is_changelog_auto_insert_target(target)
         else "- [ ] CHANGELOG.md `Unreleased` is updated if user-visible behavior changes."
     )
     lines = [
