@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-20
+
 ### Added
 
 - **`meta-harness`: シナリオに graded checks（段階評価）を導入し skill target の品質分解能を実現（Issue #364、ADR-20260814-050）**: シナリオ YAML に `graded:` 配列（機械 oracle のみ）を新設し、gate（`critical:`、実行成立性）と graded（出来栄えの段階評価）を分離できるようになった。graded 宣言シナリオの `quality_score` は graded checks の pass 率 × 100 で算出され、self-report penalty は記録のみで quality には反映されない。graded 未宣言シナリオは従来の算出式のまま。routing-config 候補等の regression 評価では graded の fail も suite fail として扱う（regression strict mode）。`skill:issue-fix` の 2 シナリオを gate 1 項目 + graded 3 項目に転換した。
