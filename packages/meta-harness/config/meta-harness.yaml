@@ -169,7 +169,7 @@ proposer:
     srt_version_pin: null # null = pin なし。設定時は srt --version と厳密一致
     allow_read_extra: [] # CLI 起動に必要な追加 allowRead。store/holdout/facets 等は静的検査で拒否
 loop:
-  budget_usd: null # 実測後に既定を設定。§14 参照
+  budget_usd: 40.0 # 実測較正済み（claude-harness loop ≒$3/運転、routing-config 初完走 $19.22）。iteration 開始前の予測チェックであり hard cap ではない（ADR-20260814-049）
   quality_epsilon_pt: 0.5 # best_quality の改善判定閾値（§13-2）
   convergence:
     enabled: true
