@@ -8,6 +8,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from tests.module_loader import load_module
 
 secret_scan = load_module(
@@ -117,3 +122,127 @@ class TestMain:
         captured = capsys.readouterr()
         assert "OPENAI_API_KEY assignment" in captured.err
         assert "abc" not in captured.err
+
+
+class TestReexecUnderTargetInterpreter:
+    """_reexec_under_target_interpreter(): AI_ORCHESTRA_PYTHON によるインタプリタ切替（Issue #345）。
+
+    Codex CLI は ``.codex/hooks.json`` の ``"command": "python3 <path>"`` をそのまま起動する
+    ため、``python3`` の解決先は hook 自身の制御外にある。``AI_ORCHESTRA_PYTHON`` が設定されて
+    いる場合のみ re-exec するオプトイン仕様であり、未設定時は既存の挙動を一切変えない。
+    """
+
+    def test_noop_when_env_var_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("AI_ORCHESTRA_PYTHON", raising=False)
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(secret_scan.os, "execv", lambda *a: calls.append(a))
+
+        secret_scan._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_noop_when_target_matches_current_interpreter(self, monkeypatch) -> None:
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", secret_scan.sys.executable)
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(secret_scan.os, "execv", lambda *a: calls.append(a))
+
+        secret_scan._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_noop_when_target_missing(self, tmp_path, monkeypatch) -> None:
+        missing = tmp_path / "no-such-python3"
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(missing))
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(secret_scan.os, "execv", lambda *a: calls.append(a))
+
+        secret_scan._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_noop_when_sentinel_already_set(self, tmp_path, monkeypatch) -> None:
+        target = tmp_path / "fake-python3"
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(target))
+        monkeypatch.setenv("_AI_ORCHESTRA_HOOK_REEXECED", "1")
+        calls: list = []
+        monkeypatch.setattr(secret_scan.os, "execv", lambda *a: calls.append(a))
+
+        secret_scan._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_execs_target_when_different_interpreter(self, tmp_path, monkeypatch) -> None:
+        target = tmp_path / "fake-python3"
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(target))
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(secret_scan.os, "execv", lambda *a: calls.append(a))
+
+        secret_scan._reexec_under_target_interpreter()
+
+        assert calls == [(str(target), [str(target), *secret_scan.sys.argv])]
+        assert secret_scan.os.environ["_AI_ORCHESTRA_HOOK_REEXECED"] == "1"
+
+    def test_execs_target_when_venv_symlink_shares_realpath_with_interpreter(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """venv の bin/python symlink（realpath は sys.executable と同一）でも re-exec する。
+
+        venv の interpreter は多くの環境でベース interpreter への symlink であり、
+        os.path.realpath() で比較すると「同じ interpreter」と誤判定されてしまう
+        （symlink 越しでも sys.prefix / site 設定はベース interpreter と異なる）。
+        raw path 比較（Issue #345 follow-up）に変更したことで、このケースでも
+        re-exec が発生することを確認する。
+        """
+        symlink = tmp_path / "venv-python3"
+        symlink.symlink_to(secret_scan.sys.executable)
+        # このテストが検証したいシナリオの前提: realpath は sys.executable と一致する
+        assert secret_scan.os.path.realpath(str(symlink)) == secret_scan.os.path.realpath(
+            secret_scan.sys.executable
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(symlink))
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(secret_scan.os, "execv", lambda *a: calls.append(a))
+
+        secret_scan._reexec_under_target_interpreter()
+
+        assert calls == [(str(symlink), [str(symlink), *secret_scan.sys.argv])]
+        assert secret_scan.os.environ["_AI_ORCHESTRA_HOOK_REEXECED"] == "1"
+
+
+class TestReexecUnderTargetInterpreterSubprocess:
+    """実際にサブプロセスとして起動し、re-exec が発生することを黒箱で検証する（Issue #345）。
+
+    上の TestReexecUnderTargetInterpreter は `_reexec_under_target_interpreter()` を関数
+    単体でテストしており `os.execv` はモック済みで実行されない。この 1 ケースだけは、
+    `python3 <hook>` として実際に子プロセスを起動し、`AI_ORCHESTRA_PYTHON` に設定した
+    偽インタプリタへ `os.execv` が本当に切り替わることを stdout のマーカーで確認する
+    （advisor が挙げた「fake interpreter script that prints a marker」パターン）。
+    """
+
+    def test_reexecs_under_ai_orchestra_python_when_set(self, tmp_path: Path) -> None:
+        shim = tmp_path / "fake-python3"
+        shim.write_text('#!/bin/sh\necho "REEXEC_MARKER:$@"\n', encoding="utf-8")
+        shim.chmod(0o755)
+
+        hook_path = Path(secret_scan.__file__)
+        env = {**os.environ, "AI_ORCHESTRA_PYTHON": str(shim)}
+        env.pop("_AI_ORCHESTRA_HOOK_REEXECED", None)
+
+        result = subprocess.run(
+            [sys.executable, str(hook_path)],
+            input="{}",
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=10,
+            check=False,
+        )
+
+        assert f"REEXEC_MARKER:{hook_path}" in result.stdout
