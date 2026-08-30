@@ -84,6 +84,10 @@ class TestExecuteCodexReview:
         assert "approval_policy=never" in captured["cmd"]
         # stdin must be the opened diff file (not DEVNULL, not the sandbox arg)
         assert captured["kwargs"]["stdin"].name == str(input_diff_path)
+        # Issue #345: hooks.json's hooks resolve `python3` from the spawn
+        # environment's PATH, which may not be this script's interpreter.
+        # AI_ORCHESTRA_PYTHON lets hooks opt in to running under it instead.
+        assert captured["kwargs"]["env"]["AI_ORCHESTRA_PYTHON"] == codex_review.sys.executable
 
 
 class TestBuildReport:

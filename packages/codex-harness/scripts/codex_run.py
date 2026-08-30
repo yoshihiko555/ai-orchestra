@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -176,6 +177,13 @@ def execute_codex(
                 stderr=progress_f,
                 text=True,
                 timeout=timeout,
+                # Issue #345: tell hooks.json's hook scripts (spawned by
+                # `codex exec` as a plain `python3 <path>` command) which
+                # interpreter to prefer via `_reexec_under_target_interpreter()`,
+                # since PATH-resolved `python3` may differ from the one
+                # running this script (e.g. version-manager shims not
+                # active in the spawn environment).
+                env={**os.environ, "AI_ORCHESTRA_PYTHON": sys.executable},
             )
             return completed.returncode
         except subprocess.TimeoutExpired:

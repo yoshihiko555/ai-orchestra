@@ -212,3 +212,68 @@ class TestMain:
         payload = '{"tool_input": {"command": "git push origin main"}}'
         monkeypatch.setattr("sys.stdin", io.StringIO(payload))
         assert policy.main() == 0
+
+
+class TestReexecUnderTargetInterpreter:
+    """_reexec_under_target_interpreter(): AI_ORCHESTRA_PYTHON によるインタプリタ切替（Issue #345）。
+
+    Codex CLI は ``.codex/hooks.json`` の ``"command": "python3 <path>"`` をそのまま起動する
+    ため、``python3`` の解決先は hook 自身の制御外にある。``AI_ORCHESTRA_PYTHON`` が設定されて
+    いる場合のみ re-exec するオプトイン仕様であり、未設定時は既存の挙動を一切変えない。
+    """
+
+    def test_noop_when_env_var_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("AI_ORCHESTRA_PYTHON", raising=False)
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(policy.os, "execv", lambda *a: calls.append(a))
+
+        policy._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_noop_when_target_matches_current_interpreter(self, monkeypatch) -> None:
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", policy.sys.executable)
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(policy.os, "execv", lambda *a: calls.append(a))
+
+        policy._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_noop_when_target_missing(self, tmp_path, monkeypatch) -> None:
+        missing = tmp_path / "no-such-python3"
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(missing))
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(policy.os, "execv", lambda *a: calls.append(a))
+
+        policy._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_noop_when_sentinel_already_set(self, tmp_path, monkeypatch) -> None:
+        target = tmp_path / "fake-python3"
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(target))
+        monkeypatch.setenv("_AI_ORCHESTRA_HOOK_REEXECED", "1")
+        calls: list = []
+        monkeypatch.setattr(policy.os, "execv", lambda *a: calls.append(a))
+
+        policy._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_execs_target_when_different_interpreter(self, tmp_path, monkeypatch) -> None:
+        target = tmp_path / "fake-python3"
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(target))
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(policy.os, "execv", lambda *a: calls.append(a))
+
+        policy._reexec_under_target_interpreter()
+
+        assert calls == [(str(target), [str(target), *policy.sys.argv])]
+        assert policy.os.environ["_AI_ORCHESTRA_HOOK_REEXECED"] == "1"

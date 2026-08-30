@@ -14,6 +14,7 @@ present, the hook exits 0 (allow) rather than blocking.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from typing import Any
@@ -75,5 +76,39 @@ def main() -> int:
     return 2
 
 
+def _reexec_under_target_interpreter() -> None:
+    """Re-exec this hook under $AI_ORCHESTRA_PYTHON if set (Issue #345).
+
+    Codex CLI spawns this hook via a literal ``python3 <path>`` command in
+    ``.codex/hooks.json``. Which interpreter ``python3`` resolves to depends
+    on the spawn environment's PATH (e.g. a version-manager shim vs. the
+    system interpreter in a non-interactive shell), which is out of this
+    hook's control. When ``AI_ORCHESTRA_PYTHON`` is set to a known-good
+    interpreter (``codex_run.py`` / ``codex_review.py`` set it to their own
+    ``sys.executable`` before invoking ``codex exec``), re-exec under it so
+    the hook body runs with a predictable interpreter regardless of how
+    ``python3`` resolved.
+
+    No-op (no behavior change) when the variable is unset, already the
+    running interpreter, the target path is missing, or a re-exec already
+    happened once (guarded by the sentinel below, not by path comparison,
+    since version-manager shims can make the resolved path differ from
+    ``sys.executable`` even after a successful re-exec).
+    """
+    target = os.environ.get("AI_ORCHESTRA_PYTHON")
+    if not target or os.environ.get("_AI_ORCHESTRA_HOOK_REEXECED"):
+        return
+    if not os.path.isfile(target):
+        return
+    if os.path.realpath(target) == os.path.realpath(sys.executable):
+        return
+    os.environ["_AI_ORCHESTRA_HOOK_REEXECED"] = "1"
+    try:
+        os.execv(target, [target, *sys.argv])
+    except OSError:
+        pass
+
+
 if __name__ == "__main__":
+    _reexec_under_target_interpreter()
     sys.exit(main())
