@@ -91,9 +91,17 @@ hook の起動に使う Python は `env.AI_ORCHESTRA_PYTHON` で決まる（`orc
 `PATH` の `python3` にフォールバックする）。
 
 設定値の妥当性は、`init` / `setup` / `install` / `enable` のたびに実際にそのインタプリタを起動して
-確認する（起動でき、かつ `requires-python` を満たすか）。起動できない値（venv の削除、消えた
-バージョン付きパス、`PATH` 解決はできるが古すぎる system python3 など）は、警告のうえ現在の
-インタプリタへ自動修復される。逆に、起動できる値は利用者の明示指定として尊重し上書きしない。
+確認する（起動でき、`requires-python` を満たし、`import yaml` できるか。pyyaml を見るのは、これを
+top-level で import する hook があり、欠損時に hook が黙って素通り（fail-open）するため）。起動
+できない値（venv の削除、消えたバージョン付きパス、`PATH` 解決はできるが古すぎる system python3、
+pyyaml 未導入など）は、警告のうえ自動修復される。逆に、起動できる値は利用者の明示指定として
+尊重し上書きしない。
+
+自動設定の対象は「消えにくい場所にある Python」に限る。worktree やプロジェクト直下の venv、
+一時ディレクトリの Python は、その venv を消した時点で全プロジェクトの hook が起動不能になる
+（同じ変数で起動する SessionStart 同期も止まるため自動修復も効かない）。そうした Python から
+実行した場合は警告のみを出して `env.AI_ORCHESTRA_PYTHON` を設定せず、hook は従来どおり `PATH` の
+`python3` で起動される。固定したい場合は安定した Python のパスを手動で設定する。
 
 > **既存導入プロジェクトへの適用**: `orchex init --project .` を 1 度実行すれば、hook コマンドの表記
 > 移行（旧 `python3` 直参照 → 現行表記）と `env.AI_ORCHESTRA_PYTHON` の設定が同時に行われる。

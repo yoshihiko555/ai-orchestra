@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **hook の起動が `PATH` 上の `python3` に依存しなくなった（Issue #343）**: `settings.local.json` に登録される hook コマンドは `"${AI_ORCHESTRA_PYTHON:-python3}"` 経由になり、`orchex init` / `setup` / `install` / `enable` が `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` に現在のインタプリタを設定する。バージョンマネージャ未適用のログインシェルで hook が起動されても、想定外のインタプリタに落ちて失敗することがなくなった。既存導入プロジェクトは `orchex init --project .` を 1 度実行すると、hook コマンドの表記移行とインタプリタの設定が同時に行われる（実行するまでは従来どおり `PATH` の `python3` で解決される）。別のインタプリタを使う場合は `env.AI_ORCHESTRA_PYTHON` を書き換え、`PATH` の `python3` へ戻す場合はこのキーを削除する。設定値でインタプリタを起動できなくなった場合は `orchex init` / `setup` の再実行で修復される。
+- **hook の起動が `PATH` 上の `python3` に依存しなくなった（Issue #343）**: `settings.local.json` に登録される hook コマンドは `"${AI_ORCHESTRA_PYTHON:-python3}"` 経由になり、`orchex init` / `setup` / `install` / `enable` が `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` に現在のインタプリタを設定する。バージョンマネージャ未適用のログインシェルで hook が起動されても、想定外のインタプリタに落ちて失敗することがなくなった。既存導入プロジェクトは `orchex init --project .` を 1 度実行すると、hook コマンドの表記移行とインタプリタの設定が同時に行われる（実行するまでは従来どおり `PATH` の `python3` で解決される）。別のインタプリタを使う場合は `env.AI_ORCHESTRA_PYTHON` を書き換え、`PATH` の `python3` へ戻す場合はこのキーを削除する。設定値でインタプリタを起動できなくなった場合は `orchex init` / `setup` の再実行で修復される。なお worktree やプロジェクト直下の venv など消えうる場所の Python は恒久設定へ書き込まず、警告のうえ従来どおり `PATH` の `python3` で起動される。
 
 ## [0.3.3] - 2026-08-20
 

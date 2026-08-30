@@ -635,6 +635,99 @@ class TestSetupEnvVar:
         assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
         assert "hook を起動できません" in captured.err
 
+    def test_repairs_python_interpreter_without_pyyaml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """pyyaml を import できないインタプリタは修復する（Issue #343）。
+
+        `packages/codd/lib/codd_common.py` は top-level で `import yaml` しており、欠損時の
+        ImportError は `hook_common.safe_hook_execution` が握り潰して exit 0 する。commit
+        整合性ゲートが "Hook error" 1 行だけ残して黙って fail-open するため、requires-python
+        を満たすだけでは hook を起動できたことにならない。
+        """
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        # -S で site-packages を外すと、バージョンは満たすが yaml を import できなくなる。
+        no_yaml = tmp_path / "no-yaml-python3"
+        no_yaml.write_text(f'#!/bin/sh\nexec "{sys.executable}" -S "$@"\n', encoding="utf-8")
+        no_yaml.chmod(0o755)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": str(no_yaml)}}), encoding="utf-8"
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        captured = capsys.readouterr()
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
+        assert "pyyaml" in captured.err
+
+    def test_does_not_pin_interpreter_inside_orchestra_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """worktree / プロジェクト venv の python は恒久設定へ書き込まない（Issue #343）。
+
+        利用者グローバルの settings.json に焼き込むと、その venv を消した瞬間に全
+        プロジェクトの hook が起動不能になり、同じ変数で起動する SessionStart 同期も
+        道連れになって自己修復が効かなくなる。未設定なら PATH の python3 へ安全に劣化する。
+        """
+        repo_dir = tmp_path / "repo"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(repo_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+
+        venv_python = repo_dir / ".venv" / "bin" / "python3"
+        venv_python.parent.mkdir(parents=True, exist_ok=True)
+        venv_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        venv_python.chmod(0o755)
+        monkeypatch.setattr(hooks_mod.sys, "executable", str(venv_python))
+        monkeypatch.setattr(hooks_mod.sys, "_base_executable", str(venv_python), raising=False)
+
+        manager.setup_env_var()
+
+        saved = json.loads((home_dir / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        captured = capsys.readouterr()
+        assert hook_utils.HOOK_PYTHON_ENV_VAR not in saved["env"]
+        assert saved["env"]["AI_ORCHESTRA_DIR"] == str(repo_dir)
+        assert "設定しません" in captured.err
+
+    def test_repairs_broken_value_even_with_ephemeral_interpreter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """既存値が起動できない場合は、消えうる場所の python でも機能回復を優先する。
+
+        設定済みの値が死んでいる時点で全 hook が起動不能なので、死んだパスを残すより
+        現在のインタプリタで動かせる状態に戻す方が良い。
+        """
+        repo_dir = tmp_path / "repo"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(repo_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+
+        venv_python = repo_dir / ".venv" / "bin" / "python3"
+        venv_python.parent.mkdir(parents=True, exist_ok=True)
+        venv_python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        venv_python.chmod(0o755)
+        monkeypatch.setattr(hooks_mod.sys, "executable", str(venv_python))
+        monkeypatch.setattr(hooks_mod.sys, "_base_executable", str(venv_python), raising=False)
+
+        settings_path = home_dir / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": str(tmp_path / "gone" / "python3")}}),
+            encoding="utf-8",
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        captured = capsys.readouterr()
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == str(venv_python)
+        assert "hook を起動できません" in captured.err
+
     def test_min_hook_python_version_matches_requires_python(self) -> None:
         """プローブの下限は pyproject.toml の requires-python と一致させる。
 
@@ -949,3 +1042,44 @@ class TestSyncHookOperations:
         assert settings["hooks"]["SessionStart"] == [
             {"matcher": "Task", "hooks": [{"type": "command", "command": "python3 keep.py"}]}
         ]
+
+
+class TestEphemeralInterpreterDetection:
+    """恒久設定へ焼き込めないインタプリタの判定（Issue #343）。"""
+
+    def test_detects_venv_symlink_by_unresolved_path(self, tmp_path: Path) -> None:
+        """venv の bin/python は symlink 先ではなく未解決パスで判定する。
+
+        `bin/python` は基底インタプリタへの symlink なので realpath は venv の外を指す。
+        しかし設定へ焼き込まれて venv 削除で死ぬのは未解決パスの方であり、realpath だけを
+        見るガードは本来弾くべき値をすべて素通しする。
+        """
+        repo_dir = tmp_path / "repo"
+        venv_python = repo_dir / ".venv" / "bin" / "python3"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.symlink_to(sys.executable)
+
+        assert not _is_within(venv_python.resolve(), repo_dir)
+        assert hooks_mod._is_ephemeral_interpreter(str(venv_python), [repo_dir]) is True
+
+    def test_accepts_interpreter_outside_roots(self, tmp_path: Path) -> None:
+        """対象ツリー外のインタプリタは恒久設定に使える。"""
+        assert hooks_mod._is_ephemeral_interpreter(sys.executable, [tmp_path / "repo"]) is False
+
+    def test_roots_include_persisted_orchestra_dir(self, tmp_path: Path) -> None:
+        """記録済みの AI_ORCHESTRA_DIR も対象ツリーに含める。
+
+        worktree から実行しつつ venv は main リポジトリ側、というケースを取りこぼさない。
+        """
+        manager = _make_manager(tmp_path / "worktree")
+        main_dir = tmp_path / "main"
+
+        roots = manager._ephemeral_interpreter_roots({"AI_ORCHESTRA_DIR": str(main_dir)})
+
+        assert main_dir in roots
+        assert tmp_path / "worktree" in roots
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """テスト用: path が root 配下か判定する。"""
+    return path == root or root in path.parents

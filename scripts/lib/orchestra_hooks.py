@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -37,8 +38,14 @@ MIN_HOOK_PYTHON_VERSION = (3, 12)
 # インタプリタ検証プローブの上限秒。応答しない shim で init を止めないためのガード。
 PYTHON_PROBE_TIMEOUT_SECONDS = 5
 
-_VERSION_PROBE_SCRIPT = (
-    f"import sys; sys.exit(0 if sys.version_info >= {MIN_HOOK_PYTHON_VERSION} else 1)"
+_LAUNCH_PROBE_SCRIPT = (
+    f"import sys, yaml; sys.exit(0 if sys.version_info >= {MIN_HOOK_PYTHON_VERSION} else 1)"
+)
+
+# 起動できないインタプリタの原因（警告メッセージ用）。プローブが見る条件と対応させる。
+_LAUNCH_FAILURE_REASONS = (
+    f"実行不可、Python {MIN_HOOK_PYTHON_VERSION[0]}.{MIN_HOOK_PYTHON_VERSION[1]} 未満、"
+    "または pyyaml 未導入"
 )
 
 
@@ -50,13 +57,16 @@ def _can_launch_hooks(interpreter: str) -> bool:
     system python3（macOS CommandLineTools では 3.9 系）や、実体を失った pyenv shim は
     which では解決できてしまうが、hook スクリプトを起動できない。
 
-    判定は「起動でき、かつ requires-python を満たす」ことに限定し、依存モジュール
-    （pyyaml）の有無は見ない。hook 側は遅延 import + フォールバックで欠損を吸収する設計で
-    あり、pyyaml を持たない 3.12+ は hook を停止させないため。
+    判定は「起動でき、requires-python を満たし、pyyaml を import できる」こと。pyyaml を
+    含めるのは、`packages/codd/lib/codd_common.py` が top-level で `import yaml` しており、
+    欠損時の ImportError を `hook_common.safe_hook_execution` が握り潰して exit 0 する
+    ため（commit 整合性ゲートが 1 行の "Hook error" だけ残して黙って fail-open する）。
+    遅延 import + try/except で吸収されるのは `hook_common` の config 読み込みだけであり、
+    hook 全体には一般化できない。
     """
     try:
         result = subprocess.run(
-            [interpreter, "-c", _VERSION_PROBE_SCRIPT],
+            [interpreter, "-c", _LAUNCH_PROBE_SCRIPT],
             capture_output=True,
             timeout=PYTHON_PROBE_TIMEOUT_SECONDS,
             check=False,
@@ -64,6 +74,27 @@ def _can_launch_hooks(interpreter: str) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """path が root と同一、または root 配下か判定する。"""
+    return path == root or root in path.parents
+
+
+def _is_ephemeral_interpreter(interpreter: str, roots: list[Path]) -> bool:
+    """恒久設定へ焼き込むべきでない（消えうる）場所のインタプリタか判定する。
+
+    判定は realpath ではなく未解決の絶対パスを主に見る。venv の `bin/python` は基底
+    インタプリタへの symlink であり、realpath だけを見ると venv の外を指してしまうが、
+    設定に焼き込まれて venv 削除で死ぬのは未解決パスの方であるため。realpath 側は
+    `/var` と `/private/var` のような表記差を補うための補助にとどめる。
+    """
+    candidate = Path(interpreter)
+    if not candidate.is_absolute():
+        return False
+    paths = {candidate, candidate.resolve()}
+    root_paths = {resolved for root in roots for resolved in (root.absolute(), root.resolve())}
+    return any(_is_within(path, root) for path in paths for root in root_paths)
 
 
 def _git_directories(repo_dir: Path) -> tuple[Path, Path] | None:
@@ -230,8 +261,78 @@ class HooksMixin:
         command = get_hook_command(pkg_name, filename)
         _remove_hook(settings["hooks"], event, command, matcher)
 
-    @staticmethod
-    def _resolve_python_update(env: dict[str, Any]) -> str | None:
+    def _ephemeral_interpreter_roots(self, env: dict[str, Any]) -> list[Path]:
+        """インタプリタを恒久設定へ焼き込んではいけないツリーの一覧を返す。
+
+        実行元リポジトリ（linked worktree を含む）と一時ディレクトリに加え、既に記録済みの
+        AI_ORCHESTRA_DIR も対象にする。worktree から実行しつつ venv は main リポジトリ側、
+        というケースを取りこぼさないため。`os.environ` ではなく settings の値を見るのは、
+        worktree でのテスト実行が AI_ORCHESTRA_DIR を export するため。
+        """
+        roots = [self.orchestra_dir, Path(tempfile.gettempdir())]
+        persisted_dir = env.get("AI_ORCHESTRA_DIR")
+        if isinstance(persisted_dir, str) and persisted_dir:
+            roots.append(Path(persisted_dir))
+        return roots
+
+    def _stable_hook_interpreter(self, env: dict[str, Any]) -> str | None:
+        """恒久設定に耐えるインタプリタを選ぶ。該当なしなら None。
+
+        venv の中に居る場合は基底インタプリタも候補にする（venv 削除で死なないため）。
+        基底側が pyyaml を持たない場合はプローブで落ちるので、そのまま採用はしない。
+        """
+        candidates = (sys.executable, getattr(sys, "_base_executable", None))
+        roots = self._ephemeral_interpreter_roots(env)
+        for candidate in candidates:
+            if not candidate or _is_ephemeral_interpreter(candidate, roots):
+                continue
+            if _can_launch_hooks(candidate):
+                return candidate
+        return None
+
+    def _initial_python_interpreter(self, env: dict[str, Any]) -> str | None:
+        """未設定の AI_ORCHESTRA_PYTHON へ書き込む値を返す。適格な候補がなければ None。
+
+        worktree やプロジェクト venv、一時ディレクトリのインタプリタを利用者グローバルの
+        設定へ焼き込むと、その venv を消した瞬間に全プロジェクトの hook が起動不能になる。
+        同じ変数で起動する SessionStart 同期も道連れになるため自己修復も効かない。
+        未設定のままなら hook コマンドは `${AI_ORCHESTRA_PYTHON:-python3}` により PATH の
+        python3 へ安全に劣化する（本 Issue 以前の挙動）。
+        """
+        stable = self._stable_hook_interpreter(env)
+        if stable is None:
+            print(
+                f"警告: {sys.executable} は削除されうる場所にあるため "
+                f"{HOOK_PYTHON_ENV_VAR} を設定しません"
+                "（hook は PATH の python3 で起動されます）。固定する場合は安定した "
+                f"Python のパスを {HOOK_PYTHON_ENV_VAR} へ手動で設定してください",
+                file=sys.stderr,
+            )
+        return stable
+
+    def _repair_python_interpreter(self, existing: str, env: dict[str, Any]) -> str | None:
+        """起動できない既存値を置き換える値を返す。置き換え先がなければ None。
+
+        既に全 hook が起動不能な状態なので、安定した候補がない場合は機能回復を優先し、
+        消えうる場所のインタプリタでも書き込む（死んだパスを残すよりは良い）。
+        """
+        replacement = self._stable_hook_interpreter(env)
+        if replacement is None and _can_launch_hooks(sys.executable):
+            replacement = sys.executable
+
+        remedy = (
+            f"{replacement} で修復します"
+            if replacement
+            else f"修復先を特定できませんでした。{HOOK_PYTHON_ENV_VAR} を手動で設定してください"
+        )
+        print(
+            f"警告: 環境変数 {HOOK_PYTHON_ENV_VAR}={existing} では hook を起動できません"
+            f"（{_LAUNCH_FAILURE_REASONS}）。{remedy}",
+            file=sys.stderr,
+        )
+        return replacement
+
+    def _resolve_python_update(self, env: dict[str, Any]) -> str | None:
         """AI_ORCHESTRA_PYTHON に書き込むべき値を返す。書き込み不要なら None。
 
         既存値は「その値で hook を起動できる」ときだけ尊重する（Issue #343）。判定は
@@ -239,25 +340,18 @@ class HooksMixin:
         解決可否では、本 Issue が対象とする「解決はできるが hook を動かせないインタプリタ」
         （system python3 = 3.9 系、実体を失った shim 等）を取りこぼすため。
 
-        起動できない値（削除された venv、古すぎる Python 等）を放置すると全 hook が
-        起動不能になり、同じ変数で起動する SessionStart 同期による自己修復も失われるため、
-        警告のうえ現在のインタプリタで修復する。
+        書き込む値の選定にだけ「消えうる場所か」のガードを掛ける。利用者が明示した既存値は
+        起動可否だけで判断し、置き場所を理由に上書きしない。
         """
         existing = env.get(HOOK_PYTHON_ENV_VAR)
         if not isinstance(existing, str) or not existing:
-            return sys.executable
+            return self._initial_python_interpreter(env)
 
         if _can_launch_hooks(existing):
             print(f"環境変数 {HOOK_PYTHON_ENV_VAR} は設定済み: {existing}")
             return None
 
-        required = f"{MIN_HOOK_PYTHON_VERSION[0]}.{MIN_HOOK_PYTHON_VERSION[1]}"
-        print(
-            f"警告: 環境変数 {HOOK_PYTHON_ENV_VAR}={existing} では hook を起動できません"
-            f"（実行不可、または Python {required} 未満）。{sys.executable} で修復します",
-            file=sys.stderr,
-        )
-        return sys.executable
+        return self._repair_python_interpreter(existing, env)
 
     def _resolve_env_updates(self, env: dict[str, Any]) -> dict[str, str]:
         """グローバル env に書き込むべき差分を返す。
@@ -299,7 +393,8 @@ class HooksMixin:
         """~/.claude/settings.json の env.AI_ORCHESTRA_DIR / AI_ORCHESTRA_PYTHON を設定
 
         AI_ORCHESTRA_PYTHON は hook コマンドが使うインタプリタ（Issue #343）。
-        未設定のときだけ現在の sys.executable を書き込み、PATH 解決に依存しないようにする。
+        未設定または起動できない値のときに、消えにくい場所のインタプリタを書き込み、
+        PATH 解決に依存しないようにする（選定は `_resolve_python_update` 参照）。
         """
         import json
 
