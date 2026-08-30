@@ -41,6 +41,10 @@ def _read_cli_tools_yaml_raw() -> dict:
         return yaml.safe_load(f)
 
 
+# agents.<name>.tool が取りうる実行先の語彙（config-loading / codex-delegation ルール準拠）
+VALID_AGENT_TOOLS = frozenset({"codex", "antigravity", "claude-direct", "auto"})
+
+
 # =========================================================================
 # deep_merge
 # =========================================================================
@@ -207,10 +211,14 @@ class TestRouteConfigLoadConfig:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
         config = route_config.load_config({"cwd": str(REPO_ROOT)})
         agents = config.get("agents", {})
+        expected_agents = _read_cli_tools_yaml_raw()["agents"]
         assert len(agents) >= 20
-        assert agents.get("planner", {}).get("tool") == "claude-direct"
-        assert agents.get("debugger", {}).get("tool") == "codex"
-        assert agents.get("researcher", {}).get("tool") == "antigravity"
+        # tool 値は yaml 由来で導出（literal 比較を廃止し、ルーティング変更で壊れない）
+        for name in ("planner", "debugger", "researcher"):
+            assert agents.get(name, {}).get("tool") == expected_agents[name]["tool"]
+        # 構造契約: 全 agent の tool が既知の実行先語彙に含まれる（ファイル健全性の保証）
+        for name, spec in agents.items():
+            assert spec.get("tool") in VALID_AGENT_TOOLS, f"unknown tool for agent: {name}"
 
 
 # =========================================================================
