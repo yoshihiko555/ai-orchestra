@@ -87,8 +87,29 @@ Claude Code (Orchestrator)
 hook の起動に使う Python は `env.AI_ORCHESTRA_PYTHON` で決まる（`orchex init` / `setup` が現在の
 インタプリタを自動設定する）。hook コマンドは `"${AI_ORCHESTRA_PYTHON:-python3}" "$AI_ORCHESTRA_DIR/..."`
 の形で登録されるため、hook 起動シェルの `PATH` 解決に依存せず、依存モジュールを持つインタプリタで
-確実に起動する。別の Python を使いたい場合や、設定済みのパスが古くなった場合は、この環境変数を
-書き換える（削除すると従来どおり `PATH` の `python3` にフォールバックする）。
+確実に起動する。別の Python を使いたい場合はこの環境変数を書き換える（削除すると従来どおり `PATH` の
+`python3` にフォールバックする）。設定値が実行可能なインタプリタとして解決できなくなった場合
+（venv の削除、バージョン付きパスの消失など）は、`orchex init` / `setup` の再実行で現在の
+インタプリタへ自動修復される。
+
+#### hook 起動の確認とロールバック
+
+インタプリタ表記を変更したあと、または hook が動いていない疑いがあるときは次の順で確認する。
+
+1. `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` が実行可能か確かめる（`"$AI_ORCHESTRA_PYTHON" -V`）
+2. Claude Code を新規セッションで起動し、SessionStart の `sync-orchestra` hook が実行されるか確認する
+3. 環境変数を一時的に外した状態でも起動するか（`PATH` の `python3` へのフォールバック）を確認する
+
+hook が一切起動しなくなった場合、SessionStart 同期による自己修復も同時に止まるため、
+`.claude/settings.local.json` の hook コマンドを手動で旧表記へ戻して復旧する。
+
+```bash
+# hook コマンドのインタプリタ参照を PATH の python3 直参照へ戻す
+sed -i '' 's/"${AI_ORCHESTRA_PYTHON:-python3}"/python3/g' .claude/settings.local.json
+```
+
+戻したあとに `orchex init --project .` を実行すると、`env.AI_ORCHESTRA_PYTHON` が再設定され、
+次の SessionStart 同期で hook コマンドが現行表記へ戻る。
 
 ### 開発・検証フロー（メンテナ向け）
 

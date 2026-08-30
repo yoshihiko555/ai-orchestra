@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,7 @@ from lib.hook_utils import (
     find_hook_in_settings,
     get_hook_command,
     is_sync_hook_command,
+    migrate_hook_interpreters,
 )
 from lib.hook_utils import (
     add_hook_to_settings as _add_hook,
@@ -141,7 +143,15 @@ class HooksMixin:
         action: str,
         dry_run: bool = False,
     ) -> None:
-        """フックの登録/削除を一括実行する。action は 'add' または 'remove'。"""
+        """フックの登録/削除を一括実行する。action は 'add' または 'remove'。
+
+        登録/削除に先立ち、既存 hook のインタプリタ表記を現行形式へ揃える（Issue #343）。
+        旧表記のまま残っていると、新表記の追加が別 hook として並んで二重起動し、削除も
+        取りこぼす（どちらもコマンド文字列の完全一致で判定するため）。
+        """
+        if not dry_run and isinstance(settings.get("hooks"), dict):
+            migrate_hook_interpreters(settings["hooks"])
+
         for event, entries in pkg.hooks.items():
             for entry in entries:
                 matcher_info = f" (matcher: {entry.matcher})" if entry.matcher else ""
@@ -186,11 +196,36 @@ class HooksMixin:
         command = get_hook_command(pkg_name, filename)
         _remove_hook(settings["hooks"], event, command, matcher)
 
+    @staticmethod
+    def _resolve_python_update(env: dict[str, Any]) -> str | None:
+        """AI_ORCHESTRA_PYTHON に書き込むべき値を返す。書き込み不要なら None。
+
+        既存値は「実行可能なインタプリタとして解決できる」ときだけ尊重する（Issue #343）。
+        利用者が逃げ道として PATH 相対名（`python3` / `python3.12` 等）を指定する運用も
+        あるため、実在判定は Path.exists ではなく shutil.which で行う。
+        解決できない値（削除された venv、消えたバージョン付きパス等）を放置すると
+        全 hook が起動不能になり自己修復経路まで失われるため、警告のうえ修復する。
+        """
+        existing = env.get(HOOK_PYTHON_ENV_VAR)
+        if not isinstance(existing, str) or not existing:
+            return sys.executable
+
+        if shutil.which(existing) is not None:
+            print(f"環境変数 {HOOK_PYTHON_ENV_VAR} は設定済み: {existing}")
+            return None
+
+        print(
+            f"警告: 環境変数 {HOOK_PYTHON_ENV_VAR}={existing} は実行可能なインタプリタとして"
+            f"解決できません。{sys.executable} で修復します",
+            file=sys.stderr,
+        )
+        return sys.executable
+
     def _resolve_env_updates(self, env: dict[str, Any]) -> dict[str, str] | None:
         """グローバル env に書き込むべき差分を返す。
 
         linked worktree からの実行では既存の main パスを保持するため None を返す。
-        既に設定済みのキーは差分に含めない（AI_ORCHESTRA_PYTHON は利用者が明示した
+        既に設定済みで有効なキーは差分に含めない（AI_ORCHESTRA_PYTHON は利用者が明示した
         インタプリタを上書きしない = 逃げ道として機能させるため）。
         """
         orchestra_dir_str = str(self.orchestra_dir)
@@ -215,11 +250,9 @@ class HooksMixin:
         else:
             updates["AI_ORCHESTRA_DIR"] = orchestra_dir_str
 
-        existing_python = env.get(HOOK_PYTHON_ENV_VAR)
-        if isinstance(existing_python, str) and existing_python:
-            print(f"環境変数 {HOOK_PYTHON_ENV_VAR} は設定済み: {existing_python}")
-        else:
-            updates[HOOK_PYTHON_ENV_VAR] = sys.executable
+        python_update = self._resolve_python_update(env)
+        if python_update is not None:
+            updates[HOOK_PYTHON_ENV_VAR] = python_update
 
         return updates
 

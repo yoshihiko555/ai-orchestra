@@ -20,6 +20,7 @@ models_mod = load_module("orchestra_models", "scripts/lib/orchestra_models.py")
 HookEntry = models_mod.HookEntry
 Package = models_mod.Package
 hooks_mod = sys.modules[manager_mod.HooksMixin.__module__]
+hook_utils = load_module("hook_utils_for_hooks_test", "scripts/lib/hook_utils.py")
 
 
 def _make_manager(tmp_path: Path) -> OrchestraManager:
@@ -118,6 +119,63 @@ class TestApplyHooks:
 
         # Assert
         assert not manager.is_hook_registered(settings, "SessionStart", "hook_a.py", "mypkg")
+
+    def test_add_migrates_legacy_interpreter_instead_of_duplicating(self, tmp_path: Path) -> None:
+        """旧表記が残るプロジェクトへ install/enable しても hook は二重登録されない。
+
+        登録済み判定はコマンド文字列の完全一致で行うため、移行しないと旧表記を残したまま
+        新表記が追加され、次の SessionStart 同期で prune されるまで hook が 2 回走る。
+        """
+        manager = _make_manager(tmp_path)
+        pkg = _make_package(tmp_path, hooks={"SessionStart": ["hook_a.py"]})
+        legacy_command = 'python3 "$AI_ORCHESTRA_DIR/packages/mypkg/hooks/hook_a.py"'
+        settings: dict = {
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": legacy_command, "timeout": 5}]}
+                ]
+            }
+        }
+
+        manager._apply_hooks(pkg, settings, action="add")
+
+        commands = [h["command"] for h in settings["hooks"]["SessionStart"][0]["hooks"]]
+        assert commands == [hook_utils.get_hook_command("mypkg", "hook_a.py")]
+
+    def test_remove_also_removes_legacy_interpreter_hook(self, tmp_path: Path) -> None:
+        """旧表記で登録された hook も uninstall/disable で取りこぼさず削除する。"""
+        manager = _make_manager(tmp_path)
+        pkg = _make_package(tmp_path, hooks={"SessionStart": ["hook_a.py"]})
+        legacy_command = 'python3 "$AI_ORCHESTRA_DIR/packages/mypkg/hooks/hook_a.py"'
+        settings: dict = {
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": legacy_command, "timeout": 5}]}
+                ]
+            }
+        }
+
+        manager._apply_hooks(pkg, settings, action="remove")
+
+        assert settings["hooks"]["SessionStart"] == []
+
+    def test_dry_run_does_not_migrate_legacy_interpreter(self, tmp_path: Path) -> None:
+        """dry-run では移行も含めて settings を書き換えない。"""
+        manager = _make_manager(tmp_path)
+        pkg = _make_package(tmp_path, hooks={"SessionStart": ["hook_a.py"]})
+        legacy_command = 'python3 "$AI_ORCHESTRA_DIR/packages/mypkg/hooks/hook_a.py"'
+        settings: dict = {
+            "hooks": {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": legacy_command, "timeout": 5}]}
+                ]
+            }
+        }
+
+        manager._apply_hooks(pkg, settings, action="add", dry_run=True)
+
+        commands = [h["command"] for h in settings["hooks"]["SessionStart"][0]["hooks"]]
+        assert commands == [legacy_command]
 
     def test_dry_run_does_not_mutate_settings(self, tmp_path: Path) -> None:
         # Arrange
@@ -456,18 +514,98 @@ class TestSetupEnvVar:
         manager = _make_manager(tmp_path)
         monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
 
+        custom = tmp_path / "custom" / "bin" / "python3"
+        custom.parent.mkdir(parents=True, exist_ok=True)
+        custom.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        custom.chmod(0o755)
         settings_path = tmp_path / ".claude" / "settings.json"
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(
-            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": "/opt/custom/bin/python3"}}),
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": str(custom)}}),
             encoding="utf-8",
         )
 
         manager.setup_env_var()
 
         saved = json.loads(settings_path.read_text(encoding="utf-8"))
-        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == "/opt/custom/bin/python3"
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == str(custom)
         assert saved["env"]["AI_ORCHESTRA_DIR"] == str(tmp_path)
+
+    def test_repairs_stale_python_interpreter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """解決できない AI_ORCHESTRA_PYTHON は再 init で修復する（Issue #343）。
+
+        pipx/uvx の一時 venv やバージョン付きパスは容易に消える。凍結値が陳腐化すると
+        全 hook が起動不能になり、同じ変数で起動する SessionStart 同期による自己修復も
+        効かなくなるため、init/setup を復旧経路として機能させる。
+        """
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        stale = str(tmp_path / "removed-venv" / "bin" / "python3")
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": stale}}), encoding="utf-8"
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        captured = capsys.readouterr()
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
+        assert "解決できません" in captured.err
+
+    def test_repairs_non_executable_python_interpreter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """実在しても実行権のないパスは修復対象にする（起動できないため）。"""
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        not_executable = tmp_path / "python3"
+        not_executable.write_text("", encoding="utf-8")
+        not_executable.chmod(0o644)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": str(not_executable)}}), encoding="utf-8"
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
+
+    def test_preserves_path_relative_python_interpreter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PATH で解決できる相対名の指定は尊重する（逃げ道の維持）。
+
+        利用者が意図的に `python3` 等を指定する運用があるため、実在判定は
+        Path.exists ではなく PATH 解決で行う。
+        """
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "python3.99"
+        shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        shim.chmod(0o755)
+        monkeypatch.setenv("PATH", str(shim_dir))
+
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": "python3.99"}}), encoding="utf-8"
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == "python3.99"
 
     def test_keeps_main_path_when_running_from_linked_worktree(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

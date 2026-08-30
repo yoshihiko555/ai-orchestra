@@ -249,3 +249,103 @@ class TestHookInterpreterResolution:
         stdout = self._run_in_shell(command, {**env, "PATH": str(shim_dir)})
 
         assert stdout == sys.executable
+
+
+class TestMigrateHookInterpreters:
+    """migrate_hook_interpreters のテスト（Issue #343）。"""
+
+    def _entry(self, *commands: str, matcher: str | None = None) -> dict:
+        entry: dict = {"hooks": [{"type": "command", "command": c, "timeout": 5} for c in commands]}
+        if matcher:
+            entry["matcher"] = matcher
+        return entry
+
+    def test_migrates_package_hook_under_matcher(self) -> None:
+        """sync hook 以外のパッケージ hook も matcher 付きイベントで移行される。
+
+        install/enable と SessionStart 同期の両方で、旧表記が現行表記へ揃うことを保証する
+        （揃わないと新旧が並んで PostToolUse のフォーマッタ等が二重起動する）。
+        """
+        legacy = 'python3 "$AI_ORCHESTRA_DIR/packages/codd/hooks/codd-scan-postedit.py"'
+        settings_hooks = {"PostToolUse": [self._entry(legacy, matcher="Edit|Write")]}
+
+        changed = hook_utils.migrate_hook_interpreters(settings_hooks)
+
+        commands = [h["command"] for h in settings_hooks["PostToolUse"][0]["hooks"]]
+        assert changed == 1
+        assert commands == [hook_utils.get_hook_command("codd", "codd-scan-postedit.py")]
+
+    def test_collapses_legacy_and_current_duplicates(self) -> None:
+        """新旧表記が併存するパッケージ hook は 1 件に畳む（二重起動の防止）。"""
+        current = hook_utils.get_hook_command("codd", "codd-scan-postedit.py")
+        legacy = 'python3 "$AI_ORCHESTRA_DIR/packages/codd/hooks/codd-scan-postedit.py"'
+        settings_hooks = {"PostToolUse": [self._entry(legacy, current, matcher="Edit|Write")]}
+
+        changed = hook_utils.migrate_hook_interpreters(settings_hooks)
+
+        commands = [h["command"] for h in settings_hooks["PostToolUse"][0]["hooks"]]
+        # 旧表記の書き換えと重複エントリの除去で 2 件を数える
+        assert changed == 2
+        assert commands == [current]
+
+    def test_leaves_foreign_hooks_untouched(self) -> None:
+        """利用者自身が登録した python3 hook は書き換えない。"""
+        foreign = 'python3 "$HOME/my/hook.py"'
+        other = "node /opt/tools/lint.js"
+        settings_hooks = {"PreToolUse": [self._entry(foreign, other)]}
+
+        changed = hook_utils.migrate_hook_interpreters(settings_hooks)
+
+        commands = [h["command"] for h in settings_hooks["PreToolUse"][0]["hooks"]]
+        assert changed == 0
+        assert commands == [foreign, other]
+
+    def test_keeps_separate_matchers_independent(self) -> None:
+        """matcher が異なるエントリ間では畳まない（別々の発火条件を維持する）。"""
+        legacy = 'python3 "$AI_ORCHESTRA_DIR/packages/codd/hooks/codd-scan-postedit.py"'
+        settings_hooks = {
+            "PostToolUse": [
+                self._entry(legacy, matcher="Edit|Write"),
+                self._entry(legacy, matcher="Bash"),
+            ]
+        }
+
+        changed = hook_utils.migrate_hook_interpreters(settings_hooks)
+
+        current = hook_utils.get_hook_command("codd", "codd-scan-postedit.py")
+        assert changed == 2
+        assert [h["command"] for h in settings_hooks["PostToolUse"][0]["hooks"]] == [current]
+        assert [h["command"] for h in settings_hooks["PostToolUse"][1]["hooks"]] == [current]
+
+    def test_is_noop_when_already_current(self) -> None:
+        """現行表記だけの settings は変更しない（無駄な差分・書き込みを出さない）。"""
+        settings_hooks = {
+            "SessionStart": [self._entry(hook_utils.SYNC_HOOK_COMMAND)],
+            "PostToolUse": [
+                self._entry(
+                    hook_utils.get_hook_command("codd", "codd-scan-postedit.py"),
+                    matcher="Edit|Write",
+                )
+            ],
+        }
+
+        assert hook_utils.migrate_hook_interpreters(settings_hooks) == 0
+
+    def test_tolerates_malformed_settings_shapes(self) -> None:
+        """壊れた形の settings でも例外を投げない（同期を止めないため）。"""
+        settings_hooks = {"SessionStart": "not-a-list", "PreToolUse": ["not-a-dict"]}
+
+        assert hook_utils.migrate_hook_interpreters(settings_hooks) == 0
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python3 /tmp/local-hook.py",
+            'python3 "$AI_ORCHESTRA_DIR/packages/core/scripts/not-a-hook.py"',
+            "node /opt/tools/lint.js",
+        ],
+        ids=["absolute_path", "non_hooks_dir", "non_python"],
+    )
+    def test_canonical_hook_command_rejects_foreign_commands(self, command: str) -> None:
+        """ai-orchestra 由来でないコマンドは正規化対象にしない。"""
+        assert hook_utils.canonical_hook_command(command) is None

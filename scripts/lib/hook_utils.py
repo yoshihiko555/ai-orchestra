@@ -160,12 +160,78 @@ def is_sync_hook_command(command: str) -> bool:
     return strip_hook_interpreter(command) == SYNC_HOOK_SCRIPT_ARG
 
 
+def _is_package_hook_arg(rest: str) -> bool:
+    """インタプリタを除いた残りが packages/*/hooks/* のスクリプト引数か判定する。"""
+    return rest.startswith(_PACKAGE_HOOK_PREFIX) and "/hooks/" in rest
+
+
 def is_orchestra_hook(command: str) -> bool:
     """コマンドが $AI_ORCHESTRA_DIR/packages/*/hooks/* パターンか判定する。"""
     rest = strip_hook_interpreter(command)
     if rest is None:
         return False
-    return rest.startswith(_PACKAGE_HOOK_PREFIX) and "/hooks/" in rest
+    return _is_package_hook_arg(rest)
+
+
+def canonical_hook_command(command: str) -> str | None:
+    """ai-orchestra が登録した hook コマンドを現行インタプリタ表記へ正規化する。
+
+    ai-orchestra 由来でない場合は None を返す。インタプリタ表記だけでなくスクリプト引数の
+    形（sync-orchestra.py または packages/*/hooks/*）まで検証することで、利用者自身が
+    登録した `python3 "$HOME/my/hook.py"` のような hook を書き換えないようにする。
+    """
+    rest = strip_hook_interpreter(command)
+    if rest is None:
+        return None
+    if rest != SYNC_HOOK_SCRIPT_ARG and not _is_package_hook_arg(rest):
+        return None
+    return f"{HOOK_INTERPRETER} {rest}"
+
+
+def _migrate_entry_hooks(entry: dict[str, Any]) -> int:
+    """settings の 1 エントリ内の hook を正規化し、同一コマンドの重複を畳む。"""
+    changed = 0
+    kept: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for hook in entry.get("hooks", []):
+        command = hook.get("command", "")
+        canonical = canonical_hook_command(command)
+        if canonical is None:
+            kept.append(hook)
+            continue
+        if canonical in seen:
+            changed += 1
+            continue
+        seen.add(canonical)
+        if command != canonical:
+            hook["command"] = canonical
+            changed += 1
+        kept.append(hook)
+
+    entry["hooks"] = kept
+    return changed
+
+
+def migrate_hook_interpreters(settings_hooks: dict[str, Any]) -> int:
+    """全イベントの ai-orchestra hook を現行のインタプリタ表記へ書き換える（Issue #343）。
+
+    旧形式（リテラル python3）のまま残った既存プロジェクトを PATH 非依存の現行形式へ
+    追従させる。新旧が同一エントリに併存すると同じ hook が二重起動するため、正規化後に
+    重複するコマンドは 1 件へ畳む。対象は sync-orchestra hook とパッケージ hook のみで、
+    利用者自身が登録した hook には触れない。
+
+    Returns:
+        書き換え・重複除去を行った hook 数。
+    """
+    changed = 0
+    for entries in settings_hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict):
+                changed += _migrate_entry_hooks(entry)
+    return changed
 
 
 def parse_pkg_from_command(command: str) -> str | None:

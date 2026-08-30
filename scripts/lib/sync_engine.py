@@ -18,12 +18,12 @@ except ImportError:  # pragma: no cover
     yaml = None  # type: ignore[assignment]
 
 from lib.hook_utils import (
-    SYNC_HOOK_COMMAND,
     add_hook_to_settings,
     find_hook_in_settings,
     get_hook_command,
     is_orchestra_hook,
     is_sync_hook_command,
+    migrate_hook_interpreters,
     parse_hook_entry,
     parse_pkg_from_command,
     remove_hook_from_settings,
@@ -668,39 +668,6 @@ def collect_facet_build_targets(
     return targets
 
 
-def migrate_sync_hook_interpreter(settings_hooks: dict[str, Any]) -> int:
-    """SessionStart の sync-orchestra hook を現行のインタプリタ表記へ書き換える。
-
-    旧形式（リテラル python3）で登録済みの既存プロジェクトを、PATH 非依存の
-    現行形式へ追従させる（Issue #343）。同一エントリ内に新旧が併存した場合は
-    重複起動を避けるため 1 件に畳む。
-
-    Returns:
-        書き換え・重複除去を行った hook 数。
-    """
-    changed = 0
-    for entry in settings_hooks.get("SessionStart", []):
-        if "matcher" in entry:
-            continue
-        kept: list[dict[str, Any]] = []
-        seen_sync = False
-        for hook in entry.get("hooks", []):
-            command = hook.get("command", "")
-            if not is_sync_hook_command(command):
-                kept.append(hook)
-                continue
-            if seen_sync:
-                changed += 1
-                continue
-            seen_sync = True
-            if command != SYNC_HOOK_COMMAND:
-                hook["command"] = SYNC_HOOK_COMMAND
-                changed += 1
-            kept.append(hook)
-        entry["hooks"] = kept
-    return changed
-
-
 def sync_hooks(
     project_dir: Path,
     orchestra_path: Path,
@@ -727,7 +694,7 @@ def sync_hooks(
 
     settings_hooks = settings.get("hooks", {})
 
-    migrated = migrate_sync_hook_interpreter(settings_hooks)
+    migrated = migrate_hook_interpreters(settings_hooks)
 
     # (event, command, matcher) -> manifest 側で期待される timeout
     expected_hooks: dict[tuple[str, str, str | None], int] = {}
