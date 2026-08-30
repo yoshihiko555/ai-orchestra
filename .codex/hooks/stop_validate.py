@@ -355,9 +355,17 @@ def _reexec_under_target_interpreter() -> None:
 
     No-op (no behavior change) when the variable is unset, already the
     running interpreter, the target path is missing, or a re-exec already
-    happened once (guarded by the sentinel below, not by path comparison,
-    since version-manager shims can make the resolved path differ from
-    ``sys.executable`` even after a successful re-exec).
+    happened once (guarded by the sentinel below).
+
+    The "already the running interpreter" check compares the raw executable
+    paths (``target == sys.executable``), not ``os.path.realpath()`` of
+    each. A venv's ``bin/python`` is commonly a symlink to a base
+    interpreter; comparing resolved paths would make the venv and its base
+    interpreter look identical even though ``sys.prefix`` and site
+    configuration differ, silently skipping the intended re-exec into the
+    venv (Issue #345 follow-up). Comparing raw paths means any mismatch
+    (including a venv symlink case) triggers a re-exec; the sentinel above
+    still prevents infinite re-exec loops.
 
     LIMITATIONS: this is a self-referential trust bootstrap, not a hardening
     guarantee. The decision of whether to switch interpreter runs inside the
@@ -383,7 +391,7 @@ def _reexec_under_target_interpreter() -> None:
         return
     if not os.path.isfile(target):
         return
-    if os.path.realpath(target) == os.path.realpath(sys.executable):
+    if target == sys.executable:
         return
     os.environ["_AI_ORCHESTRA_HOOK_REEXECED"] = "1"
     try:

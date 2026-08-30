@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`codex-harness`: hook スクリプトが `AI_ORCHESTRA_PYTHON` で起動インタプリタを指定できるようになった（Issue #345）**: `.codex/hooks.json` は各 hook を `python3 <path>` というリテラルコマンドで起動するため、`PATH` 上の `python3` が想定と異なるインタプリタに解決される環境（バージョンマネージャ未適用のログインシェル等）では hook が黙って動作しない懸念があった。`AI_ORCHESTRA_PYTHON` を設定すると hook はそのインタプリタへ自動的に切り替わる（未設定時は従来どおり動作は変わらない）。`codex_run.py` / `codex_review.py` は `codex exec` 実行時に自身のインタプリタを `AI_ORCHESTRA_PYTHON` として自動的に子環境へ渡すため、通常利用では追加設定不要。
+- **`codex-harness`: hook スクリプトが `AI_ORCHESTRA_PYTHON` で起動インタプリタを指定できるようになった（Issue #345）**: `.codex/hooks.json` は各 hook を `python3 <path>` というリテラルコマンドで起動するため、`PATH` 上の `python3` が想定と異なるインタプリタに解決される環境（バージョンマネージャ未適用のログインシェル等）では hook が黙って動作しない懸念があった。`AI_ORCHESTRA_PYTHON` を設定すると hook はそのインタプリタへ自動的に切り替わる（未設定時は従来どおり動作は変わらない）。`codex_run.py` / `codex_review.py` は `codex exec` 実行時に自身のインタプリタを `AI_ORCHESTRA_PYTHON` として自動的に子環境へ渡すため、この 2 スクリプト経由の利用では追加設定不要（対話 TUI や直接の `codex exec` 呼び出しでは自動注入されないため、必要な場合は自分で export する）。実行パス同士（symlink の realpath ではなく）を比較して切替判定するため、venv の `bin/python` のようにベース interpreter への symlink になっている場合でも意図通り切り替わる。
 
 ## [0.3.3] - 2026-08-20
 

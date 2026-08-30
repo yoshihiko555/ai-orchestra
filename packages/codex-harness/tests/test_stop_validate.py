@@ -329,3 +329,30 @@ class TestReexecUnderTargetInterpreter:
 
         assert calls == [(str(target), [str(target), *stop_validate.sys.argv])]
         assert stop_validate.os.environ["_AI_ORCHESTRA_HOOK_REEXECED"] == "1"
+
+    def test_execs_target_when_venv_symlink_shares_realpath_with_interpreter(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """venv の bin/python symlink（realpath は sys.executable と同一）でも re-exec する。
+
+        venv の interpreter は多くの環境でベース interpreter への symlink であり、
+        os.path.realpath() で比較すると「同じ interpreter」と誤判定されてしまう
+        （symlink 越しでも sys.prefix / site 設定はベース interpreter と異なる）。
+        raw path 比較（Issue #345 follow-up）に変更したことで、このケースでも
+        re-exec が発生することを確認する。
+        """
+        symlink = tmp_path / "venv-python3"
+        symlink.symlink_to(stop_validate.sys.executable)
+        # このテストが検証したいシナリオの前提: realpath は sys.executable と一致する
+        assert stop_validate.os.path.realpath(str(symlink)) == stop_validate.os.path.realpath(
+            stop_validate.sys.executable
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(symlink))
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(stop_validate.os, "execv", lambda *a: calls.append(a))
+
+        stop_validate._reexec_under_target_interpreter()
+
+        assert calls == [(str(symlink), [str(symlink), *stop_validate.sys.argv])]
+        assert stop_validate.os.environ["_AI_ORCHESTRA_HOOK_REEXECED"] == "1"
