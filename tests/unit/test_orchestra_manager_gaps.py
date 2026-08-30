@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -159,7 +160,7 @@ class TestEnableRequiresInstalled:
         settings_path = claude_dir / "settings.local.json"
         assert not settings_path.exists()
 
-    def test_enable_installed_package_registers_hook(self, tmp_path: Path) -> None:
+    def test_enable_installed_package_registers_hook(self, tmp_path: Path, monkeypatch) -> None:
         orchestra_dir = tmp_path / "orchestra"
         (orchestra_dir / "packages").mkdir(parents=True)
         _write_manifest(orchestra_dir / "packages", "mypkg")
@@ -171,11 +172,76 @@ class TestEnableRequiresInstalled:
             json.dumps({"installed_packages": ["mypkg"], "file_hashes": {}}), encoding="utf-8"
         )
 
+        # enable は setup_env_var 経由で ~/.claude/settings.json に書くため HOME を隔離する
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
         manager = OrchestraManager(orchestra_dir)
         manager.enable("mypkg", str(project_dir), dry_run=False)
 
         settings_after = json.loads((claude_dir / "settings.local.json").read_text())
         assert settings_after["hooks"]["SessionStart"], "フックが登録されているはず"
+
+
+class TestEnableSetsInterpreterEnv:
+    """EV-37（Issue #343）: `enable` も env.AI_ORCHESTRA_PYTHON を補完する。
+
+    `install` を経ずに `enable` だけを実行した環境で、hook のインタプリタ固定が
+    抜け落ちないことを担保する。
+    """
+
+    @staticmethod
+    def _prepare(tmp_path: Path) -> tuple[Path, Path]:
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        _write_manifest(orchestra_dir / "packages", "mypkg")
+
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+        (claude_dir / "orchestra.json").write_text(
+            json.dumps({"installed_packages": ["mypkg"], "file_hashes": {}}), encoding="utf-8"
+        )
+        return orchestra_dir, project_dir
+
+    def test_enable_writes_interpreter_when_unset(self, tmp_path: Path, monkeypatch) -> None:
+        orchestra_dir, project_dir = self._prepare(tmp_path)
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+
+        OrchestraManager(orchestra_dir).enable("mypkg", str(project_dir), dry_run=False)
+
+        global_settings = json.loads((home / ".claude" / "settings.json").read_text())
+        assert global_settings["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
+
+    def test_enable_preserves_user_specified_interpreter(self, tmp_path: Path, monkeypatch) -> None:
+        orchestra_dir, project_dir = self._prepare(tmp_path)
+        home = tmp_path / "home"
+        global_settings_path = home / ".claude" / "settings.json"
+        global_settings_path.parent.mkdir(parents=True)
+        custom = tmp_path / "custom" / "bin" / "python3"
+        custom.parent.mkdir(parents=True)
+        custom.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        custom.chmod(0o755)
+        global_settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": str(custom)}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("HOME", str(home))
+
+        OrchestraManager(orchestra_dir).enable("mypkg", str(project_dir), dry_run=False)
+
+        saved = json.loads(global_settings_path.read_text())
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == str(custom)
+
+    def test_enable_dry_run_does_not_write_global_settings(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        orchestra_dir, project_dir = self._prepare(tmp_path)
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+
+        OrchestraManager(orchestra_dir).enable("mypkg", str(project_dir), dry_run=True)
+
+        assert not (home / ".claude" / "settings.json").exists()
 
 
 class TestRunInitialSyncPreservesUserModifiedConfig:

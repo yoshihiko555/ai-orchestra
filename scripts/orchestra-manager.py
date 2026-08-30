@@ -870,7 +870,12 @@ class OrchestraManager(ContextMixin, HooksMixin):
             print(f"\n✓ プロジェクトを初期化しました: {project_dir}")
 
     def enable(self, package_name: str, project: str | None, dry_run: bool = False) -> None:
-        """パッケージを有効化（settings.local.json にフック登録を復元）"""
+        """パッケージを有効化（settings.local.json にフック登録を復元）
+
+        hook を登録し直す経路なので、`install` と同じく env.AI_ORCHESTRA_PYTHON も
+        補完する（Issue #343）。`install` を経ずに `enable` だけを実行した環境で
+        インタプリタ固定が抜け落ちるのを防ぐ。
+        """
         packages = self.load_packages()
         if package_name not in packages:
             print(f"エラー: パッケージ '{package_name}' が見つかりません", file=sys.stderr)
@@ -887,6 +892,8 @@ class OrchestraManager(ContextMixin, HooksMixin):
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        self.setup_env_var(dry_run)
 
         settings = self.load_settings(project_dir)
         self._apply_hooks(pkg, settings, "add", dry_run)

@@ -84,13 +84,19 @@ Claude Code (Orchestrator)
 `$AI_ORCHESTRA_DIR` は「配布元リポジトリへのポインタ」であり、hook は起動のたびにこのパスを直接実行する。  
 通常は `~/.claude/settings.json` の `env.AI_ORCHESTRA_DIR` がメインディレクトリ（安定版 main）を指す。
 
-hook の起動に使う Python は `env.AI_ORCHESTRA_PYTHON` で決まる（`orchex init` / `setup` が現在の
-インタプリタを自動設定する）。hook コマンドは `"${AI_ORCHESTRA_PYTHON:-python3}" "$AI_ORCHESTRA_DIR/..."`
-の形で登録されるため、hook 起動シェルの `PATH` 解決に依存せず、依存モジュールを持つインタプリタで
-確実に起動する。別の Python を使いたい場合はこの環境変数を書き換える（削除すると従来どおり `PATH` の
-`python3` にフォールバックする）。設定値が実行可能なインタプリタとして解決できなくなった場合
-（venv の削除、バージョン付きパスの消失など）は、`orchex init` / `setup` の再実行で現在の
-インタプリタへ自動修復される。
+hook の起動に使う Python は `env.AI_ORCHESTRA_PYTHON` で決まる（`orchex init` / `setup` / `install` /
+`enable` が現在のインタプリタを自動設定する）。hook コマンドは
+`"${AI_ORCHESTRA_PYTHON:-python3}" "$AI_ORCHESTRA_DIR/..."` の形で登録されるため、hook 起動シェルの
+`PATH` 解決に依存せず、依存モジュールを持つインタプリタで確実に起動する。別の Python を使いたい場合は
+この環境変数を書き換える（削除すると従来どおり `PATH` の `python3` にフォールバックする）。設定値が
+実行可能なインタプリタとして解決できなくなった場合（venv の削除、バージョン付きパスの消失など）は、
+`orchex init` / `setup` の再実行で現在のインタプリタへ自動修復される。
+
+> **既存導入プロジェクトへの適用**: hook コマンドの表記は SessionStart 同期で自動的に現行形式へ
+> 書き換わるが、`env.AI_ORCHESTRA_PYTHON` は SessionStart 同期では設定されない。SessionStart hook 自身が
+> `PATH` の `python3` で起動されうるため、そこで観測したインタプリタを固定すると誤った値を恒久化して
+> しまうためである。既存導入で修正を効かせるには `orchex init --project .` を 1 度実行する
+> （実行するまでは従来どおり `PATH` の `python3` で解決される）。
 
 #### hook 起動の確認とロールバック
 
