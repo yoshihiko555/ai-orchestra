@@ -96,16 +96,22 @@ hook の起動に使う Python は `env.AI_ORCHESTRA_PYTHON` で決まる（`orc
 
 インタプリタ表記を変更したあと、または hook が動いていない疑いがあるときは次の順で確認する。
 
-1. `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` が実行可能か確かめる（`"$AI_ORCHESTRA_PYTHON" -V`）
+1. `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` の値を控え、そのパスを直接実行して起動するか確かめる（`<控えた値> -V`。この変数は Claude Code の設定側にあり、対話シェルには export されていない）
 2. Claude Code を新規セッションで起動し、SessionStart の `sync-orchestra` hook が実行されるか確認する
 3. 環境変数を一時的に外した状態でも起動するか（`PATH` の `python3` へのフォールバック）を確認する
 
 hook が一切起動しなくなった場合、SessionStart 同期による自己修復も同時に止まるため、
 `.claude/settings.local.json` の hook コマンドを手動で旧表記へ戻して復旧する。
 
+`settings.local.json` は JSON なので、hook コマンド中の引用符は `\"` の形で保存されている。
+置換パターンもそのエスケープ形に合わせる（合わせないと 1 件も一致せず、sed は黙って成功する）。
+
 ```bash
 # hook コマンドのインタプリタ参照を PATH の python3 直参照へ戻す
-sed -i '' 's/"${AI_ORCHESTRA_PYTHON:-python3}"/python3/g' .claude/settings.local.json
+sed -i '' 's/\\"${AI_ORCHESTRA_PYTHON:-python3}\\" /python3 /g' .claude/settings.local.json
+
+# JSON として壊れていないか確認する
+python3 -m json.tool .claude/settings.local.json > /dev/null
 ```
 
 戻したあとに `orchex init --project .` を実行すると、`env.AI_ORCHESTRA_PYTHON` が再設定され、
