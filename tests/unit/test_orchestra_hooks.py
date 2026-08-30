@@ -396,6 +396,7 @@ class TestSetupEnvVar:
         saved = json.loads(settings_path.read_text(encoding="utf-8"))
         assert saved["env"]["EXISTING"] == "1"
         assert saved["env"]["AI_ORCHESTRA_DIR"] == str(tmp_path)
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
 
     def test_skips_when_already_configured(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -407,7 +408,14 @@ class TestSetupEnvVar:
         settings_path = tmp_path / ".claude" / "settings.json"
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(
-            json.dumps({"env": {"AI_ORCHESTRA_DIR": str(tmp_path)}}),
+            json.dumps(
+                {
+                    "env": {
+                        "AI_ORCHESTRA_DIR": str(tmp_path),
+                        "AI_ORCHESTRA_PYTHON": sys.executable,
+                    }
+                }
+            ),
             encoding="utf-8",
         )
         before = settings_path.read_text(encoding="utf-8")
@@ -417,6 +425,49 @@ class TestSetupEnvVar:
         captured = capsys.readouterr()
         assert "設定済み" in captured.out
         assert settings_path.read_text(encoding="utf-8") == before
+
+    def test_writes_python_interpreter_when_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AI_ORCHESTRA_DIR 設定済みでも AI_ORCHESTRA_PYTHON は補完する（Issue #343）。
+
+        既存導入プロジェクトの再 init で hook のインタプリタ固定が適用されるようにする。
+        """
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_DIR": str(tmp_path)}}),
+            encoding="utf-8",
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["env"]["AI_ORCHESTRA_DIR"] == str(tmp_path)
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
+
+    def test_preserves_user_specified_python_interpreter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """利用者が明示した AI_ORCHESTRA_PYTHON は上書きしない（逃げ道として維持）。"""
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": "/opt/custom/bin/python3"}}),
+            encoding="utf-8",
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == "/opt/custom/bin/python3"
+        assert saved["env"]["AI_ORCHESTRA_DIR"] == str(tmp_path)
 
     def test_keeps_main_path_when_running_from_linked_worktree(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -556,6 +607,48 @@ class TestSyncHookOperations:
         }
 
         assert manager.is_sync_hook_registered(settings) is True
+
+    def test_is_sync_hook_registered_detects_legacy_interpreter_form(self, tmp_path: Path) -> None:
+        """旧表記（リテラル python3）の登録も検出する（重複登録の防止、Issue #343）。"""
+        manager = _make_manager(tmp_path)
+        settings = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"',
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+
+        assert manager.is_sync_hook_registered(settings) is True
+
+    def test_remove_sync_hook_removes_legacy_interpreter_form(self, tmp_path: Path) -> None:
+        """旧表記の sync hook も削除対象にする（取り残しの防止、Issue #343）。"""
+        manager = _make_manager(tmp_path)
+        settings = {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"',
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+
+        manager.remove_sync_hook(settings)
+
+        assert settings["hooks"]["SessionStart"] == []
 
     def test_register_sync_hook_creates_entry(self, tmp_path: Path) -> None:
         """sync hook を新規登録する。"""

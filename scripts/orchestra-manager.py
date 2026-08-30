@@ -52,6 +52,7 @@ if _SCRIPTS_DIR not in sys.path:
 
 import lib.gitignore_sync as gitignore_sync  # noqa: E402
 from lib.facet_builder import FacetBuilder  # noqa: E402
+from lib.hook_utils import SYNC_HOOK_COMMAND as _SYNC_HOOK_COMMAND  # noqa: E402
 from lib.orchestra_context import ContextMixin  # noqa: E402
 from lib.orchestra_hooks import HooksMixin  # noqa: E402
 from lib.orchestra_models import Package  # noqa: E402
@@ -79,7 +80,7 @@ def _fmt_inner_proxy(inner_port: object) -> str:
 class OrchestraManager(ContextMixin, HooksMixin):
     """パッケージ管理マネージャー"""
 
-    SYNC_HOOK_COMMAND = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
+    SYNC_HOOK_COMMAND = _SYNC_HOOK_COMMAND
     SYNC_HOOK_TIMEOUT = 15
     CONTEXT_SHARED_REL = "templates/context/shared.md"
     COLOR_RESET = "\033[0m"

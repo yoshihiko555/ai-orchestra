@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from lib.hook_utils import (
-    add_hook_to_settings as _add_hook,
-)
-from lib.hook_utils import (
+    HOOK_PYTHON_ENV_VAR,
     find_hook_in_settings,
     get_hook_command,
+    is_sync_hook_command,
+)
+from lib.hook_utils import (
+    add_hook_to_settings as _add_hook,
 )
 from lib.hook_utils import (
     remove_hook_from_settings as _remove_hook,
@@ -184,8 +186,49 @@ class HooksMixin:
         command = get_hook_command(pkg_name, filename)
         _remove_hook(settings["hooks"], event, command, matcher)
 
+    def _resolve_env_updates(self, env: dict[str, Any]) -> dict[str, str] | None:
+        """グローバル env に書き込むべき差分を返す。
+
+        linked worktree からの実行では既存の main パスを保持するため None を返す。
+        既に設定済みのキーは差分に含めない（AI_ORCHESTRA_PYTHON は利用者が明示した
+        インタプリタを上書きしない = 逃げ道として機能させるため）。
+        """
+        orchestra_dir_str = str(self.orchestra_dir)
+        existing_orchestra_dir = env.get("AI_ORCHESTRA_DIR")
+
+        if (
+            isinstance(existing_orchestra_dir, str)
+            and existing_orchestra_dir != orchestra_dir_str
+            and _is_linked_worktree_of(self.orchestra_dir, Path(existing_orchestra_dir))
+        ):
+            print(
+                "警告: linked worktree からの実行を検出したため、"
+                f"グローバル AI_ORCHESTRA_DIR={existing_orchestra_dir} を保持します "
+                f"(実行元: {orchestra_dir_str})",
+                file=sys.stderr,
+            )
+            return None
+
+        updates: dict[str, str] = {}
+        if existing_orchestra_dir == orchestra_dir_str:
+            print(f"環境変数 AI_ORCHESTRA_DIR は設定済み: {orchestra_dir_str}")
+        else:
+            updates["AI_ORCHESTRA_DIR"] = orchestra_dir_str
+
+        existing_python = env.get(HOOK_PYTHON_ENV_VAR)
+        if isinstance(existing_python, str) and existing_python:
+            print(f"環境変数 {HOOK_PYTHON_ENV_VAR} は設定済み: {existing_python}")
+        else:
+            updates[HOOK_PYTHON_ENV_VAR] = sys.executable
+
+        return updates
+
     def setup_env_var(self, dry_run: bool = False) -> None:
-        """~/.claude/settings.json の env.AI_ORCHESTRA_DIR を設定"""
+        """~/.claude/settings.json の env.AI_ORCHESTRA_DIR / AI_ORCHESTRA_PYTHON を設定
+
+        AI_ORCHESTRA_PYTHON は hook コマンドが使うインタプリタ（Issue #343）。
+        未設定のときだけ現在の sys.executable を書き込み、PATH 解決に依存しないようにする。
+        """
         import json
 
         global_settings_path = Path.home() / ".claude" / "settings.json"
@@ -196,37 +239,24 @@ class HooksMixin:
                 global_settings = json.load(f)
 
         env = global_settings.get("env", {})
-        orchestra_dir_str = str(self.orchestra_dir)
-        existing_orchestra_dir = env.get("AI_ORCHESTRA_DIR")
-
-        if existing_orchestra_dir == orchestra_dir_str:
-            print(f"環境変数 AI_ORCHESTRA_DIR は設定済み: {orchestra_dir_str}")
-            return
-
-        if isinstance(existing_orchestra_dir, str) and _is_linked_worktree_of(
-            self.orchestra_dir, Path(existing_orchestra_dir)
-        ):
-            print(
-                "警告: linked worktree からの実行を検出したため、"
-                f"グローバル AI_ORCHESTRA_DIR={existing_orchestra_dir} を保持します "
-                f"(実行元: {orchestra_dir_str})",
-                file=sys.stderr,
-            )
+        updates = self._resolve_env_updates(env)
+        if not updates:
             return
 
         if dry_run:
-            print(f"[DRY-RUN] 環境変数設定: AI_ORCHESTRA_DIR={orchestra_dir_str}")
+            for key, value in updates.items():
+                print(f"[DRY-RUN] 環境変数設定: {key}={value}")
             return
 
-        env["AI_ORCHESTRA_DIR"] = orchestra_dir_str
-        global_settings["env"] = env
+        global_settings["env"] = {**env, **updates}
 
         global_settings_path.parent.mkdir(parents=True, exist_ok=True)
         with open(global_settings_path, "w", encoding="utf-8") as f:
             json.dump(global_settings, f, indent=2, ensure_ascii=False)
             f.write("\n")
 
-        print(f"環境変数設定: AI_ORCHESTRA_DIR={orchestra_dir_str}")
+        for key, value in updates.items():
+            print(f"環境変数設定: {key}={value}")
 
     def is_sync_hook_registered(self, settings: dict[str, Any]) -> bool:
         """sync-orchestra の SessionStart hook が登録されているかチェック"""
@@ -235,7 +265,7 @@ class HooksMixin:
             if "matcher" in entry:
                 continue
             for hook in entry.get("hooks", []):
-                if hook.get("command") == self.SYNC_HOOK_COMMAND:
+                if is_sync_hook_command(hook.get("command", "")):
                     return True
         return False
 
@@ -283,7 +313,7 @@ class HooksMixin:
             if "matcher" in entry:
                 continue
             entry["hooks"] = [
-                h for h in entry.get("hooks", []) if h.get("command") != self.SYNC_HOOK_COMMAND
+                h for h in entry.get("hooks", []) if not is_sync_hook_command(h.get("command", ""))
             ]
 
         settings["hooks"]["SessionStart"] = [

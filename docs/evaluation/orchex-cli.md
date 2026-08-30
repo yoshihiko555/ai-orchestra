@@ -84,6 +84,7 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-34（正常 / must）: `init` は CLI サブコマンドとして露出し `orchex init --help` が引ける — 根拠: 実装挙動、PR #302
 - [ ] EV-35（正常 / must）: COMMAND_REGISTRY の keys と subparsers.choices は常に一致し、トップレベル help のグループ化一覧は registry から導出される — 根拠: 実装挙動、ドリフト防止テスト
 - [ ] EV-36（正常 / must）: 全トップレベルコマンドは description と 1 件以上の examples を help に表示する — 根拠: 実装挙動
+- [ ] EV-37（正常 / must）: hook 起動のインタプリタ解決 — `settings.local.json` に登録される hook コマンド（パッケージ hook / sync-orchestra hook の両方）は `"${AI_ORCHESTRA_PYTHON:-python3}"` 経由で Python を起動し、`init`/`setup` は `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` が未設定の場合にのみ現在の `sys.executable` を書き込む（利用者が明示した値は上書きしない）。旧形式（リテラル `python3`）で登録済みのプロジェクトは SessionStart 同期（`sync_hooks`）で現行形式へ書き換えられ、新旧の重複登録・取り残しを残さない — 根拠: Issue #343、実装挙動（`hook_utils.HOOK_INTERPRETER` / `is_sync_hook_command`、`sync_engine.migrate_sync_hook_interpreter`、`orchestra_hooks.setup_env_var`）。**既知の制限**: 旧形式のみが登録された状態では、SessionStart 同期が走るまで `status` が当該パッケージを partial と表示する。`env.AI_ORCHESTRA_PYTHON` が実在しないパスに古くなった場合は hook が起動できないため、その場合は当該環境変数を修正または削除する（削除時は `PATH` の `python3` にフォールバックする）
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

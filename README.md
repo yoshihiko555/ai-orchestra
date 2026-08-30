@@ -84,6 +84,12 @@ Claude Code (Orchestrator)
 `$AI_ORCHESTRA_DIR` は「配布元リポジトリへのポインタ」であり、hook は起動のたびにこのパスを直接実行する。  
 通常は `~/.claude/settings.json` の `env.AI_ORCHESTRA_DIR` がメインディレクトリ（安定版 main）を指す。
 
+hook の起動に使う Python は `env.AI_ORCHESTRA_PYTHON` で決まる（`orchex init` / `setup` が現在の
+インタプリタを自動設定する）。hook コマンドは `"${AI_ORCHESTRA_PYTHON:-python3}" "$AI_ORCHESTRA_DIR/..."`
+の形で登録されるため、hook 起動シェルの `PATH` 解決に依存せず、依存モジュールを持つインタプリタで
+確実に起動する。別の Python を使いたい場合や、設定済みのパスが古くなった場合は、この環境変数を
+書き換える（削除すると従来どおり `PATH` の `python3` にフォールバックする）。
+
 ### 開発・検証フロー（メンテナ向け）
 
 feature 開発は `git worktree add` で別ディレクトリに切り出す。メインディレクトリは **常に main 固定**で、ここではブランチを切り替えない。
@@ -163,7 +169,7 @@ orchex install tmux-monitor --project /path/to/project
 
 orchex が内部で以下を実行:
 
-1. `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` を設定
+1. `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` と `env.AI_ORCHESTRA_PYTHON`（hook 起動用インタプリタ）を設定
 2. `.claude/orchestra.json` にパッケージ情報を記録
 3. `.claude/settings.local.json` に hooks を登録（`$AI_ORCHESTRA_DIR/packages/...` 参照）
 4. `sync-orchestra.py` の SessionStart hook を登録（初回のみ）
@@ -173,7 +179,7 @@ orchex が内部で以下を実行:
 
 以下をすべて満たしたらセットアップ完了です:
 
-- `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` が設定されている
+- `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` と `env.AI_ORCHESTRA_PYTHON` が設定されている
 - `.claude/settings.local.json` に AI Orchestra の hooks が登録されている
 - `.claude/orchestra.json` が存在し、インストール済みパッケージが記録されている
 - Claude Code 次回起動時に SessionStart hook が走り `.claude/` 配下へ差分同期される

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import pytest
 
 from tests.module_loader import load_module
@@ -18,8 +22,26 @@ class TestIsOrchestraHook:
             ('python3 "$AI_ORCHESTRA_DIR/packages/core/hooks/check-plan-gate.py"', True),
             ('python3 "$AI_ORCHESTRA_DIR/packages/core/scripts/check-plan-gate.py"', False),
             ("python3 /tmp/local-hook.py", False),
+            (
+                '"${AI_ORCHESTRA_PYTHON:-python3}" '
+                '"$AI_ORCHESTRA_DIR/packages/core/hooks/check-plan-gate.py"',
+                True,
+            ),
+            (
+                '"${AI_ORCHESTRA_PYTHON:-python3}" '
+                '"$AI_ORCHESTRA_DIR/packages/core/scripts/check-plan-gate.py"',
+                False,
+            ),
+            ('/usr/bin/python3 "$AI_ORCHESTRA_DIR/packages/core/hooks/check-plan-gate.py"', False),
         ],
-        ids=["valid_hook", "non_hook_path", "plain_python_path"],
+        ids=[
+            "legacy_valid_hook",
+            "legacy_non_hook_path",
+            "plain_python_path",
+            "current_valid_hook",
+            "current_non_hook_path",
+            "unknown_interpreter",
+        ],
     )
     def test_detects_orchestra_hook_pattern(self, command: str, expected: bool) -> None:
         """AI Orchestra の hook パスかどうかを判定する。"""
@@ -30,8 +52,13 @@ class TestParsePkgFromCommand:
     """parse_pkg_from_command のテスト。"""
 
     def test_returns_package_name_for_valid_hook_command(self) -> None:
-        """正常な hook コマンドから package 名を抽出する。"""
+        """正常な hook コマンドから package 名を抽出する（旧表記）。"""
         command = 'python3 "$AI_ORCHESTRA_DIR/packages/quality-gates/hooks/test-gate-checker.py"'
+        assert hook_utils.parse_pkg_from_command(command) == "quality-gates"
+
+    def test_returns_package_name_for_current_interpreter_command(self) -> None:
+        """現行表記（AI_ORCHESTRA_PYTHON 参照）でも package 名を抽出する。"""
+        command = hook_utils.get_hook_command("quality-gates", "test-gate-checker.py")
         assert hook_utils.parse_pkg_from_command(command) == "quality-gates"
 
     @pytest.mark.parametrize(
@@ -145,3 +172,80 @@ class TestAddHookToSettingsTimeout:
         # 他の属性（コマンド・type）は保たれる
         assert hook["command"] == "cmd"
         assert hook["type"] == "command"
+
+
+class TestHookInterpreterResolution:
+    """hook コマンドのインタプリタ解決のテスト（Issue #343）。"""
+
+    def test_generated_command_references_override_env_var(self) -> None:
+        """生成コマンドは AI_ORCHESTRA_PYTHON を参照し python3 にフォールバックする。"""
+        command = hook_utils.get_hook_command("core", "check-plan-gate.py")
+
+        assert command.startswith('"${AI_ORCHESTRA_PYTHON:-python3}" ')
+        assert command.endswith('"$AI_ORCHESTRA_DIR/packages/core/hooks/check-plan-gate.py"')
+
+    def test_sync_hook_command_uses_same_interpreter(self) -> None:
+        """sync-orchestra hook も同じインタプリタ参照を使う。"""
+        assert hook_utils.SYNC_HOOK_COMMAND.startswith(hook_utils.HOOK_INTERPRETER + " ")
+        assert hook_utils.is_sync_hook_command(hook_utils.SYNC_HOOK_COMMAND) is True
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ('python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"', True),
+            ('python3 "$AI_ORCHESTRA_DIR/packages/core/hooks/check-plan-gate.py"', False),
+            ("python3 /tmp/sync-orchestra.py", False),
+        ],
+        ids=["legacy_sync_hook", "package_hook", "unrelated_script"],
+    )
+    def test_is_sync_hook_command_accepts_legacy_form(self, command: str, expected: bool) -> None:
+        """旧表記の sync hook も検出できる（移行判定に必要）。"""
+        assert hook_utils.is_sync_hook_command(command) is expected
+
+    def _run_in_shell(self, command: str, env: dict[str, str]) -> str:
+        """生成された hook コマンド文字列を sh 経由で実行し stdout を返す。"""
+        # PATH は検証用シムだけに絞るため、シェル自体は絶対パスで起動する
+        result = subprocess.run(
+            ["/bin/sh", "-c", command],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    def test_shell_expansion_prefers_env_var_over_path(self, tmp_path) -> None:
+        """AI_ORCHESTRA_PYTHON が設定されていれば PATH の python3 より優先される。"""
+        script = tmp_path / "print-exe.py"
+        script.write_text("import sys; print(sys.executable)\n", encoding="utf-8")
+        # PATH 上の python3 は必ず失敗するシムに差し替える（誤って使えば検知できる）
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "python3"
+        shim.write_text("#!/bin/sh\nexit 42\n", encoding="utf-8")
+        shim.chmod(0o755)
+        command = f'"${{AI_ORCHESTRA_PYTHON:-python3}}" "{script}"'
+
+        stdout = self._run_in_shell(
+            command,
+            {**os.environ, "PATH": str(shim_dir), "AI_ORCHESTRA_PYTHON": sys.executable},
+        )
+
+        assert stdout == sys.executable
+
+    def test_shell_expansion_falls_back_to_path_python3(self, tmp_path) -> None:
+        """AI_ORCHESTRA_PYTHON 未設定時は従来どおり PATH の python3 を使う（後方互換）。"""
+        script = tmp_path / "print-exe.py"
+        script.write_text("import sys; print(sys.executable)\n", encoding="utf-8")
+        shim_dir = tmp_path / "bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "python3"
+        shim.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        shim.chmod(0o755)
+        command = f'"${{AI_ORCHESTRA_PYTHON:-python3}}" "{script}"'
+        env = {k: v for k, v in os.environ.items() if k != "AI_ORCHESTRA_PYTHON"}
+
+        stdout = self._run_in_shell(command, {**env, "PATH": str(shim_dir)})
+
+        assert stdout == sys.executable
