@@ -53,6 +53,7 @@ if _SCRIPTS_DIR not in sys.path:
 import lib.gitignore_sync as gitignore_sync  # noqa: E402
 from lib.facet_builder import FacetBuilder  # noqa: E402
 from lib.hook_utils import SYNC_HOOK_COMMAND as _SYNC_HOOK_COMMAND  # noqa: E402
+from lib.hook_utils import migrate_hook_interpreters  # noqa: E402
 from lib.orchestra_context import ContextMixin  # noqa: E402
 from lib.orchestra_hooks import HooksMixin  # noqa: E402
 from lib.orchestra_models import Package  # noqa: E402
@@ -860,6 +861,11 @@ class OrchestraManager(ContextMixin, HooksMixin):
             print("orchestra.json 初期化")
 
         settings = self.load_settings(project_dir)
+        # 旧インタプリタ表記を先に現行形式へ揃える（Issue #343）。SessionStart 同期にも
+        # 同じ移行はあるが、その sync hook 自身が壊れたインタプリタで起動されうる環境では
+        # 永久に走らない。init を PATH 非依存化の単独の入口として成立させる。
+        if not dry_run and isinstance(settings.get("hooks"), dict):
+            migrate_hook_interpreters(settings["hooks"])
         self.register_sync_hook(settings, dry_run)
         if not dry_run:
             self.save_settings(project_dir, settings)

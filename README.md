@@ -87,30 +87,43 @@ Claude Code (Orchestrator)
 hook の起動に使う Python は `env.AI_ORCHESTRA_PYTHON` で決まる（`orchex init` / `setup` / `install` /
 `enable` が現在のインタプリタを自動設定する）。hook コマンドは
 `"${AI_ORCHESTRA_PYTHON:-python3}" "$AI_ORCHESTRA_DIR/..."` の形で登録されるため、hook 起動シェルの
-`PATH` 解決に依存せず、依存モジュールを持つインタプリタで確実に起動する。別の Python を使いたい場合は
-この環境変数を書き換える（削除すると従来どおり `PATH` の `python3` にフォールバックする）。設定値が
-実行可能なインタプリタとして解決できなくなった場合（venv の削除、バージョン付きパスの消失など）は、
-`orchex init` / `setup` の再実行で現在のインタプリタへ自動修復される。
+`PATH` 解決に依存しない。別の Python を使いたい場合はこの環境変数を書き換える（削除すると従来どおり
+`PATH` の `python3` にフォールバックする）。
 
-> **既存導入プロジェクトへの適用**: hook コマンドの表記は SessionStart 同期で自動的に現行形式へ
-> 書き換わるが、`env.AI_ORCHESTRA_PYTHON` は SessionStart 同期では設定されない。SessionStart hook 自身が
-> `PATH` の `python3` で起動されうるため、そこで観測したインタプリタを固定すると誤った値を恒久化して
-> しまうためである。既存導入で修正を効かせるには `orchex init --project .` を 1 度実行する
-> （実行するまでは従来どおり `PATH` の `python3` で解決される）。
+設定値の妥当性は、`init` / `setup` / `install` / `enable` のたびに実際にそのインタプリタを起動して
+確認する（起動でき、かつ `requires-python` を満たすか）。起動できない値（venv の削除、消えた
+バージョン付きパス、`PATH` 解決はできるが古すぎる system python3 など）は、警告のうえ現在の
+インタプリタへ自動修復される。逆に、起動できる値は利用者の明示指定として尊重し上書きしない。
+
+> **既存導入プロジェクトへの適用**: `orchex init --project .` を 1 度実行すれば、hook コマンドの表記
+> 移行（旧 `python3` 直参照 → 現行表記）と `env.AI_ORCHESTRA_PYTHON` の設定が同時に行われる。
+> 表記移行は SessionStart 同期にも載っているが、そこには依存しない。移行前の hook は `PATH` の
+> `python3` で起動されるため、その `python3` が壊れている環境では sync hook 自身が起動できず、
+> 同期経由の移行が永久に走らないためである。`init` を単独の入口として成立させている。
+>
+> なお SessionStart 同期は `env.AI_ORCHESTRA_PYTHON` を書かない。sync hook 自身が `PATH` の
+> `python3` で起動されうるため、そこで観測したインタプリタを固定すると誤った値を恒久化して
+> しまうためである。
 
 #### hook 起動の確認とロールバック
 
-インタプリタ表記を変更したあと、または hook が動いていない疑いがあるときは次の順で確認する。
+hook が動いていない疑いがあるときは次の順で確認する。
 
 1. `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` の値を控え、そのパスを直接実行して起動するか確かめる（`<控えた値> -V`。この変数は Claude Code の設定側にあり、対話シェルには export されていない）
 2. Claude Code を新規セッションで起動し、SessionStart の `sync-orchestra` hook が実行されるか確認する
-3. 環境変数を一時的に外した状態でも起動するか（`PATH` の `python3` へのフォールバック）を確認する
+3. `PATH` の `python3` へのフォールバックを試す場合は、`~/.claude/settings.json` から `env.AI_ORCHESTRA_PYTHON` のキーごと削除して新規セッションを開く（シェル側での `unset` では変わらない）
 
-hook が一切起動しなくなった場合、SessionStart 同期による自己修復も同時に止まるため、
-`.claude/settings.local.json` の hook コマンドを手動で旧表記へ戻して復旧する。
+**ロールバックの正規手順**は `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` を削除するか、
+正しいインタプリタのパスへ書き換えることである。hook コマンドは `"${AI_ORCHESTRA_PYTHON:-python3}"`
+形式なので、キーを削除するだけで `PATH` の `python3` 起動に戻せる。`settings.local.json` を触る
+必要はなく、同期で巻き戻されることもない（ただし削除しただけだと、次に `init` / `setup` /
+`install` / `enable` を実行したときに未設定として再度自動設定される。`PATH` 解決を恒久的に
+選ぶなら、キーを消さず値を `python3` と明示しておく）。
 
-`settings.local.json` は JSON なので、hook コマンド中の引用符は `\"` の形で保存されている。
-置換パターンもそのエスケープ形に合わせる（合わせないと 1 件も一致せず、sed は黙って成功する）。
+`${VAR:-default}` の展開自体が効かない環境に当たった場合に限り、次の応急処置で hook コマンドを
+旧表記へ戻せる。`settings.local.json` は JSON なので、hook コマンド中の引用符は `\"` の形で保存
+されている。置換パターンもそのエスケープ形に合わせる（合わせないと 1 件も一致せず、sed は黙って
+成功する）。
 
 ```bash
 # hook コマンドのインタプリタ参照を PATH の python3 直参照へ戻す
@@ -120,8 +133,9 @@ sed -i '' 's/\\"${AI_ORCHESTRA_PYTHON:-python3}\\" /python3 /g' .claude/settings
 python3 -m json.tool .claude/settings.local.json > /dev/null
 ```
 
-戻したあとに `orchex init --project .` を実行すると、`env.AI_ORCHESTRA_PYTHON` が再設定され、
-次の SessionStart 同期で hook コマンドが現行表記へ戻る。
+ただしこれは恒久的なロールバックではない。旧表記へ戻すと sync hook が動くようになり、次の
+SessionStart 同期（および `init` / `install` / `enable`）が表記を現行形式へ書き戻すため、状態が
+セッションごとに揺れる。応急処置のあとは必ず上記の `env.AI_ORCHESTRA_PYTHON` 側で決着させること。
 
 ### 開発・検証フロー（メンテナ向け）
 

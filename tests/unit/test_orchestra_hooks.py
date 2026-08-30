@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.module_loader import load_module
+from tests.module_loader import REPO_ROOT, load_module
 
 manager_mod = load_module("orchestra_manager", "scripts/orchestra-manager.py")
 OrchestraManager = manager_mod.OrchestraManager
@@ -555,7 +555,7 @@ class TestSetupEnvVar:
         saved = json.loads(settings_path.read_text(encoding="utf-8"))
         captured = capsys.readouterr()
         assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
-        assert "解決できません" in captured.err
+        assert "hook を起動できません" in captured.err
 
     def test_repairs_non_executable_python_interpreter(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -607,6 +607,47 @@ class TestSetupEnvVar:
         saved = json.loads(settings_path.read_text(encoding="utf-8"))
         assert saved["env"]["AI_ORCHESTRA_PYTHON"] == "python3.99"
 
+    def test_repairs_python_interpreter_that_fails_version_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """起動できても requires-python を満たさないインタプリタは修復する（Issue #343）。
+
+        本 Issue の実失敗は「PATH で解決はできるが hook を動かせない」インタプリタ
+        （バージョンマネージャ未適用のログインシェルが拾う system python3 等）。
+        PATH 解決だけを見る判定ではこのクラスを取りこぼす。
+        """
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        outdated = tmp_path / "outdated-python3"
+        outdated.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        outdated.chmod(0o755)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": str(outdated)}}), encoding="utf-8"
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        captured = capsys.readouterr()
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
+        assert "hook を起動できません" in captured.err
+
+    def test_min_hook_python_version_matches_requires_python(self) -> None:
+        """プローブの下限は pyproject.toml の requires-python と一致させる。
+
+        値を二重管理しているため、片方だけ上がったときにドリフトを検出する。
+        """
+        import tomllib
+
+        with open(REPO_ROOT / "pyproject.toml", "rb") as f:
+            requires_python = tomllib.load(f)["project"]["requires-python"]
+
+        expected = ".".join(str(part) for part in hooks_mod.MIN_HOOK_PYTHON_VERSION)
+        assert requires_python == f">={expected}"
+
     def test_keeps_main_path_when_running_from_linked_worktree(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -630,14 +671,48 @@ class TestSetupEnvVar:
             json.dumps({"env": {"AI_ORCHESTRA_DIR": str(main_dir)}}),
             encoding="utf-8",
         )
-        before = settings_path.read_text(encoding="utf-8")
 
         manager.setup_env_var()
 
         captured = capsys.readouterr()
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
         assert "linked worktree" in captured.err
         assert str(main_dir) in captured.err
-        assert settings_path.read_text(encoding="utf-8") == before
+        assert saved["env"]["AI_ORCHESTRA_DIR"] == str(main_dir)
+
+    def test_sets_python_interpreter_even_from_linked_worktree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """worktree 実行でも AI_ORCHESTRA_PYTHON は補完する（Issue #343）。
+
+        AI_ORCHESTRA_DIR の保持と hook 起動用インタプリタの固定は独立した関心事であり、
+        worktree 前提の開発フローで修正が一切届かなくなるのを防ぐ。
+        """
+        main_dir = tmp_path / "main"
+        worktree_dir = tmp_path / "feature"
+        home_dir = tmp_path / "home"
+        main_dir.mkdir()
+        manager = _make_manager(worktree_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(
+            hooks_mod,
+            "_is_linked_worktree_of",
+            lambda candidate, existing: (candidate, existing) == (worktree_dir, main_dir),
+            raising=False,
+        )
+
+        settings_path = home_dir / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_DIR": str(main_dir)}}),
+            encoding="utf-8",
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["env"]["AI_ORCHESTRA_DIR"] == str(main_dir)
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
 
     def test_replaces_existing_path_when_current_dir_is_not_its_worktree(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -661,6 +661,32 @@ class TestSyncHooks:
         hooks = settings["hooks"]["SessionStart"][0]["hooks"]
         assert [h["command"] for h in hooks] == [hook_utils.SYNC_HOOK_COMMAND]
 
+    def test_sync_does_not_write_global_interpreter_env(self, tmp_path, monkeypatch):
+        """EV-37（Issue #343）: SessionStart 同期は env.AI_ORCHESTRA_PYTHON を書かない。
+
+        sync hook 自身が `PATH` の `python3` で起動されうるため、そこで観測した
+        インタプリタを固定すると、本 Issue が想定する劣化したインタプリタを恒久化して
+        しまう。表記の移行だけを行い、インタプリタ値の決定は init/setup 側に残す。
+        """
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        self._write_manifest(orchestra_path, "core", {})
+        legacy_command = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
+        self._write_settings(
+            project_dir,
+            {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": legacy_command, "timeout": 15}]}
+                ]
+            },
+        )
+
+        sync_engine.sync_hooks(project_dir, orchestra_path, ["core"])
+
+        assert not (home / ".claude" / "settings.json").exists()
+
 
 class TestSyncPackagesAgentsHashGuard:
     """sync_packages() の agents ハッシュガードのテスト（Issue #241）。"""

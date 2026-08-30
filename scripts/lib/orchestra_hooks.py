@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +29,41 @@ from lib.settings_io import (
 )
 
 GIT_METADATA_TIMEOUT_SECONDS = 5
+
+# hook スクリプトが要求する Python の最小バージョン。pyproject.toml の requires-python と
+# 揃える（ドリフトはテストで検出する）。
+MIN_HOOK_PYTHON_VERSION = (3, 12)
+
+# インタプリタ検証プローブの上限秒。応答しない shim で init を止めないためのガード。
+PYTHON_PROBE_TIMEOUT_SECONDS = 5
+
+_VERSION_PROBE_SCRIPT = (
+    f"import sys; sys.exit(0 if sys.version_info >= {MIN_HOOK_PYTHON_VERSION} else 1)"
+)
+
+
+def _can_launch_hooks(interpreter: str) -> bool:
+    """指定インタプリタで hook を起動できるか、実際に実行して確かめる（Issue #343）。
+
+    PATH 解決（shutil.which）では「その名前のファイルが在る」ことしか分からず、本 Issue が
+    対象とする失敗をそのまま見逃す。バージョンマネージャ未適用のログインシェルが解決する
+    system python3（macOS CommandLineTools では 3.9 系）や、実体を失った pyenv shim は
+    which では解決できてしまうが、hook スクリプトを起動できない。
+
+    判定は「起動でき、かつ requires-python を満たす」ことに限定し、依存モジュール
+    （pyyaml）の有無は見ない。hook 側は遅延 import + フォールバックで欠損を吸収する設計で
+    あり、pyyaml を持たない 3.12+ は hook を停止させないため。
+    """
+    try:
+        result = subprocess.run(
+            [interpreter, "-c", _VERSION_PROBE_SCRIPT],
+            capture_output=True,
+            timeout=PYTHON_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def _git_directories(repo_dir: Path) -> tuple[Path, Path] | None:
@@ -200,53 +234,58 @@ class HooksMixin:
     def _resolve_python_update(env: dict[str, Any]) -> str | None:
         """AI_ORCHESTRA_PYTHON に書き込むべき値を返す。書き込み不要なら None。
 
-        既存値は「実行可能なインタプリタとして解決できる」ときだけ尊重する（Issue #343）。
-        利用者が逃げ道として PATH 相対名（`python3` / `python3.12` 等）を指定する運用も
-        あるため、実在判定は Path.exists ではなく shutil.which で行う。
-        解決できない値（削除された venv、消えたバージョン付きパス等）を放置すると
-        全 hook が起動不能になり自己修復経路まで失われるため、警告のうえ修復する。
+        既存値は「その値で hook を起動できる」ときだけ尊重する（Issue #343）。判定は
+        PATH 解決ではなく実起動プローブで行う（`_can_launch_hooks` 参照）。which による
+        解決可否では、本 Issue が対象とする「解決はできるが hook を動かせないインタプリタ」
+        （system python3 = 3.9 系、実体を失った shim 等）を取りこぼすため。
+
+        起動できない値（削除された venv、古すぎる Python 等）を放置すると全 hook が
+        起動不能になり、同じ変数で起動する SessionStart 同期による自己修復も失われるため、
+        警告のうえ現在のインタプリタで修復する。
         """
         existing = env.get(HOOK_PYTHON_ENV_VAR)
         if not isinstance(existing, str) or not existing:
             return sys.executable
 
-        if shutil.which(existing) is not None:
+        if _can_launch_hooks(existing):
             print(f"環境変数 {HOOK_PYTHON_ENV_VAR} は設定済み: {existing}")
             return None
 
+        required = f"{MIN_HOOK_PYTHON_VERSION[0]}.{MIN_HOOK_PYTHON_VERSION[1]}"
         print(
-            f"警告: 環境変数 {HOOK_PYTHON_ENV_VAR}={existing} は実行可能なインタプリタとして"
-            f"解決できません。{sys.executable} で修復します",
+            f"警告: 環境変数 {HOOK_PYTHON_ENV_VAR}={existing} では hook を起動できません"
+            f"（実行不可、または Python {required} 未満）。{sys.executable} で修復します",
             file=sys.stderr,
         )
         return sys.executable
 
-    def _resolve_env_updates(self, env: dict[str, Any]) -> dict[str, str] | None:
+    def _resolve_env_updates(self, env: dict[str, Any]) -> dict[str, str]:
         """グローバル env に書き込むべき差分を返す。
 
-        linked worktree からの実行では既存の main パスを保持するため None を返す。
-        既に設定済みで有効なキーは差分に含めない（AI_ORCHESTRA_PYTHON は利用者が明示した
-        インタプリタを上書きしない = 逃げ道として機能させるため）。
+        AI_ORCHESTRA_DIR（配布元リポジトリの位置）と AI_ORCHESTRA_PYTHON（hook 起動用
+        インタプリタ）は独立した関心事として扱う。linked worktree からの実行では
+        AI_ORCHESTRA_DIR の更新だけを抑止し、インタプリタの補完は継続する（Issue #343）。
+        後者は worktree 依存の値ではないうえ、抑止すると worktree で作業する利用者に
+        修正が一切届かなくなるため。
+
+        既に設定済みで有効なキーは差分に含めない。
         """
+        updates: dict[str, str] = {}
         orchestra_dir_str = str(self.orchestra_dir)
         existing_orchestra_dir = env.get("AI_ORCHESTRA_DIR")
 
-        if (
-            isinstance(existing_orchestra_dir, str)
-            and existing_orchestra_dir != orchestra_dir_str
-            and _is_linked_worktree_of(self.orchestra_dir, Path(existing_orchestra_dir))
+        if existing_orchestra_dir == orchestra_dir_str:
+            print(f"環境変数 AI_ORCHESTRA_DIR は設定済み: {orchestra_dir_str}")
+        elif isinstance(existing_orchestra_dir, str) and _is_linked_worktree_of(
+            self.orchestra_dir, Path(existing_orchestra_dir)
         ):
             print(
                 "警告: linked worktree からの実行を検出したため、"
                 f"グローバル AI_ORCHESTRA_DIR={existing_orchestra_dir} を保持します "
-                f"(実行元: {orchestra_dir_str})",
+                f"(実行元: {orchestra_dir_str})。"
+                f"{HOOK_PYTHON_ENV_VAR} の補完は継続します",
                 file=sys.stderr,
             )
-            return None
-
-        updates: dict[str, str] = {}
-        if existing_orchestra_dir == orchestra_dir_str:
-            print(f"環境変数 AI_ORCHESTRA_DIR は設定済み: {orchestra_dir_str}")
         else:
             updates["AI_ORCHESTRA_DIR"] = orchestra_dir_str
 
