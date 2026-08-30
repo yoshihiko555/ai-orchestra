@@ -180,6 +180,25 @@ def _reexec_under_target_interpreter() -> None:
     happened once (guarded by the sentinel below, not by path comparison,
     since version-manager shims can make the resolved path differ from
     ``sys.executable`` even after a successful re-exec).
+
+    LIMITATIONS: this is a self-referential trust bootstrap, not a hardening
+    guarantee. The decision of whether to switch interpreter runs inside the
+    very PATH-resolved ``python3`` process it is trying to route around. If
+    that interpreter is attacker-influenced (a version-manager shim,
+    ``.python-version``, a malicious ``sitecustomize.py``, etc. -- none of
+    which are covered by the ``.claude/orchestra.json`` ``codex_file_hashes``
+    ledger), the attacker can patch ``os.execv``, strip
+    ``AI_ORCHESTRA_PYTHON`` from the environment, or otherwise run arbitrary
+    code before this function is ever reached, defeating the re-exec before
+    it happens. This is not a new privilege escalation
+    (``AI_ORCHESTRA_PYTHON`` sits at the same trust level as PATH; the
+    PATH-hijack exposure predates this re-exec), but it does not make the
+    hook robust against a deliberately substituted interpreter -- it only
+    narrows the common case of an unexpected/stale PATH resolution. Pinning
+    an absolute interpreter path directly inside ``.codex/hooks.json``
+    (which *is* covered by the hash ledger) would close this remaining gap,
+    but trades away the current machine-independent distribution/sync
+    model; that is a follow-up trade-off decision, not part of this fix.
     """
     target = os.environ.get("AI_ORCHESTRA_PYTHON")
     if not target or os.environ.get("_AI_ORCHESTRA_HOOK_REEXECED"):
