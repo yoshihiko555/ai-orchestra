@@ -205,6 +205,19 @@ Codex CLI を主たる利用面とする repo-local ハーネス。hooks（secre
   - `.codex/schemas/task_result.schema.json`, `.codex/schemas/review_result.schema.json`
   - `.codex/rules/codex-harness.rules`, `.codex/validation.json`
 
+**`AI_ORCHESTRA_PYTHON` 環境変数（任意）:**
+
+hook（`user_prompt_secret_scan.py` / `pre_tool_use_policy.py` / `stop_validate.py`）は Codex CLI から
+`python3 <path>` というリテラルコマンドで起動されるため、`python3` の解決先は PATH に依存する。
+`AI_ORCHESTRA_PYTHON` に python 実行ファイルの絶対パス（例: venv の `bin/python`）を設定すると、
+hook はその interpreter へ re-exec し PATH 非依存で動作する。
+
+- `codex_run.py` / `codex_review.py` 経由（`orchex run codex-harness codex_run -- ...` 等）では、
+  自身の `sys.executable` が子プロセスの `AI_ORCHESTRA_PYTHON` として自動注入される
+- 対話 TUI や直接の `codex exec` 呼び出しはこの自動注入を経由しないため、利用者が自分で
+  `export AI_ORCHESTRA_PYTHON=/path/to/venv/bin/python` する必要がある
+- 未設定時は従来どおり PATH 上の `python3` が使われる（no-op、既存動作を変えない）
+
 ---
 
 ### antigravity-suggestions

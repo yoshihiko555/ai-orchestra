@@ -146,6 +146,10 @@ class TestExecuteCodex:
         # escalation-prompting run (EV-53).
         assert "-c" in captured["cmd"]
         assert "approval_policy=never" in captured["cmd"]
+        # Issue #345: hooks.json's hooks resolve `python3` from the spawn
+        # environment's PATH, which may not be this script's interpreter.
+        # AI_ORCHESTRA_PYTHON lets hooks opt in to running under it instead.
+        assert captured["kwargs"]["env"]["AI_ORCHESTRA_PYTHON"] == codex_run.sys.executable
 
     def test_returns_124_on_timeout(self, tmp_path: Path, monkeypatch) -> None:
         run_dir = tmp_path / "run"

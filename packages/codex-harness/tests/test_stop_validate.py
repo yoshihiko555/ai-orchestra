@@ -264,3 +264,95 @@ class TestMain:
         captured = capsys.readouterr()
         emitted = json.loads(captured.out)
         assert "not trusted" in emitted["systemMessage"]
+
+
+class TestReexecUnderTargetInterpreter:
+    """_reexec_under_target_interpreter(): AI_ORCHESTRA_PYTHON によるインタプリタ切替（Issue #345）。
+
+    Codex CLI は ``.codex/hooks.json`` の ``"command": "python3 <path>"`` をそのまま起動する
+    ため、``python3`` の解決先は hook 自身の制御外にある。``AI_ORCHESTRA_PYTHON`` が設定されて
+    いる場合のみ re-exec するオプトイン仕様であり、未設定時は既存の挙動を一切変えない。
+    """
+
+    def test_noop_when_env_var_unset(self, monkeypatch) -> None:
+        monkeypatch.delenv("AI_ORCHESTRA_PYTHON", raising=False)
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(stop_validate.os, "execv", lambda *a: calls.append(a))
+
+        stop_validate._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_noop_when_target_matches_current_interpreter(self, monkeypatch) -> None:
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", stop_validate.sys.executable)
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(stop_validate.os, "execv", lambda *a: calls.append(a))
+
+        stop_validate._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_noop_when_target_missing(self, tmp_path, monkeypatch) -> None:
+        missing = tmp_path / "no-such-python3"
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(missing))
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(stop_validate.os, "execv", lambda *a: calls.append(a))
+
+        stop_validate._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_noop_when_sentinel_already_set(self, tmp_path, monkeypatch) -> None:
+        target = tmp_path / "fake-python3"
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(target))
+        monkeypatch.setenv("_AI_ORCHESTRA_HOOK_REEXECED", "1")
+        calls: list = []
+        monkeypatch.setattr(stop_validate.os, "execv", lambda *a: calls.append(a))
+
+        stop_validate._reexec_under_target_interpreter()
+
+        assert calls == []
+
+    def test_execs_target_when_different_interpreter(self, tmp_path, monkeypatch) -> None:
+        target = tmp_path / "fake-python3"
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(target))
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(stop_validate.os, "execv", lambda *a: calls.append(a))
+
+        stop_validate._reexec_under_target_interpreter()
+
+        assert calls == [(str(target), [str(target), *stop_validate.sys.argv])]
+        assert stop_validate.os.environ["_AI_ORCHESTRA_HOOK_REEXECED"] == "1"
+
+    def test_execs_target_when_venv_symlink_shares_realpath_with_interpreter(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """venv の bin/python symlink（realpath は sys.executable と同一）でも re-exec する。
+
+        venv の interpreter は多くの環境でベース interpreter への symlink であり、
+        os.path.realpath() で比較すると「同じ interpreter」と誤判定されてしまう
+        （symlink 越しでも sys.prefix / site 設定はベース interpreter と異なる）。
+        raw path 比較（Issue #345 follow-up）に変更したことで、このケースでも
+        re-exec が発生することを確認する。
+        """
+        symlink = tmp_path / "venv-python3"
+        symlink.symlink_to(stop_validate.sys.executable)
+        # このテストが検証したいシナリオの前提: realpath は sys.executable と一致する
+        assert stop_validate.os.path.realpath(str(symlink)) == stop_validate.os.path.realpath(
+            stop_validate.sys.executable
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_PYTHON", str(symlink))
+        monkeypatch.delenv("_AI_ORCHESTRA_HOOK_REEXECED", raising=False)
+        calls: list = []
+        monkeypatch.setattr(stop_validate.os, "execv", lambda *a: calls.append(a))
+
+        stop_validate._reexec_under_target_interpreter()
+
+        assert calls == [(str(symlink), [str(symlink), *stop_validate.sys.argv])]
+        assert stop_validate.os.environ["_AI_ORCHESTRA_HOOK_REEXECED"] == "1"

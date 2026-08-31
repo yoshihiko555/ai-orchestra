@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -176,6 +177,29 @@ def execute_codex(
                 stderr=progress_f,
                 text=True,
                 timeout=timeout,
+                # Issue #345: tell hooks.json's hook scripts (spawned by
+                # `codex exec` as a plain `python3 <path>` command) which
+                # interpreter to prefer via `_reexec_under_target_interpreter()`,
+                # since PATH-resolved `python3` may differ from the one
+                # running this script (e.g. version-manager shims not
+                # active in the spawn environment).
+                #
+                # Scope: this injection only reaches hooks that are actually
+                # dispatched under this `codex exec` subprocess. As of the
+                # supported floor version (codex-cli 0.142.5), `codex exec`
+                # does not dispatch UserPromptSubmit / PreToolUse / Stop
+                # hooks at all (see docs/design/codex-cli-harness.md §0), so
+                # the env var currently has no observable effect via this
+                # code path on that version; it takes effect once/if a
+                # supported version dispatches hooks under `exec`. Raising
+                # the supported floor to such a version is a separate
+                # follow-up (requires E2E verification), out of scope here.
+                # It also does not apply to the interactive TUI or to a
+                # `codex exec` invoked directly outside this wrapper -- those
+                # paths never go through this `subprocess.run()` call, so a
+                # user relying on interpreter-independent hook execution
+                # there must export `AI_ORCHESTRA_PYTHON` themselves.
+                env={**os.environ, "AI_ORCHESTRA_PYTHON": sys.executable},
             )
             return completed.returncode
         except subprocess.TimeoutExpired:

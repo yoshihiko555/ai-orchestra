@@ -28,17 +28,30 @@ route_config = load_module("route_config", "packages/agent-routing/hooks/route_c
 def _read_cli_tools_yaml_raw() -> dict:
     """ローダとは独立に、解決済み cli-tools.yaml を直接 PyYAML で読む。
 
-    期待値を yaml 由来で導出することで、テストをモデル名の literal に依存させない。
-    cli-tools.yaml の codex.model / antigravity.model を変更してもテストが壊れない。
+    期待値を yaml 由来で導出することで、テストを literal（モデル名・ルーティング先）に
+    依存させない。cli-tools.yaml の codex.model / antigravity.model / agents.*.tool を
+    変更してもテストが壊れない。
 
-    Note: ベース yaml のみを読み、cli-tools.local.yaml のマージは考慮しない。
-    ローカル上書きが存在する環境では load_package_config の結果と乖離しうるため、
-    本ヘルパは「ローカル上書きなし」を前提とした統合テスト専用とする。
+    cli-tools.local.yaml が実在する環境では base に deep_merge して返す。
+    ローカル上書きは正式にサポートされ永続化されるため、これを無視すると
+    上書きのある環境で load_package_config の結果と乖離してテストが誤って失敗する。
     """
     path = hook_common.find_package_config("agent-routing", "cli-tools.yaml", str(REPO_ROOT))
     assert path, "cli-tools.yaml が解決できること"
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        base = yaml.safe_load(f)
+    local_path = hook_common._find_local_config_path(
+        "agent-routing", "cli-tools.yaml", str(REPO_ROOT), path
+    )
+    if not os.path.isfile(local_path):
+        return base
+    with open(local_path, encoding="utf-8") as f:
+        local = yaml.safe_load(f)
+    return hook_common.deep_merge(base, local) if local else base
+
+
+# agents.<name>.tool が取りうる実行先の語彙（config-loading / codex-delegation ルール準拠）
+VALID_AGENT_TOOLS = frozenset({"codex", "antigravity", "claude-direct", "auto"})
 
 
 # =========================================================================
@@ -214,13 +227,16 @@ class TestRouteConfigLoadConfig:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
         config = route_config.load_config({"cwd": str(REPO_ROOT)})
         agents = config.get("agents", {})
-        expected_agents = _read_cli_tools_yaml_raw().get("agents", {})
-
+        expected_agents = _read_cli_tools_yaml_raw()["agents"]
         assert len(agents) >= 20
+        # ローダが agent を取りこぼしたり増やしたりしないこと（yaml との集合一致）
         assert set(agents) == set(expected_agents)
+        # tool 値は yaml 由来で導出（literal 比較を廃止し、ルーティング変更で壊れない）
         for name in ("planner", "debugger", "researcher"):
-            assert name in expected_agents, f"{name} は cli-tools.yaml に存在すること"
-            assert agents.get(name, {}).get("tool") == expected_agents[name].get("tool")
+            assert agents.get(name, {}).get("tool") == expected_agents[name]["tool"]
+        # 構造契約: 全 agent の tool が既知の実行先語彙に含まれる（ファイル健全性の保証）
+        for name, spec in agents.items():
+            assert spec.get("tool") in VALID_AGENT_TOOLS, f"unknown tool for agent: {name}"
 
 
 # =========================================================================

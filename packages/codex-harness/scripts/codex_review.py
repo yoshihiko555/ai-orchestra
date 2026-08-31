@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -150,6 +151,11 @@ def execute_codex_review(
                 stderr=progress_f,
                 text=True,
                 timeout=timeout,
+                # Issue #345: see codex_run.py's execute_codex() for rationale
+                # and applicability scope (only reaches hooks dispatched
+                # under this `codex exec` subprocess; not the interactive
+                # TUI or a directly-invoked `codex exec`).
+                env={**os.environ, "AI_ORCHESTRA_PYTHON": sys.executable},
             )
             return completed.returncode
         except subprocess.TimeoutExpired:

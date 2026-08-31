@@ -302,6 +302,14 @@ orchex install codex-harness --project /path/to/project
 orchex run codex-harness codex_run -- "<task>"
 orchex run codex-harness codex_review -- --base main
 # 設計資料: docs/design/codex-cli-harness.md
+#
+# AI_ORCHESTRA_PYTHON: codex-harness の hook を PATH 上の python3 に依存せず、
+#   指定した interpreter で実行したい場合に設定する（値は python 実行ファイルの絶対パス。
+#   例: venv の bin/python）。codex_run.py / codex_review.py 経由（`orchex run codex-harness ...`）
+#   では自動で子プロセスの環境に注入される。対話 TUI や直接の `codex exec` 呼び出しでは
+#   この自動注入が効かないため、必要なら自分で export する。未設定時は従来どおり
+#   PATH 上の python3 が使われる（no-op、既存動作を変えない）。
+export AI_ORCHESTRA_PYTHON=/path/to/venv/bin/python
 
 # dry-run（変更内容を表示のみ）
 orchex setup essential --project . --dry-run

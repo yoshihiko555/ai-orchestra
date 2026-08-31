@@ -111,6 +111,7 @@
 - [ ] EV-51（境界 / must）: ドキュメント整合 — README.md に `packages/codex-harness` の記載が追加され、実際の配布物（manifest の `codex_files` 8 件、`scripts` 2 件）と一致していること — 根拠: CLAUDE.md 変更ガードレール（仕様変更時は README.md と必要なテストを同時更新する）。**現状ギャップ**: 本評価セット作成時点で README.md に `codex-harness` の記載なし（.claude/Plans.md Phase 5 TODO「README / CHANGELOG（Unreleased）更新」が未完了）
 - [ ] EV-52（正常 / must）: rules 層の decision 分類 — `codex-harness.rules` は `git push` / `gh pr create` を `decision="prompt"`（人間承認付き許可）とし、`gh pr merge` / `gh release create` / `npm publish` / `pnpm publish` / `docker push` / `kubectl apply` / `terraform apply` / `rm -rf` 各種を `decision="forbidden"`（承認不可のハード禁止）とする — 根拠: 設計 §5.6 / §10.3 + Issue #161 フォローアップ（対話は承認ベース、公開/破壊系は禁止維持）
 - [ ] EV-53（境界 / must）: 非対話 runner の承認固定 — `codex_run.py` / `codex_review.py` は `codex exec` に `-c approval_policy=never` を付与し、対話向け既定（`config.toml` の `approval_policy="on-failure"`）に依存せず、承認エスカレーションを行わない厳格 sandbox 動作を維持する — 根拠: 実装挙動（runner は非対話でプロンプト不可）+ 設計 §5.2
+- [ ] EV-54（境界 / should）: interpreter 解決の PATH 非依存化 — `.codex/hooks.json` は各 hook を `python3 <path>` というリテラルコマンドで起動するため、`python3` の解決先はhook 自身の制御外にある（Issue #345）。3 hook（`user_prompt_secret_scan.py` / `pre_tool_use_policy.py` / `stop_validate.py`）は `AI_ORCHESTRA_PYTHON` が設定されている場合のみ `os.execv` で指定インタプリタへ re-exec し、未設定時は既存挙動を変えない。`codex_run.py` / `codex_review.py` は `codex exec` 起動時に自身の `sys.executable` を`AI_ORCHESTRA_PYTHON` として子環境へ注入する — 根拠: Issue #345 + 実装挙動（`_reexec_under_target_interpreter()` / `execute_codex()` / `execute_codex_review()`）
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
