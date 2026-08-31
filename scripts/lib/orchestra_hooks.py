@@ -42,6 +42,19 @@ _LAUNCH_PROBE_SCRIPT = (
     f"import sys, yaml; sys.exit(0 if sys.version_info >= {MIN_HOOK_PYTHON_VERSION} else 1)"
 )
 
+# プローブから一時的な import 経路を除くフラグ（Issue #343）。
+#   -E: PYTHONPATH / PYTHONHOME を無視する。`PYTHONPATH=... orchex init` のように一時的な
+#       import 経路を持つシェルから実行された場合、pyyaml を持たないインタプリタでも
+#       `import yaml` が通ってしまい、その値が恒久設定へ焼き込まれる。
+#   -P: `-c` 実行時に sys.path 先頭へ入る cwd を外す。実 hook はスクリプトファイルとして
+#       起動されるため sys.path[0] はスクリプトのディレクトリであり、cwd は載らない。
+# `-I`（isolated mode）を使わないのは、これが `-s` を含み user site-packages まで無視する
+# ため。pyyaml が user site にしかない正当なインタプリタを不採用にしてしまう一方、実 hook
+# 起動時には user site が有効であり、プローブ環境が実環境から乖離する。
+# なお `-P` は Python 3.11 以降のオプションだが、未対応のインタプリタは requires-python
+# （3.12 以上）を満たさないため、いずれにせよ不採用が正しい。
+_PROBE_ISOLATION_FLAGS = ("-E", "-P")
+
 # 起動できないインタプリタの原因（警告メッセージ用）。プローブが見る条件と対応させる。
 _LAUNCH_FAILURE_REASONS = (
     f"実行不可、Python {MIN_HOOK_PYTHON_VERSION[0]}.{MIN_HOOK_PYTHON_VERSION[1]} 未満、"
@@ -63,10 +76,14 @@ def _can_launch_hooks(interpreter: str) -> bool:
     ため（commit 整合性ゲートが 1 行の "Hook error" だけ残して黙って fail-open する）。
     遅延 import + try/except で吸収されるのは `hook_common` の config 読み込みだけであり、
     hook 全体には一般化できない。
+
+    プローブは呼び出し側シェルの import 経路を引き継がない（`_PROBE_ISOLATION_FLAGS`）。
+    一時的な `PYTHONPATH` の下で成立した import を合格根拠にすると、通常の環境から起動
+    された hook では同じ import が失敗し、上記の fail-open をそのまま呼び戻すため。
     """
     try:
         result = subprocess.run(
-            [interpreter, "-c", _LAUNCH_PROBE_SCRIPT],
+            [interpreter, *_PROBE_ISOLATION_FLAGS, "-c", _LAUNCH_PROBE_SCRIPT],
             capture_output=True,
             timeout=PYTHON_PROBE_TIMEOUT_SECONDS,
             check=False,

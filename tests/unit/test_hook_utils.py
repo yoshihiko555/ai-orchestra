@@ -331,6 +331,40 @@ class TestMigrateHookInterpreters:
 
         assert hook_utils.migrate_hook_interpreters(settings_hooks) == 0
 
+    def test_preserves_hooks_with_non_string_command(self) -> None:
+        """command が文字列でない利用者 hook は素通しで保持する（Issue #343）。
+
+        移行は全イベントを走査するため、無関係な 1 エントリで例外を投げると
+        `init` / `install` / `enable` / `disable` / `uninstall` がまとめて中断し、
+        「利用者自身の hook には触れない」という移行方針も満たせなくなる。
+        """
+        legacy = 'python3 "$AI_ORCHESTRA_DIR/packages/codd/hooks/codd-scan-postedit.py"'
+        settings_hooks = {
+            "PreToolUse": [
+                {
+                    "hooks": [
+                        {"type": "command", "command": None},
+                        {"type": "command", "command": 42},
+                        {"type": "command"},
+                        "not-a-dict",
+                        {"type": "command", "command": legacy},
+                    ]
+                }
+            ]
+        }
+
+        changed = hook_utils.migrate_hook_interpreters(settings_hooks)
+
+        current = hook_utils.get_hook_command("codd", "codd-scan-postedit.py")
+        assert changed == 1
+        assert settings_hooks["PreToolUse"][0]["hooks"] == [
+            {"type": "command", "command": None},
+            {"type": "command", "command": 42},
+            {"type": "command"},
+            "not-a-dict",
+            {"type": "command", "command": current},
+        ]
+
     def test_tolerates_malformed_settings_shapes(self) -> None:
         """壊れた形の settings でも例外を投げない（同期を止めないため）。"""
         settings_hooks = {"SessionStart": "not-a-list", "PreToolUse": ["not-a-dict"]}

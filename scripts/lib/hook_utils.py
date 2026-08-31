@@ -142,12 +142,18 @@ def remove_hook_from_settings(
     settings_hooks[event] = [e for e in settings_hooks[event] if e.get("hooks")]
 
 
-def strip_hook_interpreter(command: str) -> str | None:
+def strip_hook_interpreter(command: object) -> str | None:
     """hook コマンドからインタプリタ部分を取り除いた残りを返す。
 
     新形式（HOOK_INTERPRETER）と旧形式（リテラル python3）の両方を受理する。
     どちらの表記でもない場合は None を返す（ai-orchestra が登録した hook ではない）。
+
+    settings.local.json は利用者も手で編集するため、`command` が欠損・null・数値のことが
+    ある。文字列でない値は ai-orchestra 由来ではないと判定し、そのまま None を返す
+    （呼び出し側で foreign hook として保持される）。
     """
+    if not isinstance(command, str):
+        return None
     for interpreter in _HOOK_INTERPRETERS:
         prefix = f"{interpreter} "
         if command.startswith(prefix):
@@ -155,7 +161,7 @@ def strip_hook_interpreter(command: str) -> str | None:
     return None
 
 
-def is_sync_hook_command(command: str) -> bool:
+def is_sync_hook_command(command: object) -> bool:
     """sync-orchestra hook のコマンドか判定する（新旧インタプリタ表記の両方を受理）。"""
     return strip_hook_interpreter(command) == SYNC_HOOK_SCRIPT_ARG
 
@@ -165,7 +171,7 @@ def _is_package_hook_arg(rest: str) -> bool:
     return rest.startswith(_PACKAGE_HOOK_PREFIX) and "/hooks/" in rest
 
 
-def is_orchestra_hook(command: str) -> bool:
+def is_orchestra_hook(command: object) -> bool:
     """コマンドが $AI_ORCHESTRA_DIR/packages/*/hooks/* パターンか判定する。"""
     rest = strip_hook_interpreter(command)
     if rest is None:
@@ -173,7 +179,7 @@ def is_orchestra_hook(command: str) -> bool:
     return _is_package_hook_arg(rest)
 
 
-def canonical_hook_command(command: str) -> str | None:
+def canonical_hook_command(command: object) -> str | None:
     """ai-orchestra が登録した hook コマンドを現行インタプリタ表記へ正規化する。
 
     ai-orchestra 由来でない場合は None を返す。インタプリタ表記だけでなくスクリプト引数の
@@ -190,13 +196,19 @@ def canonical_hook_command(command: str) -> str | None:
 
 def _migrate_entry_hooks(entry: dict[str, Any]) -> int:
     """settings の 1 エントリ内の hook を正規化し、同一コマンドの重複を畳む。"""
+    hooks = entry.get("hooks", [])
+    if not isinstance(hooks, list):
+        return 0
+
     changed = 0
-    kept: list[dict[str, Any]] = []
+    kept: list[Any] = []
     seen: set[str] = set()
 
-    for hook in entry.get("hooks", []):
-        command = hook.get("command", "")
-        canonical = canonical_hook_command(command)
+    for hook in hooks:
+        if not isinstance(hook, dict):
+            kept.append(hook)
+            continue
+        canonical = canonical_hook_command(hook.get("command"))
         if canonical is None:
             kept.append(hook)
             continue
@@ -204,7 +216,7 @@ def _migrate_entry_hooks(entry: dict[str, Any]) -> int:
             changed += 1
             continue
         seen.add(canonical)
-        if command != canonical:
+        if hook.get("command") != canonical:
             hook["command"] = canonical
             changed += 1
         kept.append(hook)
@@ -234,7 +246,7 @@ def migrate_hook_interpreters(settings_hooks: dict[str, Any]) -> int:
     return changed
 
 
-def parse_pkg_from_command(command: str) -> str | None:
+def parse_pkg_from_command(command: object) -> str | None:
     """hook コマンドからパッケージ名を抽出する。"""
     rest = strip_hook_interpreter(command)
     if rest is None or not rest.startswith(_PACKAGE_HOOK_PREFIX):

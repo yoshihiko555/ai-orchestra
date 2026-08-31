@@ -706,6 +706,42 @@ class TestSetupEnvVar:
         assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
         assert "pyyaml" in captured.err
 
+    def test_ignores_ambient_pythonpath_when_probing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """一時的な PYTHONPATH で成立した import はプローブの合格根拠にしない（Issue #343）。
+
+        `PYTHONPATH=... orchex init` のように一時的な import 経路を持つシェルから実行すると、
+        pyyaml を持たないインタプリタでもプローブの `import yaml` が通ってしまう。その値を
+        恒久設定へ焼き込むと、通常の環境から起動された hook では同じ import が失敗し、本
+        Issue が塞いだ fail-open（commit 整合性ゲートの黙った素通り）を呼び戻す。
+        """
+        manager = _make_manager(tmp_path)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: tmp_path)
+
+        # PYTHONPATH 経由でだけ import できる yaml を用意する
+        stub_site = tmp_path / "stub-site"
+        stub_site.mkdir()
+        (stub_site / "yaml.py").write_text("", encoding="utf-8")
+        monkeypatch.setenv("PYTHONPATH", str(stub_site))
+
+        # -S で site-packages を外し、実体としては pyyaml を持たないインタプリタにする
+        no_yaml = tmp_path / "no-yaml-python3"
+        no_yaml.write_text(f'#!/bin/sh\nexec "{sys.executable}" -S "$@"\n', encoding="utf-8")
+        no_yaml.chmod(0o755)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": str(no_yaml)}}), encoding="utf-8"
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        captured = capsys.readouterr()
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
+        assert "pyyaml" in captured.err
+
     def test_does_not_pin_interpreter_inside_orchestra_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
