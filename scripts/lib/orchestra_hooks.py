@@ -97,6 +97,35 @@ def _is_ephemeral_interpreter(interpreter: str, roots: list[Path]) -> bool:
     return any(_is_within(path, root) for path in paths for root in root_paths)
 
 
+def _detached_venv_root(orchestra_dirs: list[Path]) -> Path | None:
+    """AI_ORCHESTRA_DIR と運命を共にしない venv の prefix を返す。共有していれば None。
+
+    venv かどうか（`sys.prefix != sys.base_prefix`）だけを見て一律に除外すると、orchex 自身を
+    venv へ入れる pip / pipx / uv tool 経由の導入まで対象になる。この経路では
+    `AI_ORCHESTRA_DIR` も同じ venv の中を指すため、venv 消滅時にはどちらにせよ hook が壊れる。
+    追加被害がないのに固定をやめると、pyyaml を持つ唯一のインタプリタを手放して `PATH` の
+    `python3` へ落ち、本 Issue が塞いだ fail-open を自ら呼び戻すことになる。
+
+    そこで「venv が消えても AI_ORCHESTRA_DIR は生き残る」非結合ケースだけを対象にする
+    （editable install で venv だけ `~/.venvs/...` に置く構成など）。この形は venv を消した
+    瞬間に全プロジェクトの hook と SessionStart 同期が同時に死に、自己修復も効かない。
+    """
+    if sys.prefix == sys.base_prefix:
+        return None
+
+    venv_root = Path(sys.prefix)
+    venv_paths = {venv_root.absolute(), venv_root.resolve()}
+    orchestra_paths = {
+        path
+        for orchestra_dir in orchestra_dirs
+        for path in (orchestra_dir.absolute(), orchestra_dir.resolve())
+    }
+    shares_fate = any(
+        _is_within(path, venv_path) for path in orchestra_paths for venv_path in venv_paths
+    )
+    return None if shares_fate else venv_root
+
+
 def _git_directories(repo_dir: Path) -> tuple[Path, Path] | None:
     """Git directory と common directory を絶対パスで返す。"""
     try:
@@ -268,11 +297,20 @@ class HooksMixin:
         AI_ORCHESTRA_DIR も対象にする。worktree から実行しつつ venv は main リポジトリ側、
         というケースを取りこぼさないため。`os.environ` ではなく settings の値を見るのは、
         worktree でのテスト実行が AI_ORCHESTRA_DIR を export するため。
+
+        置き場所だけを見ると、AI_ORCHESTRA_DIR の外に作った venv（`~/.venvs/...` 等）を
+        取りこぼす。そのため AI_ORCHESTRA_DIR と運命を共にしない venv の prefix も対象へ
+        加える（`_detached_venv_root` 参照）。
         """
-        roots = [self.orchestra_dir, Path(tempfile.gettempdir())]
+        orchestra_dirs = [self.orchestra_dir]
         persisted_dir = env.get("AI_ORCHESTRA_DIR")
         if isinstance(persisted_dir, str) and persisted_dir:
-            roots.append(Path(persisted_dir))
+            orchestra_dirs.append(Path(persisted_dir))
+
+        roots = [*orchestra_dirs, Path(tempfile.gettempdir())]
+        detached_venv = _detached_venv_root(orchestra_dirs)
+        if detached_venv is not None:
+            roots.append(detached_venv)
         return roots
 
     def _stable_hook_interpreter(self, env: dict[str, Any]) -> str | None:

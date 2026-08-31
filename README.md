@@ -97,11 +97,18 @@ top-level で import する hook があり、欠損時に hook が黙って素�
 pyyaml 未導入など）は、警告のうえ自動修復される。逆に、起動できる値は利用者の明示指定として
 尊重し上書きしない。
 
-自動設定の対象は「消えにくい場所にある Python」に限る。worktree やプロジェクト直下の venv、
-一時ディレクトリの Python は、その venv を消した時点で全プロジェクトの hook が起動不能になる
-（同じ変数で起動する SessionStart 同期も止まるため自動修復も効かない）。そうした Python から
-実行した場合は警告のみを出して `env.AI_ORCHESTRA_PYTHON` を設定せず、hook は従来どおり `PATH` の
-`python3` で起動される。固定したい場合は安定した Python のパスを手動で設定する。
+自動設定の対象は「消えても `AI_ORCHESTRA_DIR` は生き残る場所の Python」を除いたものに限る。
+worktree やプロジェクト直下の venv、一時ディレクトリの Python、および `AI_ORCHESTRA_DIR` の外に
+置いた venv（`~/.venvs/...` など）の Python は、その venv を消した時点で全プロジェクトの hook が
+起動不能になる（同じ変数で起動する SessionStart 同期も止まるため自動修復も効かない）。そうした
+Python から実行した場合は、venv の基底インタプリタ（起動でき、pyyaml を持つ場合のみ）を代わりに
+設定し、それも使えなければ警告のみを出して `env.AI_ORCHESTRA_PYTHON` を設定しない。未設定なら
+hook は従来どおり `PATH` の `python3` で起動される。固定したい場合は安定した Python のパスを手動で
+設定する。
+
+ただし `pip` / `pipx` / `uv tool` で orchex 自体を venv へ入れた場合は例外で、その venv の Python を
+設定する。`AI_ORCHESTRA_DIR` も同じ venv の中を指すため、venv が消えればどちらにせよ hook は動かず、
+固定をやめても失うものがない（むしろ pyyaml を確実に持つ唯一の Python を手放すことになる）。
 
 > **既存導入プロジェクトへの適用**: `orchex init --project .` を 1 度実行すれば、hook コマンドの表記
 > 移行（旧 `python3` 直参照 → 現行表記）と `env.AI_ORCHESTRA_PYTHON` の設定が同時に行われる。

@@ -44,6 +44,37 @@ def _make_package(tmp_path: Path, name: str = "mypkg", hooks: dict | None = None
     return Package.load(manifest_path)
 
 
+def _write_launchable_python(path: Path) -> Path:
+    """起動プローブを通る python の代役を作る。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _pin_venv_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    executable: Path,
+    prefix: Path,
+    base_executable: str | None,
+) -> None:
+    """venv の中から実行している状態を密閉して再現する（Issue #343）。
+
+    書き込み候補の選定は `sys.executable` / `sys.prefix` / `sys.base_prefix` /
+    `sys._base_executable` の 4 つで決まる。pytest 自身がどこで走っていても結果が変わらない
+    よう、4 つとも明示的に与える。`base_executable=None` は `sys._base_executable` を持たない
+    ビルド（属性なし）を再現する。
+    """
+    monkeypatch.setattr(hooks_mod.sys, "executable", str(executable))
+    monkeypatch.setattr(hooks_mod.sys, "prefix", str(prefix))
+    monkeypatch.setattr(hooks_mod.sys, "base_prefix", str(prefix.parent / "base-prefix"))
+    if base_executable is None:
+        monkeypatch.delattr(hooks_mod.sys, "_base_executable", raising=False)
+        return
+    monkeypatch.setattr(hooks_mod.sys, "_base_executable", base_executable, raising=False)
+
+
 class TestCountRegisteredHooks:
     def test_no_hooks_returns_zero_zero(self, tmp_path: Path) -> None:
         # Arrange
@@ -425,6 +456,16 @@ class TestLoadSaveOrchestraJson:
 class TestSetupEnvVar:
     """setup_env_var のテスト。"""
 
+    @pytest.fixture(autouse=True)
+    def _outside_venv(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """既定では「venv の外で実行している」状態に固定する（Issue #343）。
+
+        書き込み候補の選定は `sys.prefix != sys.base_prefix` を見るため、pytest 自身が venv
+        内で走るかどうかで結果が変わってしまう。venv 側の分岐を検証するテストは、この
+        fixture の後で `_pin_venv_interpreter` により自分で上書きする。
+        """
+        monkeypatch.setattr(hooks_mod.sys, "prefix", hooks_mod.sys.base_prefix)
+
     def test_dry_run_does_not_create_settings_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -692,6 +733,120 @@ class TestSetupEnvVar:
         captured = capsys.readouterr()
         assert hook_utils.HOOK_PYTHON_ENV_VAR not in saved["env"]
         assert saved["env"]["AI_ORCHESTRA_DIR"] == str(repo_dir)
+        assert "設定しません" in captured.err
+
+    def test_does_not_pin_venv_python_detached_from_orchestra_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """AI_ORCHESTRA_DIR の外に作った venv の python は書き込まない（Issue #343）。
+
+        editable install では AI_ORCHESTRA_DIR が安定した git repo を指す一方、venv だけ
+        `~/.venvs/...` に置かれることがある。置き場所（orchestra_dir / tempdir）だけを見る
+        ガードはこの形を素通しし、venv を消した瞬間に全プロジェクトの hook と SessionStart
+        同期が同時に死ぬ。venv は起動プローブを通るため、プローブでも止められない。
+        """
+        repo_dir = tmp_path / "repo"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(repo_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(hooks_mod.tempfile, "gettempdir", lambda: str(tmp_path / "systmp"))
+
+        venv_dir = tmp_path / "venvs" / "orchex-dev"
+        venv_python = _write_launchable_python(venv_dir / "bin" / "python3")
+        _pin_venv_interpreter(
+            monkeypatch,
+            executable=venv_python,
+            prefix=venv_dir,
+            base_executable=str(tmp_path / "gone" / "python3"),
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads((home_dir / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        captured = capsys.readouterr()
+        assert hook_utils.HOOK_PYTHON_ENV_VAR not in saved["env"]
+        assert "設定しません" in captured.err
+
+    def test_pins_venv_python_when_orchestra_dir_lives_inside_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """orchex 自身が venv の中にある構成では、その venv の python を書き込む。
+
+        pip / pipx / uv tool 経由の導入では AI_ORCHESTRA_DIR も同じ venv 内を指すため、venv が
+        消えればどちらにせよ hook は動かない。追加被害がないのに固定をやめると、pyyaml を持つ
+        唯一のインタプリタを手放して `PATH` の `python3` へ落ちてしまう。
+        """
+        venv_dir = tmp_path / "pipx-venv"
+        orchestra_dir = venv_dir / "lib" / "python3.12" / "site-packages" / "ai_orchestra"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(orchestra_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(hooks_mod.tempfile, "gettempdir", lambda: str(tmp_path / "systmp"))
+
+        venv_python = _write_launchable_python(venv_dir / "bin" / "python3")
+        _pin_venv_interpreter(
+            monkeypatch,
+            executable=venv_python,
+            prefix=venv_dir,
+            base_executable=str(tmp_path / "gone" / "python3"),
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads((home_dir / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        assert saved["env"][hook_utils.HOOK_PYTHON_ENV_VAR] == str(venv_python)
+
+    def test_falls_back_to_base_interpreter_for_detached_venv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """非結合 venv では、起動できる基底インタプリタがあればそちらを書き込む。"""
+        repo_dir = tmp_path / "repo"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(repo_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(hooks_mod.tempfile, "gettempdir", lambda: str(tmp_path / "systmp"))
+
+        venv_dir = tmp_path / "venvs" / "orchex-dev"
+        base_python = _write_launchable_python(tmp_path / "opt" / "python3")
+        _pin_venv_interpreter(
+            monkeypatch,
+            executable=_write_launchable_python(venv_dir / "bin" / "python3"),
+            prefix=venv_dir,
+            base_executable=str(base_python),
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads((home_dir / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        assert saved["env"][hook_utils.HOOK_PYTHON_ENV_VAR] == str(base_python)
+
+    def test_does_not_pin_detached_venv_without_base_executable_attribute(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`sys._base_executable` を持たないビルドでも例外にせず未設定にする。
+
+        非公開属性のため存在を前提にできない。候補が尽きた場合は既存の「未設定 + 警告」経路へ
+        落ちるだけで、新しい失敗経路は増やさない。
+        """
+        repo_dir = tmp_path / "repo"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(repo_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(hooks_mod.tempfile, "gettempdir", lambda: str(tmp_path / "systmp"))
+
+        venv_dir = tmp_path / "venvs" / "orchex-dev"
+        _pin_venv_interpreter(
+            monkeypatch,
+            executable=_write_launchable_python(venv_dir / "bin" / "python3"),
+            prefix=venv_dir,
+            base_executable=None,
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads((home_dir / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        captured = capsys.readouterr()
+        assert hook_utils.HOOK_PYTHON_ENV_VAR not in saved["env"]
         assert "設定しません" in captured.err
 
     def test_repairs_broken_value_even_with_ephemeral_interpreter(
@@ -1063,7 +1218,12 @@ class TestEphemeralInterpreterDetection:
         assert hooks_mod._is_ephemeral_interpreter(str(venv_python), [repo_dir]) is True
 
     def test_accepts_interpreter_outside_roots(self, tmp_path: Path) -> None:
-        """対象ツリー外のインタプリタは恒久設定に使える。"""
+        """`_is_ephemeral_interpreter` は与えられた root 配下かどうかだけを答える。
+
+        「その venv が消えても AI_ORCHESTRA_DIR は生き残るか」の判断はこの関数ではなく root の
+        構成側（`_ephemeral_interpreter_roots` / `_detached_venv_root`）が持つ。責務の置き場所
+        を固定するため、ここでは root 外なら False であることだけを確認する。
+        """
         assert hooks_mod._is_ephemeral_interpreter(sys.executable, [tmp_path / "repo"]) is False
 
     def test_roots_include_persisted_orchestra_dir(self, tmp_path: Path) -> None:
@@ -1078,6 +1238,55 @@ class TestEphemeralInterpreterDetection:
 
         assert main_dir in roots
         assert tmp_path / "worktree" in roots
+
+    def test_roots_include_detached_venv_prefix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AI_ORCHESTRA_DIR の外にある venv の prefix も対象ツリーに含める。
+
+        editable install で venv だけ別の場所に置く構成では、venv が消えても
+        AI_ORCHESTRA_DIR は残る。この非結合ケースこそ恒久設定へ焼き込んではいけない。
+        """
+        venv_dir = tmp_path / "venvs" / "orchex-dev"
+        monkeypatch.setattr(hooks_mod.sys, "prefix", str(venv_dir))
+        monkeypatch.setattr(hooks_mod.sys, "base_prefix", str(tmp_path / "opt" / "python"))
+        manager = _make_manager(tmp_path / "repo")
+
+        roots = manager._ephemeral_interpreter_roots({})
+
+        assert venv_dir in roots
+
+    def test_roots_exclude_venv_that_contains_orchestra_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """orchex 自身が入っている venv は対象にしない（pip / pipx / uv tool 経由）。
+
+        AI_ORCHESTRA_DIR が同じ venv の中にあるなら、venv 消滅時にはどちらにせよ hook は
+        動かない。追加被害がないのに固定をやめると `PATH` の `python3` へ落ちてしまう。
+        """
+        venv_dir = tmp_path / "pipx-venv"
+        orchestra_dir = venv_dir / "lib" / "python3.12" / "site-packages" / "ai_orchestra"
+        monkeypatch.setattr(hooks_mod.sys, "prefix", str(venv_dir))
+        monkeypatch.setattr(hooks_mod.sys, "base_prefix", str(tmp_path / "opt" / "python"))
+        manager = _make_manager(orchestra_dir)
+
+        roots = manager._ephemeral_interpreter_roots({})
+
+        assert venv_dir not in roots
+
+    def test_roots_exclude_venv_when_persisted_orchestra_dir_lives_inside(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """結合判定は記録済みの AI_ORCHESTRA_DIR にも効かせる。"""
+        venv_dir = tmp_path / "pipx-venv"
+        persisted_dir = venv_dir / "lib" / "python3.12" / "site-packages" / "ai_orchestra"
+        monkeypatch.setattr(hooks_mod.sys, "prefix", str(venv_dir))
+        monkeypatch.setattr(hooks_mod.sys, "base_prefix", str(tmp_path / "opt" / "python"))
+        manager = _make_manager(tmp_path / "repo")
+
+        roots = manager._ephemeral_interpreter_roots({"AI_ORCHESTRA_DIR": str(persisted_dir)})
+
+        assert venv_dir not in roots
 
 
 def _is_within(path: Path, root: Path) -> bool:

@@ -207,6 +207,8 @@ class TestEnableSetsInterpreterEnv:
         orchestra_dir, project_dir = self._prepare(tmp_path)
         home = tmp_path / "home"
         monkeypatch.setenv("HOME", str(home))
+        # pytest 自身が venv 内で走ると書き込み候補が変わるため、venv 外の実行に固定する
+        monkeypatch.setattr(sys, "prefix", sys.base_prefix)
 
         OrchestraManager(orchestra_dir).enable("mypkg", str(project_dir), dry_run=False)
 
