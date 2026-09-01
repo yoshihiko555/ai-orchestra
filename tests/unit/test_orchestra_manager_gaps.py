@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -159,7 +160,7 @@ class TestEnableRequiresInstalled:
         settings_path = claude_dir / "settings.local.json"
         assert not settings_path.exists()
 
-    def test_enable_installed_package_registers_hook(self, tmp_path: Path) -> None:
+    def test_enable_installed_package_registers_hook(self, tmp_path: Path, monkeypatch) -> None:
         orchestra_dir = tmp_path / "orchestra"
         (orchestra_dir / "packages").mkdir(parents=True)
         _write_manifest(orchestra_dir / "packages", "mypkg")
@@ -171,11 +172,165 @@ class TestEnableRequiresInstalled:
             json.dumps({"installed_packages": ["mypkg"], "file_hashes": {}}), encoding="utf-8"
         )
 
+        # enable は setup_env_var 経由で ~/.claude/settings.json に書くため HOME を隔離する
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
         manager = OrchestraManager(orchestra_dir)
         manager.enable("mypkg", str(project_dir), dry_run=False)
 
         settings_after = json.loads((claude_dir / "settings.local.json").read_text())
         assert settings_after["hooks"]["SessionStart"], "フックが登録されているはず"
+
+
+class TestEnableSetsInterpreterEnv:
+    """EV-37（Issue #343）: `enable` も env.AI_ORCHESTRA_PYTHON を補完する。
+
+    `install` を経ずに `enable` だけを実行した環境で、hook のインタプリタ固定が
+    抜け落ちないことを担保する。
+    """
+
+    @staticmethod
+    def _prepare(tmp_path: Path) -> tuple[Path, Path]:
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        _write_manifest(orchestra_dir / "packages", "mypkg")
+
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+        (claude_dir / "orchestra.json").write_text(
+            json.dumps({"installed_packages": ["mypkg"], "file_hashes": {}}), encoding="utf-8"
+        )
+        return orchestra_dir, project_dir
+
+    def test_enable_writes_interpreter_when_unset(self, tmp_path: Path, monkeypatch) -> None:
+        orchestra_dir, project_dir = self._prepare(tmp_path)
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        # pytest 自身が venv 内で走ると書き込み候補が変わるため、venv 外の実行に固定する
+        monkeypatch.setattr(sys, "prefix", sys.base_prefix)
+
+        OrchestraManager(orchestra_dir).enable("mypkg", str(project_dir), dry_run=False)
+
+        global_settings = json.loads((home / ".claude" / "settings.json").read_text())
+        assert global_settings["env"]["AI_ORCHESTRA_PYTHON"] == sys.executable
+
+    def test_enable_preserves_user_specified_interpreter(self, tmp_path: Path, monkeypatch) -> None:
+        orchestra_dir, project_dir = self._prepare(tmp_path)
+        home = tmp_path / "home"
+        global_settings_path = home / ".claude" / "settings.json"
+        global_settings_path.parent.mkdir(parents=True)
+        custom = tmp_path / "custom" / "bin" / "python3"
+        custom.parent.mkdir(parents=True)
+        custom.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        custom.chmod(0o755)
+        global_settings_path.write_text(
+            json.dumps({"env": {"AI_ORCHESTRA_PYTHON": str(custom)}}), encoding="utf-8"
+        )
+        monkeypatch.setenv("HOME", str(home))
+
+        OrchestraManager(orchestra_dir).enable("mypkg", str(project_dir), dry_run=False)
+
+        saved = json.loads(global_settings_path.read_text())
+        assert saved["env"]["AI_ORCHESTRA_PYTHON"] == str(custom)
+
+    def test_enable_dry_run_does_not_write_global_settings(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        orchestra_dir, project_dir = self._prepare(tmp_path)
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+
+        OrchestraManager(orchestra_dir).enable("mypkg", str(project_dir), dry_run=True)
+
+        assert not (home / ".claude" / "settings.json").exists()
+
+
+class TestInitMigratesHookInterpreters:
+    """EV-38（Issue #343）: `init` も hook コマンドを現行インタプリタ表記へ移行する。
+
+    表記の移行が SessionStart 同期だけに載っていると、その sync hook 自身が壊れた
+    インタプリタで起動される環境（本 Issue が対象とする状況）では移行が永久に走らない。
+    `init` を PATH 非依存化の単独の入口として成立させる。
+    """
+
+    @staticmethod
+    def _prepare(tmp_path: Path) -> tuple[Path, Path, Path]:
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        (orchestra_dir / "templates").mkdir(parents=True)
+
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+        settings_path = claude_dir / "settings.local.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": (
+                                            'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
+                                        ),
+                                        "timeout": 30,
+                                    }
+                                ]
+                            }
+                        ],
+                        "PreToolUse": [
+                            {
+                                "matcher": "Edit",
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": (
+                                            'python3 "$AI_ORCHESTRA_DIR/packages/core/hooks/x.py"'
+                                        ),
+                                        "timeout": 5,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return orchestra_dir, project_dir, settings_path
+
+    def test_init_rewrites_legacy_interpreter_notation(self, tmp_path: Path, monkeypatch) -> None:
+        orchestra_dir, project_dir, settings_path = self._prepare(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+        manager = OrchestraManager(orchestra_dir)
+        monkeypatch.setattr(manager, "run_initial_sync", lambda *a, **k: None)
+        manager.init(str(project_dir), dry_run=False)
+
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        commands = [
+            hook["command"]
+            for entries in saved["hooks"].values()
+            for entry in entries
+            for hook in entry["hooks"]
+        ]
+        assert all(command.startswith('"${AI_ORCHESTRA_PYTHON:-python3}" ') for command in commands)
+        # 旧表記の sync hook は「登録済み」と判定されるため、二重登録も起きない
+        assert len(commands) == 2
+
+    def test_init_dry_run_does_not_migrate(self, tmp_path: Path, monkeypatch) -> None:
+        orchestra_dir, project_dir, settings_path = self._prepare(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        before = settings_path.read_text(encoding="utf-8")
+
+        manager = OrchestraManager(orchestra_dir)
+        monkeypatch.setattr(manager, "run_initial_sync", lambda *a, **k: None)
+        manager.init(str(project_dir), dry_run=True)
+
+        assert settings_path.read_text(encoding="utf-8") == before
 
 
 class TestRunInitialSyncPreservesUserModifiedConfig:

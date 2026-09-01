@@ -217,11 +217,20 @@ class TestRouteConfigLoadConfig:
         assert config.get("antigravity", {}).get("model") == expected["antigravity"]["model"]
 
     def test_loads_agents_section(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """agents セクションが tool 値まで含めて読み込まれることを検証する。
+
+        期待値は cli-tools.yaml から導出する。ルーティングの実 config 値（例:
+        `agents.debugger.tool`）を literal でピンすると、設定変更のたびに無関係な
+        テストが落ちる（Issue #341）。ここで担保したいのは「読み込み結果が
+        cli-tools.yaml と一致すること」であり、個々の割り当て先ではない。
+        """
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
         config = route_config.load_config({"cwd": str(REPO_ROOT)})
         agents = config.get("agents", {})
         expected_agents = _read_cli_tools_yaml_raw()["agents"]
         assert len(agents) >= 20
+        # ローダが agent を取りこぼしたり増やしたりしないこと（yaml との集合一致）
+        assert set(agents) == set(expected_agents)
         # tool 値は yaml 由来で導出（literal 比較を廃止し、ルーティング変更で壊れない）
         for name in ("planner", "debugger", "researcher"):
             assert agents.get(name, {}).get("tool") == expected_agents[name]["tool"]

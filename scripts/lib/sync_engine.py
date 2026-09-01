@@ -22,6 +22,8 @@ from lib.hook_utils import (
     find_hook_in_settings,
     get_hook_command,
     is_orchestra_hook,
+    is_sync_hook_command,
+    migrate_hook_interpreters,
     parse_hook_entry,
     parse_pkg_from_command,
     remove_hook_from_settings,
@@ -692,7 +694,7 @@ def sync_hooks(
 
     settings_hooks = settings.get("hooks", {})
 
-    sync_hook_command = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
+    migrated = migrate_hook_interpreters(settings_hooks)
 
     # (event, command, matcher) -> manifest 側で期待される timeout
     expected_hooks: dict[tuple[str, str, str | None], int] = {}
@@ -731,7 +733,7 @@ def sync_hooks(
             matcher = entry.get("matcher")
             for hook in list(entry.get("hooks", [])):
                 command = hook.get("command", "")
-                if command == sync_hook_command:
+                if is_sync_hook_command(command):
                     continue
                 if not is_orchestra_hook(command):
                     continue
@@ -744,7 +746,7 @@ def sync_hooks(
                     remove_hook_from_settings(settings_hooks, event, command, matcher)
                     removed += 1
 
-    changes = added + updated + removed
+    changes = added + updated + removed + migrated
     if changes > 0:
         settings["hooks"] = settings_hooks
         try:

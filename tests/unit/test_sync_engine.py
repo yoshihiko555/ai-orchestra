@@ -18,6 +18,7 @@ if _scripts_dir not in sys.path:
 from tests.module_loader import load_module
 
 sync_engine = load_module("sync_engine", "scripts/lib/sync_engine.py")
+hook_utils = load_module("hook_utils_for_sync_engine_test", "scripts/lib/hook_utils.py")
 
 
 class TestNeedsSync:
@@ -519,7 +520,7 @@ class TestSyncHooks:
                 ]
             },
         )
-        command = 'python3 "$AI_ORCHESTRA_DIR/packages/codd/hooks/codd-scan-postedit.py"'
+        command = hook_utils.get_hook_command("codd", "codd-scan-postedit.py")
         settings_path = self._write_settings(
             project_dir,
             {
@@ -553,7 +554,7 @@ class TestSyncHooks:
                 ]
             },
         )
-        command = 'python3 "$AI_ORCHESTRA_DIR/packages/codd/hooks/codd-scan-postedit.py"'
+        command = hook_utils.get_hook_command("codd", "codd-scan-postedit.py")
         self._write_settings(
             project_dir,
             {
@@ -569,6 +570,122 @@ class TestSyncHooks:
         changes = sync_engine.sync_hooks(project_dir, orchestra_path, ["codd"])
 
         assert changes == 0
+
+    def test_legacy_interpreter_hook_is_migrated_to_current_command(self, tmp_path):
+        """旧表記（リテラル python3）の hook は現行表記へ差し替えられる（Issue #343）。
+
+        導入済みプロジェクトの settings.local.json が PATH 依存の python3 で登録済みの
+        まま残ると、hook 起動シェルの PATH 次第で全 hook が失敗する。SessionStart 同期で
+        現行表記へ移行し、旧エントリを残さない（重複起動させない）ことを確認する。
+        """
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        self._write_manifest(
+            orchestra_path,
+            "codd",
+            {
+                "PostToolUse": [
+                    {"file": "codd-scan-postedit.py", "matcher": "Edit|Write", "timeout": 90}
+                ]
+            },
+        )
+        legacy_command = 'python3 "$AI_ORCHESTRA_DIR/packages/codd/hooks/codd-scan-postedit.py"'
+        settings_path = self._write_settings(
+            project_dir,
+            {
+                "PostToolUse": [
+                    {
+                        "matcher": "Edit|Write",
+                        "hooks": [{"type": "command", "command": legacy_command, "timeout": 90}],
+                    }
+                ]
+            },
+        )
+
+        sync_engine.sync_hooks(project_dir, orchestra_path, ["codd"])
+
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        commands = [hook["command"] for hook in settings["hooks"]["PostToolUse"][0]["hooks"]]
+        assert commands == [hook_utils.get_hook_command("codd", "codd-scan-postedit.py")]
+
+    def test_legacy_sync_hook_is_migrated_and_not_pruned(self, tmp_path):
+        """旧表記の sync-orchestra hook は削除されず現行表記へ書き換えられる（Issue #343）。"""
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        self._write_manifest(orchestra_path, "core", {})
+        legacy_command = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
+        settings_path = self._write_settings(
+            project_dir,
+            {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": legacy_command, "timeout": 15}]}
+                ]
+            },
+        )
+
+        changes = sync_engine.sync_hooks(project_dir, orchestra_path, ["core"])
+
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        hooks = settings["hooks"]["SessionStart"][0]["hooks"]
+        assert changes == 1
+        assert [h["command"] for h in hooks] == [hook_utils.SYNC_HOOK_COMMAND]
+        assert hooks[0]["timeout"] == 15
+
+    def test_duplicated_sync_hook_entries_are_collapsed(self, tmp_path):
+        """新旧表記の sync hook が併存する場合は 1 件に畳む（二重起動の防止）。"""
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        self._write_manifest(orchestra_path, "core", {})
+        legacy_command = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
+        settings_path = self._write_settings(
+            project_dir,
+            {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": legacy_command, "timeout": 15},
+                            {
+                                "type": "command",
+                                "command": hook_utils.SYNC_HOOK_COMMAND,
+                                "timeout": 15,
+                            },
+                        ]
+                    }
+                ]
+            },
+        )
+
+        sync_engine.sync_hooks(project_dir, orchestra_path, ["core"])
+
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        hooks = settings["hooks"]["SessionStart"][0]["hooks"]
+        assert [h["command"] for h in hooks] == [hook_utils.SYNC_HOOK_COMMAND]
+
+    def test_sync_does_not_write_global_interpreter_env(self, tmp_path, monkeypatch):
+        """EV-37（Issue #343）: SessionStart 同期は env.AI_ORCHESTRA_PYTHON を書かない。
+
+        sync hook 自身が `PATH` の `python3` で起動されうるため、そこで観測した
+        インタプリタを固定すると、本 Issue が想定する劣化したインタプリタを恒久化して
+        しまう。表記の移行だけを行い、インタプリタ値の決定は init/setup 側に残す。
+        """
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        self._write_manifest(orchestra_path, "core", {})
+        legacy_command = 'python3 "$AI_ORCHESTRA_DIR/scripts/sync-orchestra.py"'
+        self._write_settings(
+            project_dir,
+            {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": legacy_command, "timeout": 15}]}
+                ]
+            },
+        )
+
+        sync_engine.sync_hooks(project_dir, orchestra_path, ["core"])
+
+        assert not (home / ".claude" / "settings.json").exists()
 
 
 class TestSyncPackagesAgentsHashGuard:

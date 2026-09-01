@@ -84,6 +84,80 @@ Claude Code (Orchestrator)
 `$AI_ORCHESTRA_DIR` は「配布元リポジトリへのポインタ」であり、hook は起動のたびにこのパスを直接実行する。  
 通常は `~/.claude/settings.json` の `env.AI_ORCHESTRA_DIR` がメインディレクトリ（安定版 main）を指す。
 
+hook の起動に使う Python は `env.AI_ORCHESTRA_PYTHON` で決まる（`orchex init` / `setup` / `install` /
+`enable` が現在のインタプリタを自動設定する）。hook コマンドは
+`"${AI_ORCHESTRA_PYTHON:-python3}" "$AI_ORCHESTRA_DIR/..."` の形で登録されるため、hook 起動シェルの
+`PATH` 解決に依存しない。別の Python を使いたい場合はこの環境変数を書き換える（削除すると従来どおり
+`PATH` の `python3` にフォールバックする）。
+
+設定値の妥当性は、`init` / `setup` / `install` / `enable` のたびに実際にそのインタプリタを起動して
+確認する（起動でき、`requires-python` を満たし、`import yaml` できるか。pyyaml を見るのは、これを
+top-level で import する hook があり、欠損時に hook が黙って素通り（fail-open）するため）。起動
+できない値（venv の削除、消えたバージョン付きパス、`PATH` 解決はできるが古すぎる system python3、
+pyyaml 未導入など）は、警告のうえ自動修復される。逆に、起動できる値は利用者の明示指定として
+尊重し上書きしない。
+
+この確認は、コマンドを実行したシェルの一時的な import 経路を引き継がない（`PYTHONPATH` /
+`PYTHONHOME` と、`-c` 実行時に載る cwd を外して起動する）。`PYTHONPATH=... orchex init` のような
+実行で成立した `import yaml` を根拠にしてしまうと、通常の環境から起動された hook では同じ import が
+失敗し、上記の fail-open を呼び戻すためである。user site-packages は無効化しない（実際の hook 起動
+時には有効なため）。
+
+自動設定の対象は「消えても `AI_ORCHESTRA_DIR` は生き残る場所の Python」を除いたものに限る。
+worktree やプロジェクト直下の venv、一時ディレクトリの Python、および `AI_ORCHESTRA_DIR` の外に
+置いた venv（`~/.venvs/...` など）の Python は、その venv を消した時点で全プロジェクトの hook が
+起動不能になる（同じ変数で起動する SessionStart 同期も止まるため自動修復も効かない）。そうした
+Python から実行した場合は、venv の基底インタプリタ（起動でき、pyyaml を持つ場合のみ）を代わりに
+設定し、それも使えなければ警告のみを出して `env.AI_ORCHESTRA_PYTHON` を設定しない。未設定なら
+hook は従来どおり `PATH` の `python3` で起動される。固定したい場合は安定した Python のパスを手動で
+設定する。
+
+ただし `pip` / `pipx` / `uv tool` で orchex 自体を venv へ入れた場合は例外で、その venv の Python を
+設定する。`AI_ORCHESTRA_DIR` も同じ venv の中を指すため、venv が消えればどちらにせよ hook は動かず、
+固定をやめても失うものがない（むしろ pyyaml を確実に持つ唯一の Python を手放すことになる）。
+
+> **既存導入プロジェクトへの適用**: `orchex init --project .` を 1 度実行すれば、hook コマンドの表記
+> 移行（旧 `python3` 直参照 → 現行表記）と `env.AI_ORCHESTRA_PYTHON` の設定が同時に行われる。
+> 表記移行は SessionStart 同期にも載っているが、そこには依存しない。移行前の hook は `PATH` の
+> `python3` で起動されるため、その `python3` が壊れている環境では sync hook 自身が起動できず、
+> 同期経由の移行が永久に走らないためである。`init` を単独の入口として成立させている。
+>
+> なお SessionStart 同期は `env.AI_ORCHESTRA_PYTHON` を書かない。sync hook 自身が `PATH` の
+> `python3` で起動されうるため、そこで観測したインタプリタを固定すると誤った値を恒久化して
+> しまうためである。
+
+#### hook 起動の確認とロールバック
+
+hook が動いていない疑いがあるときは次の順で確認する。
+
+1. `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` の値を控え、そのパスを直接実行して起動するか確かめる（`<控えた値> -V`。この変数は Claude Code の設定側にあり、対話シェルには export されていない）
+2. Claude Code を新規セッションで起動し、SessionStart の `sync-orchestra` hook が実行されるか確認する
+3. `PATH` の `python3` へのフォールバックを試す場合は、`~/.claude/settings.json` から `env.AI_ORCHESTRA_PYTHON` のキーごと削除して新規セッションを開く（シェル側での `unset` では変わらない）
+
+**ロールバックの正規手順**は `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` を削除するか、
+正しいインタプリタのパスへ書き換えることである。hook コマンドは `"${AI_ORCHESTRA_PYTHON:-python3}"`
+形式なので、キーを削除するだけで `PATH` の `python3` 起動に戻せる。`settings.local.json` を触る
+必要はなく、同期で巻き戻されることもない（ただし削除しただけだと、次に `init` / `setup` /
+`install` / `enable` を実行したときに未設定として再度自動設定される。`PATH` 解決を恒久的に
+選ぶなら、キーを消さず値を `python3` と明示しておく）。
+
+`${VAR:-default}` の展開自体が効かない環境に当たった場合に限り、次の応急処置で hook コマンドを
+旧表記へ戻せる。`settings.local.json` は JSON なので、hook コマンド中の引用符は `\"` の形で保存
+されている。置換パターンもそのエスケープ形に合わせる（合わせないと 1 件も一致せず、sed は黙って
+成功する）。
+
+```bash
+# hook コマンドのインタプリタ参照を PATH の python3 直参照へ戻す
+sed -i '' 's/\\"${AI_ORCHESTRA_PYTHON:-python3}\\" /python3 /g' .claude/settings.local.json
+
+# JSON として壊れていないか確認する
+python3 -m json.tool .claude/settings.local.json > /dev/null
+```
+
+ただしこれは恒久的なロールバックではない。旧表記へ戻すと sync hook が動くようになり、次の
+SessionStart 同期（および `init` / `install` / `enable`）が表記を現行形式へ書き戻すため、状態が
+セッションごとに揺れる。応急処置のあとは必ず上記の `env.AI_ORCHESTRA_PYTHON` 側で決着させること。
+
 ### 開発・検証フロー（メンテナ向け）
 
 feature 開発は `git worktree add` で別ディレクトリに切り出す。メインディレクトリは **常に main 固定**で、ここではブランチを切り替えない。
@@ -163,7 +237,7 @@ orchex install tmux-monitor --project /path/to/project
 
 orchex が内部で以下を実行:
 
-1. `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` を設定
+1. `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` と `env.AI_ORCHESTRA_PYTHON`（hook 起動用インタプリタ）を設定（恒久設定に耐える Python が見つからない場合は `env.AI_ORCHESTRA_PYTHON` を設定せず、警告のうえ `PATH` の `python3` へフォールバックする）
 2. `.claude/orchestra.json` にパッケージ情報を記録
 3. `.claude/settings.local.json` に hooks を登録（`$AI_ORCHESTRA_DIR/packages/...` 参照）
 4. `sync-orchestra.py` の SessionStart hook を登録（初回のみ）
@@ -174,6 +248,7 @@ orchex が内部で以下を実行:
 以下をすべて満たしたらセットアップ完了です:
 
 - `~/.claude/settings.json` に `env.AI_ORCHESTRA_DIR` が設定されている
+- `env.AI_ORCHESTRA_PYTHON` が設定されている、**または** 適格な Python がない旨の警告が出たうえで未設定のまま（`PATH` の `python3` へのフォールバック）になっている
 - `.claude/settings.local.json` に AI Orchestra の hooks が登録されている
 - `.claude/orchestra.json` が存在し、インストール済みパッケージが記録されている
 - Claude Code 次回起動時に SessionStart hook が走り `.claude/` 配下へ差分同期される
