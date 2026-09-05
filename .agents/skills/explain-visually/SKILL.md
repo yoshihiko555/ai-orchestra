@@ -114,6 +114,14 @@ git diff --stat "$MERGE_BASE"
 git diff "$MERGE_BASE"
 ```
 
+`git diff "$MERGE_BASE"` は追跡済みファイルの変更しか含まない。未追跡ファイル（新規追加でまだ `git add` していないもの）は別途列挙して読む:
+
+```bash
+git status --porcelain --untracked-files=all
+```
+
+（または `git ls-files --others --exclude-standard`）出力されたパスはシェル変数へ読み込んでから `Read` に渡し、コマンド文字列へリテラル展開しない（`while IFS= read -r path; do ... done` のパターンは上記「diff / PR の場合」と同様）。
+
 `--base <ref>` が指定された場合は `EXPLAIN_VISUALLY_BASE` より優先する。
 
 **文書の書き方はプロジェクトごとに違う。** 以下は「どこを見るか」だけを定めており、見出しの名前・節の並び・記法は前提にしない。対象に該当する記述が無ければ、無いものとして扱う。
@@ -123,13 +131,15 @@ git diff "$MERGE_BASE"
 **diff / PR の場合**、差分だけでは設計意図が分からないため、実装の本体まで開く。
 
 - 変更ファイル一覧から、**その変更の中心となるファイル**を選ぶ。データ構造の定義、処理の本体、外部との境界にあたるものを優先する
-- PR の場合、ファイルの内容は head コミットから取る。ファイル名は `gh pr diff --name-only` の出力をシェル変数に読み込んでから参照し、コマンド文字列へ直接埋め込まない:
+- PR の場合、ファイルの内容は head コミットから取る。`gh pr diff --name-only` は引数なしで実行すると**現在のブランチに紐づく PR**を対象にしてしまうため、手順1で解決した PR 番号（または URL）と `--repo` を必ず明示して呼び出す。ファイル名はシェル変数に読み込んでから参照し、コマンド文字列へ直接埋め込まない:
 
   ```bash
-  gh pr diff --name-only | while IFS= read -r path; do
+  gh pr diff "$pr_number" --repo "$repo" --name-only | while IFS= read -r path; do
     gh api "repos/$repo/contents/$path?ref=$sha" -H "Accept: application/vnd.github.raw"
   done
   ```
+
+  同様に `gh pr view` / `gh api` を呼ぶ際も、`"$pr_number"` と `--repo "$repo"` を明示する（対象を暗黙の現在ブランチに委ねない）。
 
 - 定義ファイルやコード中のコメントに、設計判断の理由が書かれていることが多い。ここが解説の中身になる
 
@@ -168,7 +178,9 @@ diff / PR モードでは、上記に加えて「AI が書いたコード」向�
 
 `.claude/skills/explain-visually/scripts/template.html` をコピーし、`{{TITLE}}` と `{{BODY}}` を置き換える。テンプレートには必要な CSS が全て入っているので、スタイルを書き足さない（見た目が回ごとにばらつくと、読み手が毎回レイアウトを覚え直すことになる）。
 
-**MUST: 原文から引用するテキストは必ず HTML エスケープしてから埋め込む。** PR 本文 / Issue コメント / diff / レビュー指摘 / 設計文書など対象文書から引用する部分はすべて、`&` `<` `>` `"` `'` を実体参照化（Python の `html.escape()` 相当の処理をエージェント自身が行う）してから `{{BODY}}` に埋め込む。対象は `.card` の本文、`pre.code` のコードスニペット、見出し、`.figcap` など、Mermaid のラベル以外のすべての箇所。理由: 対象文書に仕込まれた `<script>` や `onerror=` がエスケープされずに HTML へ混入すると、`verify_page.py` が sandbox 外の Chrome で描画する時点でそのまま実行される（XSS）。
+**MUST: 原文から引用するテキストは必ず HTML エスケープしてから埋め込む。例外はない。** PR 本文 / Issue コメント / diff / レビュー指摘 / 設計文書など対象文書から引用する部分はすべて、`&` `<` `>` `"` `'` を実体参照化（Python の `html.escape()` 相当の処理をエージェント自身が行う）してから `{{BODY}}` に埋め込む。対象は `.card` の本文、`pre.code` のコードスニペット、見出し、`.figcap`、**Mermaid のラベルを含む対象文書由来のすべての文字列**。理由: 対象文書に仕込まれた `<script>` や `onerror=`、あるいは `</pre><style>body{display:none}</style>` のような断片がエスケープされずに HTML へ混入すると、CSP の `style-src 'unsafe-inline'` や lint の未検出パターンを介して生 HTML として解釈されうる。`verify_page.py` が sandbox 外の Chrome で描画する時点でそのまま実行・適用される（XSS / 表示破壊）ため、Mermaid ラベルだからといって例外にしない。
+
+エスケープしても Mermaid への受け渡しは壊れない。テンプレートの `<script type="module">` は `nodes[i].textContent` で `<pre class="mermaid">` の中身を読む。`textContent` はブラウザが実体参照を元の文字に戻した結果を返すため、`&lt;` は `<` として Mermaid に渡る。エスケープは HTML パーサに対する防御であり、Mermaid が受け取る文字列には影響しない。
 
 テンプレートには CSP meta（inline script はテンプレート由来の2本のみをハッシュで許可し、外部通信・外部画像は遮断する）が入っている。これは多層防御であり、**エスケープを省略してよい理由にはならない**。CSP meta は `<script>` ブロックと同様に編集禁止（ハッシュが script の内容に紐づいているため、書き換えると検証が壊れる）。`verify_page.py` はテンプレート由来以外の `<script>` / `on*=` 属性 / `javascript:` を検出すると `warnings` に出す（exit 2）。
 
@@ -277,4 +289,4 @@ Linux 環境では `xdg-open` を使う。
 | `mermaidRendered` が `mermaidSources` より少ない | 記法エラーか id の衝突。テンプレートの script を書き換えていないか確認する |
 | 図やラベルが他の要素に重なる | ほぼ id の衝突。「Mermaid の使い方」の1を確認する |
 | `pageHeight` が取得できない警告が出る | テンプレート末尾の高さ出力scriptを消している。戻す |
-| `gh` が TLS エラーや接続失敗になる | Bash sandbox 起因の可能性がある。ネットワーク・認証設定を確認したうえで、解消しなければサンドボックス無しでの再実行を検討する |
+| `gh` が TLS エラーや接続失敗になる | サンドボックス無効化では回避しない（無効化対象は `verify_page.py` と `open` の単体コマンドに限定）。そのままエラー内容をユーザーに報告して処理を止める |

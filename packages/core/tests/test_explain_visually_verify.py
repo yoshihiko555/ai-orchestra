@@ -125,7 +125,8 @@ class TestParseDomMetrics:
         dom = (
             "<html><head><title>Example Page</title></head>"
             '<body data-mermaid-ready="1" data-page-height="1234">'
-            '<svg id="fig-0">a</svg><svg id="fig-1">b</svg>'
+            '<div class="mermaid"><svg id="fig-0">a</svg></div>'
+            '<div class="mermaid"><svg id="fig-1">b</svg></div>'
             "</body></html>"
         )
 
@@ -159,6 +160,34 @@ class TestParseDomMetrics:
         assert metrics.unrendered == 1
         assert metrics.sources == 1
         assert metrics.ready is False
+
+    def test_counts_unrendered_mermaid_starting_with_percent_comment(self) -> None:
+        # %%{init: ...}%% ディレクティブから始まる Mermaid ソースも未描画として数えられる必要がある
+        dom = (
+            '<body data-page-height="500">'
+            '<pre class="mermaid">%%{init: {"theme": "base"}}%%\ngraph TD; a --> b</pre>'
+            "</body>"
+        )
+
+        metrics = verify_page.parse_dom_metrics(dom)
+
+        assert metrics.rendered == 0
+        assert metrics.unrendered == 1
+        assert metrics.sources == 1
+
+    def test_counts_unrendered_mermaid_starting_with_frontmatter_dashes(self) -> None:
+        # --- フロントマターから始まる Mermaid ソースも未描画として数えられる必要がある
+        dom = (
+            '<body data-page-height="500">'
+            '<div class="mermaid">---\ntitle: x\n---\ngraph TD; a --> b</div>'
+            "</body>"
+        )
+
+        metrics = verify_page.parse_dom_metrics(dom)
+
+        assert metrics.rendered == 0
+        assert metrics.unrendered == 1
+        assert metrics.sources == 1
 
     def test_mermaid_box_wrapper_is_not_counted_as_unrendered_source(self) -> None:
         # `.mermaid-box` は外枠のコンテナクラスであり、`.mermaid` 本体とは区別する必要がある。
@@ -302,6 +331,98 @@ class TestLintInjectedMarkup:
         assert any("CSP" in warning for warning in warnings)
 
 
+class TestMarkupWarningsBlockChromeLaunch:
+    """安全性警告がある HTML は Chrome 起動前に拒否する（fail-closed ゲート）。"""
+
+    def test_injected_script_blocks_chrome_launch_in_process(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        html_file = tmp_path / "page.html"
+        html_file.write_text(
+            "<html><body>"
+            "<script>alert(1)</script><script>alert(2)</script><script>alert(3)</script>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+
+        def _fail_popen(*args: object, **kwargs: object) -> None:
+            raise AssertionError("Chrome must not be launched when markup warnings exist")
+
+        monkeypatch.setattr(verify_page.subprocess, "Popen", _fail_popen)
+
+        options = verify_page.CliOptions(
+            html=html_file,
+            width=verify_page.DEFAULT_VIEWPORT_WIDTH,
+            wait=verify_page.DEFAULT_VIRTUAL_TIME_BUDGET_MS,
+            timeout=verify_page.DEFAULT_CHROME_TIMEOUT_SECONDS,
+            dom_file=None,
+            skip_screenshot=False,
+            chrome="/nonexistent/binary",
+        )
+
+        result = verify_page.verify_page(options)
+
+        assert result["ok"] is False
+        assert result["screenshot"] is None
+        assert result["mermaidRendered"] == 0
+        assert result["warnings"]
+
+    def test_injected_markup_exits_with_warnings_via_main_without_touching_chrome(
+        self, tmp_path: Path
+    ) -> None:
+        html_file = tmp_path / "page.html"
+        html_file.write_text(
+            "<html><body>"
+            "<script>a()</script><script>b()</script><script>c()</script>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+
+        proc = _run([str(html_file), "--chrome", "/nonexistent/binary", "--skip-screenshot"])
+
+        assert proc.returncode == verify_page.EXIT_WARNINGS, proc.stderr
+        payload = json.loads(proc.stdout)
+        assert payload["ok"] is False
+        assert payload["mermaidRendered"] == 0
+        assert payload["screenshot"] is None
+
+
+class TestRenderScreenshotStaleFile:
+    """古いスクリーンショットが残っていても、今回の撮影失敗を隠さない。"""
+
+    def test_stale_screenshot_file_does_not_count_as_success(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        html_file = tmp_path / "page.html"
+        html_file.write_text("<html></html>", encoding="utf-8")
+        stale_output = tmp_path / "page-shot.png"
+        stale_output.write_bytes(b"stale")
+
+        def _fake_screenshot(*args: object, **kwargs: object) -> None:
+            return None  # Chrome timed out and never wrote a new screenshot
+
+        monkeypatch.setattr(verify_page, "screenshot", _fake_screenshot)
+
+        options = verify_page.CliOptions(
+            html=html_file,
+            width=verify_page.DEFAULT_VIEWPORT_WIDTH,
+            wait=verify_page.DEFAULT_VIRTUAL_TIME_BUDGET_MS,
+            timeout=verify_page.DEFAULT_CHROME_TIMEOUT_SECONDS,
+            dom_file=None,
+            skip_screenshot=False,
+            chrome="/fake/chrome",
+        )
+
+        with pytest.raises(
+            verify_page.VerificationError, match="スクリーンショットを生成できなかった"
+        ):
+            verify_page.render_screenshot(
+                options, html_file, "file:///x", tmp_path, "/fake/chrome", 1000
+            )
+
+        assert not stale_output.exists()
+
+
 # ---------------------------------------------------------------------------
 # EV-31 拡張: run_chrome のタイムアウト時致命的化
 # ---------------------------------------------------------------------------
@@ -361,6 +482,32 @@ class TestRunChromeTimeoutWithoutOutput:
 
         assert result == ""
 
+    def test_process_already_gone_during_timeout_kill_is_tolerated(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        class FakeProcess:
+            pid = 12345
+            returncode = 0
+
+            def __init__(self) -> None:
+                self._call_count = 0
+
+            def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+                self._call_count += 1
+                if self._call_count == 1:
+                    raise subprocess.TimeoutExpired(cmd="chrome", timeout=timeout)
+                return "<html>done</html>", ""
+
+        def _raise_process_lookup_error(pid: int) -> int:
+            raise ProcessLookupError("no such process")
+
+        monkeypatch.setattr(verify_page.subprocess, "Popen", lambda *a, **kw: FakeProcess())
+        monkeypatch.setattr(verify_page.os, "getpgid", _raise_process_lookup_error)
+
+        result = verify_page.run_chrome("chrome", "file:///x", tmp_path, [], timeout=1)
+
+        assert result == "<html>done</html>"
+
 
 # ---------------------------------------------------------------------------
 # EV-31: main() の三段階 exit code
@@ -380,7 +527,8 @@ class TestMainExitCodes:
         )
         dom_file = tmp_path / "dom.html"
         dom_file.write_text(
-            '<body data-mermaid-ready="1" data-page-height="900"><svg id="fig-0">x</svg></body>',
+            '<body data-mermaid-ready="1" data-page-height="900">'
+            '<div class="mermaid"><svg id="fig-0">x</svg></div></body>',
             encoding="utf-8",
         )
 
@@ -424,7 +572,12 @@ class TestMainExitCodes:
 
     def test_nonexistent_chrome_binary_exits_fatal_with_error_key(self, tmp_path: Path) -> None:
         html_file = tmp_path / "page.html"
-        html_file.write_text("<html></html>", encoding="utf-8")
+        html_file.write_text(
+            "<html><head>"
+            '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'">'
+            "</head></html>",
+            encoding="utf-8",
+        )
 
         proc = _run([str(html_file), "--chrome", "/nonexistent/binary", "--skip-screenshot"])
 

@@ -43,7 +43,7 @@ EXIT_FATAL = 1
 EXIT_WARNINGS = 2
 
 RENDERED_FIGURE_PATTERN = re.compile(r'<svg id="fig-\d+"')
-UNRENDERED_FIGURE_PATTERN = re.compile(r'<\w+\s+class="mermaid">\s*\w')
+MERMAID_ELEMENT_PATTERN = re.compile(r'<\w+\s+class="mermaid">')
 PAGE_HEIGHT_PATTERN = re.compile(r'data-page-height="(\d+)"')
 PAGE_TITLE_PATTERN = re.compile(r"<title>(.*?)</title>", re.S)
 
@@ -72,6 +72,16 @@ class DomMetrics:
     ready: bool
     page_height: int
     title: str
+
+
+EMPTY_DOM_METRICS = DomMetrics(
+    rendered=0,
+    unrendered=0,
+    sources=0,
+    ready=False,
+    page_height=0,
+    title="",
+)
 
 
 @dataclass(frozen=True)
@@ -116,15 +126,16 @@ def resolve_chrome_path(
 
 def parse_dom_metrics(dom: str) -> DomMetrics:
     """Parse Mermaid state, page height, and title from a rendered DOM."""
+    sources = len(MERMAID_ELEMENT_PATTERN.findall(dom))
     rendered = len(RENDERED_FIGURE_PATTERN.findall(dom))
-    unrendered = len(UNRENDERED_FIGURE_PATTERN.findall(dom))
+    unrendered = max(sources - rendered, 0)
     height_match = PAGE_HEIGHT_PATTERN.search(dom)
     title_match = PAGE_TITLE_PATTERN.search(dom)
 
     return DomMetrics(
         rendered=rendered,
         unrendered=unrendered,
-        sources=rendered + unrendered,
+        sources=sources,
         ready='data-mermaid-ready="1"' in dom,
         page_height=int(height_match.group(1)) if height_match else 0,
         title=title_match.group(1).strip() if title_match else "",
@@ -225,7 +236,10 @@ def run_chrome(
         output, _ = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         output, _ = process.communicate()
     if timed_out and expect_output and not output:
         raise VerificationError(f"Chrome が {timeout} 秒でタイムアウトしました（出力なし）")
@@ -368,6 +382,7 @@ def render_screenshot(
 
     resolved_chrome = chrome_path or resolve_required_chrome(options.chrome)
     output_path = html.parent / f"{html.stem}-shot.png"
+    output_path.unlink(missing_ok=True)
     screenshot_height = page_height + SCREENSHOT_HEIGHT_PADDING
     screenshot(
         resolved_chrome,
@@ -412,13 +427,15 @@ def verify_page(options: CliOptions) -> dict[str, object]:
         raise VerificationError(f"ファイルが見つかりません: {html}")
 
     markup_warnings = lint_injected_markup(read_html_source(html))
+    if markup_warnings:
+        return build_output(html, EMPTY_DOM_METRICS, 0, None, markup_warnings)
 
     url = html.as_uri()
     with tempfile.TemporaryDirectory(prefix=TEMPORARY_DIRECTORY_PREFIX) as temporary_directory:
         profile = Path(temporary_directory) / "profile"
         dom, chrome_path = load_rendered_dom(options, url, profile)
         metrics = parse_dom_metrics(dom)
-        warnings = build_warnings(metrics) + markup_warnings
+        warnings = build_warnings(metrics)
         page_height = metrics.page_height or FALLBACK_WINDOW_HEIGHT
         screenshot_path = render_screenshot(options, html, url, profile, chrome_path, page_height)
 
