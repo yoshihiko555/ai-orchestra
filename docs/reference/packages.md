@@ -74,6 +74,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | skill  | `startproject`               | マルチエージェント協調で新規開発を開始                           |
 | skill  | `task-state`                 | Plans.md の作成・更新                                            |
 | skill  | `design`                     | 要件定義・設計ドキュメント作成                                   |
+| skill  | `explain-visually`           | 計画・差分・PR/Issue を図解 HTML にして説明                     |
 | rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                               |
 | rule   | `coding-principles`          | コード品質の共通ルール                                           |
 | rule   | `task-memory-usage`          | Plans.md によるタスク管理ルール                                  |

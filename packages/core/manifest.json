@@ -67,7 +67,8 @@
     "startproject",
     "task-state",
     "design",
-    "handoff"
+    "handoff",
+    "explain-visually"
   ],
   "agents": [],
   "rules": [

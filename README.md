@@ -432,6 +432,7 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 | `/tdd`                | テスト駆動開発ワークフロー                                    |
 | `/code-comments`      | コード・テスト・コミットログ・コードコメントの書き分け        |
 | `/code-naming`        | 識別子（変数・関数・クラス等）の命名                          |
+| `/explain-visually`   | 計画・差分・PR/Issue を図解 HTML にして説明                   |
 
 ### レビュースキル
 
