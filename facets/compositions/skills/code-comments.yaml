@@ -1,0 +1,21 @@
+# code-comments スキルのファセット構成定義
+name: code-comments
+description: コード・テスト・コミットログ・コードコメントの書き分け
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: code-comments
+  description: |
+    Use when deciding what to write in code, tests, commit logs, or code comments.
+    Code should express How, tests should express What, commit logs should express Why,
+    and code comments should express Why not. Use during implementation and when writing
+    commit messages or PR descriptions. Also trigger on "comments", "コメント", "commit message",
+    "コミットメッセージ", "PR description", "テスト名", "why not".
+  metadata:
+    short-description: Decide what belongs in code vs tests vs commit logs vs code comments
+
+# 参照するポリシー（既存の code-quality と観点が異なるため付与しない。理由は移植 PR で報告）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: code-comments

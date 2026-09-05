@@ -28,7 +28,7 @@
     "hooks/quality_gate_config.py",
     "hooks/evaluation-set-checker.py"
   ],
-  "skills": ["review", "tdd", "design-tracker", "release-readiness"],
+  "skills": ["review", "tdd", "design-tracker", "release-readiness", "code-comments", "code-naming"],
   "agents": [],
   "rules": ["skill-review-policy", "evaluation-set-policy"],
   "scripts": [],

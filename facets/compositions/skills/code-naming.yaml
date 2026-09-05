@@ -1,0 +1,27 @@
+# code-naming スキルのファセット構成定義
+name: code-naming
+description: 識別子（変数・関数・メソッド・クラス・型・ファイル）の命名
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: code-naming
+  description: |
+    Use when naming identifiers (variables, functions, methods, classes, types, files) in code.
+    Stops overuse of "get" and ensures names reveal what is done to obtain a value.
+    Use during implementation and when deciding method/class names in implementation plans.
+    Also trigger on "naming", "命名", "識別子", "変数名", "クラス名", "メソッド名", "rename".
+  metadata:
+    short-description: Choose identifier names that reveal intent, not just "get"
+
+# 参照するポリシー（既存の code-quality と観点が異なるため付与しない。理由は移植 PR で報告）
+policies: []
+
+# スキル固有の instruction（ファイル参照）
+instruction: code-naming
+
+# スキルに同梱する参考資料
+knowledge:
+  - verbs
+  - booleans
+  - class-names
+  - modifiers
