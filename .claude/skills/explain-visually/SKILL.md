@@ -78,10 +78,10 @@ disable-model-invocation: true
 - PR・Issue を対象にする場合は `gh` が認証済み
 
 > **Bash サンドボックス制約**
-> `verify_page.py`（Chrome 起動・CDN 到達）と `open` は Bash sandbox 内では動作しない。
+> `verify_page.py`（Chrome 起動・CDN 到達）と `open`（Linux では `xdg-open`）は Bash sandbox 内では動作しない。
 > sandbox 無効化は次を満たす場合に限る:
 >
-> 1. `verify_page.py <html>` または `open <html>` の**単体コマンドにのみ**適用する
+> 1. `verify_page.py <html>`、`open <html>`、または Linux での `xdg-open <html>` の**単体コマンドにのみ**適用する
 > 2. 他のシェルコマンドと `&&` / `;` / `|` 等で連結しない
 > 3. サンドボックス無効化後も失敗する場合は、HTML を書いた状態のまま処理を止め、失敗内容をユーザーに報告する（憶測で「描画済み」と報告しない）
 > 4. PR/Issue/diff から得たファイル名・ブランチ名・本文などの untrusted な文字列は、新しいコマンド文字列へ**リテラル展開しない**（`.claude/rules/codex-delegation.md`「prompt の shell-safe 渡し」と同水準）。ファイル名はシェル変数に読み込み `"$var"` で参照するか、一覧を一時ファイルへ書き出して `while IFS= read -r` で回す
@@ -105,10 +105,20 @@ disable-model-invocation: true
 
 URL・番号指定の場合は URL から `owner/repo` を解決して `--repo` に渡す。`#N` や番号のみの指定は現在のリポジトリを対象とする。
 
-**ブランチ差分の取得**（未コミット変更も含める）:
+**ブランチ差分の取得**（未コミット変更も含める）。`main` が存在しないリポジトリでも失敗しないよう、基準 ref は次の優先順位で解決する: ① `--base <ref>` 指定 → ② 環境変数 `EXPLAIN_VISUALLY_BASE` → ③ `git symbolic-ref -q refs/remotes/origin/HEAD`（`origin/<default>`）→ ④ ローカル `main` / `master` の実在確認（`git rev-parse -q --verify`）→ ⑤ いずれも解決できなければ AskUserQuestion で基準 ref をユーザーに確認する:
 
 ```bash
-BASE_REF="${EXPLAIN_VISUALLY_BASE:-main}"
+if [ -n "$EXPLAIN_VISUALLY_BASE" ]; then
+  BASE_REF="$EXPLAIN_VISUALLY_BASE"
+elif ORIGIN_HEAD=$(git symbolic-ref -q refs/remotes/origin/HEAD); then
+  BASE_REF="${ORIGIN_HEAD#refs/remotes/}"
+elif git rev-parse -q --verify main >/dev/null; then
+  BASE_REF="main"
+elif git rev-parse -q --verify master >/dev/null; then
+  BASE_REF="master"
+else
+  BASE_REF=""  # 解決不能。AskUserQuestion で基準 ref をユーザーに確認してから代入する
+fi
 MERGE_BASE=$(git merge-base "$BASE_REF" HEAD)
 git diff --stat "$MERGE_BASE"
 git diff "$MERGE_BASE"
@@ -122,7 +132,7 @@ git status --porcelain --untracked-files=all
 
 （または `git ls-files --others --exclude-standard`）出力されたパスはシェル変数へ読み込んでから `Read` に渡し、コマンド文字列へリテラル展開しない（`while IFS= read -r path; do ... done` のパターンは上記「diff / PR の場合」と同様）。
 
-`--base <ref>` が指定された場合は `EXPLAIN_VISUALLY_BASE` より優先する。
+`--base <ref>` が指定された場合はその値を上記コードの `EXPLAIN_VISUALLY_BASE` として扱い、他の解決手順（③〜⑤）より優先する。
 
 **文書の書き方はプロジェクトごとに違う。** 以下は「どこを見るか」だけを定めており、見出しの名前・節の並び・記法は前提にしない。対象に該当する記述が無ければ、無いものとして扱う。
 
@@ -133,9 +143,12 @@ git status --porcelain --untracked-files=all
 - 変更ファイル一覧から、**その変更の中心となるファイル**を選ぶ。データ構造の定義、処理の本体、外部との境界にあたるものを優先する
 - PR の場合、ファイルの内容は head コミットから取る。`gh pr diff --name-only` は引数なしで実行すると**現在のブランチに紐づく PR**を対象にしてしまうため、手順1で解決した PR 番号（または URL）と `--repo` を必ず明示して呼び出す。ファイル名はシェル変数に読み込んでから参照し、コマンド文字列へ直接埋め込まない:
 
+  ファイル名が `#` `?` `%` 等を含む場合、シェル引用だけでは Contents API のパスとして安全でない（URL 上の区切り文字と衝突しうる）。パス要素は percent-encode してから endpoint に埋め、`ref` はクエリ文字列へ直接連結せず `-f ref=` の GET パラメータとして渡す:
+
   ```bash
   gh pr diff "$pr_number" --repo "$repo" --name-only | while IFS= read -r path; do
-    gh api "repos/$repo/contents/$path?ref=$sha" -H "Accept: application/vnd.github.raw"
+    encoded_path=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe="/"))' "$path")
+    gh api "repos/$repo/contents/$encoded_path" -X GET -f ref="$sha" -H "Accept: application/vnd.github.raw"
   done
   ```
 
@@ -178,15 +191,17 @@ diff / PR モードでは、上記に加えて「AI が書いたコード」向�
 
 `.claude/skills/explain-visually/scripts/template.html` をコピーし、`{{TITLE}}` と `{{BODY}}` を置き換える。テンプレートには必要な CSS が全て入っているので、スタイルを書き足さない（見た目が回ごとにばらつくと、読み手が毎回レイアウトを覚え直すことになる）。
 
-**MUST: 原文から引用するテキストは必ず HTML エスケープしてから埋め込む。例外はない。** PR 本文 / Issue コメント / diff / レビュー指摘 / 設計文書など対象文書から引用する部分はすべて、`&` `<` `>` `"` `'` を実体参照化（Python の `html.escape()` 相当の処理をエージェント自身が行う）してから `{{BODY}}` に埋め込む。対象は `.card` の本文、`pre.code` のコードスニペット、見出し、`.figcap`、**Mermaid のラベルを含む対象文書由来のすべての文字列**。理由: 対象文書に仕込まれた `<script>` や `onerror=`、あるいは `</pre><style>body{display:none}</style>` のような断片がエスケープされずに HTML へ混入すると、CSP の `style-src 'unsafe-inline'` や lint の未検出パターンを介して生 HTML として解釈されうる。`verify_page.py` が sandbox 外の Chrome で描画する時点でそのまま実行・適用される（XSS / 表示破壊）ため、Mermaid ラベルだからといって例外にしない。
+**MUST: 原文から引用するテキストは必ず HTML エスケープしてから埋め込む。例外はない。** PR 本文 / Issue コメント / diff / レビュー指摘 / 設計文書など対象文書から引用する部分はすべて、`&` `<` `>` `"` `'` を実体参照化（Python の `html.escape()` 相当の処理をエージェント自身が行う）してから `{{BODY}}` に埋め込む。対象は `.card` の本文、`pre.code` のコードスニペット、見出し、`.figcap`。理由: 対象文書に仕込まれた `<script>` や `onerror=`、あるいは `</pre><style>body{display:none}</style>` のような断片がエスケープされずに HTML へ混入すると、CSP の `style-src 'unsafe-inline'` や lint の未検出パターンを介して生 HTML として解釈されうる（XSS / 表示破壊）。
 
-エスケープしても Mermaid への受け渡しは壊れない。テンプレートの `<script type="module">` は `nodes[i].textContent` で `<pre class="mermaid">` の中身を読む。`textContent` はブラウザが実体参照を元の文字に戻した結果を返すため、`&lt;` は `<` として Mermaid に渡る。エスケープは HTML パーサに対する防御であり、Mermaid が受け取る文字列には影響しない。
+**MUST: Mermaid のラベル・ノード id・辺には、原文由来の文字列を直接入れない。** テンプレートの `<script type="module">` は `nodes[i].textContent` で `<pre class="mermaid">` の中身を読み、`textContent` はブラウザが実体参照を元の文字に戻した値を返す。つまり HTML エスケープは Mermaid が受け取る文字列には効かず、対象文書に `x"] --> B["fabricated` のような断片が含まれていると、エスケープ済みでもそのまま Mermaid の文法として解釈され、別ノード・別の辺を追加する有効なソースになりうる（Mermaid インジェクション）。このため図のラベルは対象文書の原文をそのまま流用せず、**エージェント自身が書く短い語**にする。使ってよい文字は英数字・かな・漢字と空白のみで、`"` `[` `]` `(` `)` `{` `}` `|` `<` `>` `;` `-->` や改行は含めない。原文の引用そのものは図の外（`.card` / `pre.code` / `.figcap`）にエスケープして置き、図のラベルからは参照だけに留める。どうしても原文由来の識別子（関数名・ファイル名等）をラベルに使う必要がある場合は、上記の許可文字（英数字・かな・漢字・空白）以外の文字をすべて除去してから使う。
 
-テンプレートには CSP meta（inline script はテンプレート由来の2本のみをハッシュで許可し、外部通信・外部画像は遮断する）が入っている。これは多層防御であり、**エスケープを省略してよい理由にはならない**。CSP meta は `<script>` ブロックと同様に編集禁止（ハッシュが script の内容に紐づいているため、書き換えると検証が壊れる）。`verify_page.py` はテンプレート由来以外の `<script>` / `on*=` 属性 / `javascript:` を検出すると `warnings` に出す（exit 2）。
+テンプレートには CSP meta（inline script はテンプレート由来の2本のみをハッシュで許可し、外部通信・外部画像は遮断する）が入っている。これは多層防御であり、**エスケープや Mermaid ソースの直接埋め込み禁止を省略してよい理由にはならない**。CSP meta は `<script>` ブロックと同様に編集禁止（ハッシュが script の内容に紐づいているため、書き換えると検証が壊れる）。`verify_page.py` はテンプレート由来以外の `<script>` / `on*=` 属性 / `javascript:` を検出すると `warnings` に出す（exit 2）。
 
 **`<script>` ブロックは編集禁止。** テンプレート内のコメントは「Mermaid の図が無い場合は script 要素ごと削除する」と書いてあるが、当リポジトリでは削除しない。`.mermaid` 要素が0個でもスクリプトは何もせず終了するため実害がなく、`<script>` 編集禁止ルールを優先する。
 
 出力先は `.claude/docs/explain-visually/<対象名>.html`。ディレクトリが無ければ `mkdir -p` で作る。`<対象名>` は対象が特定できる短い名前を `[a-z0-9-]+` にサニタイズしたもの（パストラバーサル防止）。このサニタイズは技術的に強制されておらず運用ルールである。生成前に対象名を必ず正規化し、`..` や `/` を含む名前は拒否する。
+
+**MUST: 書き込み前に symlink 越し書き込みを拒否する。** 出力ディレクトリ `.claude/docs/explain-visually` とその祖先（`.claude/docs`、`.claude`）、および既存の `<対象名>.html` / `<対象名>-shot.png` が symlink なら（`test -L`）書き込まず停止して報告する。加えて、解決後のパス（`realpath` 等）が出力ディレクトリの解決後パス配下に無い場合も同様に停止する。symlink 経由で意図しない場所への書き込み・上書きを防ぐため。`verify_page.py` も同じ検査を行い、該当時は致命的エラー（exit 1）として扱う。
 
 | 対象 | サニタイズ例 |
 |---|---|

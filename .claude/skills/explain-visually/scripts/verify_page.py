@@ -34,10 +34,13 @@ CHROME_ENVIRONMENT_VARIABLE = "EXPLAIN_VISUALLY_CHROME"
 DEFAULT_VIEWPORT_WIDTH = 1250
 DEFAULT_VIRTUAL_TIME_BUDGET_MS = 25000
 DEFAULT_CHROME_TIMEOUT_SECONDS = 40
+REAP_TIMEOUT_SECONDS = 5
+STDERR_TAIL_CHARS = 2000
 DOM_WINDOW_HEIGHT = 1200
 FALLBACK_WINDOW_HEIGHT = 12000
 SCREENSHOT_HEIGHT_PADDING = 40
 TEMPORARY_DIRECTORY_PREFIX = "explain-visually-"
+TEMPLATE_FILENAME = "template.html"
 EXIT_OK = 0
 EXIT_FATAL = 1
 EXIT_WARNINGS = 2
@@ -60,6 +63,33 @@ JAVASCRIPT_SCHEME_PATTERN = re.compile(
     re.IGNORECASE,
 )
 CSP_META_PATTERN = re.compile(r"Content-Security-Policy", re.IGNORECASE)
+CSP_META_CONTENT_PATTERN = re.compile(
+    r"""<meta\b(?=[^>]*\bhttp-equiv\s*=\s*["']Content-Security-Policy["'])"""
+    r"""[^>]*\bcontent\s*=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)')""",
+    re.IGNORECASE,
+)
+SCRIPT_BODY_PATTERN = re.compile(r"<script[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
+META_REFRESH_PATTERN = re.compile(
+    r"""<meta\b[^>]*\bhttp-equiv\s*=\s*(?:"\s*refresh\s*"|'\s*refresh\s*'|refresh\b)""",
+    re.IGNORECASE,
+)
+BASE_TAG_PATTERN = re.compile(r"<base\b", re.IGNORECASE)
+IFRAME_TAG_PATTERN = re.compile(r"<iframe\b", re.IGNORECASE)
+OBJECT_TAG_PATTERN = re.compile(r"<object\b", re.IGNORECASE)
+EMBED_TAG_PATTERN = re.compile(r"<embed\b", re.IGNORECASE)
+FORM_TAG_PATTERN = re.compile(r"<form\b", re.IGNORECASE)
+FORBIDDEN_MARKUP_RULES = (
+    (META_REFRESH_PATTERN, "meta refresh が含まれる。原文の引用は HTML エスケープすること"),
+    (BASE_TAG_PATTERN, "<base> が含まれる。原文の引用は HTML エスケープすること"),
+    (IFRAME_TAG_PATTERN, "<iframe> が含まれる。原文の引用は HTML エスケープすること"),
+    (OBJECT_TAG_PATTERN, "<object> が含まれる。原文の引用は HTML エスケープすること"),
+    (EMBED_TAG_PATTERN, "<embed> が含まれる。原文の引用は HTML エスケープすること"),
+    (FORM_TAG_PATTERN, "<form> が含まれる。原文の引用は HTML エスケープすること"),
+)
+UNREPLACED_PLACEHOLDER_WARNINGS = (
+    ("{{TITLE}}", "{{TITLE}} が未置換のまま残っている"),
+    ("{{BODY}}", "{{BODY}} が未置換のまま残っている"),
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +129,17 @@ class CliOptions:
 
 class VerificationError(RuntimeError):
     """Raised when page verification cannot complete."""
+
+
+class CliUsageError(VerificationError):
+    """Raised when command-line arguments are invalid."""
+
+
+class _StrictArgumentParser(argparse.ArgumentParser):
+    """Argument parser that reports usage errors through the JSON error path."""
+
+    def error(self, message: str) -> None:
+        raise CliUsageError(message)
 
 
 def resolve_chrome_path(
@@ -181,6 +222,38 @@ def lint_injected_markup(html: str) -> list[str]:
         warnings.append("javascript: スキームが含まれる。原文の引用は HTML エスケープすること")
     if not CSP_META_PATTERN.search(html):
         warnings.append("テンプレートの CSP meta が無い")
+    warnings.extend(message for pattern, message in FORBIDDEN_MARKUP_RULES if pattern.search(html))
+    warnings.extend(
+        message for placeholder, message in UNREPLACED_PLACEHOLDER_WARNINGS if placeholder in html
+    )
+    return warnings
+
+
+def _extract_csp_content(html: str) -> str | None:
+    """Extract the CSP meta content attribute from HTML."""
+    match = CSP_META_CONTENT_PATTERN.search(html)
+    if match is None:
+        return None
+    return match.group("double") if match.group("double") is not None else match.group("single")
+
+
+def _extract_script_elements(html: str) -> list[str]:
+    """Extract full script elements, including opening tag attributes."""
+    return [match.group(0) for match in SCRIPT_BODY_PATTERN.finditer(html)]
+
+
+def lint_template_integrity(html: str, template: str) -> list[str]:
+    """Flag generated CSP or script elements that differ from the template."""
+    warnings: list[str] = []
+    if _extract_csp_content(html) != _extract_csp_content(template):
+        warnings.append("CSP meta の内容がテンプレートと一致しない（緩和されている可能性がある）")
+
+    generated_scripts = _extract_script_elements(html)
+    template_scripts = _extract_script_elements(template)
+    if generated_scripts != template_scripts[: len(generated_scripts)]:
+        warnings.append(
+            "生成 HTML の <script> 本文がテンプレートと一致しない（改変されている可能性がある）"
+        )
     return warnings
 
 
@@ -220,32 +293,48 @@ def run_chrome(
     stdout が空で正常な呼び出しは expect_output=False で呼ぶ。
     """
     command = build_chrome_command(chrome_path, url, profile, extra)
+    process = _launch_chrome(command)
+    timed_out = False
     try:
-        process = subprocess.Popen(
+        output, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        output, stderr = _kill_and_reap(process)
+    if timed_out and expect_output and not output:
+        raise VerificationError(f"Chrome が {timeout} 秒でタイムアウトしました（出力なし）")
+    if not timed_out and process.returncode:
+        detail = stderr[-STDERR_TAIL_CHARS:] if stderr else ""
+        suffix = f"\n--- stderr (tail) ---\n{detail}" if detail else ""
+        raise VerificationError(f"Chrome が終了コード {process.returncode} で失敗しました{suffix}")
+    return output or ""
+
+
+def _launch_chrome(command: list[str]) -> subprocess.Popen[str]:
+    """Launch Chrome with captured output in a dedicated process group."""
+    try:
+        return subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
         )
     except OSError as error:
         raise VerificationError(f"Chrome の起動に失敗しました: {error}") from error
 
-    timed_out = False
+
+def _kill_and_reap(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Kill Chrome's process group and reap it within a bounded interval."""
     try:
-        output, _ = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        output, _ = process.communicate()
-    if timed_out and expect_output and not output:
-        raise VerificationError(f"Chrome が {timeout} 秒でタイムアウトしました（出力なし）")
-    if not timed_out and process.returncode:
-        raise VerificationError(f"Chrome が終了コード {process.returncode} で失敗しました")
-    return output or ""
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        return process.communicate(timeout=REAP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise VerificationError(
+            f"Chrome プロセスの終了待機が {REAP_TIMEOUT_SECONDS} 秒でタイムアウトしました"
+        ) from error
 
 
 def dump_dom(
@@ -286,7 +375,7 @@ def screenshot(
 
 def build_argument_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser."""
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _StrictArgumentParser(description=__doc__)
     parser.add_argument("html", type=Path, help="検証するHTMLファイルのパス")
     parser.add_argument(
         "--width",
@@ -352,6 +441,40 @@ def read_html_source(html: Path) -> str:
         return html.read_text(encoding="utf-8")
     except OSError as error:
         raise VerificationError(f"HTMLファイルを読み込めません: {html}: {error}") from error
+
+
+def read_template_source() -> str:
+    """Read the HTML template distributed beside this verifier."""
+    template_path = Path(__file__).resolve().parent / TEMPLATE_FILENAME
+    try:
+        return template_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise VerificationError(
+            f"テンプレートを読み込めません: {template_path}: {error}"
+        ) from error
+
+
+def _validate_html_path(html: Path) -> Path:
+    """Resolve an HTML path after enforcing cwd containment and no symlinks."""
+    cwd = Path.cwd().resolve()
+    absolute_html = html.absolute()
+    current_path = absolute_html
+    while current_path.resolve() != cwd:
+        if current_path.is_symlink():
+            raise VerificationError(
+                f"シンボリックリンク経由のパスは許可されていません: {current_path}"
+            )
+        parent = current_path.parent
+        if parent == current_path:
+            break
+        current_path = parent
+
+    resolved_html = absolute_html.resolve()
+    if not resolved_html.is_relative_to(cwd):
+        raise VerificationError(f"作業ディレクトリ外のパスは許可されていません: {resolved_html}")
+    if not resolved_html.is_file():
+        raise VerificationError(f"ファイルが見つかりません: {resolved_html}")
+    return resolved_html
 
 
 def load_rendered_dom(
@@ -422,11 +545,13 @@ def build_output(
 
 def verify_page(options: CliOptions) -> dict[str, object]:
     """Verify one HTML page and return its JSON-ready report."""
-    html = options.html.resolve()
-    if not html.is_file():
-        raise VerificationError(f"ファイルが見つかりません: {html}")
-
-    markup_warnings = lint_injected_markup(read_html_source(html))
+    html = _validate_html_path(options.html)
+    html_source = read_html_source(html)
+    template_source = read_template_source()
+    markup_warnings = [
+        *lint_injected_markup(html_source),
+        *lint_template_integrity(html_source, template_source),
+    ]
     if markup_warnings:
         return build_output(html, EMPTY_DOM_METRICS, 0, None, markup_warnings)
 
@@ -449,8 +574,8 @@ def print_json(payload: Mapping[str, object]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """Run page verification and return its three-tier exit status."""
-    options = parse_cli_options(argv)
     try:
+        options = parse_cli_options(argv)
         output = verify_page(options)
     except VerificationError as error:
         print_json({"ok": False, "error": str(error)})
