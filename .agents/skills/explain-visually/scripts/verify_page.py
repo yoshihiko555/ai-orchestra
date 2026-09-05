@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -21,7 +20,9 @@ import sys
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
+from typing import IO
 
 MACOS_DEFAULT_CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CHROME_BINARY_CANDIDATES = (
@@ -45,51 +46,206 @@ EXIT_OK = 0
 EXIT_FATAL = 1
 EXIT_WARNINGS = 2
 
-RENDERED_FIGURE_PATTERN = re.compile(r'<svg id="fig-\d+"')
-MERMAID_ELEMENT_PATTERN = re.compile(r'<\w+\s+class="mermaid">')
-PAGE_HEIGHT_PATTERN = re.compile(r'data-page-height="(\d+)"')
-PAGE_TITLE_PATTERN = re.compile(r"<title>(.*?)</title>", re.S)
-
 # Number of <script> elements the template itself contains (page-height reporter +
 # Mermaid CDN loader). Any count above this in the final HTML source indicates
 # script content that was injected via unescaped source text.
 TEMPLATE_SCRIPT_COUNT = 2
-SCRIPT_TAG_PATTERN = re.compile(r"<script\b", re.IGNORECASE)
-# タグの属性位置に限定して検出する。エスケープ済みの引用（`&lt;img onerror=...&gt;` や
-# `element.onclick = fn` のようなコード片）は `<` で始まるタグ文脈にならないため誤検知しない。
-EVENT_HANDLER_ATTRIBUTE_PATTERN = re.compile(r"<\w[^>]*\bon\w+\s*=", re.IGNORECASE)
-JAVASCRIPT_SCHEME_PATTERN = re.compile(
-    r"""<\w[^>]*\b(?:href|src|action|formaction)\s*=\s*["']?\s*javascript:""",
-    re.IGNORECASE,
-)
-CSP_META_PATTERN = re.compile(r"Content-Security-Policy", re.IGNORECASE)
-CSP_META_CONTENT_PATTERN = re.compile(
-    r"""<meta\b(?=[^>]*\bhttp-equiv\s*=\s*["']Content-Security-Policy["'])"""
-    r"""[^>]*\bcontent\s*=\s*(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)')""",
-    re.IGNORECASE,
-)
-SCRIPT_BODY_PATTERN = re.compile(r"<script[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
-META_REFRESH_PATTERN = re.compile(
-    r"""<meta\b[^>]*\bhttp-equiv\s*=\s*(?:"\s*refresh\s*"|'\s*refresh\s*'|refresh\b)""",
-    re.IGNORECASE,
-)
-BASE_TAG_PATTERN = re.compile(r"<base\b", re.IGNORECASE)
-IFRAME_TAG_PATTERN = re.compile(r"<iframe\b", re.IGNORECASE)
-OBJECT_TAG_PATTERN = re.compile(r"<object\b", re.IGNORECASE)
-EMBED_TAG_PATTERN = re.compile(r"<embed\b", re.IGNORECASE)
-FORM_TAG_PATTERN = re.compile(r"<form\b", re.IGNORECASE)
-FORBIDDEN_MARKUP_RULES = (
-    (META_REFRESH_PATTERN, "meta refresh が含まれる。原文の引用は HTML エスケープすること"),
-    (BASE_TAG_PATTERN, "<base> が含まれる。原文の引用は HTML エスケープすること"),
-    (IFRAME_TAG_PATTERN, "<iframe> が含まれる。原文の引用は HTML エスケープすること"),
-    (OBJECT_TAG_PATTERN, "<object> が含まれる。原文の引用は HTML エスケープすること"),
-    (EMBED_TAG_PATTERN, "<embed> が含まれる。原文の引用は HTML エスケープすること"),
-    (FORM_TAG_PATTERN, "<form> が含まれる。原文の引用は HTML エスケープすること"),
-)
+NAVIGATION_ATTRIBUTE_NAMES = frozenset({"href", "src", "action", "formaction"})
+META_REFRESH_WARNING = "meta refresh が含まれる。原文の引用は HTML エスケープすること"
+FORBIDDEN_ELEMENT_WARNINGS = {
+    "base": "<base> が含まれる。原文の引用は HTML エスケープすること",
+    "iframe": "<iframe> が含まれる。原文の引用は HTML エスケープすること",
+    "object": "<object> が含まれる。原文の引用は HTML エスケープすること",
+    "embed": "<embed> が含まれる。原文の引用は HTML エスケープすること",
+    "form": "<form> が含まれる。原文の引用は HTML エスケープすること",
+    "link": "<link> が含まれる。原文の引用は HTML エスケープすること",
+}
 UNREPLACED_PLACEHOLDER_WARNINGS = (
     ("{{TITLE}}", "{{TITLE}} が未置換のまま残っている"),
     ("{{BODY}}", "{{BODY}} が未置換のまま残っている"),
 )
+
+HtmlAttribute = tuple[str, str | None]
+ScriptElement = tuple[tuple[HtmlAttribute, ...], str]
+
+
+def _attributes_by_name(attributes: list[HtmlAttribute]) -> dict[str, str | None]:
+    """Index parsed HTML attributes by their normalized names."""
+    return dict(attributes)
+
+
+def _is_event_handler_attribute(attribute_name: str) -> bool:
+    """Return whether an attribute name has the on-word event-handler form."""
+    suffix = attribute_name[2:]
+    return (
+        attribute_name.startswith("on")
+        and bool(suffix)
+        and all(character == "_" or character.isalnum() for character in suffix)
+    )
+
+
+def _is_rendered_figure_id(element_id: str) -> bool:
+    """Return whether an element ID follows the rendered Mermaid figure format."""
+    return element_id.startswith("fig-") and element_id.removeprefix("fig-").isdigit()
+
+
+class MarkupScanner(HTMLParser):
+    """Collect verification facts from one HTML parse pass."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.body_attributes: dict[str, str | None] | None = None
+        self.csp_content: str | None = None
+        self.forbidden_elements: set[str] = set()
+        self.has_event_handler_attribute = False
+        self.has_javascript_scheme = False
+        self.has_meta_refresh = False
+        self.head_depth = 0
+        self.mermaid_sources = 0
+        self.preformatted_depth = 0
+        self.rendered_figures = 0
+        self.script_count = 0
+        self.script_elements: list[ScriptElement] = []
+        self.text_outside_preformatted: list[str] = []
+        self.title_text = ""
+        self._has_seen_title = False
+        self._script_attributes: tuple[HtmlAttribute, ...] | None = None
+        self._script_body_chunks: list[str] = []
+        self._title_chunks: list[str] = []
+        self._title_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[HtmlAttribute]) -> None:
+        """Record facts exposed by one opening tag."""
+        attributes = _attributes_by_name(attrs)
+        self._enter_context(tag)
+        self._record_body(tag, attributes)
+        self._record_meta(tag, attributes)
+        self._record_markup_risks(tag, attrs)
+        self._record_dom_metrics(tag, attributes)
+        self._start_script(tag, attrs)
+        self._start_title(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        """Finalize element text and leave tracked contexts."""
+        self._finish_script(tag)
+        self._finish_title(tag)
+        if tag == "head":
+            self.head_depth = max(self.head_depth - 1, 0)
+        if tag in {"pre", "code"}:
+            self.preformatted_depth = max(self.preformatted_depth - 1, 0)
+
+    def handle_data(self, data: str) -> None:
+        """Accumulate script, title, and placeholder-candidate text."""
+        if self._script_attributes is not None:
+            self._script_body_chunks.append(data)
+        if self._title_depth:
+            self._title_chunks.append(data)
+        if not self.preformatted_depth:
+            self.text_outside_preformatted.append(data)
+
+    def contains_placeholder(self, placeholder: str) -> bool:
+        """Return whether visible or title text contains an unreplaced placeholder."""
+        candidates = [*self.text_outside_preformatted, self.title_text]
+        return any(placeholder in candidate for candidate in candidates)
+
+    def _enter_context(self, tag: str) -> None:
+        if tag == "head":
+            self.head_depth += 1
+        if tag in {"pre", "code"}:
+            self.preformatted_depth += 1
+
+    def _record_body(self, tag: str, attributes: dict[str, str | None]) -> None:
+        if tag == "body" and self.body_attributes is None:
+            self.body_attributes = attributes
+
+    def _record_meta(self, tag: str, attributes: dict[str, str | None]) -> None:
+        if tag != "meta":
+            return
+        http_equiv = attributes.get("http-equiv")
+        if http_equiv is None:
+            return
+        directive = http_equiv.strip().lower()
+        if directive == "refresh":
+            self.has_meta_refresh = True
+        if directive == "content-security-policy" and self.head_depth:
+            self._record_first_csp_content(attributes.get("content"))
+
+    def _record_first_csp_content(self, content: str | None) -> None:
+        if self.csp_content is None and content is not None:
+            self.csp_content = content
+
+    def _record_markup_risks(self, tag: str, attributes: list[HtmlAttribute]) -> None:
+        if tag in FORBIDDEN_ELEMENT_WARNINGS:
+            self.forbidden_elements.add(tag)
+        for attribute_name, value in attributes:
+            if _is_event_handler_attribute(attribute_name):
+                self.has_event_handler_attribute = True
+            if self._is_javascript_navigation(attribute_name, value):
+                self.has_javascript_scheme = True
+
+    def _is_javascript_navigation(self, attribute_name: str, value: str | None) -> bool:
+        if attribute_name not in NAVIGATION_ATTRIBUTE_NAMES or value is None:
+            return False
+        return value.strip().lower().startswith("javascript:")
+
+    def _record_dom_metrics(self, tag: str, attributes: dict[str, str | None]) -> None:
+        class_value = attributes.get("class")
+        if class_value is not None and "mermaid" in class_value.split():
+            self.mermaid_sources += 1
+        element_id = attributes.get("id")
+        if tag == "svg" and element_id is not None and _is_rendered_figure_id(element_id):
+            self.rendered_figures += 1
+
+    def _start_script(self, tag: str, attributes: list[HtmlAttribute]) -> None:
+        if tag != "script":
+            return
+        self.script_count += 1
+        if self._script_attributes is None:
+            self._script_attributes = tuple(attributes)
+            self._script_body_chunks = []
+
+    def _finish_script(self, tag: str) -> None:
+        if tag != "script" or self._script_attributes is None:
+            return
+        self.script_elements.append((self._script_attributes, "".join(self._script_body_chunks)))
+        self._script_attributes = None
+        self._script_body_chunks = []
+
+    def _start_title(self, tag: str) -> None:
+        if tag != "title":
+            return
+        if self._title_depth:
+            self._title_depth += 1
+            return
+        if not self._has_seen_title:
+            self._has_seen_title = True
+            self._title_depth = 1
+            self._title_chunks = []
+
+    def _finish_title(self, tag: str) -> None:
+        if tag != "title" or not self._title_depth:
+            return
+        self._title_depth -= 1
+        if not self._title_depth:
+            self.title_text = "".join(self._title_chunks)
+
+
+def _scan_markup(markup: str) -> MarkupScanner:
+    """Parse markup once and return all collected verification facts."""
+    scanner = MarkupScanner()
+    scanner.feed(markup)
+    scanner.close()
+    return scanner
+
+
+def _parse_page_height(value: str | None) -> int:
+    """Parse a body page-height attribute with a zero fallback."""
+    if value is None:
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
 
 
 @dataclass(frozen=True)
@@ -167,19 +323,19 @@ def resolve_chrome_path(
 
 def parse_dom_metrics(dom: str) -> DomMetrics:
     """Parse Mermaid state, page height, and title from a rendered DOM."""
-    sources = len(MERMAID_ELEMENT_PATTERN.findall(dom))
-    rendered = len(RENDERED_FIGURE_PATTERN.findall(dom))
+    scanner = _scan_markup(dom)
+    sources = scanner.mermaid_sources
+    rendered = scanner.rendered_figures
     unrendered = max(sources - rendered, 0)
-    height_match = PAGE_HEIGHT_PATTERN.search(dom)
-    title_match = PAGE_TITLE_PATTERN.search(dom)
+    body_attributes = scanner.body_attributes or {}
 
     return DomMetrics(
         rendered=rendered,
         unrendered=unrendered,
         sources=sources,
-        ready='data-mermaid-ready="1"' in dom,
-        page_height=int(height_match.group(1)) if height_match else 0,
-        title=title_match.group(1).strip() if title_match else "",
+        ready=body_attributes.get("data-mermaid-ready") == "1",
+        page_height=_parse_page_height(body_attributes.get("data-page-height")),
+        title=scanner.title_text.strip(),
     )
 
 
@@ -206,50 +362,57 @@ def build_warnings(metrics: DomMetrics) -> list[str]:
 
 def lint_injected_markup(html: str) -> list[str]:
     """Flag script/event-handler injection risk and a missing CSP meta tag."""
+    scanner = _scan_markup(html)
     warnings: list[str] = []
-    script_count = len(SCRIPT_TAG_PATTERN.findall(html))
-    if script_count > TEMPLATE_SCRIPT_COUNT:
-        extra_count = script_count - TEMPLATE_SCRIPT_COUNT
+    if scanner.script_count > TEMPLATE_SCRIPT_COUNT:
+        extra_count = scanner.script_count - TEMPLATE_SCRIPT_COUNT
         warnings.append(
             f"テンプレート由来以外の <script> が {extra_count} 個含まれる。"
             "原文の引用は HTML エスケープすること"
         )
-    if EVENT_HANDLER_ATTRIBUTE_PATTERN.search(html):
+    if scanner.has_event_handler_attribute:
         warnings.append(
             "イベントハンドラ属性（onXxx=）が含まれる。原文の引用は HTML エスケープすること"
         )
-    if JAVASCRIPT_SCHEME_PATTERN.search(html):
+    if scanner.has_javascript_scheme:
         warnings.append("javascript: スキームが含まれる。原文の引用は HTML エスケープすること")
-    if not CSP_META_PATTERN.search(html):
+    if scanner.csp_content is None:
         warnings.append("テンプレートの CSP meta が無い")
-    warnings.extend(message for pattern, message in FORBIDDEN_MARKUP_RULES if pattern.search(html))
+    if scanner.has_meta_refresh:
+        warnings.append(META_REFRESH_WARNING)
     warnings.extend(
-        message for placeholder, message in UNREPLACED_PLACEHOLDER_WARNINGS if placeholder in html
+        message
+        for tag, message in FORBIDDEN_ELEMENT_WARNINGS.items()
+        if tag in scanner.forbidden_elements
+    )
+    warnings.extend(
+        message
+        for placeholder, message in UNREPLACED_PLACEHOLDER_WARNINGS
+        if scanner.contains_placeholder(placeholder)
     )
     return warnings
 
 
 def _extract_csp_content(html: str) -> str | None:
     """Extract the CSP meta content attribute from HTML."""
-    match = CSP_META_CONTENT_PATTERN.search(html)
-    if match is None:
-        return None
-    return match.group("double") if match.group("double") is not None else match.group("single")
+    return _scan_markup(html).csp_content
 
 
-def _extract_script_elements(html: str) -> list[str]:
-    """Extract full script elements, including opening tag attributes."""
-    return [match.group(0) for match in SCRIPT_BODY_PATTERN.finditer(html)]
+def _extract_script_elements(html: str) -> list[ScriptElement]:
+    """Extract script attributes and raw bodies in document order."""
+    return _scan_markup(html).script_elements
 
 
 def lint_template_integrity(html: str, template: str) -> list[str]:
     """Flag generated CSP or script elements that differ from the template."""
+    generated = _scan_markup(html)
+    expected = _scan_markup(template)
     warnings: list[str] = []
-    if _extract_csp_content(html) != _extract_csp_content(template):
+    if generated.csp_content != expected.csp_content:
         warnings.append("CSP meta の内容がテンプレートと一致しない（緩和されている可能性がある）")
 
-    generated_scripts = _extract_script_elements(html)
-    template_scripts = _extract_script_elements(template)
+    generated_scripts = generated.script_elements
+    template_scripts = expected.script_elements
     if generated_scripts != template_scripts[: len(generated_scripts)]:
         warnings.append(
             "生成 HTML の <script> 本文がテンプレートと一致しない（改変されている可能性がある）"
@@ -291,50 +454,70 @@ def run_chrome(
     ただし stdout を期待する呼び出し（--dump-dom）でタイムアウト時に出力が空なら、
     描画が完了していないので致命的エラーとして扱う。--screenshot のように
     stdout が空で正常な呼び出しは expect_output=False で呼ぶ。
+
+    stdout / stderr はパイプではなく一時ファイルへ書かせる。パイプだと、プロセス
+    グループ外に逃げた Chrome の補助プロセス（crashpad 等）が書き込み端を握り続け、
+    親を SIGKILL した後も EOF が来ず回収が終わらないことがあるため。
     """
     command = build_chrome_command(chrome_path, url, profile, extra)
-    process = _launch_chrome(command)
-    timed_out = False
-    try:
-        output, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        output, stderr = _kill_and_reap(process)
+    capture_dir = profile.parent
+    with (
+        tempfile.NamedTemporaryFile(dir=capture_dir, suffix=".out", delete=False) as stdout_file,
+        tempfile.NamedTemporaryFile(dir=capture_dir, suffix=".err", delete=False) as stderr_file,
+    ):
+        process = _launch_chrome(command, stdout_file, stderr_file)
+        timed_out = _wait_or_kill(process, timeout)
+    output = _read_capture(Path(stdout_file.name))
+    stderr = _read_capture(Path(stderr_file.name))
     if timed_out and expect_output and not output:
         raise VerificationError(f"Chrome が {timeout} 秒でタイムアウトしました（出力なし）")
     if not timed_out and process.returncode:
         detail = stderr[-STDERR_TAIL_CHARS:] if stderr else ""
         suffix = f"\n--- stderr (tail) ---\n{detail}" if detail else ""
         raise VerificationError(f"Chrome が終了コード {process.returncode} で失敗しました{suffix}")
-    return output or ""
+    return output
 
 
-def _launch_chrome(command: list[str]) -> subprocess.Popen[str]:
-    """Launch Chrome with captured output in a dedicated process group."""
+def _launch_chrome(
+    command: list[str], stdout: IO[bytes], stderr: IO[bytes]
+) -> subprocess.Popen[bytes]:
+    """Launch Chrome in a dedicated process group, capturing output into files."""
     try:
-        return subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
+        return subprocess.Popen(command, stdout=stdout, stderr=stderr, start_new_session=True)
     except OSError as error:
         raise VerificationError(f"Chrome の起動に失敗しました: {error}") from error
 
 
-def _kill_and_reap(process: subprocess.Popen[str]) -> tuple[str, str]:
+def _wait_or_kill(process: subprocess.Popen[bytes], timeout: int) -> bool:
+    """Wait for Chrome; on timeout kill its process group. Returns whether it timed out."""
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_and_reap(process)
+        return True
+    return False
+
+
+def _kill_and_reap(process: subprocess.Popen[bytes]) -> None:
     """Kill Chrome's process group and reap it within a bounded interval."""
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
     try:
-        return process.communicate(timeout=REAP_TIMEOUT_SECONDS)
+        process.wait(timeout=REAP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as error:
         raise VerificationError(
             f"Chrome プロセスの終了待機が {REAP_TIMEOUT_SECONDS} 秒でタイムアウトしました"
         ) from error
+
+
+def _read_capture(path: Path) -> str:
+    """Read a capture file written by Chrome and remove it."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def dump_dom(
@@ -395,7 +578,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CHROME_TIMEOUT_SECONDS,
         help=f"Chrome1回あたりの打ち切り秒数（既定: {DEFAULT_CHROME_TIMEOUT_SECONDS}）",
     )
-    parser.add_argument("--dom-file", type=Path, help="Chromeの代わりに読み込むDOM HTMLファイル")
+    parser.add_argument(
+        "--dom-file",
+        type=Path,
+        help="Chromeの代わりに読み込むDOM HTMLファイル（指定時はスクリーンショットも省略する）",
+    )
     parser.add_argument(
         "--skip-screenshot", action="store_true", help="スクリーンショット撮影を省略する"
     )
@@ -454,12 +641,20 @@ def read_template_source() -> str:
         ) from error
 
 
+def _resolve_or_raise(path: Path) -> Path:
+    """Resolve a path or convert filesystem resolution failures to JSON errors."""
+    try:
+        return path.resolve()
+    except (RuntimeError, OSError) as error:
+        raise VerificationError(f"パスを解決できません: {path}: {error}") from error
+
+
 def _validate_html_path(html: Path) -> Path:
     """Resolve an HTML path after enforcing cwd containment and no symlinks."""
-    cwd = Path.cwd().resolve()
+    cwd = _resolve_or_raise(Path.cwd())
     absolute_html = html.absolute()
     current_path = absolute_html
-    while current_path.resolve() != cwd:
+    while _resolve_or_raise(current_path) != cwd:
         if current_path.is_symlink():
             raise VerificationError(
                 f"シンボリックリンク経由のパスは許可されていません: {current_path}"
@@ -469,7 +664,7 @@ def _validate_html_path(html: Path) -> Path:
             break
         current_path = parent
 
-    resolved_html = absolute_html.resolve()
+    resolved_html = _resolve_or_raise(absolute_html)
     if not resolved_html.is_relative_to(cwd):
         raise VerificationError(f"作業ディレクトリ外のパスは許可されていません: {resolved_html}")
     if not resolved_html.is_file():
@@ -500,7 +695,7 @@ def render_screenshot(
     page_height: int,
 ) -> Path | None:
     """Capture a screenshot unless the caller requested DOM-only verification."""
-    if options.skip_screenshot:
+    if options.skip_screenshot or options.dom_file is not None:
         return None
 
     resolved_chrome = chrome_path or resolve_required_chrome(options.chrome)

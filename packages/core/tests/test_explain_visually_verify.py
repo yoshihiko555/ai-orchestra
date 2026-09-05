@@ -57,6 +57,7 @@ def _render_template(title: str = "Example", body: str = "<main>body</main>") ->
 def _options_for(
     html: Path,
     *,
+    dom_file: Path | None = None,
     skip_screenshot: bool = True,
     chrome: str | None = None,
 ) -> verify_page.CliOptions:
@@ -65,13 +66,17 @@ def _options_for(
         width=verify_page.DEFAULT_VIEWPORT_WIDTH,
         wait=verify_page.DEFAULT_VIRTUAL_TIME_BUDGET_MS,
         timeout=verify_page.DEFAULT_CHROME_TIMEOUT_SECONDS,
-        dom_file=None,
+        dom_file=dom_file,
         skip_screenshot=skip_screenshot,
         chrome=chrome,
     )
 
 
 class _FakeChromeProcess:
+    """`subprocess.Popen` の代役。Popen と同じ引数で呼ばれ、渡された stdout / stderr の
+    ファイルへ出力を書き込んでから自身を返す（run_chrome はパイプではなくファイル経由で
+    出力を回収するため）。"""
+
     pid = 12345
 
     def __init__(
@@ -87,11 +92,19 @@ class _FakeChromeProcess:
         self.timeout_calls = timeout_calls
         self.call_count = 0
 
-    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+    def __call__(self, *args: object, **kwargs: object) -> _FakeChromeProcess:
+        for key, text in (("stdout", self.output), ("stderr", self.stderr)):
+            handle = kwargs.get(key)
+            if handle is not None and hasattr(handle, "write"):
+                handle.write(text.encode("utf-8"))
+                handle.flush()
+        return self
+
+    def wait(self, timeout: float | None = None) -> int | None:
         self.call_count += 1
         if self.call_count <= self.timeout_calls:
             raise subprocess.TimeoutExpired(cmd="chrome", timeout=timeout)
-        return self.output, self.stderr
+        return self.returncode
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +197,20 @@ class TestParseDomMetrics:
         assert metrics.ready is True
         assert metrics.page_height == 1234
         assert metrics.title == "Example Page"
+
+    def test_body_attributes_override_attribute_like_title_text(self) -> None:
+        dom = (
+            '<html><head><title>Example data-page-height="1" Page</title></head>'
+            '<body data-page-height="1234" data-mermaid-ready="1">'
+            '<div class="mermaid"><svg id="fig-0">a</svg></div>'
+            "</body></html>"
+        )
+
+        metrics = verify_page.parse_dom_metrics(dom)
+
+        assert metrics.page_height == 1234
+        assert metrics.ready is True
+        assert metrics.title == 'Example data-page-height="1" Page'
 
     def test_counts_unrendered_pre_mermaid_blocks_as_sources(self) -> None:
         dom = '<body data-page-height="500"><pre class="mermaid">graph TD; a --> b</pre></body>'
@@ -376,6 +403,33 @@ class TestLintInjectedMarkup:
 
         assert any("CSP" in warning for warning in warnings)
 
+    def test_csp_hidden_in_comment_is_not_recognized(self) -> None:
+        html = (
+            "<html><head>"
+            '<!-- <meta http-equiv="Content-Security-Policy" '
+            "content=\"default-src 'none'\"> -->"
+            "</head><body>"
+            "<script>const a = 1;</script>"
+            '<script type="module">const b = 2;</script>'
+            "</body></html>"
+        )
+
+        warnings = verify_page.lint_injected_markup(html)
+
+        assert any("CSP" in warning for warning in warnings)
+
+    @pytest.mark.parametrize(
+        "http_equiv",
+        ["re&#102;resh", "&#x72;efresh"],
+        ids=["decimal-entity", "hex-entity"],
+    )
+    def test_entity_obfuscated_meta_refresh_warns(self, http_equiv: str) -> None:
+        markup = f'<meta http-equiv="{http_equiv}" content="0; url=evil">'
+
+        warnings = verify_page.lint_injected_markup(self._html_with_template_scripts(markup))
+
+        assert any("meta refresh" in warning for warning in warnings)
+
     @pytest.mark.parametrize(
         ("markup", "expected"),
         [
@@ -385,8 +439,9 @@ class TestLintInjectedMarkup:
             ('<object data="https://example.com/"></object>', "<object>"),
             ('<embed src="https://example.com/">', "<embed>"),
             ('<form action="https://example.com/"></form>', "<form>"),
+            ('<link rel="stylesheet" href="https://attacker.example/x.css">', "<link>"),
         ],
-        ids=["meta-refresh", "base", "iframe", "object", "embed", "form"],
+        ids=["meta-refresh", "base", "iframe", "object", "embed", "form", "link"],
     )
     def test_navigation_or_embedding_markup_warns(self, markup: str, expected: str) -> None:
         warnings = verify_page.lint_injected_markup(self._html_with_template_scripts(markup))
@@ -396,6 +451,23 @@ class TestLintInjectedMarkup:
     def test_unreplaced_placeholder_warns(self, placeholder: str) -> None:
         warnings = verify_page.lint_injected_markup(self._html_with_template_scripts(placeholder))
         assert any(placeholder in warning for warning in warnings)
+
+    def test_placeholder_inside_pre_is_not_flagged(self) -> None:
+        html = self._html_with_template_scripts('<pre class="code">{{BODY}}</pre>')
+
+        assert verify_page.lint_injected_markup(html) == []
+
+    def test_unreplaced_title_placeholder_still_flagged(self) -> None:
+        html = self._html_with_template_scripts("{{BODY}}").replace(
+            "</head>", "<title>{{TITLE}}</title></head>"
+        )
+
+        warnings = verify_page.lint_injected_markup(html)
+
+        assert all(
+            any(placeholder in warning for warning in warnings)
+            for placeholder in ("{{TITLE}}", "{{BODY}}")
+        )
 
 
 class TestLintTemplateIntegrity:
@@ -514,6 +586,35 @@ class TestMarkupWarningsBlockChromeLaunch:
         assert payload["screenshot"] is None
 
 
+class TestSuppliedDomSkipsScreenshot:
+    """Supplied DOM metrics and screenshots never come from different renders."""
+
+    def test_dom_file_skips_screenshot_without_explicit_skip_flag(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        html_file = tmp_path / "page.html"
+        html_file.write_text(_render_template(), encoding="utf-8")
+        dom_file = tmp_path / "dom.html"
+        dom_file.write_text(
+            '<body data-mermaid-ready="1" data-page-height="900">'
+            '<div class="mermaid"><svg id="fig-0">x</svg></div></body>',
+            encoding="utf-8",
+        )
+
+        def _fail_popen(*args: object, **kwargs: object) -> None:
+            raise AssertionError("Chrome must not be launched")
+
+        monkeypatch.setattr(verify_page.subprocess, "Popen", _fail_popen)
+
+        result = verify_page.verify_page(
+            _options_for(html_file, dom_file=dom_file, skip_screenshot=False)
+        )
+
+        assert result["ok"] is True
+        assert result["screenshot"] is None
+
+
 class TestRenderScreenshotStaleFile:
     """古いスクリーンショットが残っていても、今回の撮影失敗を隠さない。"""
 
@@ -555,7 +656,7 @@ class TestRunChromeTimeoutWithoutOutput:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         process = _FakeChromeProcess(timeout_calls=1)
-        monkeypatch.setattr(verify_page.subprocess, "Popen", lambda *a, **kw: process)
+        monkeypatch.setattr(verify_page.subprocess, "Popen", process)
         monkeypatch.setattr(verify_page.os, "killpg", lambda pgid, sig: None)
 
         with pytest.raises(verify_page.VerificationError, match="タイムアウト"):
@@ -566,7 +667,7 @@ class TestRunChromeTimeoutWithoutOutput:
     ) -> None:
         """--screenshot のように stdout が空で正常な呼び出しはタイムアウトを許容する。"""
         process = _FakeChromeProcess(timeout_calls=1)
-        monkeypatch.setattr(verify_page.subprocess, "Popen", lambda *a, **kw: process)
+        monkeypatch.setattr(verify_page.subprocess, "Popen", process)
         monkeypatch.setattr(verify_page.os, "killpg", lambda pgid, sig: None)
 
         result = verify_page.run_chrome(
@@ -582,7 +683,7 @@ class TestRunChromeTimeoutWithoutOutput:
             raise ProcessLookupError("no such process")
 
         process = _FakeChromeProcess(output="<html>done</html>", returncode=0, timeout_calls=1)
-        monkeypatch.setattr(verify_page.subprocess, "Popen", lambda *a, **kw: process)
+        monkeypatch.setattr(verify_page.subprocess, "Popen", process)
         monkeypatch.setattr(verify_page.os, "killpg", _raise_process_lookup_error)
 
         result = verify_page.run_chrome("chrome", "file:///x", tmp_path, [], timeout=1)
@@ -593,7 +694,7 @@ class TestRunChromeTimeoutWithoutOutput:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         process = _FakeChromeProcess(timeout_calls=2)
-        monkeypatch.setattr(verify_page.subprocess, "Popen", lambda *a, **kw: process)
+        monkeypatch.setattr(verify_page.subprocess, "Popen", process)
         monkeypatch.setattr(verify_page.os, "killpg", lambda pgid, sig: None)
         with pytest.raises(verify_page.VerificationError, match="終了待機が 5 秒"):
             verify_page.run_chrome("chrome", "file:///x", tmp_path, [], timeout=1)
@@ -602,7 +703,7 @@ class TestRunChromeTimeoutWithoutOutput:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         process = _FakeChromeProcess(stderr="boom: something went wrong", returncode=1)
-        monkeypatch.setattr(verify_page.subprocess, "Popen", lambda *a, **kw: process)
+        monkeypatch.setattr(verify_page.subprocess, "Popen", process)
         with pytest.raises(verify_page.VerificationError) as error_info:
             verify_page.run_chrome("chrome", "file:///x", tmp_path, [], timeout=1)
         assert "boom: something went wrong" in str(error_info.value)
@@ -772,6 +873,23 @@ class TestHtmlPathValidation:
         with pytest.raises(verify_page.VerificationError, match="作業ディレクトリ外"):
             verify_page.verify_page(_options_for(outside_html))
 
+    def test_symlink_loop_exits_fatal_with_json_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        loop_path = tmp_path / "loop"
+        loop_path.symlink_to(loop_path)
+        monkeypatch.chdir(tmp_path)
+
+        exit_code = verify_page.main([str(loop_path), "--skip-screenshot"])
+        payload = json.loads(capsys.readouterr().out)
+
+        assert exit_code == verify_page.EXIT_FATAL
+        assert payload["ok"] is False
+        assert "error" in payload
+
 
 # ---------------------------------------------------------------------------
 # EV-34: template.html ↔ verify_page.py の契約（should）
@@ -779,13 +897,13 @@ class TestHtmlPathValidation:
 
 
 class TestTemplateContract:
-    """template.html が verify_page.py の正規表現前提（fig- id / data-* フラグ）と
+    """template.html が verify_page.py の走査前提（fig- id / data-* フラグ）と
     プレースホルダ・Mermaid CDN スクリプトを保持し続けているかを検証する。"""
 
     def test_template_assigns_fig_prefixed_ids_to_mermaid_render(self) -> None:
         template = TEMPLATE_PATH.read_text(encoding="utf-8")
 
-        # RENDERED_FIGURE_PATTERN は `<svg id="fig-N">` を前提とする。id を渡す箇所が
+        # DOM 走査は `<svg id="fig-N">` を前提とする。id を渡す箇所が
         # 'fig-' プレフィックスを使い続けているかを確認する。
         assert "mermaid.render('fig-' + i" in template
 
@@ -794,7 +912,7 @@ class TestTemplateContract:
 
         # ブラウザは `dataset.mermaidReady` / `dataset.pageHeight`（camelCase）への代入を
         # `data-mermaid-ready` / `data-page-height`（kebab-case）属性としてレンダリング済み DOM に
-        # 反映する。PAGE_HEIGHT_PATTERN / ready フラグ判定はこのレンダリング結果を前提にしており、
+        # 反映する。DOM 走査の page height / ready 判定はこのレンダリング結果を前提にしており、
         # 静的なテンプレートソースには kebab-case 属性文字列そのものは現れない。
         assert "document.body.dataset.mermaidReady = '1'" in template
         assert (
