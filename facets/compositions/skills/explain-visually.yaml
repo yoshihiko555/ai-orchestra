@@ -1,0 +1,29 @@
+# explain-visually スキルのファセット構成定義
+# 出典: https://github.com/keitakn/engineering-skills (MIT) @ f972ef4a を当リポジトリ向けに適応
+name: explain-visually
+description: 設計文書・実装計画・ブランチ差分・PR/Issue を図解 HTML にして人間の理解を助ける
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: explain-visually
+  description: |
+    Turn a long design document, implementation plan, branch diff (AI-written code),
+    PR, Issue, or /review result into an explanatory HTML page with diagrams and short
+    text, verify it renders, and open it in the browser. Use when the user wants to
+    understand AI-generated code or plans at a glance, or says "図解", "explain visually",
+    "可視化して", "わかりやすく説明", "この差分を説明", "計画を図にして".
+  metadata:
+    short-description: Explain plans, diffs, PRs and docs as diagram-based HTML pages
+  disable-model-invocation: true
+
+# 参照するポリシー（推測と事実の区別・未確認事項の明示）
+policies:
+  - factual-writing
+
+# スキル固有の instruction（ファイル参照）
+instruction: explain-visually
+
+# 同梱スクリプト（scripts/ 配下へ flat 配布）
+scripts:
+  - explain-visually/template.html
+  - explain-visually/verify_page.py

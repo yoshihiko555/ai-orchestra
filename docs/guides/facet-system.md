@@ -317,6 +317,7 @@ orchex facet build --name my-skill --project .
 | `antigravity-system`                | skill | antigravity-suggestions         | cli-language                             | —             |
 | `code-comments`                     | skill | quality-gates                   | —                                        | —             |
 | `code-naming`                       | skill | quality-gates                   | —                                        | —             |
+| `explain-visually`                  | skill | core                            | factual-writing                          | —             |
 | `issue-create`                      | skill | git-workflow                    | —                                        | —             |
 | `issue-fix`                         | skill | git-workflow                    | cli-language, pr-standards               | tiered-review |
 | `pr-create`                         | skill | git-workflow                    | cli-language, dialog-rules, pr-standards | —             |

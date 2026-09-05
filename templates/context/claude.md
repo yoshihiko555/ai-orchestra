@@ -86,3 +86,7 @@
 - 変更後は必ず再生成と同期を実行する
   - `python "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" context build`
   - `python "$AI_ORCHESTRA_DIR/scripts/orchestra-manager.py" context sync --project <path>`
+- git worktree（`.worktrees/<name>`）で作業中は `orchex` コマンドを使わず、必ず
+  `AI_ORCHESTRA_DIR="$PWD" python "$PWD/scripts/orchestra-manager.py" facet build --project "$PWD"`
+  の形で実行する（`context build` / `sync` / `--target codex` も同様）。editable install の `orchex` は
+  root チェックアウトを解決するため、worktree の `facets/` を見ずに失敗する
