@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`quality-gates`: `code-comments` / `code-naming` スキルを追加**: コード・テスト・コミットログ・コードコメントの書き分けと、識別子（変数・関数・クラス等）の命名を、実装時やコミットメッセージ作成時に参照できるようになった（[keitakn/engineering-skills](https://github.com/keitakn/engineering-skills) より移植、MIT）。
+
 ### Fixed
 
 - **hook の起動が `PATH` 上の `python3` に依存しなくなった（Issue #343）**: `settings.local.json` に登録される hook コマンドは `"${AI_ORCHESTRA_PYTHON:-python3}"` 経由になり、`orchex init` / `setup` / `install` / `enable` が `~/.claude/settings.json` の `env.AI_ORCHESTRA_PYTHON` に現在のインタプリタを設定する。バージョンマネージャ未適用のログインシェルで hook が起動されても、想定外のインタプリタに落ちて失敗することがなくなった。既存導入プロジェクトは `orchex init --project .` を 1 度実行すると、hook コマンドの表記移行とインタプリタの設定が同時に行われる（実行するまでは従来どおり `PATH` の `python3` で解決される）。別のインタプリタを使う場合は `env.AI_ORCHESTRA_PYTHON` を書き換え、`PATH` の `python3` へ戻す場合はこのキーを削除する。設定値でインタプリタを起動できなくなった場合は `orchex init` / `setup` の再実行で修復される。なお worktree やプロジェクト直下の venv、`AI_ORCHESTRA_DIR` の外に置いた venv など、消えると hook だけが道連れになる場所の Python は恒久設定へ書き込まず、警告のうえ従来どおり `PATH` の `python3` で起動される（`pip` / `pipx` / `uv tool` で orchex 自体を venv へ入れた場合は、`AI_ORCHESTRA_DIR` も同じ venv 内にあるため対象外）。

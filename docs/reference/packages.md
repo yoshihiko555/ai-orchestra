@@ -137,6 +137,8 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | skill | `tdd`                           | テスト駆動開発ワークフロー                                               |
 | skill | `design-tracker`                | 設計記録                                                                 |
 | skill | `release-readiness`             | リリース前最終チェック                                                   |
+| skill | `code-comments`                 | コード・テスト・コミットログ・コードコメントの書き分け                   |
+| skill | `code-naming`                   | 識別子（変数・関数・クラス等）の命名                                     |
 | rule  | `skill-review-policy`           | レビュー系スキルのポリシー                                               |
 
 ---

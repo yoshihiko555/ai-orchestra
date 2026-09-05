@@ -430,6 +430,8 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 | `/task-state`         | Plans.md の作成・更新                                         |
 | `/release-readiness`  | マージ前の最終チェック                                        |
 | `/tdd`                | テスト駆動開発ワークフロー                                    |
+| `/code-comments`      | コード・テスト・コミットログ・コードコメントの書き分け        |
+| `/code-naming`        | 識別子（変数・関数・クラス等）の命名                          |
 
 ### レビュースキル
 
