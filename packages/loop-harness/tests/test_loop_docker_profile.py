@@ -88,8 +88,11 @@ def test_scenario_command_applies_complete_security_profile_and_mount_order(
     assert "--cpus 1.0" in rendered
     assert "/home/loop:rw,noexec,nosuid,nodev" in rendered
     assert "/tmp:rw,noexec,nosuid,nodev" in rendered
+    # Issue #409: `TMPDIR` points at the separate `exec`-capable tmpfs, not the `noexec` `/tmp`
+    # mount above, so mechanical checks (`pytest -q`, etc.) can stage executable fixtures there.
+    assert "/tmp/exec:rw,exec,nosuid,nodev" in rendered
     assert "HOME=/home/loop" in rendered
-    assert "TMPDIR=/tmp" in rendered
+    assert "TMPDIR=/tmp/exec" in rendered
     assert command[-6:] == [
         "/usr/bin/timeout",
         "--signal=TERM",

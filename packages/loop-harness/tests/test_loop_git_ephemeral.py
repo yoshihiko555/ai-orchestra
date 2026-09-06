@@ -239,12 +239,23 @@ def test_prepare_ephemeral_git_initializes_trusted_maker_repository(
     assert _git("config", "safe.directory", env=_ephemeral_env(session)).stdout.strip() == str(
         linked_worktree.worktree_path
     )
+    # Issue #409 (design pivot): `core.bare false` lets a container process with no `GIT_DIR`/
+    # `GIT_WORK_TREE` env resolve a worktree via the `.git` pointer overlay alone.
+    assert _git("config", "core.bare", env=_ephemeral_env(session)).stdout.strip() == "false"
     assert (
         Path(session.ephemeral_dir, "objects/info/alternates").read_text(encoding="utf-8")
         == f"{session.common_dir}/objects\n"
     )
+    # The overlay bind-mounted over `<worktree>/.git` inside a container now resolves to
+    # `ephemeral_dir` (the only Git plumbing path mounted 1:1 into that container), not a copy
+    # of the host's real `.git` pointer -- see `_pinned_git_pointer_content()`. The *original*
+    # host pointer content is preserved separately, for tamper detection only.
     assert (
         Path(session.pinned_git_pointer).read_bytes()
+        == f"gitdir: {session.ephemeral_dir}\n".encode()
+    )
+    assert (
+        Path(session.original_git_pointer).read_bytes()
         == Path(linked_worktree.worktree_path, ".git").read_bytes()
     )
 
@@ -510,8 +521,9 @@ def test_build_maker_git_mount_spec_preserves_overlay_order_and_one_to_one_paths
             True,
         ),
     ]
-    assert spec.env["GIT_DIR"] == str(session.ephemeral_dir)
-    assert spec.env["GIT_WORK_TREE"] == str(session.worktree_path)
+    # Issue #409 (design pivot, belt-and-braces removed): the `.git` pointer overlay is the sole
+    # resolution mechanism -- no GIT_DIR/GIT_WORK_TREE env is ever attached anywhere any more.
+    assert spec.env == {}
     git_ephemeral.cleanup_ephemeral_git(session)
 
 
@@ -641,10 +653,9 @@ def test_build_checker_git_mount_spec_is_read_only_and_preserves_overlay_order(
             True,
         ),
     ]
-    assert dict(spec.env) == {
-        "GIT_DIR": str(session.ephemeral_dir),
-        "GIT_WORK_TREE": str(session.worktree_path),
-    }
+    # Issue #409 (design pivot, belt-and-braces removed): the `.git` pointer overlay is the sole
+    # resolution mechanism -- no GIT_DIR/GIT_WORK_TREE env is ever attached anywhere any more.
+    assert dict(spec.env) == {}
     excluded_common_paths = {Path(session.common_dir, name) for name in ("refs", "config", "hooks")}
     assert all(Path(mount.source) not in excluded_common_paths for mount in spec.mounts)
     git_ephemeral.cleanup_ephemeral_git(session)
@@ -1529,8 +1540,12 @@ def test_prepare_and_finalize_ignore_ambient_git_index_file_env_var(
     )
     assert ephemeral_files == ["tracked.txt", "unchanged.txt"]
 
-    # Simulate the Maker container's own environment (GIT_DIR/GIT_WORK_TREE only -- containers do
-    # not inherit the host driver process's ambient env) committing against the real index.
+    # Simulate a Maker commit against the real (non-rogue) index using `_ephemeral_env()`'s
+    # GIT_DIR/GIT_WORK_TREE for this host-side test's convenience only. Issue #409 (design
+    # pivot): a real Maker container never actually receives this env at all any more -- it
+    # resolves the same repository purely through the `.git` pointer overlay -- but exercising
+    # that same GIT_DIR/GIT_WORK_TREE pairing from the host still exercises the identical
+    # ephemeral-index code path this test targets.
     maker_env = _ephemeral_env(session)
     maker_env.pop("GIT_INDEX_FILE", None)
     Path(session.worktree_path, "tracked.txt").write_text("maker commit\n", encoding="utf-8")

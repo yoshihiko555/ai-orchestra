@@ -166,13 +166,19 @@ def _validate_broker(value: Any) -> BrokerConfig:
         startup_timeout_sec=_positive_int(
             broker.get("startup_timeout_sec", 30), "broker.startup_timeout_sec"
         ),
-        budget_usd=_positive_number(broker.get("budget_usd", 3.0), "broker.budget_usd"),
-        max_requests=_positive_int(broker.get("max_requests", 64), "broker.max_requests"),
+        # Issue #405: the previous defaults (budget_usd=3.0, max_requests=64,
+        # max_total_tokens=500_000) rejected Claude Code's very first request outright -- its
+        # system prompt + tools already push the per-request cost upper bound past a $3 run
+        # budget, so every Maker/Checker LLM-review request was budget-rejected before a single
+        # token could be spent. Recalibrated from an actual Maker run (31 requests, $6.68,
+        # `total_tokens` over 2M once cache reads are counted) with headroom.
+        budget_usd=_positive_number(broker.get("budget_usd", 25.0), "broker.budget_usd"),
+        max_requests=_positive_int(broker.get("max_requests", 400), "broker.max_requests"),
         max_total_tokens=_positive_int(
-            broker.get("max_total_tokens", 500000), "broker.max_total_tokens"
+            broker.get("max_total_tokens", 30000000), "broker.max_total_tokens"
         ),
         max_upstream_bytes=_positive_int(
-            broker.get("max_upstream_bytes", 50000000), "broker.max_upstream_bytes"
+            broker.get("max_upstream_bytes", 500000000), "broker.max_upstream_bytes"
         ),
         pricing=BrokerPricing(
             input=_positive_number(pricing.get("input", 15.0), "broker.pricing.input"),

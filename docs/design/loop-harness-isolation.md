@@ -19,7 +19,9 @@ codd:
 **ステータス**: draft（Issue #211 の設計フェーズ成果物。実装は本書確定後に別 PR で行う）
 **対象**: LP-2（`loop_driver.py` の headless `claude -p` 実行）のみ。LP-1（セッション内伴走型、`loop_step.py`）は対象外
 **関連**: `design:loop-harness`（基本設計）、`design:loop-harness-cli`（CLI 詳細設計。§2.2 に現行の多層防御と本 Issue への申し送りがある）、
-`adr:ADR-20260712-035`（meta-harness の Docker + ephemeral broker 移行。本設計の流用元）、`adr:ADR-20260715-039`（本設計の決定を記録する ADR）
+`adr:ADR-20260712-035`（meta-harness の Docker + ephemeral broker 移行。本設計の流用元）、`adr:ADR-20260715-039`（本設計の決定を記録する ADR）、
+`adr:ADR-20260906-053`（LP-2 実運用フィードバックによる git env 撤廃（`.git` overlay 一本化）・
+tmpfs・観測性の調整）
 
 > 本書は `docs/design/loop-harness-cli.md` §2.2 末尾の「残余リスク（同一 UID 前提）」および
 > Issue #231（イメージキャッシュ肥大化）の教訓を踏まえ、Maker/Checker の実行境界を
@@ -134,6 +136,14 @@ driver (host)                          broker (sidecar)          scenario (Maker
 | 実行内容           | `claude -p`（編集 + `git commit` まで。push はしない）          | `mechanical.commands`（subprocess）+ LLM レビュアー `claude -p`（読み取り専用） |
 | コンテナ後の driver 処理 | git 同期（4 節）+ push 前整合性検証（既存 §2.2 のロジックを継続） | artifact 保存のみ（既存 `run-checker` 相当のロジックを継続） |
 
+> **[ADR-20260906-053]** artifact 保存には、broker `--print-metrics` の要約
+> （`artifacts/<action_id>/broker_metrics.json`）と、`claude` が非 0 終了した場合の stdout 末尾 /
+> stderr（`artifacts/<action_id>/`）、LLM レビュアー出力の生 stdout/stderr
+> （`artifacts/<action_id>/llm_review_<reviewer>.raw.json` / `.stderr.log`）を追加する。
+> infrastructure failure の journal payload にも broker metrics 要約
+> （requests / estimated_cost_usd / anomaly_reasons）を載せる。lease 喪失による
+> `discard_after_lease_loss` 経路では書かない（EV-50 準拠）。
+
 ---
 
 ## 3. コンテナ実行時のセキュリティプロファイル
@@ -142,7 +152,15 @@ meta-harness（`packages/meta-harness/lib/scenario_docker_profile.py`）の scen
 そのまま踏襲する（確定方針 4）。
 
 - `--read-only`（rootfs）/ `--cap-drop=ALL` / `--security-opt=no-new-privileges` / non-root user
-- `--tmpfs` で `$HOME`・`/tmp` を用意（書き込みは対象 mount と tmpfs のみに限定）
+- `--tmpfs` で `$HOME`・`/tmp` を用意（書き込みは対象 mount と tmpfs のみに限定。`$HOME`・`/tmp`
+  は noexec を維持する）
+- **[ADR-20260906-053]** 別途 `/tmp/exec`（rw, nosuid, nodev、**noexec なし**、size 512m、
+  uid/gid はコンテナユーザー）を tmpfs として追加し、コンテナ全体の `TMPDIR` をここへ向ける。
+  Maker（`claude -p` が生成したコードの実行）・Checker（`mechanical.commands`）はいずれも
+  Maker が作成した Python 等を実行する場面が主であり、`$HOME`・`/tmp` の noexec はそこでは
+  実質的な防御にならない一方、CLI バイナリを生成・実行する正当なテストを構造的に落としていた
+  （実測 47 件。詳細は ADR-20260906-053 参照）。`$HOME`・`/tmp` の noexec は「`TMPDIR` を
+  尊重しない直書きへの残余防御」に格下げされる（主防御ではなくなる）。
 - `--pids-limit` / `--memory` / `--cpus` の資源上限（config で調整可。7 節）
 - Docker socket は**決してマウントしない**
 - ネットワークは `--internal` の Docker network のみに接続し、broker 以外に到達不可
@@ -276,12 +294,29 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
    ため）。`GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` を明示的に指定する呼び出し（本手順、
    4.3.1 手順11・Fix-10、4.3.3 手順3・Fix-9）はこの除去後に明示値を上書きするため、意図した
    値は変わらず優先される。
-10. **[Fix-3] `.git` ポインタの改ざん防止準備**: `<worktree_path>/.git` は本来
-    `gitdir: <common_dir>/worktrees/<name>` を指すテキストファイルである。この内容を
-    `pinned_git_pointer = <runtime dir>/pinned-dotgit` にコピーしておく（コンテナ起動前、
-    trusted な内容として一度だけスナップショット）。4.3.2 節でこのファイルを
-    `<worktree_path>/.git` に **ro で上書き bind mount** することで、worktree 自体は rw でも
-    `.git` ポインタだけはコンテナから書き換え不能にする。
+10. **[Fix-3. 2026-09-07 ADR-20260906-053 で改訂] `.git` ポインタの改ざん防止 + git 解決の主制御化**:
+    `<worktree_path>/.git` は本来 `gitdir: <common_dir>/worktrees/<name>` を指すテキストファイルで
+    あり、この内容は host 側でしか解決できない（`common_dir/worktrees/<name>` 自体はコンテナに
+    マウントしない）。改ざん検知用に、host オリジナルの `.git` 内容をコンテナ起動前にスナップショット
+    として別途保持する（overlay 用の合成内容 `pinned_git_pointer` とは別ファイル。具体的な変数名・
+    パスは実装時に確定する）。別途、コンテナへ bind mount する**合成内容**として
+    `pinned_git_pointer = <runtime dir>/pinned-dotgit` に **`gitdir: <ephemeral_dir>`** を書き込む
+    （`<ephemeral_dir>` 側は `core.bare=false` に設定し、worktree 相当として解決できるようにする）。
+    4.3.2 節でこの `pinned_git_pointer` を `<worktree_path>/.git` に **ro で上書き bind mount**
+    することで、worktree 自体は rw でも `.git` ポインタだけはコンテナから書き換え不能かつ、
+    コンテナ内で到達可能な参照になる。
+    **[Fix-16. 2026-09-07]** これにより `.git` overlay 自体が git 解決の**唯一の制御**に昇格する
+    （従来は host gitdir を指す内容のコピーだったため、コンテナ内では到達不能で改ざん防止のみを
+    担っていた。実プロジェクト ai-orchestra Issue #347 の LP-2 無人実行と Docker E2E
+    `test_maker_commit_round_trip_uses_production_profile_and_cleanup` で本番構成におけるこの乖離
+    が判明し、ADR-20260906-053 で是正した）。**[2026-09-07 最終決定]** `GIT_DIR`/`GIT_WORK_TREE`
+    env はコンテナ内のいかなるプロセス（`claude -p` を含む）にも付与しない
+    （belt-and-braces として `claude -p` exec にだけ残す中間案も採らない。Maker が Bash 経由で
+    走らせる pytest 内の `git init` + commit が env に引きずられ ephemeral repo 側へ落ちる事故
+    ——Checker で観測した 656 件失敗と同じクラス——を Maker 側にも残さないため。詳細は
+    ADR-20260906-053 参照）。事後処理（4.3.3 節）の改ざん検知は、上記の host オリジナル内容の
+    スナップショットと host `.git` の実体を比較する形で継続する（overlay 用の合成内容とは別に
+    保持する）。
 11. **[Fix-10. 2026-07-17 PR #256 レビュー指摘反映。High]** `ephemeral_dir` の作成（手順4）より前に、
     Maker がまだ到達できない `common_dir` を `GIT_DIR` とし、`baseline_sha` の tree から
     `read-tree` で新規構築した host 専用の一時 index に対して、**`target_sha`（＝`baseline_sha`）
@@ -308,20 +343,36 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
 
 - マウント（すべて **1:1 パス**。4.4 節）:
   - `<worktree_path>` → 同パス、rw
-  - **`pinned_git_pointer` → `<worktree_path>/.git`、ro**（worktree 全体の rw マウントより後に
-    重ねてマウントする。より限定的なマウントが優先されるため `.git` だけが ro になる。**[Fix-3]**）
+  - **`pinned_git_pointer`（内容: `gitdir: <ephemeral_dir>`） → `<worktree_path>/.git`、ro**
+    （worktree 全体の rw マウントより後に重ねてマウントする。より限定的なマウントが優先される
+    ため `.git` だけが ro になる。**[Fix-3. Fix-16]**）
   - `<ephemeral_dir>` → 同パス、rw
   - `<common_dir>/objects` → 同パス、**ro**
-- env: 既存 `maker_env()`（層2 の認証剥奪。git/gh 資格情報を渡さない方針は継続）に加え、
-  `GIT_DIR=<ephemeral_dir>` / `GIT_WORK_TREE=<worktree_path>` を明示する。これにより Maker の
-  `git add`/`git commit`/`git status`/`git diff`（既存 `--allowedTools` の許可範囲。§2.2 参照）は
-  ephemeral repo の index/ref に対して働き、ファイル自体は実 worktree 上で編集される。
-- **[Fix-3] 補足**: `.git` を ro 保護しても、Maker が `GIT_DIR`/`GIT_WORK_TREE` を無視して
-  `.git` 経由の自動解決（`common_dir/worktrees/<name>` への到達）を試みる可能性はゼロではない。
-  ただし到達先の `common_dir/worktrees/<name>` 自体はマウントされていないため、コンテナ内からは
-  どのみち解決不能である（`.git` の ro 化は主として **4.3.3 節のホスト側事後処理**が汚染された
-  `.git` を踏まないようにするための保護であり、Maker 自身の到達可否は「マウントしない」という
-  4 節冒頭の原則で別途担保されている）。
+- env: 既存 `maker_env()`（層2 の認証剥奪。git/gh 資格情報を渡さない方針は継続）を使用する。
+  **[ADR-20260906-053. Fix-16. 2026-09-07 最終決定]** `GIT_DIR`/`GIT_WORK_TREE` は **コンテナ内の
+  いかなるプロセス（`claude -p` を含む）にも付与しない**。belt-and-braces（`claude -p` exec にだけ
+  env を冗長付与する案）は採らない。`.git` overlay（`gitdir: <ephemeral_dir>`）が git 解決の
+  **唯一の制御**であり、Maker の `git add`/`git commit`/`git status`/`git diff`（既存
+  `--allowedTools` の許可範囲。§2.2 参照）はこの overlay 経由で ephemeral repo の index/ref に
+  対して働き、ファイル自体は実 worktree 上で編集される。
+  - 機械検証（`mechanical.commands`）の exec に env を付与しない理由: env を継承すると worktree 内
+    で `git init` を行うテスト等が ephemeral repo 側へ誤誘導される（#409 で実測 656 failed /
+    429 errors）。
+  - `claude -p` exec にも env を付与しない理由（belt-and-braces 廃止）: env を残すと、Maker が
+    Bash 経由で走らせる pytest 内の `git init <dir>` + commit が env に引きずられて ephemeral
+    repo 側へ落ち、Checker で発生したのと同じクラスの失敗が Maker 側にも残存し得る。env を完全に
+    排除することで、この経路自体を構造的に排除する。
+  - Docker E2E（`test_maker_commit_round_trip_uses_production_profile_and_cleanup`）で、env を
+    一切付与しなくても `.git` → `gitdir: <ephemeral_dir>` の通常解決が Maker・機械検証の双方で
+    成立することを実証済み。詳細は ADR-20260906-053 参照。
+- **[Fix-3 補足. 2026-09-07 改訂]** `.git` overlay が `gitdir: <ephemeral_dir>` を指すよう改訂
+  されたことで、env が存在しないコンテナ内で Maker が `.git` 経由の自動解決を行っても、
+  到達先の `<ephemeral_dir>` はコンテナにマウントされているため正しく解決される（改訂前は到達先が
+  host 専用の `common_dir/worktrees/<name>` で解決不能だったが、これは意図した挙動ではなく
+  overlay を改ざん防止としてのみ機能させていた副作用だった。ADR-20260906-053 参照）。`.git` の
+  ro 化は引き続き、worktree 全体が rw でも overlay の内容（＝どの ephemeral repo を指すか）自体を
+  コンテナ内から書き換え不能にするための保護であり、加えて 4.3.3 節のホスト側事後処理が汚染された
+  `.git` を踏まないようにする役割も担う。
 
 #### 4.3.3 事後処理（driver、host。コンテナ破棄後）
 
@@ -460,9 +511,13 @@ reset のみ**に限定され、いずれも driver（host、信頼境界内の�
    起動不能になる不備があった。Checker は commit しないため手順5（commit identity の seed）は
    実質使われないが、選択的な除外がまた別の抜け漏れを生む再発防止のため一律で同じ手順を適用する。
 2. コンテナには `<worktree_path>` を **ro**（確定方針 6）、`ephemeral_dir_checker` を **ro**、
-   `<common_dir>/objects` を **ro** でマウントする。`.git` の ro overlay（4.3.1 節 Fix-3）は
-   Checker のコンテナにも同様に適用する（Checker は書き込まないため実害は小さいが、
-   4.3.3 節の driver 側事後処理は Checker 実行後にも共通して走るため一貫性のため適用する）。
+   `<common_dir>/objects` を **ro** でマウントする。`.git` の ro overlay（4.3.1 節 Fix-3/Fix-16）は
+   Checker のコンテナにも同様に適用する。**[ADR-20260906-053. 2026-09-07 最終決定]** Maker（4.3.2
+   節）と同様、`GIT_DIR`/`GIT_WORK_TREE` はコンテナ内のいかなるプロセス（`mechanical.commands`
+   exec・LLM レビュアー `claude -p` exec のいずれにも）にも付与しない。したがって
+   `gitdir: <ephemeral_dir_checker>` を指すこの overlay が、worktree 内で git を解決する**唯一の
+   手段**になる（Maker と同様、単なる改ざん防止ではなく load-bearing）。詳細は
+   ADR-20260906-053 参照。
 3. コンテナ破棄後、`ephemeral_dir_checker` は書き戻し不要（Checker は commit しない）のため
    `shutil.rmtree` するのみ。共有 common dir への書き込みは一切発生しない。
 
@@ -717,9 +772,13 @@ config で切替可能な追加バックエンドとして導入する（確定�
   として受容する。
 - Docker daemon 自体の脆弱性・ホスト側 Docker Desktop/OrbStack の実装依存のリスクは
   ADR-20260712-035 のスコープと同じく対象外とする。
-- 4.3.2 節 Fix-3 の `.git` ro overlay は「host 側の事後処理が汚染された gitdir を踏まない」ことを
-  保証するものであり、Maker 自身が `.git` 経由でコンテナ内から `common_dir/worktrees/<name>` へ
-  到達すること自体は、当該パスをそもそもマウントしていないことで防いでいる（二重の防御）。
+- **[2026-09-07 ADR-20260906-053 で改訂]** 4.3.2 節 Fix-3/Fix-16 の `.git` ro overlay は現在
+  `gitdir: <ephemeral_dir>` を指す合成内容であり、Maker が `.git` 経由でコンテナ内から自動解決
+  しても `<ephemeral_dir>`（マウント済み）へ正しく到達する（改訂前は host 専用の
+  `common_dir/worktrees/<name>` を指しており、当該パスをマウントしないことで到達不能にする
+  「二重の防御」だったが、これは overlay を改ざん防止としてのみ機能させていた副作用だった）。
+  `common_dir/worktrees/<name>` 自体をコンテナへマウントしない原則（4 節冒頭）は変更なく、
+  Maker がその path へ到達する経路は依然として存在しない。
 - ephemeral fetch（4.3.3 手順4）が転送するオブジェクトのサイズ・件数には上限がない。Maker が
   worktree 上で正当に生成した巨大ファイルをそのまま commit した場合、host 権限で共有
   `common_dir/objects` へ書き込まれディスク枯渇 DoS を招き得る（Fix-7 が閉じた alternates 経由の

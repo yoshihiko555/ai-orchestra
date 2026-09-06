@@ -548,7 +548,36 @@ def _reject_symlinks_under_objects(objects_dir: Path) -> None:
                 pending.append(Path(entry.path))
 
 
+def _pinned_git_pointer_content(ephemeral_dir: Path) -> bytes:
+    """Canonical bytes for the `.git` pointer overlay bind-mounted over a container worktree.
+
+    Issue #409 (design pivot): points at `ephemeral_dir` -- the only Git plumbing path mounted
+    1:1 at the same absolute path inside every Maker/Checker container (see
+    `build_maker_git_mount_spec`/`build_checker_git_mount_spec`) -- rather than the host
+    worktree's real `.git` pointer, which usually resolves to a path outside any container mount
+    and is therefore unreachable from inside one. A container process resolving `.git` with no
+    `GIT_DIR`/`GIT_WORK_TREE` env at all (e.g. `execute_mechanical()`'s `docker exec`) still finds
+    the right repository this way. Shared by `prepare_ephemeral_git()` (writes it) and
+    `_verify_git_pointer()` (re-derives the same bytes to detect tampering) so the two can never
+    drift out of sync with each other.
+    """
+    return f"gitdir: {ephemeral_dir}\n".encode()
+
+
 def _verify_git_pointer(session: EphemeralGitSession) -> None:
+    """Verify neither the host's real `.git` pointer nor the container-facing overlay was touched.
+
+    Issue #409 (design pivot): `session.pinned_git_pointer` (the file bind-mounted over
+    `<worktree>/.git` inside a container) intentionally no longer mirrors the host worktree's
+    original `.git` pointer content -- see `_pinned_git_pointer_content()`'s own docstring for
+    why. `session.original_git_pointer` (a snapshot of that original content, taken once by
+    `prepare_ephemeral_git()`, never mounted into any container) now carries the "has the real
+    host `<worktree>/.git` file been tampered with since prepare?" check this function always
+    performed; a second, independent check confirms `pinned_git_pointer`'s *own* bytes still
+    match the expected `gitdir: <ephemeral_dir>` content (has the overlay file itself, which the
+    host driver process owns read-only, been tampered with?). Both trust boundaries this function
+    protected before are still enforced -- only what each comparison is made against changed.
+    """
     git_pointer = session.worktree_path / ".git"
     if git_pointer.is_symlink():
         raise EphemeralGitInfrastructureError(
@@ -557,13 +586,15 @@ def _verify_git_pointer(session: EphemeralGitSession) -> None:
         )
     try:
         current = git_pointer.read_bytes()
+        original = session.original_git_pointer.read_bytes()
         pinned = session.pinned_git_pointer.read_bytes()
     except OSError as exc:
         raise EphemeralGitInfrastructureError(
             "could not verify the worktree .git pointer",
             details={"git_pointer": str(git_pointer)},
         ) from exc
-    if not git_pointer.is_file() or current != pinned:
+    expected_pinned = _pinned_git_pointer_content(session.ephemeral_dir)
+    if not git_pointer.is_file() or current != original or pinned != expected_pinned:
         raise EphemeralGitInfrastructureError(
             "worktree .git pointer differs from its trusted pinned snapshot",
             details={"git_pointer": str(git_pointer)},

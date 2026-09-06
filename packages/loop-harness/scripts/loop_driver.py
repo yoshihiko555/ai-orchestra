@@ -500,6 +500,12 @@ class LoopDriver:
         self._action_executor: lae.HostActionExecutor | lae.DockerActionExecutor = (
             lae.HostActionExecutor(self._run_host_child)
         )
+        # Issue #405: best-effort broker `--print-metrics` summary for the *next*
+        # `loop_iteration` audit event, set by `_dispatch()` only for a Docker infra-failure
+        # result. Deliberately not part of the sealed `result` dict `lc.complete()` persists --
+        # `RUN_CHECKER`'s result is schema-validated (`validate_implementation_checker_result()`)
+        # and must never carry extra top-level keys.
+        self._last_docker_broker_metrics_summary: dict[str, Any] | None = None
 
     # -- lifecycle -----------------------------------------------------------------------
 
@@ -914,6 +920,14 @@ class LoopDriver:
                 "result": _iteration_result(state_after, action),
             }
         )
+        # Issue #405: enrich (never replace) the audit payload with a Docker broker metrics
+        # summary, only when this action actually captured one (`_capture_docker_broker_metrics_
+        # summary()`, called from `_dispatch()` only for a Docker infra-failure result). This is
+        # the audit/journal payload only -- the sealed `result` dict `lc.complete()` already
+        # persisted is never touched, so `validate_implementation_checker_result()`'s strict
+        # schema check on a `RUN_CHECKER` result is unaffected.
+        if self._last_docker_broker_metrics_summary is not None:
+            payload["broker_metrics_summary"] = self._last_docker_broker_metrics_summary
         maker = result.get("maker")
         aid = maker.get("agent") if isinstance(maker, dict) else None
         lc.emit_loop_audit_event("loop_iteration", self.project_dir, payload, aid=aid)
@@ -991,6 +1005,10 @@ class LoopDriver:
         params = proposal.context.get("params", {})
         if not isinstance(params, dict):
             params = {}
+        # Issue #405: reset per dispatch so a previous action's summary never leaks into this
+        # one's `loop_iteration` audit event when this action has no Docker broker metrics of
+        # its own (host executor, or a Docker action that never hit an infra failure).
+        self._last_docker_broker_metrics_summary = None
         try:
             executor = lae.build_action_executor(
                 ld.load_config(self.project_dir),
@@ -1069,6 +1087,8 @@ class LoopDriver:
                 executor.discard()
                 return result
             executor.finish(result)
+            if result.get("infrastructure_failure"):
+                self._capture_docker_broker_metrics_summary(executor, proposal.action_id)
             return result
         except (lda.DockerActionSafetyStop, lge.EphemeralGitSafetyStop) as exc:
             lease_lost_result = self._discard_after_lease_loss_or_none(
@@ -1103,9 +1123,47 @@ class LoopDriver:
                 self._stop_for_action_safety(proposal, state, safety_exc)
             except (lda.DockerActionError, lge.EphemeralGitInfrastructureError) as cleanup_exc:
                 exc.add_note(f"action cleanup also failed: {cleanup_exc}")
-            return self._docker_infrastructure_result(proposal, state, params, str(exc))
+            result = self._docker_infrastructure_result(proposal, state, params, str(exc))
+            self._capture_docker_broker_metrics_summary(executor, proposal.action_id)
+            return result
         finally:
             self._action_executor = previous_executor
+
+    def _capture_docker_broker_metrics_summary(
+        self,
+        executor: lae.HostActionExecutor | lae.DockerActionExecutor,
+        action_id: str,
+    ) -> None:
+        """Best-effort broker `--print-metrics` summary for the next `loop_iteration` audit.
+
+        Issue #405: reads the `broker_metrics.json` artifact `DockerActionRuntime.finish()`/
+        `abort()` already wrote (see that module's `_persist_broker_metrics()`), rather than
+        querying the broker container again -- by the time `_dispatch()` reaches this,
+        `finish()`/`abort()` has already run, and for a checker action with no `llm_review`
+        layer the broker container may never have existed at all. Sets `self._last_docker_
+        broker_metrics_summary` (never returns it), which `_emit_iteration_and_stop_audit()`
+        folds into the audit payload -- deliberately *not* the sealed `result` dict passed to
+        `lc.complete()`, since `RUN_CHECKER`'s result is schema-validated and must never carry
+        extra top-level keys. Best-effort: any read/parse failure just leaves the summary unset.
+        """
+        if not isinstance(executor, lae.DockerActionExecutor):
+            return
+        raw = lc.load_artifact(self.loop_id, self.project_dir, action_id, "broker_metrics.json")
+        if raw is None:
+            return
+        try:
+            metrics = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(metrics, dict):
+            return
+        summary = {
+            key: metrics[key]
+            for key in ("request_count", "estimated_cost_usd", "anomaly_reasons")
+            if key in metrics
+        }
+        if summary:
+            self._last_docker_broker_metrics_summary = summary
 
     def _discard_after_lease_loss_or_none(
         self,
@@ -1353,6 +1411,11 @@ class LoopDriver:
         except ClaudeChildFailedError:
             # code #6: a clean non-zero exit is not a timeout but must still be treated as an
             # infra failure, not a successful (possibly empty-summary) run_maker completion.
+            #
+            # Issue #405: persist stdout/stderr so a Maker-side process failure (e.g. every
+            # broker request budget-rejected) is diagnosable from `artifacts/<action_id>/`
+            # instead of only via an interactive `docker exec`.
+            self._save_claude_failure_artifacts(proposal.action_id, "maker", completed)
             return {"maker": {"agent": maker_agent}, "infrastructure_failure": True}
         summary = _extract_claude_summary(completed.stdout)
         return {"maker": {"agent": maker_agent, "summary": summary}}
@@ -1677,6 +1740,89 @@ class LoopDriver:
         )
         return payload
 
+    _CLAUDE_FAILURE_ARTIFACT_MAX_BYTES = 8192
+
+    def _save_claude_failure_artifacts(
+        self, action_id: str, kind: str, completed: subprocess.CompletedProcess[str]
+    ) -> None:
+        """Persist a non-zero-exit `claude -p` run's stdout/stderr tail for diagnosis (#405).
+
+        Before this, a `claude -p` process failure (e.g. every broker request budget-rejected)
+        vanished into an opaque, artifact-free `infrastructure_failure` -- the cause was only
+        ever visible by `docker exec`-ing into a still-running container. `kind` is `"maker"`
+        for the Maker's own run, or the reviewer name for a Checker LLM-review run (distinct
+        artifacts per reviewer, mirroring `llm_review_<reviewer>.json`'s own naming).
+        """
+        stdout_tail = completed.stdout.encode("utf-8")[-self._CLAUDE_FAILURE_ARTIFACT_MAX_BYTES :]
+        stderr_tail = completed.stderr.encode("utf-8")[-self._CLAUDE_FAILURE_ARTIFACT_MAX_BYTES :]
+        stdout_path = lc.save_artifact(
+            self.loop_id,
+            self.project_dir,
+            action_id,
+            f"claude_{kind}_stdout.tail.txt",
+            stdout_tail.decode("utf-8", errors="ignore"),
+        )
+        stderr_path = lc.save_artifact(
+            self.loop_id,
+            self.project_dir,
+            action_id,
+            f"claude_{kind}_stderr.txt",
+            stderr_tail.decode("utf-8", errors="ignore"),
+        )
+        print(
+            f"loop_driver: {kind} claude exited {completed.returncode}; "
+            f"see {stdout_path} / {stderr_path}",
+            file=sys.stderr,
+        )
+
+    def _invalid_reviewer_output_result(
+        self,
+        action_id: str,
+        reviewer: str,
+        completed: subprocess.CompletedProcess[str],
+        exc: Exception,
+    ) -> lc.CheckResult:
+        """Preserve a reviewer's raw output when it cannot be parsed into a CheckResult (#410).
+
+        Distinct from `_run_one_llm_reviewer()`'s other `infrastructure_failure` returns (a
+        `claude -p` process that timed out or exited non-zero, where there is no reviewer text
+        to preserve at all): here `claude -p` completed successfully but its JSON reply could
+        not be turned into a CheckResult (schema mismatch, an unparseable fenced block, etc.).
+        `infrastructure_failure=True` is kept so the existing 3-retries-then-
+        `infrastructure_failure_exhausted` guard semantics (`loop_common.evaluate_guard`,
+        gated on `infrastructure_failure` before it ever reaches no-progress signature tracking)
+        are unchanged; `signature="reviewer_output_invalid"` only labels *this* CheckResult for
+        diagnosis -- `_combine_llm_results()` below always recomputes the sealed layer's own
+        signature from the aggregated findings, so this value never reaches the persisted
+        `check_result.json`.
+        """
+        raw_path = lc.save_artifact(
+            self.loop_id,
+            self.project_dir,
+            action_id,
+            f"llm_review_{reviewer}.raw.json",
+            completed.stdout,
+        )
+        lc.save_artifact(
+            self.loop_id,
+            self.project_dir,
+            action_id,
+            f"llm_review_{reviewer}.stderr.log",
+            completed.stderr,
+        )
+        print(
+            f"loop_driver: {reviewer} output invalid: {exc}; raw saved to {raw_path}",
+            file=sys.stderr,
+        )
+        return lc.CheckResult(
+            passed=False,
+            layer="llm_review",
+            signature="reviewer_output_invalid",
+            findings=[],
+            raw_artifact_path=raw_path,
+            infrastructure_failure=True,
+        )
+
     def _run_llm_reviewers(
         self, state: lc.LoopState, action_id: str, reviewers: list[str]
     ) -> list[tuple[str, lc.CheckResult]]:
@@ -1728,28 +1874,7 @@ class LoopDriver:
             )
         try:
             completed = self._run_child(cmd, state.worktree_path, timeout_seconds, env)
-            if completed.returncode != 0:
-                raise ClaudeChildFailedError(f"claude -p exited {completed.returncode}")
-            data = lds.parse_claude_p_json(completed.stdout)
-            result_field = data.get("result", data)
-            # code F3: `claude -p --output-format json`'s top-level "result" field is the
-            # reviewer's raw text reply (a JSON *string*, per `_reviewer_prompt`'s "Reply with
-            # JSON only" instruction), not an already-parsed object; passing it straight to
-            # `check_result_from_dict()` used to call `.get()` on a `str` and crash with an
-            # uncaught `AttributeError` instead of degrading to an infra-failure CheckResult.
-            if isinstance(result_field, str):
-                result_field = json.loads(result_field)
-            if not isinstance(result_field, dict):
-                raise ValueError("claude -p reviewer result is not a JSON object")
-            check_result = lc.check_result_from_dict(result_field)
-        except (
-            lds.ClaudePTimeoutError,
-            ClaudeChildFailedError,
-            ValueError,
-            TypeError,
-            KeyError,
-            json.JSONDecodeError,
-        ):
+        except lds.ClaudePTimeoutError:
             return lc.CheckResult(
                 passed=False,
                 layer="llm_review",
@@ -1758,6 +1883,41 @@ class LoopDriver:
                 raw_artifact_path="",
                 infrastructure_failure=True,
             )
+        if completed.returncode != 0:
+            # Issue #405: a `claude -p` process failure (e.g. every request budget-rejected by
+            # the Docker credential broker) previously vanished into an opaque, artifact-free
+            # `infrastructure_failure` -- diagnosable only by `docker exec`-ing into a still-
+            # running container. Persist its stdout/stderr tail so the cause is visible from
+            # `artifacts/<action_id>/` alone.
+            self._save_claude_failure_artifacts(action_id, reviewer, completed)
+            return lc.CheckResult(
+                passed=False,
+                layer="llm_review",
+                signature=None,
+                findings=[],
+                raw_artifact_path="",
+                infrastructure_failure=True,
+            )
+        try:
+            data = lds.parse_claude_p_json(completed.stdout)
+            result_field = data.get("result", data)
+            # code F3: `claude -p --output-format json`'s top-level "result" field is the
+            # reviewer's raw text reply (a JSON *string*, per `_reviewer_prompt`'s "Reply with
+            # JSON only" instruction), not an already-parsed object; passing it straight to
+            # `check_result_from_dict()` used to call `.get()` on a `str` and crash with an
+            # uncaught `AttributeError` instead of degrading to an infra-failure CheckResult.
+            #
+            # Issue #410: `extract_check_result_json()` (not a bare `json.loads()`) tolerates a
+            # ```json fenced code block or leading/trailing prose around the JSON object -- a
+            # reviewer that otherwise replies correctly but wraps its JSON in a fence must not be
+            # treated the same as one that returned no usable result at all.
+            if isinstance(result_field, str):
+                result_field = lds.extract_check_result_json(result_field)
+            if not isinstance(result_field, dict):
+                raise ValueError("claude -p reviewer result is not a JSON object")
+            check_result = lc.check_result_from_dict(result_field)
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            return self._invalid_reviewer_output_result(action_id, reviewer, completed, exc)
         name = f"llm_review_{reviewer}.json"
         path = lc.save_artifact(
             self.loop_id,
@@ -3747,6 +3907,15 @@ def _reviewer_prompt(state: lc.LoopState, reviewer: str, base_sha: str | None) -
         f"[Role] You are the {reviewer} reviewing the diff at {state.worktree_path} "
         f"(branch {state.branch}).\n"
         f"[Task] Review `{diff_instruction}` for Critical/High/Medium/Low findings.\n"
+        # Issue #410: a reviewer previously spent turns repeatedly retrying `pytest`/`git show`
+        # (denied by `allowedTools`) before ever replying, and returned prose- or fence-wrapped
+        # JSON despite the [Output] instruction below. Spelling out both constraints up front
+        # reduces wasted turns and non-JSON replies; `extract_check_result_json()` still
+        # tolerates a fenced reply as a fallback either way.
+        "[Constraints] Only single, unpiped `git diff`/`git log` Bash commands are allowed "
+        "(no `&&`, `;`, `|`, or env-var prefixes); do not run tests or linters (a separate "
+        "mechanical check layer already does that). Reply with a bare JSON object only -- no "
+        "code fences, no text before or after it.\n"
         "[Output] Reply with JSON only, matching this shape: "
         '{"passed": bool, "layer": "llm_review", "signature": str|null, '
         '"findings": [{"severity": "critical|high|medium|low", "summary": str, '

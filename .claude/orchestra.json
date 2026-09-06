@@ -121,7 +121,7 @@
       "config/image-generation/styles/blueprint.md": "70d4d9843bff8b04dd1cbc80753ccd10b897e31def54a45c0764adbe480be8a8"
     },
     "loop-harness": {
-      "config/loop-harness/loop-harness.yaml": "92f4f15ee24e61aaba7ad8a8336582c4bc465ac73bb88434a793c4d0ff596acb",
+      "config/loop-harness/loop-harness.yaml": "dffc26233ae94eef562a698ea3a1cc588aec4e848a7ba5103432f92f23df0cab",
       "config/loop-harness/loops/issue-loop.yaml": "bfc5db758e844f6d840ac7cea9a365126b814b0f635536bd132bc6640dedeb84"
     },
     "fail-logs": {
