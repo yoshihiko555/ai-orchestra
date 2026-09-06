@@ -363,6 +363,26 @@ def test_build_cli_suggestion_antigravity_no_stdin_redirect() -> None:
     assert "< /dev/null" not in result
 
 
+def test_build_cli_suggestion_codex_includes_stdin_redirect() -> None:
+    """EV-10: Codex CLI 呼び出しは stdin を `< /dev/null` で封じる。
+
+    EV-11（antigravity は `< /dev/null` 不要）の対になる正の確認。
+    codex-delegation.md「Non-Interactive 実行」に基づき、stdin を開いたままだと
+    `codex exec` が入力待ちで無限ハングするため、提案文字列に `< /dev/null` を
+    含めることを要求する。
+    """
+    config = {
+        "codex": {
+            "model": "gpt-5.3-codex",
+            "sandbox": {"analysis": "read-only"},
+            "flags": "--full-auto",
+        },
+    }
+    result = route_config.build_cli_suggestion("codex", "tester", "テスト", config)
+    assert result is not None
+    assert "< /dev/null" in result
+
+
 def test_build_cli_suggestion_codex_shows_analysis_sandbox_only() -> None:
     """EV-22: hook 提案は分析用（analysis）sandbox のみを表示する現状実装（仕様未文書化）の確認。
 

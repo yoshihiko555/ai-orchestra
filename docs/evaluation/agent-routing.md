@@ -39,7 +39,7 @@
 - [ ] EV-07（正常 / must）: `agents.<name>.tool == "claude-direct"` の場合は外部 CLI を呼ばず Claude で処理する — 根拠: .claude/rules/codex-delegation.md, .claude/rules/antigravity-delegation.md
 - [ ] EV-08（正常 / should）: `agents.<name>.tool == "auto"` の場合、深い推論（設計判断・デバッグ・比較検討・レビュー）→ Codex、外部調査・最新ドキュメント確認 → Antigravity、単純編集・明確な単一解・テスト/lint → Claude direct のヒューリスティクスで選択する — 根拠: .claude/rules/codex-delegation.md `tool: auto` ヒューリスティクス表 — 検証方法: manual/policy review（`tool: auto` の選択ロジックはコード実装が存在せず（route_config は auto をそのまま返す）、ヒューリスティクスはルール文書のみ）
 - [ ] EV-09（正常 / must）: 設定は `cli-tools.yaml`（ベース）→ `cli-tools.local.yaml`（上書き）の順で解決し、local に未定義のキーはベース値を継続使用する — 根拠: .claude/rules/config-loading.md
-- [ ] EV-10（正常 / must）: Codex CLI 呼び出し時は stdin を `< /dev/null` で封じる — 根拠: .claude/rules/codex-delegation.md Non-Interactive 実行
+- [ ] EV-10（正常 / must）: Codex CLI 呼び出し時は stdin を `< /dev/null` で封じる — 根拠: .claude/rules/codex-delegation.md Non-Interactive 実行 — 自動テスト: `build_cli_suggestion()` の codex 出力に `< /dev/null` が含まれることを正で確認する形で `packages/agent-routing/tests/test_agent_router.py` に追加（EV-11 の対）
 - [ ] EV-11（正常 / should）: Antigravity（`agy -p`）呼び出しは非対話完結のため `< /dev/null` は不要 — 根拠: .claude/rules/antigravity-delegation.md Non-Interactive 実行 — 自動テスト: `build_cli_suggestion()` の antigravity 出力に `< /dev/null` が含まれないことを否定 assert する形で `packages/agent-routing/tests/test_agent_router.py` に追加される（本 PR）
 - [ ] EV-12（正常 / must）: Codex/Antigravity への質問は英語、ユーザーへの報告は日本語で行う — 根拠: .claude/rules/orchestra-usage.md CLI Language Policy — 検証方法: manual/policy review（CLI 言語ポリシーは対象コードなし）
 - [ ] EV-13（異常 / must）: `codex.enabled == false` の場合、Codex は呼び出されずフォールバック方針に従う — 根拠: .claude/rules/codex-delegation.md
@@ -47,7 +47,7 @@
 - [ ] EV-15（異常 / should）: Codex 呼び出しが長時間無出力の場合、`< /dev/null` の有無確認 → `2>/dev/null` を外した再実行での stderr 確認 → モデル疎通確認、の順でハングを調査する — 根拠: .claude/rules/codex-delegation.md ハング調査プロトコル — 検証方法: manual/policy review（ハング調査手順はランブックであり自動テスト対象コードなし）
 - [ ] EV-16（異常 / should）: Antigravity が質問文（`?` で終わる文、"Could you clarify" 等の質問フレーズ）を返した場合、追加コンテキスト付きで最大 2 回までリトライし、3 回目の失敗で報告する — 根拠: .claude/rules/antigravity-delegation.md リトライプロトコル — 検証方法: manual/policy review（Antigravity リトライプロトコルは実装コードが存在せず、ルール文書上の運用手順のみ）
 - [ ] EV-17（異常 / should）: `antigravity.model` が `antigravity.model_allowlist` に含まれない場合、実行前に `[WARN] model '<value>' not in allowlist` を出力する（agy は無効な slug でも exit 0 でデフォルトモデルに黙ってフォールバックするため） — 根拠: .claude/rules/antigravity-delegation.md
-- [ ] EV-18（境界 / must）: 旧 `gemini.enabled: false`（`.local.yaml` 残存分）は `antigravity.enabled: false` と等価に扱われる（後方互換） — 根拠: .claude/rules/antigravity-delegation.md「旧 gemini 設定からの移行」表
+- [ ] EV-18（境界 / must）: 旧 `gemini.enabled: false`（`.local.yaml` 残存分）は `antigravity.enabled: false` と等価に扱われる（後方互換） — 根拠: .claude/rules/antigravity-delegation.md「旧 gemini 設定からの移行」表 — 自動テスト: `normalize_cli_tools_config()`（`packages/core/hooks/hook_common.py`）のトップレベル旧 `gemini` キー enabled 互換を、旧キーのみ残存・新旧混在の両ケースで直接検証する形で `tests/unit/test_hook_common.py`（`TestNormalizeCliToolsConfig`）に追加
 - [ ] EV-19（境界 / must）: 旧 `agents.<name>.tool: gemini` は `agents.<name>.tool: antigravity` と同義に自動読み替えされる（後方互換） — 根拠: .claude/rules/antigravity-delegation.md「旧 gemini 設定からの移行」表
 - [ ] EV-20（境界 / should）: 旧 `gemini.model` の値は引き継がれず無視され、`antigravity.model` を明示的に設定する必要がある — 根拠: .claude/rules/antigravity-delegation.md「旧 gemini 設定からの移行」表
 - [ ] EV-21（境界 / should）: 「明らかに 1 行で完結する CLI 呼び出し」または「ユーザーが明示的に直接実行を指示した場合」に限り、hook の提案を経ずオーケストレーターが直接実行してよい（例外規定） — 根拠: .claude/rules/agent-routing-policy.md 例外 — 検証方法: manual/policy review（直接実行の例外規定はオーケストレーター裁量）

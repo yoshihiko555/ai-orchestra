@@ -269,6 +269,52 @@ class TestLoadPackageConfig:
         assert result == {}
 
 
+class TestNormalizeCliToolsConfig:
+    """normalize_cli_tools_config の後方互換テスト（EV-18）。
+
+    トップレベル旧 gemini キーの enabled 互換を、単一 dict の正規化として
+    直接検証する（load_cli_tools_config のファイル読み込み経路とは独立）。
+    """
+
+    def test_legacy_gemini_disable_maps_to_antigravity_disable(self) -> None:
+        """EV-18（旧キーのみ残存）: トップレベル gemini.enabled: false のみが
+        ある場合、antigravity.enabled: False と等価に扱われる。"""
+        result = hook_common.normalize_cli_tools_config({"gemini": {"enabled": False}})
+        assert result["antigravity"]["enabled"] is False
+
+    def test_explicit_antigravity_wins_over_legacy_gemini_in_same_dict(self) -> None:
+        """EV-18（新旧混在）: 同一 dict 内で antigravity.enabled が明示されている
+        場合、旧 gemini.enabled: false のフォールバックは適用されず明示値が優先される。"""
+        result = hook_common.normalize_cli_tools_config(
+            {"antigravity": {"enabled": True}, "gemini": {"enabled": False}}
+        )
+        assert result["antigravity"]["enabled"] is True
+
+    def test_legacy_gemini_model_and_flags_not_carried_over(self) -> None:
+        """EV-20 と整合: gemini 固有の model/flags は antigravity に引き継がれない
+        （enabled の無効化意図のみを反映する）。"""
+        result = hook_common.normalize_cli_tools_config(
+            {"gemini": {"enabled": False, "model": "gemini-legacy", "flags": "--legacy"}}
+        )
+        antigravity = result["antigravity"]
+        assert antigravity == {"enabled": False}
+        assert "model" not in antigravity
+        assert "flags" not in antigravity
+
+    def test_legacy_gemini_enabled_true_does_not_force_disable(self) -> None:
+        """境界: enabled: false のみがフォールバックのトリガー。gemini.enabled: true は
+        antigravity を無効化しない。"""
+        result = hook_common.normalize_cli_tools_config({"gemini": {"enabled": True}})
+        assert "antigravity" not in result
+
+    def test_does_not_mutate_input(self) -> None:
+        """入力 dict は変更されず、新しい dict が返る。"""
+        original = {"gemini": {"enabled": False}}
+        hook_common.normalize_cli_tools_config(original)
+        assert original == {"gemini": {"enabled": False}}
+        assert "antigravity" not in original
+
+
 class TestLoadCliToolsConfig:
     """load_cli_tools_config のテスト（Issue #125: レイヤーごとの正規化）。"""
 
