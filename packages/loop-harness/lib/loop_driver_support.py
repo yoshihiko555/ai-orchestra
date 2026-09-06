@@ -615,6 +615,11 @@ def build_claude_p_command(
     `--disallowedTools`, wiring in the `maker_bash_guard.py` PreToolUse hook (design doc 2.2 節
     層3; EV-49/EV-63) that hard-denies Bash push/remote/gh-pr commands even when wrapped in
     `bash -c "..."` — a bypass `--disallowedTools`'s literal-prefix match alone cannot catch.
+
+    A `--` terminator is inserted right before `prompt` because the current Claude Code CLI
+    treats `--add-dir` as a variadic option: without the terminator, the prompt string that
+    immediately follows the last `--add-dir` value is swallowed as another directory argument,
+    and `claude -p` exits non-zero complaining it received no prompt (Issue #401).
     """
     cmd = [
         claude_bin,
@@ -632,6 +637,7 @@ def build_claude_p_command(
     ]
     for add_dir in add_dirs:
         cmd.extend(["--add-dir", add_dir])
+    cmd.append("--")
     cmd.append(prompt)
     return cmd
 

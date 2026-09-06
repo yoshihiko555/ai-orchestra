@@ -1975,3 +1975,40 @@ def test_unconfirmed_container_removal_safe_stops_every_action_kind(
         runtime.finish(action_succeeded=False)
 
     assert caught.value.stop_reason == expected_reason
+
+
+def test_without_settings_survives_add_dir_terminator(tmp_path: Path) -> None:
+    """Issue #401: `build_claude_p_command()` now appends `--` before the prompt so
+    `--add-dir` (a variadic option in the current Claude Code CLI) doesn't swallow it. This
+    only appends tokens after `--settings`, so `_without_settings()` -- which locates
+    `--settings` by index and slices out exactly that flag/value pair -- must remain
+    unaffected regardless of what follows it in the argv."""
+    command = docker_action.driver_support.build_claude_p_command(
+        "do the thing", allowed_tools="Read,Edit", add_dirs=["/wt", "/tmp/x"]
+    )
+
+    rewritten = docker_action._without_settings(command)
+
+    assert "--settings" not in rewritten
+    assert rewritten[0] == "claude"
+    assert rewritten[-2] == "--"
+    assert rewritten[-1] == "do the thing"
+    assert rewritten.count("--add-dir") == 2
+
+
+def test_rewrite_claude_settings_survives_add_dir_terminator(tmp_path: Path) -> None:
+    """Companion to the `_without_settings` regression test above: `rewrite_claude_settings()`
+    also locates `--settings` by index, so the trailing `--` terminator and prompt appended by
+    `build_claude_p_command()` for Issue #401 must not interfere with it."""
+    command = docker_action.driver_support.build_claude_p_command(
+        "do the thing", allowed_tools="Read,Edit", add_dirs=["/wt"]
+    )
+    bundle = docker_settings.DockerSettingsBundle(source_dir=tmp_path)
+
+    rewritten = docker_settings.rewrite_claude_settings(command, bundle)
+
+    assert rewritten[0] == "claude"
+    settings_index = rewritten.index("--settings")
+    assert rewritten[settings_index + 1] == bundle.settings_path
+    assert rewritten[-2] == "--"
+    assert rewritten[-1] == "do the thing"
