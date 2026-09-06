@@ -756,6 +756,111 @@ def test_maker_lifecycle_uses_production_primitives_in_required_order(
     ]
 
 
+def test_maker_scenario_container_env_includes_ruff_cache_dir_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #407: a Maker's `execute_claude()` docker exec uses `_broker_exec_env()`, not
+    `_mechanical_exec_env()`, so a Maker-authored Bash tool command running `ruff check` inside the
+    scenario container previously had no `RUFF_CACHE_DIR` default anywhere in its env. ruff then
+    fell back to `.ruff_cache` under `cwd` -- the mounted, read-write Maker worktree -- leaving a
+    `mode 0600` cache directory on the host. The next action's mount-safety check then refuses to
+    mount that owner-only path into a non-root container, safe-stopping the loop deterministically.
+    `_start()` must merge `_MECHANICAL_ENV_DEFAULTS` into the scenario container's own startup env
+    (`ScenarioContainerSpec.env`) regardless of `kind`, so this default reaches the container even
+    when execution never goes through the mechanical exec path at all.
+    """
+    session = SimpleNamespace(
+        runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
+    )
+    bundle = docker_settings.DockerSettingsBundle(tmp_path / "trusted")
+    mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
+
+    class Broker:
+        internal_network = "lh-internal"
+        base_url = "http://lh-broker:8790"
+        run_token = "run-token"
+
+        def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        docker_action.runtime_cli, "docker_daemon_available", lambda **_kwargs: True
+    )
+    monkeypatch.setattr(
+        docker_action.broker_runtime, "sweep_stale_resources", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        docker_action.docker_image,
+        "ensure_scenario_image",
+        lambda *_args, **_kwargs: SimpleNamespace(image_id=IMAGE_ID),
+    )
+    monkeypatch.setattr(
+        docker_action.docker_image,
+        "ensure_broker_image",
+        lambda *_args, **_kwargs: SimpleNamespace(image_id=IMAGE_ID),
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "prepare_ephemeral_git", lambda **_kwargs: session
+    )
+    monkeypatch.setattr(
+        docker_action.docker_settings, "create_settings_bundle", lambda *_args: bundle
+    )
+    monkeypatch.setattr(
+        docker_action.git_ephemeral, "build_maker_git_mount_spec", lambda *_args: mount_spec
+    )
+    monkeypatch.setattr(
+        docker_action.broker_runtime, "start_broker", lambda *_args, **_kwargs: Broker()
+    )
+
+    seen_specs: list[Any] = []
+
+    def build_command(spec: Any) -> list[str]:
+        seen_specs.append(spec)
+        return ["docker", "run"]
+
+    monkeypatch.setattr(docker_action.profile, "build_scenario_container_command", build_command)
+
+    def docker_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if command[:2] == ["docker", "run"]:
+            return subprocess.CompletedProcess(command, 0, "container-id\n", "")
+        if command[:2] == ["docker", "top"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "PID COMMAND COMMAND\n"
+                "101 docker-init /usr/bin/docker-init -- /usr/bin/timeout 660s "
+                "/usr/bin/sleep infinity\n"
+                "102 timeout /usr/bin/timeout 660s /usr/bin/sleep infinity\n"
+                "103 sleep /usr/bin/sleep infinity\n",
+                "",
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(docker_action.runtime_cli, "run", docker_run)
+    monkeypatch.setattr(
+        docker_action.runtime_cli, "remove_container", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(docker_action.git_ephemeral, "finalize_ephemeral_git", lambda *_args: None)
+    monkeypatch.setattr(docker_action.docker_settings, "cleanup_settings_bundle", lambda *_a: None)
+    monkeypatch.setattr(docker_action.git_ephemeral, "cleanup_ephemeral_git", lambda *_a: None)
+
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime._ensure_started()
+    runtime.finish(action_succeeded=True)
+
+    assert (
+        seen_specs[0].env["RUFF_CACHE_DIR"]
+        == docker_action._MECHANICAL_ENV_DEFAULTS["RUFF_CACHE_DIR"]
+    )
+    # Existing mount-derived env (from `build_maker_git_mount_spec()`) must survive the merge.
+    assert seen_specs[0].env["GIT_DIR"] == "/git"
+    assert seen_specs[0].env["GIT_WORK_TREE"] == "/work"
+
+
 def test_start_fails_before_any_docker_setup_when_budget_already_exhausted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -928,6 +1033,88 @@ def test_mechanical_only_checker_skips_broker_and_uses_isolated_network(
     assert captured_networks == ["lh-isolated-internal"]
     assert seen_specs[0].internal_network == "lh-isolated-internal"
     assert stopped_networks == ["lh-isolated-internal"]
+    assert (
+        seen_specs[0].env["RUFF_CACHE_DIR"]
+        == docker_action._MECHANICAL_ENV_DEFAULTS["RUFF_CACHE_DIR"]
+    )
+
+
+def test_broker_exec_env_includes_ruff_cache_dir_default(tmp_path: Path) -> None:
+    """Issue #407: `_broker_exec_env()` builds the explicit `-e` flags for `execute_claude()`'s
+    `docker exec` (the Maker's `claude -p` process, and any Bash tool subprocess it spawns). This
+    default must be listed here too, not just in `_start()`'s scenario-container startup env, so a
+    Maker-authored `ruff check` never depends on `docker exec`'s inheritance of the container's own
+    runtime env actually holding for this key.
+    """
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="classifier"),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.broker = SimpleNamespace(base_url="http://lh-broker:8790", run_token="run-token")
+
+    env = runtime._broker_exec_env()
+
+    assert env["RUFF_CACHE_DIR"] == docker_action._MECHANICAL_ENV_DEFAULTS["RUFF_CACHE_DIR"]
+    assert env["ANTHROPIC_BASE_URL"] == "http://lh-broker:8790"
+    assert env["ANTHROPIC_API_KEY"] == "run-token"
+
+
+def test_build_scenario_container_command_renders_ruff_cache_dir_default(tmp_path: Path) -> None:
+    """Issue #407: exercise the real `profile.build_scenario_container_command()` (not a
+    monkeypatched stub, unlike `test_maker_scenario_container_env_includes_ruff_cache_dir_default`
+    above) to prove the merged `RUFF_CACHE_DIR` default actually survives into the rendered
+    `docker run` command's `--env` flags -- `container_env_args()` could in principle filter or
+    reorder `spec.env` in a way a stubbed test would never catch.
+    """
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    spec = profile.ScenarioContainerSpec(
+        container_name="lh-run-action",
+        image_id=IMAGE_ID,
+        internal_network="lh-run-action-internal",
+        workdir=worktree,
+        mounts=(),
+        env={**docker_action._MECHANICAL_ENV_DEFAULTS, "GIT_DIR": "/git"},
+        resources={"pids_limit": 64, "memory": "1g", "cpus": 1.0},
+        max_lifetime_sec=300,
+        owner_labels={"ai.orchestra.loop-harness.owner": "owner"},
+    )
+
+    command = profile.build_scenario_container_command(spec)
+
+    assert "--env RUFF_CACHE_DIR=/tmp/ruff-cache" in " ".join(command)
+
+
+def test_execute_claude_forwards_ruff_cache_dir_default_to_docker_exec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #407: `execute_claude()` renders `_broker_exec_env()` into the actual `docker exec`
+    command via `--env` flags, the same as `execute_mechanical()` already does for
+    `_mechanical_exec_env()` (see `test_execute_mechanical_forwards_env_to_docker_exec` above).
+    Uses `kind="classifier"` only to skip the trusted-settings-bundle rewrite that a Maker/Checker
+    request needs (`execute_claude()`'s `_without_settings()` branch); the exec env path this test
+    exercises (`_broker_exec_env()`) is identical for the Maker's own `execute_claude()` calls,
+    since that helper does not vary by `kind`.
+    """
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="classifier"),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.container_name = "lh-action"
+    runtime._started = True
+    runtime.broker = SimpleNamespace(base_url="http://lh-broker:8790", run_token="run-token")
+    monkeypatch.setattr(docker_action, "enforce_scenario_container_idle", lambda *_a, **_k: None)
+
+    def host_child(
+        command: list[str], _cwd: str, _timeout: float, _env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        rendered = " ".join(command)
+        assert "--env RUFF_CACHE_DIR=/tmp/ruff-cache" in rendered
+        return subprocess.CompletedProcess(command, 0, '{"result":"ok"}', "")
+
+    runtime.host_child_runner = host_child
+    runtime.execute_claude(["claude", "-p", "prompt"], "/tmp", 30, {})
 
 
 def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys() -> None:

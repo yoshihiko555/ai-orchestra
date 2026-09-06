@@ -527,6 +527,29 @@ class DockerActionRuntime:
         )
         self._raise_if_cancelled()
         mounts, container_env, workdir = self._prepare_mounts()
+        # Issue #407: the scenario container's *startup* env (this `container_env`, later handed
+        # to `ScenarioContainerSpec(env=...)` below) previously carried no `RUFF_CACHE_DIR`
+        # default for any `kind` -- only `_mechanical_exec_env()` (used by the Checker's mechanical
+        # `docker exec` calls) applied `_MECHANICAL_ENV_DEFAULTS`. A Maker-authored Bash command
+        # running `ruff check` inside the scenario container -- via `execute_claude()`'s `docker
+        # exec`, whose env is `_broker_exec_env()`, not `_mechanical_exec_env()` -- therefore fell
+        # back to ruff's own default of `.ruff_cache` under `cwd` (the mounted, read-write Maker
+        # worktree), leaving a `mode 0600` cache directory on the host worktree. The next action's
+        # mount-safety check (`_reject_owner_only_secrets_or_raise()`) then refuses to mount that
+        # owner-only path into a non-root container, safe-stopping the loop. Merging the same
+        # container-tmpfs default in here -- regardless of `kind` (maker/checker/classifier) --
+        # means every scenario container starts with a working `RUFF_CACHE_DIR` regardless of
+        # which exec path (`execute_claude()` or `execute_mechanical()`) a tool run happens through.
+        # Existing `container_env` keys (from `git_mounts.env`) win on any collision -- the
+        # opposite precedence from `_mechanical_exec_env()`, which deliberately lets this same
+        # default clobber a forwarded value for the same key (see that function's own docstring).
+        # That function's input is the *host* driver process's `os.environ`, so an ambient host
+        # `RUFF_CACHE_DIR` must never override the container-safe default. `container_env` here
+        # has no host-env input at all -- it comes only from `build_maker_git_mount_spec()` /
+        # `build_checker_git_mount_spec()`, i.e. already container-derived, deliberate values (Git
+        # plumbing paths) -- so if one of those ever collided with this default, the surrounding
+        # code's own value, not this generic default, should win.
+        container_env = {**_MECHANICAL_ENV_DEFAULTS, **container_env}
         max_lifetime = _max_lifetime_seconds(self.request.remaining_wall_clock_seconds())
         scope = f"{self.request.loop_id}-{self.request.action_id}"
         if self.request.needs_broker:
@@ -734,7 +757,17 @@ class DockerActionRuntime:
     def _broker_exec_env(self) -> dict[str, str]:
         if self.broker is None:
             raise DockerActionError("credential broker is unavailable")
+        # Issue #407: layer the same `RUFF_CACHE_DIR` default `_mechanical_exec_env()` uses
+        # underneath this exec's explicit `-e` flags too. `container_env` (set in `_start()`
+        # above) already makes the container's own startup env carry this default, and `docker
+        # exec` normally inherits it -- but making it explicit here as well means a Maker-authored
+        # `ruff check` run through `execute_claude()` never depends on that inheritance holding,
+        # the same belt-and-suspenders posture `_mechanical_exec_env()` already takes for the
+        # Checker's mechanical exec path. The broker-derived keys below share no name with this
+        # default, so there is no real collision, but they are still listed last to win were one
+        # ever introduced.
         return {
+            **_MECHANICAL_ENV_DEFAULTS,
             "ANTHROPIC_BASE_URL": self.broker.base_url,
             "ANTHROPIC_API_KEY": self.broker.run_token,
             "CLAUDE_CONFIG_DIR": f"{profile.CONTAINER_HOME}/.claude",
