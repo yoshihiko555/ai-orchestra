@@ -425,6 +425,37 @@ def test_build_claude_p_command_never_skips_permissions_and_uses_accept_edits() 
     assert "Bash(git push:*)" in disallowed_value
 
 
+def test_build_claude_p_command_terminates_add_dir_before_prompt() -> None:
+    """Structural regression test for Issue #401: the current Claude Code CLI treats
+    `--add-dir` as a variadic option, so without a `--` terminator right before the prompt,
+    the prompt string gets swallowed as another `--add-dir` value and `claude -p` fails to
+    start. A membership-only check (e.g. `"do the thing" in cmd`) cannot catch this class of
+    regression, so this test asserts the exact positional structure instead."""
+    prompt = "do the thing"
+    add_dirs = ["/wt", "/tmp/x"]
+    cmd = lds.build_claude_p_command(prompt, allowed_tools="Read,Edit", add_dirs=add_dirs)
+
+    # The last two tokens must be the `--` terminator followed by the prompt itself.
+    assert cmd[-2] == "--"
+    assert cmd[-1] == prompt
+
+    # Every `--add-dir` flag must be immediately followed by one of the configured
+    # directories -- never by the prompt or the `--` terminator.
+    add_dir_indices = [i for i, token in enumerate(cmd) if token == "--add-dir"]
+    assert len(add_dir_indices) == len(add_dirs)
+    seen_dirs = []
+    for index in add_dir_indices:
+        next_token = cmd[index + 1]
+        assert next_token in add_dirs
+        assert next_token != "--"
+        assert next_token != prompt
+        seen_dirs.append(next_token)
+    assert seen_dirs == add_dirs
+
+    # The terminator must come strictly after the last `--add-dir` value.
+    assert cmd.index("--") == max(add_dir_indices) + 2
+
+
 def test_build_claude_p_command_injects_settings_with_bash_guard_hook() -> None:
     """Layer 3 addendum (EV-49/EV-63): `--settings` wires in the `maker_bash_guard.py`
     PreToolUse hook so `bash -c "git push ..."` wrappers are caught too, not just literal
