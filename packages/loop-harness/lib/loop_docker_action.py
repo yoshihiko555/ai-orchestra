@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import secrets
 import subprocess
@@ -22,6 +23,7 @@ for _path in (_LIB_DIR, _DOCKER_RUNTIME_LIB):
 
 import docker_runtime_cli as runtime_cli  # noqa: E402
 import docker_runtime_lifecycle as runtime_lifecycle  # noqa: E402
+import loop_common as lc  # noqa: E402
 import loop_docker_broker as broker_runtime  # noqa: E402
 import loop_docker_config as docker_config  # noqa: E402
 import loop_docker_image as docker_image  # noqa: E402
@@ -134,9 +136,10 @@ _ALLOWED_IDLE_COMMANDS = frozenset({"docker-init", "tini", "timeout", "sleep"})
 _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
 # Codex review, PR #262, High: these are set by the container's own `docker run` invocation
 # (build_scenario_container_command's HOME/TMPDIR tmpfs mounts and the container image's own
-# PATH) or by the Git mount spec (GIT_DIR/GIT_WORK_TREE, see loop_git_ephemeral). The host-derived
-# `checker_env` passed into execute_mechanical() must never override any of these -- e.g.
-# `checker_env["HOME"]` is a *host* scratch-home path (see loop_driver_support.maker_env's
+# PATH) or -- for GIT_DIR/GIT_WORK_TREE, see the Issue #409 note below -- attached only to
+# `execute_claude()`'s own `docker exec -e` flags, never the container's own startup env. The
+# host-derived `checker_env` passed into execute_mechanical() must never override any of these --
+# e.g. `checker_env["HOME"]` is a *host* scratch-home path (see loop_driver_support.maker_env's
 # `scratch_home`) that does not exist inside the container's filesystem namespace, and the host's
 # own `PATH` almost never resolves to this hardened image's toolchain.
 #
@@ -148,9 +151,29 @@ _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
 # missing (or, if the path happened to collide, unintended) location inside the container's own
 # filesystem namespace, failing only under Docker. Treating it as container-owned means tools
 # fall back to the container's own `$HOME/.config` under the writable `/home/loop` tmpfs instead.
+#
+# Issue #409: GIT_DIR/GIT_WORK_TREE were previously part of every process's env inside the
+# scenario container (via `ScenarioContainerSpec.env`, which `docker exec` inherits unless
+# overridden), so a Checker's mechanical `pytest -q` run could never `git init`/`git init --bare`
+# a fixture repo under its own `tmp_path` -- every such invocation resolved `$GIT_DIR` to this
+# action's own ephemeral Git plumbing instead. The primary fix for that (design pivot) is on the
+# `.git` pointer overlay itself: `loop_git_ephemeral.prepare_ephemeral_git()` now rewrites the
+# worktree's pinned `.git` pointer to `gitdir: <ephemeral_dir>` (a path mounted 1:1 into every
+# container) and sets `core.bare false` on the ephemeral repo, so a container process resolves
+# the *action's own* repository correctly through the `.git` file alone, with no env needed at
+# all -- and a brand-new `tmp_path` fixture repo's own `.git` file is untouched by any of this,
+# so its own `git init` never collides with the action's ephemeral Git plumbing either way.
+# GIT_DIR/GIT_WORK_TREE stay reserved here (never forwarded from a host-derived env into a
+# mechanical exec) as belt-and-braces defense-in-depth only; `_start()` also keeps them out of
+# the container's own startup env entirely, attaching them explicitly only to `execute_claude()`'s
+# exec (see `_claude_git_env` there) for the `claude -p` session specifically.
 _MECHANICAL_ENV_RESERVED_KEYS = frozenset(
     {"HOME", "TMPDIR", "PATH", "GIT_DIR", "GIT_WORK_TREE", "XDG_CONFIG_HOME"}
 )
+# Issue #409: the only two env keys `execute_claude()`'s own `docker exec` needs that must never
+# be part of the scenario container's own `docker run` env (see `_start()`'s `container_env`
+# split and `_MECHANICAL_ENV_RESERVED_KEYS` above for why).
+_CLAUDE_EXEC_ONLY_ENV_KEYS = frozenset({"GIT_DIR", "GIT_WORK_TREE"})
 # Codex review, PR #262, Critical (round 7): `_mechanical_exec_env()` used to forward the entire
 # host-derived `checker_env` (minus only the container-reserved keys above) into every mechanical
 # `docker exec`. `checker_env` is `loop_driver_support.maker_env(os.environ, ...)`, which only
@@ -242,6 +265,11 @@ class DockerActionRuntime:
         self._isolated_network: str | None = None
         self.git_session: git_ephemeral.EphemeralGitSession | None = None
         self.settings_bundle: docker_settings.DockerSettingsBundle | None = None
+        # Issue #409: GIT_DIR/GIT_WORK_TREE (from `build_maker_git_mount_spec()`/
+        # `build_checker_git_mount_spec()`), split out of `container_env` in `_start()` so
+        # `execute_claude()` can attach them only to its own `docker exec`, never the container's
+        # startup env. Empty for a "classifier" kind, which has no Git mounts at all.
+        self._claude_git_env: dict[str, str] = {}
         self._started = False
         self._scenario_start_attempted = False
         self._scenario_removed = False
@@ -296,7 +324,11 @@ class DockerActionRuntime:
             command,
             cwd="/tmp" if self.request.kind == "classifier" else cwd,
             timeout_seconds=timeout_seconds,
-            env=self._broker_exec_env(),
+            # Issue #409: GIT_DIR/GIT_WORK_TREE reach only this exec (never the mechanical exec
+            # path, and never the container's own startup env -- see `_start()`), so a Maker/
+            # Checker's `claude -p` session (and any Bash tool call it makes) still resolves the
+            # action's own ephemeral Git plumbing correctly.
+            env={**self._broker_exec_env(), **self._claude_git_env},
         )
 
     def execute_mechanical(
@@ -380,6 +412,7 @@ class DockerActionRuntime:
             if self._finished:
                 return
             self._finished = True
+            self._persist_broker_metrics()
             scenario_error, cleanup_errors = self._cleanup_containers()
             primary_error: BaseException | None = scenario_error
             lease_already_lost = self.request.lease_lost is not None and self.request.lease_lost()
@@ -401,6 +434,45 @@ class DockerActionRuntime:
                     "isolated action cleanup failed",
                     details={"cleanup_errors": cleanup_errors},
                 )
+
+    def _persist_broker_metrics(self) -> None:
+        """Persist the broker's final `--print-metrics` snapshot before cleanup discards it.
+
+        Issue #405: `LoopBrokerSession.metrics` only ever updates in-memory via
+        `refresh_metrics()` (unused in production before this) -- once `_cleanup_containers()`
+        below removes the broker container, its metrics (request/rejection counts, anomaly
+        reasons, estimated cost) become unrecoverable, leaving a budget-rejection failure
+        undiagnosable without an interactive `docker exec` into the still-running broker.
+        Deliberately never called from `discard_after_lease_loss()` (EV-50): once the lease is
+        already known lost, no artifact write is safe -- see that method's own docstring.
+        Best-effort: any failure to read or persist metrics is logged and never blocks finish/
+        abort, since a missing metrics artifact is strictly less useful, not incorrect. The
+        `hasattr` guard below skips silently (no stderr line at all) rather than logging an
+        error for a `self.broker` that structurally has no `refresh_metrics` at all -- real
+        production `LoopBrokerSession` always has it; only test/e2e stubs (a handful of
+        `class Broker:` fakes across this package's test suite) omit it, and that is not a
+        genuine failure worth logging. Still catches a broad `Exception` around the call itself
+        (not just `LoopDockerBrokerError`) -- a real `refresh_metrics()` call is a `docker exec`
+        that can also raise `subprocess.TimeoutExpired`/`OSError` -- so a broker that does
+        support metrics but genuinely fails to report them is still logged.
+        """
+        if self.broker is None or not hasattr(self.broker, "refresh_metrics"):
+            return
+        try:
+            metrics = self.broker.refresh_metrics()
+        except Exception as exc:  # noqa: BLE001 - best-effort diagnostics must never raise
+            print(f"loop_docker_action: could not read broker metrics: {exc}", file=sys.stderr)
+            return
+        try:
+            lc.save_artifact(
+                self.request.loop_id,
+                str(self.request.project_dir),
+                self.request.action_id,
+                "broker_metrics.json",
+                json.dumps(metrics, ensure_ascii=False),
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort diagnostics must never raise
+            print(f"loop_docker_action: could not persist broker metrics: {exc}", file=sys.stderr)
 
     def cancel(self) -> None:
         """Latch cancellation and destroy a started scenario without leaking thread errors."""
@@ -527,6 +599,24 @@ class DockerActionRuntime:
         )
         self._raise_if_cancelled()
         mounts, container_env, workdir = self._prepare_mounts()
+        # Issue #409: GIT_DIR/GIT_WORK_TREE (present in `container_env` only for kind
+        # maker/checker, via `build_maker_git_mount_spec()`/`build_checker_git_mount_spec()`)
+        # must never be part of the scenario container's own `docker run` startup env -- `docker
+        # exec` otherwise inherits it for *every* exec into this container, including the
+        # Checker's mechanical `pytest -q` run. A brand-new `tmp_path` fixture repo's own `git
+        # init` is unaffected either way (its own `.git` never collides with the action's), but
+        # any invocation resolving the *action's own* worktree without env would previously have
+        # been at the mercy of whatever `$GIT_DIR` happened to be forwarded here. The primary fix
+        # for env-less resolution is on the `.git` pointer overlay itself (`loop_git_ephemeral.
+        # prepare_ephemeral_git()`'s `gitdir: <ephemeral_dir>` pinned pointer + `core.bare
+        # false`); popping these keys here and stashing them on `self._claude_git_env` for
+        # `execute_claude()` alone is belt-and-braces on top of that, scoped to the `claude -p`
+        # session specifically.
+        self._claude_git_env = {
+            key: container_env.pop(key)
+            for key in _CLAUDE_EXEC_ONLY_ENV_KEYS
+            if key in container_env
+        }
         # Issue #407: the scenario container's *startup* env (this `container_env`, later handed
         # to `ScenarioContainerSpec(env=...)` below) previously carried no `RUFF_CACHE_DIR`
         # default for any `kind` -- only `_mechanical_exec_env()` (used by the Checker's mechanical
@@ -540,15 +630,6 @@ class DockerActionRuntime:
         # container-tmpfs default in here -- regardless of `kind` (maker/checker/classifier) --
         # means every scenario container starts with a working `RUFF_CACHE_DIR` regardless of
         # which exec path (`execute_claude()` or `execute_mechanical()`) a tool run happens through.
-        # Existing `container_env` keys (from `git_mounts.env`) win on any collision -- the
-        # opposite precedence from `_mechanical_exec_env()`, which deliberately lets this same
-        # default clobber a forwarded value for the same key (see that function's own docstring).
-        # That function's input is the *host* driver process's `os.environ`, so an ambient host
-        # `RUFF_CACHE_DIR` must never override the container-safe default. `container_env` here
-        # has no host-env input at all -- it comes only from `build_maker_git_mount_spec()` /
-        # `build_checker_git_mount_spec()`, i.e. already container-derived, deliberate values (Git
-        # plumbing paths) -- so if one of those ever collided with this default, the surrounding
-        # code's own value, not this generic default, should win.
         container_env = {**_MECHANICAL_ENV_DEFAULTS, **container_env}
         max_lifetime = _max_lifetime_seconds(self.request.remaining_wall_clock_seconds())
         scope = f"{self.request.loop_id}-{self.request.action_id}"

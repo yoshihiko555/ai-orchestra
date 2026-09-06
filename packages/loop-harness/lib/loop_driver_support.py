@@ -728,6 +728,78 @@ def parse_claude_p_json(stdout: str) -> dict[str, Any]:
     return data
 
 
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
+
+
+def extract_check_result_json(text: str) -> dict[str, Any]:
+    """Tolerantly extract a Checker LLM reviewer's CheckResult JSON object from free-form text.
+
+    Issue #410: `_reviewer_prompt()` asks for "JSON only", but a reviewer's actual reply is not
+    always a bare JSON object -- it can be wrapped in a ```json fenced code block, or padded
+    with leading/trailing prose the model added despite the instruction. Tries, in order:
+    (1) the whole (stripped) text as one JSON object, (2) each ```/```json fenced block's own
+    contents, in order, (3) the first balanced ``{...}`` substring that contains the CheckResult
+    schema's own `"layer"` discriminator key (cheap enough to rule out an unrelated JSON blob
+    sitting elsewhere in surrounding prose). Raises `ValueError` naming the failure, rather than
+    returning `None`, so a caller can always report *why* extraction failed.
+    """
+    stripped = text.strip()
+    candidates = (stripped, *_fenced_json_blocks(stripped), _first_layer_object(stripped))
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise ValueError("no JSON object found in reviewer output")
+
+
+def _fenced_json_blocks(text: str) -> list[str]:
+    """Return every ```/```json fenced block's own contents, in the order they appear."""
+    return [match.group(1).strip() for match in _JSON_FENCE_RE.finditer(text)]
+
+
+def _first_layer_object(text: str) -> str | None:
+    """Return the first balanced ``{...}`` substring containing `"layer"`, else `None`.
+
+    Tracks JSON string state (including backslash escapes) while counting brace depth, so a
+    literal ``{``/``}`` inside a quoted string value (e.g. a finding's `summary` text) never
+    miscounts the object's true boundary.
+    """
+    start: int | None = None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if start is None:
+            if char == "{":
+                start, depth = index, 1
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start : index + 1]
+                start = None
+                if '"layer"' in candidate:
+                    return candidate
+    return None
+
+
 # --- push multi-layer defense: layer 4 (post-push integrity verification) -----------------
 
 

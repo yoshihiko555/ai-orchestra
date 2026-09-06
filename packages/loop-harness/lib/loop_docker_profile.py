@@ -21,6 +21,12 @@ import docker_runtime_profile as runtime  # noqa: E402
 
 CONTAINER_HOME = "/home/loop"
 CONTAINER_TMP = "/tmp"
+# Issue #409: a Checker's mechanical `pytest -q` run needs a writable *and executable* scratch
+# directory -- e.g. `tmp_path`-rooted fixtures that `git init`/`chmod +x` a helper inside a
+# temp dir, or any tool that stages an executable under `$TMPDIR`. `CONTAINER_TMP` above stays
+# `noexec` (unchanged; nothing else needs execute rights there), and `TMPDIR` is pointed at this
+# separate, `exec`-capable tmpfs instead of relaxing `CONTAINER_TMP` itself.
+CONTAINER_EXEC_TMP = "/tmp/exec"
 CONTAINER_TIMEOUT_KILL_AFTER_SECONDS = 5
 _IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FORBIDDEN_NETWORKS = frozenset({"bridge", "default", "host", "none"})
@@ -88,9 +94,13 @@ def build_scenario_container_command(spec: ScenarioContainerSpec) -> list[str]:
         runtime.tmpfs(CONTAINER_HOME, uid, gid, size="256m"),
         "--tmpfs",
         runtime.tmpfs(CONTAINER_TMP, uid, gid, size="256m"),
+        "--tmpfs",
+        runtime.tmpfs(CONTAINER_EXEC_TMP, uid, gid, size="512m", exec_ok=True),
         "--workdir",
         str(spec.workdir),
-        *runtime.container_env_args({**spec.env, "HOME": CONTAINER_HOME, "TMPDIR": CONTAINER_TMP}),
+        *runtime.container_env_args(
+            {**spec.env, "HOME": CONTAINER_HOME, "TMPDIR": CONTAINER_EXEC_TMP}
+        ),
         spec.image_id,
         *runtime.bounded_container_command(
             resources,

@@ -42,6 +42,7 @@ from loop_git_ephemeral_support import (  # noqa: E402
     _ephemeral_env,
     _harden_ephemeral_git_metadata,
     _normalize_branch_ref,
+    _pinned_git_pointer_content,
     _run_git,
     _run_git_unchecked,
     _validate_common_objects_mount_source,
@@ -118,6 +119,11 @@ class EphemeralGitSession:
     runtime_dir: Path
     ephemeral_dir: Path
     pinned_git_pointer: Path
+    # Issue #409: snapshot of the host worktree's *original* `.git` pointer content, taken before
+    # `pinned_git_pointer` is rewritten to point at `ephemeral_dir` instead. Used only by
+    # `_verify_git_pointer()` to detect host-side tampering of the real `<worktree>/.git` file --
+    # never mounted into a container.
+    original_git_pointer: Path
     pinned_git_config: Path
     branch_ref: str
     import_ref: str
@@ -250,6 +256,11 @@ def _prepare_ephemeral_git(
     runtime_dir = project / ".claude" / "loop" / loop_id / "docker-runtime" / action_id
     ephemeral_dir = runtime_dir / "git-ephemeral"
     pinned_git_pointer = runtime_dir / "pinned-dotgit"
+    # Issue #409 (design pivot): a snapshot of the host worktree's *original* `.git` pointer
+    # content, taken purely so `_verify_git_pointer()` can still detect host-side tampering of
+    # the real `<worktree>/.git` file. `pinned_git_pointer` itself no longer mirrors this content
+    # -- see that write site's own comment.
+    original_git_pointer = runtime_dir / "original-dotgit"
     pinned_git_config = runtime_dir / "pinned-git-config"
 
     baseline_result = _run_git(
@@ -291,6 +302,7 @@ def _prepare_ephemeral_git(
         runtime_dir=runtime_dir,
         ephemeral_dir=ephemeral_dir,
         pinned_git_pointer=pinned_git_pointer,
+        original_git_pointer=original_git_pointer,
         pinned_git_config=pinned_git_config,
         branch_ref=branch_ref,
         import_ref=import_ref,
@@ -335,6 +347,25 @@ def _prepare_ephemeral_git(
             init_args,
             runner=runner,
             operation="initialize ephemeral git directory",
+        )
+        # Issue #409 (design pivot): the worktree's `.git` pointer overlay bind-mounted into a
+        # Maker/Checker container (`pinned_git_pointer`, written below) now resolves straight to
+        # `ephemeral_dir` via the standard "found a `.git` file -> follow its `gitdir:` line"
+        # mechanism, so a container process with no `GIT_DIR`/`GIT_WORK_TREE` env at all (e.g.
+        # `execute_mechanical()`'s `docker exec`) can still resolve this repository correctly.
+        # That convention only associates a worktree (here, the directory containing the `.git`
+        # file) with a `gitdir:`-pointed repository when that repository's own `core.bare` is
+        # `false` -- a repository initialized `--bare` (the line above) stays `core.bare = true`,
+        # which makes every worktree-needing command (`status`/`add`/`commit`/...) fail with
+        # "this operation must be run in a work tree" even though the `.git` file resolves fine.
+        # Every existing host-side call in this module either passes `--git-dir` alone (never
+        # needs a worktree: `config`/`update-ref`/`symbolic-ref`/`rev-parse --verify`) or sets
+        # `GIT_WORK_TREE` explicitly via `_ephemeral_env()` (`read-tree` below), so this flip
+        # changes no host-side behavior -- only the container-side, pointer-only resolution path.
+        _run_git(
+            ["--git-dir", ephemeral_dir, "config", "core.bare", "false"],
+            runner=runner,
+            operation="mark the ephemeral git directory as non-bare for the .git pointer overlay",
         )
         _run_git(
             ["--git-dir", ephemeral_dir, "config", "user.name", "loop-harness-maker"],
@@ -400,7 +431,15 @@ def _prepare_ephemeral_git(
                 "worktree .git pointer is not a trusted regular file",
                 details={"git_pointer": str(git_pointer)},
             )
-        pinned_git_pointer.write_bytes(git_pointer.read_bytes())
+        # Issue #409 (design pivot): snapshot the host's *original* `.git` pointer content
+        # first, purely so `_verify_git_pointer()` can still detect host-side tampering of the
+        # real `<worktree>/.git` file later -- this snapshot is never mounted into a container.
+        original_git_pointer.write_bytes(git_pointer.read_bytes())
+        original_git_pointer.chmod(0o400)
+        # The overlay actually bind-mounted over `<worktree>/.git` inside a container must
+        # resolve to a path that is *also* mounted 1:1 into that same container --
+        # `ephemeral_dir` is; the host's real gitdir is not. See `_pinned_git_pointer_content()`.
+        pinned_git_pointer.write_bytes(_pinned_git_pointer_content(ephemeral_dir))
         pinned_git_pointer.chmod(0o444)
         _verify_local_override_snapshot(session, safety_stop=False)
         return session

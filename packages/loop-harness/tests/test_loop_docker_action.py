@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 from pathlib import Path
@@ -856,9 +857,14 @@ def test_maker_scenario_container_env_includes_ruff_cache_dir_default(
         seen_specs[0].env["RUFF_CACHE_DIR"]
         == docker_action._MECHANICAL_ENV_DEFAULTS["RUFF_CACHE_DIR"]
     )
-    # Existing mount-derived env (from `build_maker_git_mount_spec()`) must survive the merge.
-    assert seen_specs[0].env["GIT_DIR"] == "/git"
-    assert seen_specs[0].env["GIT_WORK_TREE"] == "/work"
+    # Issue #409: GIT_DIR/GIT_WORK_TREE (from `build_maker_git_mount_spec()`) must never reach
+    # the scenario container's own startup env -- `docker exec` inherits it for every exec
+    # otherwise. They are stashed on `_claude_git_env` instead, for `execute_claude()`'s own exec
+    # to attach, as belt-and-braces on top of the actual `.git`-pointer-overlay fix in
+    # `loop_git_ephemeral.py` (design pivot -- see that module's `_pinned_git_pointer_content()`).
+    assert "GIT_DIR" not in seen_specs[0].env
+    assert "GIT_WORK_TREE" not in seen_specs[0].env
+    assert runtime._claude_git_env == {"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"}
 
 
 def test_start_fails_before_any_docker_setup_when_budget_already_exhausted(
@@ -1115,6 +1121,49 @@ def test_execute_claude_forwards_ruff_cache_dir_default_to_docker_exec(
 
     runtime.host_child_runner = host_child
     runtime.execute_claude(["claude", "-p", "prompt"], "/tmp", 30, {})
+
+
+def test_execute_claude_attaches_claude_git_env_but_mechanical_exec_never_sees_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #409: GIT_DIR/GIT_WORK_TREE must reach only `execute_claude()`'s own `docker exec`
+    (via `self._claude_git_env`, populated by `_start()`), never the scenario container's own
+    startup env and never `execute_mechanical()`'s `docker exec` -- otherwise a Checker's
+    mechanical `pytest -q` run resolves `$GIT_DIR` to this action's own ephemeral Git plumbing
+    instead of a test fixture's own `tmp_path`-rooted repo.
+    """
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, kind="classifier"),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime.container_name = "lh-action"
+    runtime._started = True
+    runtime.broker = SimpleNamespace(base_url="http://lh-broker:8790", run_token="run-token")
+    runtime._claude_git_env = {"GIT_DIR": "/ephemeral/git", "GIT_WORK_TREE": "/action/worktree"}
+    monkeypatch.setattr(docker_action, "enforce_scenario_container_idle", lambda *_a, **_k: None)
+
+    def claude_exec(
+        command: list[str], _cwd: str, _timeout: float, _env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        rendered = " ".join(command)
+        assert "--env GIT_DIR=/ephemeral/git" in rendered
+        assert "--env GIT_WORK_TREE=/action/worktree" in rendered
+        return subprocess.CompletedProcess(command, 0, '{"result":"ok"}', "")
+
+    runtime.host_child_runner = claude_exec
+    runtime.execute_claude(["claude", "-p", "prompt"], "/tmp", 30, {})
+
+    def mechanical_exec(
+        command: list[str], _cwd: str, _timeout: float, _env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
+        rendered = " ".join(command)
+        assert "GIT_DIR" not in rendered
+        assert "GIT_WORK_TREE" not in rendered
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    runtime.host_child_runner = mechanical_exec
+    runtime.execute_mechanical("git init -q", "/tmp", 30)
 
 
 def test_mechanical_exec_env_forwards_overrides_but_not_container_reserved_keys() -> None:
@@ -1978,6 +2027,97 @@ def test_finish_runs_local_runtime_cleanup_when_lease_is_held(
 
     assert events == ["git_finalize", "settings_cleanup", "git_cleanup"]
     assert runtime._finished is True
+
+
+def test_finish_persists_broker_metrics_before_container_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #405: broker metrics (request/rejection counts, anomaly reasons, estimated cost)
+    only ever live in-memory on the broker container -- `_cleanup_containers()` removes it, so
+    `finish()` must read `--print-metrics` and persist an artifact *before* that call, not after,
+    or a budget-rejection failure becomes undiagnosable without an interactive `docker exec`
+    into a container that no longer exists by the time an operator investigates.
+    """
+    events: list[str] = []
+
+    class Broker:
+        def refresh_metrics(self) -> dict[str, Any]:
+            events.append("broker_metrics_read")
+            return {"request_count": 3, "estimated_cost_usd": 1.2, "anomaly_reasons": ["x"]}
+
+        def cleanup(self) -> None:
+            events.append("broker_cleanup")
+
+    saved: list[tuple[Any, ...]] = []
+
+    def fake_save_artifact(
+        loop_id: str, project_dir: str, action_id: str, name: str, content: str
+    ) -> str:
+        events.append("artifact_saved")
+        saved.append((loop_id, project_dir, action_id, name, content))
+        return f"artifacts/{action_id}/{name}"
+
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path, lease_lost=lambda: False),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime._scenario_start_attempted = True
+    runtime._scenario_removed = True
+    runtime.broker = Broker()
+    runtime.git_session = SimpleNamespace(runtime_dir=tmp_path / "runtime")
+    monkeypatch.setattr(docker_action.lc, "save_artifact", fake_save_artifact)
+    monkeypatch.setattr(docker_action.git_ephemeral, "finalize_ephemeral_git", lambda *_a: None)
+    monkeypatch.setattr(docker_action.docker_settings, "cleanup_settings_bundle", lambda *_a: None)
+    monkeypatch.setattr(docker_action.git_ephemeral, "cleanup_ephemeral_git", lambda *_a: None)
+
+    runtime.finish(action_succeeded=True)
+
+    assert events == ["broker_metrics_read", "artifact_saved", "broker_cleanup"]
+    loop_id, project_dir, action_id, name, content = saved[0]
+    assert (loop_id, action_id, name) == ("loop-211", "action-001", "broker_metrics.json")
+    assert str(project_dir) == str(tmp_path)
+    assert json.loads(content) == {
+        "request_count": 3,
+        "estimated_cost_usd": 1.2,
+        "anomaly_reasons": ["x"],
+    }
+
+
+def test_discard_after_lease_loss_never_persists_broker_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EV-50: once the lease is already known lost, no artifact write is safe -- a replacement
+    worker may already be running against the same `(loop_id, action_id)` path. `_persist_broker_
+    metrics()` must therefore never run from `discard_after_lease_loss()`, unlike `finish()`.
+    """
+    saved: list[Any] = []
+
+    class Broker:
+        def refresh_metrics(self) -> dict[str, Any]:
+            saved.append("read")
+            return {}
+
+        def cleanup(self) -> None:
+            return
+
+    def fake_save_artifact(*_args: Any, **_kwargs: Any) -> str:
+        saved.append("write")
+        return ""
+
+    runtime = docker_action.DockerActionRuntime(
+        _request(tmp_path),
+        host_child_runner=lambda *_args: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    runtime._scenario_start_attempted = True
+    runtime._scenario_removed = True
+    runtime.broker = Broker()
+    monkeypatch.setattr(docker_action.lc, "save_artifact", fake_save_artifact)
+
+    runtime.discard_after_lease_loss()
+
+    assert saved == []
 
 
 def test_abort_skips_baseline_verify_when_lease_lost_before_finish(

@@ -26,6 +26,18 @@ def orchestra_dir() -> Path:
     return REPO_ROOT
 
 
+# Issue #409: the Docker Checker mounts the checked-out source tree read-only, so a handful of
+# e2e tests that write directly under `REPO_ROOT` (e.g. `orchestra_dir`-fixture writes, or
+# `os.utime()` on a tracked source file to trigger a resync) fail there with `PermissionError`/
+# `OSError`, not because of a real regression -- there is nothing to fix, the source tree is
+# genuinely not writable in that environment. Skip only those tests rather than xfail-ing them,
+# since a writable checkout (host runs, most CI) must still run them for real.
+requires_writable_repo = pytest.mark.skipif(
+    not os.access(REPO_ROOT, os.W_OK),
+    reason="source tree is read-only (Docker Checker)",
+)
+
+
 @pytest.fixture()
 def e2e_project(tmp_path: Path) -> Path:
     """git 初期化済みの一時プロジェクトを作成する。"""

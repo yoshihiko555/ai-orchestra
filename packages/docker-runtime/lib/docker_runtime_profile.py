@@ -47,8 +47,18 @@ def bind_mount(source: Path, target: str, *, read_only: bool) -> str:
     return ",".join(options)
 
 
-def tmpfs(target: str, uid: int, gid: int, *, size: str) -> str:
-    return f"{target}:rw,noexec,nosuid,nodev,size={size},uid={uid},gid={gid},mode=0700"
+def tmpfs(target: str, uid: int, gid: int, *, size: str, exec_ok: bool = False) -> str:
+    """Build a `docker run --tmpfs` mount spec, `noexec` by default.
+
+    Issue #409: every existing tmpfs mount (container `HOME`/`TMPDIR`) intentionally forbids
+    executing files placed there, but a Checker's mechanical `pytest -q` run can legitimately
+    need a writable, *executable* scratch directory (e.g. `TMPDIR`-rooted test fixtures that
+    `chmod +x` a helper script). `exec_ok=True` drops only the `noexec` flag; every other
+    hardening flag (`nosuid`, `nodev`, the fixed non-root `uid`/`gid`, `mode=0700`) is unchanged,
+    and every existing caller that omits this keyword keeps today's `noexec` behavior exactly.
+    """
+    exec_flag = "exec" if exec_ok else "noexec"
+    return f"{target}:rw,{exec_flag},nosuid,nodev,size={size},uid={uid},gid={gid},mode=0700"
 
 
 def non_root_identity() -> tuple[int, int]:

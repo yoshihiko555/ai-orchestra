@@ -1307,6 +1307,48 @@ def test_apportioned_timeout_floors_at_zero_when_wall_clock_already_exceeded() -
     assert lds.apportioned_timeout(-10, 1800) == 0
 
 
+def test_extract_check_result_json_parses_bare_object() -> None:
+    assert lds.extract_check_result_json('{"layer": "llm_review", "passed": true}') == {
+        "layer": "llm_review",
+        "passed": True,
+    }
+
+
+def test_extract_check_result_json_parses_fenced_block_with_surrounding_prose() -> None:
+    text = (
+        "Here is my review:\n"
+        "```json\n"
+        '{"layer": "llm_review", "passed": false, "findings": []}\n'
+        "```\n"
+        "Thanks for reading."
+    )
+    assert lds.extract_check_result_json(text) == {
+        "layer": "llm_review",
+        "passed": False,
+        "findings": [],
+    }
+
+
+def test_extract_check_result_json_finds_first_layer_object_in_free_form_prose() -> None:
+    """Issue #410: the balanced-brace scanner must skip an unrelated JSON blob (no `"layer"`
+    key) and correctly track brace depth through a `{`/`}` embedded inside a string value."""
+    text = (
+        'Some prose {"unrelated": 1} more prose '
+        '{"layer": "llm_review", "passed": true, '
+        '"note": "a { nested } brace in a string"} trailing text'
+    )
+    assert lds.extract_check_result_json(text) == {
+        "layer": "llm_review",
+        "passed": True,
+        "note": "a { nested } brace in a string",
+    }
+
+
+def test_extract_check_result_json_raises_when_nothing_parses() -> None:
+    with pytest.raises(ValueError, match="no JSON object found"):
+        lds.extract_check_result_json("not json at all")
+
+
 # --------------------------------------------------------------------------------------------
 # loop_driver_support: kill-tree / non-interactive subprocess control (EV-59)
 # --------------------------------------------------------------------------------------------
@@ -1896,6 +1938,87 @@ def test_dispatch_real_build_action_executor_maker_action_builds_real_docker_exe
     # same `Event.is_set` bound to this driver's own `self._lease_lost`).
     assert executor.runtime.request.lease_lost == d._lease_lost.is_set
     assert executor.runtime.request.needs_broker is True
+
+
+def test_capture_docker_broker_metrics_summary_reads_the_persisted_artifact(
+    tmp_path: Path,
+) -> None:
+    """Issue #405: `_dispatch()` reads `DockerActionRuntime.finish()`'s already-written
+    `broker_metrics.json` artifact -- not the broker container again -- and keeps only the
+    fields relevant for diagnosis, dropping the rest of the raw metrics payload."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    lc.save_artifact(
+        loop_id,
+        project_dir,
+        "act-broker-metrics",
+        "broker_metrics.json",
+        json.dumps(
+            {
+                "request_count": 5,
+                "rejected_count": 2,
+                "estimated_cost_usd": 3.4,
+                "anomaly_reasons": ["request cost upper bound exceeds the remaining run budget"],
+            }
+        ),
+    )
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    # `runtime` is never touched by `_capture_docker_broker_metrics_summary()` -- only the
+    # `isinstance(executor, DockerActionExecutor)` check matters -- so a plain placeholder
+    # satisfies the constructor without needing a real `DockerActionRuntime`.
+    executor = driver.lae.DockerActionExecutor(runtime=object())
+
+    d._capture_docker_broker_metrics_summary(executor, "act-broker-metrics")
+
+    assert d._last_docker_broker_metrics_summary == {
+        "request_count": 5,
+        "estimated_cost_usd": 3.4,
+        "anomaly_reasons": ["request cost upper bound exceeds the remaining run budget"],
+    }
+
+
+def test_capture_docker_broker_metrics_summary_noop_for_host_executor(tmp_path: Path) -> None:
+    """A host-only action never had a Docker broker at all -- no artifact read is attempted."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    executor = driver.lae.HostActionExecutor(host_child_runner=lambda *_a: None)
+
+    d._capture_docker_broker_metrics_summary(executor, "act-host-only")
+
+    assert d._last_docker_broker_metrics_summary is None
+
+
+def test_emit_iteration_and_stop_audit_includes_broker_metrics_summary_when_captured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #405: the summary reaches the `loop_iteration` audit payload as an added field --
+    `_maker_audit_payload()`/`_checker_audit_payload()`'s own signatures stay untouched."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._last_docker_broker_metrics_summary = {"request_count": 1, "estimated_cost_usd": 0.1}
+    captured_payloads: list[dict[str, Any]] = []
+
+    def fake_emit(event: str, project_dir: str, payload: dict[str, Any], *, aid: Any) -> None:
+        captured_payloads.append(payload)
+
+    monkeypatch.setattr(driver.lc, "emit_loop_audit_event", fake_emit)
+
+    d._emit_iteration_and_stop_audit(
+        "act-audit", state.phase, lc.Action.RUN_MAKER.value, {"maker": {}}
+    )
+
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["broker_metrics_summary"] == {
+        "request_count": 1,
+        "estimated_cost_usd": 0.1,
+    }
 
 
 def test_dispatch_persists_original_safety_stop_when_abort_raises_a_second_one(
@@ -6918,6 +7041,14 @@ def test_run_maker_treats_nonzero_returncode_as_infrastructure_failure(
 
     assert result["infrastructure_failure"] is True
     assert "summary" not in result["maker"]
+    stdout_artifact = lc.load_artifact(
+        loop_id, project_dir, "act-run-maker", "claude_maker_stdout.tail.txt"
+    )
+    stderr_artifact = lc.load_artifact(
+        loop_id, project_dir, "act-run-maker", "claude_maker_stderr.txt"
+    )
+    assert stdout_artifact is not None and "looks successful" in stdout_artifact
+    assert stderr_artifact == "boom"
 
 
 def test_run_one_llm_reviewer_treats_nonzero_returncode_as_infrastructure_failure(
@@ -6957,6 +7088,91 @@ def test_run_one_llm_reviewer_treats_nonzero_returncode_as_infrastructure_failur
 
     assert result.passed is False
     assert result.infrastructure_failure is True
+    stdout_artifact = lc.load_artifact(
+        loop_id, project_dir, "act-000040", "claude_code-reviewer_stdout.tail.txt"
+    )
+    stderr_artifact = lc.load_artifact(
+        loop_id, project_dir, "act-000040", "claude_code-reviewer_stderr.txt"
+    )
+    assert stdout_artifact is not None and '"passed": true' in stdout_artifact
+    assert stderr_artifact == "boom"
+
+
+def test_run_one_llm_reviewer_saves_raw_output_on_invalid_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #410: a reviewer that exits 0 but returns unparseable JSON must not vanish into an
+    artifact-free infrastructure failure -- the raw stdout/stderr must be persisted, and the
+    CheckResult labeled distinctly (`reviewer_output_invalid`) from a process-level failure."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        d,
+        "_run_child",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [], 0, json.dumps({"result": "not json at all"}), "some warning on stderr"
+        ),
+    )
+
+    result = d._run_one_llm_reviewer(state, "act-000042", "code-reviewer")
+
+    assert result.passed is False
+    assert result.infrastructure_failure is True
+    assert result.signature == "reviewer_output_invalid"
+    assert result.raw_artifact_path.endswith("llm_review_code-reviewer.raw.json")
+    raw = lc.load_artifact(loop_id, project_dir, "act-000042", "llm_review_code-reviewer.raw.json")
+    assert raw is not None and "not json at all" in raw
+    stderr_log = lc.load_artifact(
+        loop_id, project_dir, "act-000042", "llm_review_code-reviewer.stderr.log"
+    )
+    assert stderr_log == "some warning on stderr"
+
+
+def test_run_one_llm_reviewer_extracts_fenced_json_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #410: a reviewer that wraps its otherwise-correct JSON reply in a ```json fenced
+    code block must still produce a normal (non-infrastructure-failure) CheckResult."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    fenced_reply = (
+        "```json\n"
+        + json.dumps(
+            {
+                "passed": True,
+                "layer": "llm_review",
+                "signature": None,
+                "findings": [],
+                "raw_artifact_path": "",
+                "infrastructure_failure": False,
+            }
+        )
+        + "\n```"
+    )
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        d,
+        "_run_child",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [], 0, json.dumps({"result": fenced_reply}), ""
+        ),
+    )
+
+    result = d._run_one_llm_reviewer(state, "act-000043", "code-reviewer")
+
+    assert result.passed is True
+    assert result.infrastructure_failure is False
 
 
 def test_run_one_llm_reviewer_parses_json_string_result_field(
@@ -8444,6 +8660,21 @@ def test_reviewer_prompt_falls_back_to_working_tree_diff_when_base_sha_unknown()
 
     assert "git diff`" in prompt
     assert "..HEAD" not in prompt
+
+
+def test_reviewer_prompt_restricts_bash_and_forbids_fenced_output() -> None:
+    """Issue #410: a reviewer previously wasted turns retrying denied `pytest`/`git show` calls
+    and sometimes wrapped its JSON reply in a code fence despite the [Output] instruction. The
+    prompt must spell out both constraints explicitly."""
+    state = lc._initial_state(
+        "abcd1234-issue-1", "issue-loop", "abcd1234", "/tmp/wt", "main", "implementation"
+    )
+
+    prompt = driver._reviewer_prompt(state, "code-reviewer", "abc123")
+
+    assert "git diff" in prompt and "git log" in prompt
+    assert "do not run tests or linters" in prompt.lower()
+    assert "no code fences" in prompt.lower()
 
 
 def test_run_one_llm_reviewer_threads_pre_maker_head_into_the_diff_instruction(

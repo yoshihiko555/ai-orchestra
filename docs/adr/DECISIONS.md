@@ -58,3 +58,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260718-043 | Docker action の cleanup 失敗と実行取消を安全停止として扱う                          | accepted   | 2026-07-18 |
 | ADR-20260720-044 | 予算 latch を frontier 回帰判定で評価不能として中立化する                            | accepted   | 2026-07-20 |
 | ADR-20260726-045 | 永続イメージライフサイクルの脅威モデル再評価と異常系 stale cleanup の追加            | proposed   | 2026-07-26 |
+| ADR-20260906-053 | LP-2 Docker Checker の実行環境と観測性を実運用値に合わせる                              | accepted   | 2026-09-06 |

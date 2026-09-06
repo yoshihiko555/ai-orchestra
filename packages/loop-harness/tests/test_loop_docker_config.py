@@ -28,10 +28,10 @@ def test_default_config_is_disabled_and_has_required_broker_limits() -> None:
     assert validated.backend == "none"
     assert validated.execution_backend == "none"
     assert validated.docker_execution_enabled is False
-    assert validated.broker.budget_usd == 3.0
-    assert validated.broker.max_requests == 64
-    assert validated.broker.max_total_tokens == 500000
-    assert validated.broker.max_upstream_bytes == 50000000
+    assert validated.broker.budget_usd == 25.0
+    assert validated.broker.max_requests == 400
+    assert validated.broker.max_total_tokens == 30000000
+    assert validated.broker.max_upstream_bytes == 500000000
     assert validated.broker.pricing.output == 75.0
 
 

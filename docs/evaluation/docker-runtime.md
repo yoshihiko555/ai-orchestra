@@ -39,7 +39,7 @@ namespace・image・config を引数として受け取り、meta-harness と loo
 - [ ] EV-01（正常 / must）: 同一 image・context hash・build args の process-local build は 1 回だけ実行し、2 回目は再利用する — 根拠: Phase 0 の既存 meta-harness 挙動
 - [ ] EV-02（異常 / must）: auto-build 無効時は `@sha256:<digest>` 形式でない mutable image を拒否する — 根拠: ADR-20260712-035
 - [ ] EV-03（異常 / must）: container/network の削除失敗は明示的な missing-object 応答だけを「既に削除済み」として成功扱いし、permission error 等を成功扱いしない — 根拠: ADR-20260712-035 受容基準
-- [ ] EV-04（正常 / must）: profile builder は read-only rootfs、cap drop、no-new-privileges、non-root、resource limit、noexec tmpfs を構成できる — 根拠: `docs/design/loop-harness-isolation.md` §3
+- [ ] EV-04（正常 / must）[2026-09-07 改訂（Issue #409、`docker_runtime_profile.tmpfs()` に `exec_ok` パラメータ追加）]: profile builder は read-only rootfs、cap drop、no-new-privileges、non-root、resource limit、tmpfs を構成できる。tmpfs は既定で `noexec`（`exec_ok` 省略時、既存呼び出しは無変更）だが、呼び出し側が明示的に要求した場合のみ `noexec` を外した exec 可能な tmpfs（`nosuid`/`nodev`/固定 non-root uid・gid/`mode=0700` は同一のまま）も構成できる — 根拠: `docs/design/loop-harness-isolation.md` §3, `packages/docker-runtime/lib/docker_runtime_profile.py`（`tmpfs`）, loop-harness EV-161
 - [ ] EV-05（異常 / must）: comma を含む bind source 等、安全に Docker CLI へ表現できない mount は拒否する — 根拠: meta-harness 既存実装挙動
 - [ ] EV-06（正常 / must）: broker は internal/external network の dual-homed sidecar として起動し、scenario 側の direct egress や Docker socket mount を追加しない — 根拠: `docs/design/loop-harness-isolation.md` §2・§3
 - [ ] EV-07（異常 / must）: broker 起動の途中失敗では作成済み container/network を逆順に cleanup し、非隔離実行へ降格しない — 根拠: `docs/design/loop-harness-isolation.md` §2.1・§7

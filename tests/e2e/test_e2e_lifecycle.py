@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tests.conftest import run_orchex, run_session_start
+from tests.conftest import requires_writable_repo, run_orchex, run_session_start
 
 
 class TestLifecycleNewProject:
@@ -61,6 +61,7 @@ class TestLifecycleNewProject:
 class TestLifecycleOrchestraUpdate:
     """9.2 orchestra 側の更新 → プロジェクト反映"""
 
+    @requires_writable_repo
     def test_policy_change_propagation(self, e2e_project: Path, orchestra_dir: Path) -> None:
         """#70: facet policy 変更 → SessionStart → 全参照 skill に伝播"""
         run_orchex("setup", "essential", project=e2e_project)
@@ -84,6 +85,7 @@ class TestLifecycleOrchestraUpdate:
         finally:
             policy_path.write_text(original, encoding="utf-8")
 
+    @requires_writable_repo
     def test_config_update_preserves_local(self, e2e_project: Path, orchestra_dir: Path) -> None:
         """#72: config 値変更 → ベース更新、local 保持"""
         run_orchex("setup", "essential", project=e2e_project)

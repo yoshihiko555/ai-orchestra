@@ -239,12 +239,23 @@ def test_prepare_ephemeral_git_initializes_trusted_maker_repository(
     assert _git("config", "safe.directory", env=_ephemeral_env(session)).stdout.strip() == str(
         linked_worktree.worktree_path
     )
+    # Issue #409 (design pivot): `core.bare false` lets a container process with no `GIT_DIR`/
+    # `GIT_WORK_TREE` env resolve a worktree via the `.git` pointer overlay alone.
+    assert _git("config", "core.bare", env=_ephemeral_env(session)).stdout.strip() == "false"
     assert (
         Path(session.ephemeral_dir, "objects/info/alternates").read_text(encoding="utf-8")
         == f"{session.common_dir}/objects\n"
     )
+    # The overlay bind-mounted over `<worktree>/.git` inside a container now resolves to
+    # `ephemeral_dir` (the only Git plumbing path mounted 1:1 into that container), not a copy
+    # of the host's real `.git` pointer -- see `_pinned_git_pointer_content()`. The *original*
+    # host pointer content is preserved separately, for tamper detection only.
     assert (
         Path(session.pinned_git_pointer).read_bytes()
+        == f"gitdir: {session.ephemeral_dir}\n".encode()
+    )
+    assert (
+        Path(session.original_git_pointer).read_bytes()
         == Path(linked_worktree.worktree_path, ".git").read_bytes()
     )
 

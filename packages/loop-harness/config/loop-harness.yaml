@@ -69,10 +69,13 @@ lp2:
       port_range: [8790, 8990]
       idle_timeout_sec: 300
       startup_timeout_sec: 30
-      budget_usd: 3.0
-      max_requests: 64
-      max_total_tokens: 500000
-      max_upstream_bytes: 50000000
+      # Per-action ceilings. Recalibrated from a real measurement (Issue #405): a Maker run took
+      # 31 requests / $6.68, with `total_tokens` over 2M once cache reads are counted, so the
+      # previous defaults rejected Claude Code's very first request outright.
+      budget_usd: 25.0
+      max_requests: 400
+      max_total_tokens: 30000000
+      max_upstream_bytes: 500000000
       pricing_upper_bound_usd_per_million:
         input: 15.0
         output: 75.0

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.conftest import run_orchex, run_session_start
+from tests.conftest import requires_writable_repo, run_orchex, run_session_start
 
 
 def _setup_essential(project: Path) -> None:
@@ -60,6 +60,7 @@ class TestFacetBuild:
         )
         assert "E2E LOCAL POLICY" in content
 
+    @requires_writable_repo
     def test_extract(self, e2e_project: Path, orchestra_dir: Path) -> None:
         """#48: extract — instruction の書き戻し"""
         _setup_essential(e2e_project)

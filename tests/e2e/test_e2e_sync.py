@@ -10,7 +10,7 @@ import os
 import time
 from pathlib import Path
 
-from tests.conftest import run_orchex, run_session_start
+from tests.conftest import requires_writable_repo, run_orchex, run_session_start
 
 
 def _setup_essential(project: Path) -> None:
@@ -38,6 +38,7 @@ class TestFileSync:
         result = run_session_start(e2e_project, "skip1")
         assert result.stdout.strip() == ""
 
+    @requires_writable_repo
     def test_updated_file_synced(self, e2e_project: Path, orchestra_dir: Path) -> None:
         """#26: orchestra 側のファイル更新で差分同期"""
         _setup_essential(e2e_project)
@@ -78,6 +79,7 @@ class TestFileSync:
         assert local_file.is_file()
         assert "test" in local_file.read_text(encoding="utf-8")
 
+    @requires_writable_repo
     def test_user_edited_agent_file_preserved_on_resync(
         self, e2e_project: Path, orchestra_dir: Path
     ) -> None:
