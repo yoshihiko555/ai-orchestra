@@ -2900,7 +2900,12 @@ class LoopDriver:
     def _create_or_reuse_pr(
         self, state: lc.LoopState, branch: str, action_id: str
     ) -> tuple[int, bool]:
-        """Create the implementation PR, or reuse the existing one for this branch.
+        """Create the implementation PR, or reuse the existing OPEN one for this branch.
+
+        Issue #274 follow-up: "existing" here means `_lookup_open_pr_number` finds an OPEN PR
+        for `branch` -- a CLOSED (or MERGED) PR of the same branch name (e.g. left over from an
+        earlier, abandoned run) is treated the same as "no PR exists yet" below, so a fresh PR
+        is created instead of silently reusing one nobody can act on.
 
         Returns `(pr_number, created)`. code K2: when no PR exists yet for `branch`, records a
         zero/pre-PR review baseline (`prw.record_baseline(..., pr_number=None, ...)`) *before*
@@ -2919,33 +2924,26 @@ class LoopDriver:
         `action_id`'s own PR creation, not just the first successful call. Without this, a
         crash between `gh pr create` succeeding (the zero baseline above already recorded and
         the PR now publicly visible) and `lc.complete()` persisting that outcome makes the
-        retried `advance_phase` action re-run this method from the top: `gh pr view` now finds
-        the PR this same action just created and (pre-fix) reported `created=False`, so the
-        caller's own later `record_baseline` exec step re-ran and re-fetched a *current*
-        baseline -- silently re-adopting any bot review posted in the crash-restart gap as
-        "pre-baseline" and never importing it as a finding. `_persist_pr_creation_intent()` is
+        retried `advance_phase` action re-run this method from the top: `_lookup_open_pr_number`
+        (OPEN only, Issue #274 follow-up) now finds the PR this same action just created and
+        (pre-fix) reported `created=False`, so the caller's own later `record_baseline` exec
+        step re-ran and re-fetched a *current* baseline -- silently re-adopting any bot review
+        posted in the crash-restart gap as "pre-baseline" and never importing it as a finding.
+        `_persist_pr_creation_intent()` is
         journaled immediately before recording that zero baseline, keyed to this exact
         `action_id`; recognizing it on this path preserves the original `created=True` outcome
         (and therefore the original zero baseline) across the retry.
         """
-        existing = subprocess.run(
-            ["gh", "pr", "view", branch, "--json", "number", "-q", ".number"],
-            cwd=state.worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if existing.returncode == 0 and existing.stdout.strip():
-            pr_number = int(existing.stdout.strip())
+        pr_number = _lookup_open_pr_number(state.worktree_path, branch)
+        if pr_number is not None:
             intended = self._load_persisted_pr_creation_intent(action_id) == branch
             confirmed = self._load_persisted_pr_creation_confirmed(action_id) == branch
             if intended and confirmed:
                 return pr_number, True
             if (
                 intended
-                and self._pr_created_after_intent(state.worktree_path, branch, action_id)
-                and self._pr_authored_by_us(state.worktree_path, branch)
+                and self._pr_created_after_intent(state.worktree_path, pr_number, action_id)
+                and self._pr_authored_by_us(state.worktree_path, pr_number)
             ):
                 # Heal the crash window between `gh pr create` returning (the PR now publicly
                 # exists) and `_persist_pr_creation_confirmed`'s journal write below: the intent
@@ -2984,25 +2982,27 @@ class LoopDriver:
             check=True,
         )
         # Journal the confirmation immediately after `gh pr create` succeeds (before the
-        # `gh pr view` below): only now is it proven that *this* action created the PR, which the
-        # existing-PR reuse path above requires before reporting `created=True`. A crash landing
-        # between `gh pr create` returning (including its network round-trip: the PR may exist
-        # remotely before `subprocess.run` comes back) and this journal write leaves the PR
-        # created but unconfirmed; the retry then recovers `created=True` via the
+        # `_lookup_open_pr_number` below): only now is it proven that *this* action created the
+        # PR, which the existing-PR reuse path above requires before reporting `created=True`.
+        # A crash landing between `gh pr create` returning (including its network round-trip:
+        # the PR may exist remotely before `subprocess.run` comes back) and this journal write
+        # leaves the PR created but unconfirmed; the retry then recovers `created=True` via the
         # `_pr_authored_by_us` ownership check above rather than off the intent alone, so the
         # misattribution window this confirmation closes stays closed. If that ownership lookup
         # itself fails, the retry degrades to `created=False` (re-baseline; the safe direction,
         # matching the pre-#219 reuse behavior).
         self._persist_pr_creation_confirmed(action_id, branch)
-        created = subprocess.run(
-            ["gh", "pr", "view", branch, "--json", "number", "-q", ".number"],
-            cwd=state.worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=True,
-        )
-        return int(created.stdout.strip()), True
+        created_pr_number = _lookup_open_pr_number(state.worktree_path, branch)
+        if created_pr_number is None:
+            # `gh pr create` above just succeeded (`check=True`), so the PR must exist -- an
+            # OPEN-only lookup miss here means either `gh` itself failed or the brand-new PR
+            # was somehow not OPEN, both anomalous enough to fail loud rather than silently
+            # fall back to `gh pr create` again for a branch that already has a PR.
+            raise RuntimeError(
+                f"gh pr create for branch {branch!r} reported success, but the OPEN PR "
+                "could not be resolved afterward"
+            )
+        return created_pr_number, True
 
     def _persist_pr_creation_intent(self, action_id: str, branch: str) -> None:
         """Durably mark that `action_id` already recorded the pre-creation zero baseline and
@@ -3058,14 +3058,19 @@ class LoopDriver:
         branch = payload.get("branch") if isinstance(payload, dict) else None
         return str(branch) if branch else None
 
-    def _pr_authored_by_us(self, worktree_path: str, branch: str) -> bool:
-        """Return True only when `branch`'s PR author is the authenticated `gh` user.
+    def _pr_authored_by_us(self, worktree_path: str, pr_number: int) -> bool:
+        """Return True only when PR `pr_number`'s author is the authenticated `gh` user.
 
         Ownership signal for the intent-without-confirmation recovery path in
         `_create_or_reuse_pr` (Issue #219 P2-5 follow-up). Fail-closed: any lookup failure
         (network, auth, missing PR) returns False, degrading to `created=False` -- the safe
         direction, since re-baselining against the PR's real reviews merely repeats the
         pre-#219 reuse behavior instead of trusting an unverified ownership claim.
+
+        Queried by PR number rather than branch (Issue #274 follow-up): the caller already
+        resolved `pr_number` via `_lookup_open_pr_number`, so re-querying by branch here would
+        reintroduce the same "which PR does this branch name resolve to" ambiguity that helper
+        exists to remove.
         """
         # PR #226 review P2: `gh api user` defaults to github.com even when the repository
         # lives on a GitHub Enterprise host, so pin the request host to the one derived from
@@ -3078,7 +3083,7 @@ class LoopDriver:
             me_cmd = ["gh", "api", "--hostname", host, "user", "--jq", ".login"]
         try:
             author = subprocess.run(
-                ["gh", "pr", "view", branch, "--json", "author", "-q", ".author.login"],
+                ["gh", "pr", "view", str(pr_number), "--json", "author", "-q", ".author.login"],
                 cwd=worktree_path,
                 capture_output=True,
                 text=True,
@@ -3101,8 +3106,8 @@ class LoopDriver:
         my_login = me.stdout.strip()
         return bool(author_login) and bool(my_login) and author_login == my_login
 
-    def _pr_created_after_intent(self, worktree_path: str, branch: str, action_id: str) -> bool:
-        """Return True only when `branch`'s PR was created after this action journaled its intent.
+    def _pr_created_after_intent(self, worktree_path: str, pr_number: int, action_id: str) -> bool:
+        """Return True only when PR `pr_number` was created after this action journaled its intent.
 
         Second ownership signal for `_create_or_reuse_pr`'s heal path (PR #226 review P2): the
         author check alone cannot reject a *pre-existing* PR of our own that the initial
@@ -3112,6 +3117,9 @@ class LoopDriver:
         been born from this action's own `gh pr create`. Fail-closed like `_pr_authored_by_us`:
         any lookup/parse failure (and clock skew large enough to flip the comparison) degrades
         to False -- `created=False` merely repeats the pre-#219 reuse behavior.
+
+        Queried by PR number rather than branch (Issue #274 follow-up), for the same reason as
+        `_pr_authored_by_us` above.
         """
         record = lc.find_journal_event(
             self.loop_id, self.project_dir, action_id, _PR_CREATION_INTENT_JOURNAL_EVENT
@@ -3121,7 +3129,7 @@ class LoopDriver:
             return False
         try:
             created = subprocess.run(
-                ["gh", "pr", "view", branch, "--json", "createdAt", "-q", ".createdAt"],
+                ["gh", "pr", "view", str(pr_number), "--json", "createdAt", "-q", ".createdAt"],
                 cwd=worktree_path,
                 capture_output=True,
                 text=True,
@@ -3181,7 +3189,12 @@ class LoopDriver:
                 self._maybe_comment(state, _exit_failure_comment(state))
 
     def _draft_pr(self, proposal: lc.ProposeResult, state: lc.LoopState) -> None:
-        """Create a Draft PR if none exists yet, else convert the existing PR to Draft.
+        """Create a Draft PR if no OPEN one exists yet, else convert the existing OPEN PR to Draft.
+
+        Issue #274 follow-up: a CLOSED PR for `state.branch` (e.g. a Draft PR from an earlier,
+        abandoned run) must not be "converted" via `gh pr ready --undo` -- that call would be a
+        silent no-op on a closed PR, so a fresh Draft PR is created instead, exactly as if no
+        PR had ever existed for this branch.
 
         code K4: pushes the branch first. `gh pr create --head <branch>` explicitly does not
         push on its own (per `gh`'s own manual, `--head` only selects which already-published
@@ -3210,17 +3223,10 @@ class LoopDriver:
         self._verify_push_integrity_or_stop(proposal, state, state.branch)
         self._scan_for_leaked_secrets_or_stop(proposal, state)  # SH5
         self._push_verified_branch(state.worktree_path, state.branch)
-        existing = subprocess.run(
-            ["gh", "pr", "view", state.branch, "--json", "number", "-q", ".number"],
-            cwd=state.worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if existing.returncode == 0 and existing.stdout.strip():
+        existing_pr_number = _lookup_open_pr_number(state.worktree_path, state.branch)
+        if existing_pr_number is not None:
             subprocess.run(
-                ["gh", "pr", "ready", existing.stdout.strip(), "--undo"],
+                ["gh", "pr", "ready", str(existing_pr_number), "--undo"],
                 cwd=state.worktree_path,
                 capture_output=True,
                 text=True,
@@ -3312,6 +3318,55 @@ def _repo_name_with_owner(worktree_path: str) -> str:
         check=True,
     )
     return completed.stdout.strip()
+
+
+def _lookup_open_pr_number(worktree_path: str, branch: str) -> int | None:
+    """Return `branch`'s OPEN PR number, or None when no OPEN PR exists for it.
+
+    Issue #274 follow-up (run 7 of #347, hardening request): queries `gh pr list --head
+    <branch> --state open --limit 1` rather than `gh pr view <branch>`. `gh pr view` resolves
+    to *a* PR for the branch regardless of state and would require this function to filter a
+    `state` field client-side -- which works only so long as `gh` happens to prefer an OPEN PR
+    over a CLOSED one when both exist for the same branch name (e.g. a previous run's CLOSED
+    Draft PR plus a brand-new OPEN one), an internal ordering guarantee `gh` does not document.
+    `gh pr list --head <branch> --state open` instead filters server-side, so any PR present in
+    the result is guaranteed OPEN by construction, with no reliance on `gh`'s sort order. Any
+    `gh` failure, empty result, or malformed/unexpected JSON returns None, matching the prior
+    fail-closed default of falling through to `gh pr create`.
+    """
+    result = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "open",
+            "--json",
+            "number",
+            "--limit",
+            "1",
+        ],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        return None
+    if not isinstance(payload, list) or not payload:
+        return None
+    first = payload[0]
+    if not isinstance(first, dict):
+        return None
+    number = first.get("number")
+    return number if isinstance(number, int) else None
 
 
 def _maker_audit_payload(action: str, result: dict[str, Any]) -> dict[str, Any]:
