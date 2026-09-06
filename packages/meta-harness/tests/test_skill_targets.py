@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from tests.module_loader import load_module
+
+# facet_builder.py は `from lib.<name>` 形式で兄弟モジュールを参照するため、
+# 単体ロードする前に scripts/ を import パスへ通す。
+_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
 
 skill_targets = load_module(
     "skill_targets",

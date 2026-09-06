@@ -1,6 +1,7 @@
 ---
 name: antigravity-system
-description: 'PROACTIVELY consult Antigravity CLI for research and large codebase
+description:
+  'PROACTIVELY consult Antigravity CLI for research and large codebase
   comprehension.
 
   Antigravity excels at: large context windows, Google Search grounding,

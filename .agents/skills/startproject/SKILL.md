@@ -1,10 +1,11 @@
 ---
 name: startproject
-description: 'Start a new project/feature implementation with multi-agent collaboration.
+description:
+  "Start a new project/feature implementation with multi-agent collaboration.
 
   Includes multi-session review workflow for quality assurance.
 
-  '
+  "
 metadata:
   short-description: Project kickoff with multi-agent collaboration
 ---

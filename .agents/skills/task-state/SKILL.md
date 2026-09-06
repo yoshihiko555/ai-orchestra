@@ -1,10 +1,10 @@
 ---
 name: task-state
-description: 'Plans.md (SSOT) のタスク状態を管理する。
+description: "Plans.md (SSOT) のタスク状態を管理する。
 
   タスクの追加・状態更新・一覧表示・Plans.md の初期化が可能。
 
-  '
+  "
 metadata:
   short-description: SSOT タスク管理（Plans.md の作成・更新）
 ---
@@ -59,7 +59,7 @@ metadata:
 1. Plans.md に新しいフェーズセクションを追加
 2. タスクは `cc:TODO` で初期化
 3. Acceptance Criteria が決まっている場合は、タスクグループより前に `#### Acceptance Criteria` セクションを追記する
-   - 機械検証可能な条件は `— verify: \`コマンド\``、主観的条件は `— judge: 判定基準` を併記する（記法は `task-memory-usage.md` 参照）
+   - 機械検証可能な条件は `— verify: \`コマンド\``、主観的条件は `— judge: 判定基準`を併記する（記法は`task-memory-usage.md` 参照）
    - 登録時は全条件を未チェック `- [ ]` で記載する
    - `/preflight` 経由で呼ばれた場合は Phase 3 で合意済みの AC をそのまま反映する。直接 `add-phase` を呼ぶ場合は AC の有無をユーザーに確認する
 

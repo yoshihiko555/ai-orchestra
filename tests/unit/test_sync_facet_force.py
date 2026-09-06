@@ -65,6 +65,7 @@ instruction: |
         "orchestra_context.py",
         "orchestra_hooks.py",
         "facet_builder.py",
+        "md_format.py",
         "gitignore_sync.py",
         "scaffold.py",
         "agent_model_patch.py",

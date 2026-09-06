@@ -1,6 +1,7 @@
 ---
 name: code-naming
-description: 'Use when naming identifiers (variables, functions, methods, classes,
+description:
+  'Use when naming identifiers (variables, functions, methods, classes,
   types, files) in code.
 
   Stops overuse of "get" and ensures names reveal what is done to obtain a value.
@@ -46,18 +47,18 @@ metadata:
 
 何をして値を得るのかを動詞にする。
 
-| やること | 動詞 |
-|---|---|
-| 保存先から読み込む | `load` |
-| ネットワーク越しに取りに行く | `fetch` |
-| 条件に合うものを探す | `find` / `search` |
-| 一覧をまとめて返す | `list` |
-| 材料から組み立てる | `build` / `compose` |
-| 計算して求める | `calculate` / `count` |
-| 複数の材料から1つに決める | `resolve` / `determine` |
-| 別の形に変換して返す | `to〜` / `convert` |
-| 中から一部を取り出す | `extract` |
-| 無ければ作って返す | `findOrCreate` |
+| やること                     | 動詞                    |
+| ---------------------------- | ----------------------- |
+| 保存先から読み込む           | `load`                  |
+| ネットワーク越しに取りに行く | `fetch`                 |
+| 条件に合うものを探す         | `find` / `search`       |
+| 一覧をまとめて返す           | `list`                  |
+| 材料から組み立てる           | `build` / `compose`     |
+| 計算して求める               | `calculate` / `count`   |
+| 複数の材料から1つに決める    | `resolve` / `determine` |
+| 別の形に変換して返す         | `to〜` / `convert`      |
+| 中から一部を取り出す         | `extract`               |
+| 無ければ作って返す           | `findOrCreate`          |
 
 例外は適用範囲に挙げた2つ（言語機能としてのアクセサ、既存ライブラリが定めた名前）だけ。それ以外で `get` を書きたくなったら、手順1に戻って処理を1文で説明し直す。
 
@@ -74,24 +75,24 @@ metadata:
 
 次の語は、責務が定まらないまま何でも入る器になりやすい。使う前に、何をするものかを名詞で言い直す。
 
-| 避ける語 | 直し方 |
-|---|---|
-| `〜Manager` / `〜Controller`（MVC の Controller を除く） | 何を管理するのかを動詞化して分割する |
-| `〜Util` / `〜Helper` | 対象となる型の名前を冠した専用クラスにする |
-| `〜Data` / `〜Info` / `〜Item` / `〜Type` | 外して意味が通るなら外す。通らないなら中身が定まっていない |
-| `data` / `result` / `temp` / `flag` | 実際に入っているものを書く（`isSuccess` / `newId` / `mappedRows` など） |
+| 避ける語                                                 | 直し方                                                                  |
+| -------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `〜Manager` / `〜Controller`（MVC の Controller を除く） | 何を管理するのかを動詞化して分割する                                    |
+| `〜Util` / `〜Helper`                                    | 対象となる型の名前を冠した専用クラスにする                              |
+| `〜Data` / `〜Info` / `〜Item` / `〜Type`                | 外して意味が通るなら外す。通らないなら中身が定まっていない              |
+| `data` / `result` / `temp` / `flag`                      | 実際に入っているものを書く（`isSuccess` / `newId` / `mappedRows` など） |
 
 ### 4. 真偽値は `if` の条件として英文になる形にする
 
 判定基準は1つ。**`== true` を付けないと文として成立しない名前は使わない。**
 
-| 型 | 例 |
-|---|---|
-| `is` + 形容詞／過去分詞 | `isEmpty` / `isChanged` |
-| `has` + 名詞／過去分詞 | `hasObservers` / `hasSent` |
-| `can` + 動詞の原形 | `canUpdate` |
-| `should` + 動詞の原形 | `shouldRetry` |
-| `needs` + 名詞／動詞 | `needsMigration` |
+| 型                         | 例                                    |
+| -------------------------- | ------------------------------------- |
+| `is` + 形容詞／過去分詞    | `isEmpty` / `isChanged`               |
+| `has` + 名詞／過去分詞     | `hasObservers` / `hasSent`            |
+| `can` + 動詞の原形         | `canUpdate`                           |
+| `should` + 動詞の原形      | `shouldRetry`                         |
+| `needs` + 名詞／動詞       | `needsMigration`                      |
 | 三人称単数の動詞（＋名詞） | `exists` / `contains` / `existsError` |
 
 避ける形は3つ。`check〜`（真のとき何が起きるのかが読めない）、`is` + 動詞の原形（`isFail` ではなく `isFailed`）、原形の動詞 + 名詞（`existError` ではなく `existsError`）。

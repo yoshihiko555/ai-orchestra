@@ -62,10 +62,12 @@ disable-model-invocation: true
 ## Release Readiness
 
 ### Decision
+
 - status: PASS / BLOCKED
 - reason: {one-line summary}
 
 ### Evidence
+
 - tests: pass/fail (source)
 - review: critical/high status (source)
 - plans: blocked/todo status (source)
@@ -75,21 +77,22 @@ disable-model-invocation: true
 - test-completeness: sufficient/gaps-found/stale-tests-found — {詳細}
 
 ### Required Actions (if BLOCKED)
+
 1. {action}
 2. {action}
 ```
 
 ## BLOCKED 判定基準
 
-| チェック項目 | BLOCKED 条件 | 例外（skip 可） |
-|-------------|-------------|----------------|
-| テスト | 必須テストが失敗 | — |
-| レビュー | Critical が未解消 | — |
-| タスク状態 | `cc:blocked` が未解消、または対象フェーズの Acceptance Criteria に未チェック `- [ ]` が残存 | — |
-| 差分健全性 | 未整理差分あり | — |
-| ドキュメント更新 | ユーザー向け変更でドキュメント未更新 | 内部リファクタのみ（テスト・lint 整理など） |
-| テストカバレッジ | 変更コードパスのテスト未実行 | — |
-| テストケース過不足 | 追加ロジックに対応するテストケースが明らかに欠落 | — |
+| チェック項目       | BLOCKED 条件                                                                                | 例外（skip 可）                             |
+| ------------------ | ------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| テスト             | 必須テストが失敗                                                                            | —                                           |
+| レビュー           | Critical が未解消                                                                           | —                                           |
+| タスク状態         | `cc:blocked` が未解消、または対象フェーズの Acceptance Criteria に未チェック `- [ ]` が残存 | —                                           |
+| 差分健全性         | 未整理差分あり                                                                              | —                                           |
+| ドキュメント更新   | ユーザー向け変更でドキュメント未更新                                                        | 内部リファクタのみ（テスト・lint 整理など） |
+| テストカバレッジ   | 変更コードパスのテスト未実行                                                                | —                                           |
+| テストケース過不足 | 追加ロジックに対応するテストケースが明らかに欠落                                            | —                                           |
 
 ## Notes
 

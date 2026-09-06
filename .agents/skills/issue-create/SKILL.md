@@ -1,12 +1,13 @@
 ---
 name: issue-create
-description: 'GitHub Issue を作成する。種類（bug/feature/task）に応じたテンプレートで
+description:
+  "GitHub Issue を作成する。種類（bug/feature/task）に応じたテンプレートで
 
   本文を構成し、ラベルを自動付与する。
 
   トリガー: /issue-create
 
-  '
+  "
 metadata:
   short-description: GitHub Issue の作成
 ---
@@ -80,12 +81,12 @@ gh label list --json name,description --limit 100
 
 `$ARGUMENTS` から種類とタイトルを判定する。
 
-| パターン | 種類 | 例 |
-|---------|------|-----|
-| `bug ...` | bug | `/issue-create bug ログインエラー` |
-| `feature ...` | feature | `/issue-create feature ダークモード` |
-| `task ...` | task | `/issue-create task CI整備` |
-| 引数なし | — | AskUserQuestion で種類・タイトルをヒアリング |
+| パターン      | 種類    | 例                                           |
+| ------------- | ------- | -------------------------------------------- |
+| `bug ...`     | bug     | `/issue-create bug ログインエラー`           |
+| `feature ...` | feature | `/issue-create feature ダークモード`         |
+| `task ...`    | task    | `/issue-create task CI整備`                  |
+| 引数なし      | —       | AskUserQuestion で種類・タイトルをヒアリング |
 
 種類またはタイトルが不足している場合は AskUserQuestion で確認する。
 

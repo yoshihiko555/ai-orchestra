@@ -1,6 +1,7 @@
 ---
 name: codd-scan
-description: 'Build the document dependency graph from `codd:` frontmatter blocks.
+description:
+  'Build the document dependency graph from `codd:` frontmatter blocks.
 
   Scans the configured scope and writes `.claude/codd/graph.jsonl`.
 

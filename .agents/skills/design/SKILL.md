@@ -1,6 +1,7 @@
 ---
 name: design
-description: 'Interactive design skill for software projects — covers requirements
+description:
+  'Interactive design skill for software projects — covers requirements
   definition,
 
   basic design, and detailed design through dialogue with the user.

@@ -85,16 +85,19 @@ $(cat src/services/llm_client.py)
 ## Checklist
 
 ### Before Refactoring
+
 - [ ] Tests exist and all pass
 - [ ] Library constraints understood
 - [ ] Impact scope identified
 
 ### During Refactoring
+
 - [ ] Proceed in small steps
 - [ ] Run tests at each step
 - [ ] Verify library usage unchanged
 
 ### After Refactoring
+
 - [ ] All tests pass
 - [ ] Behavior unchanged
 - [ ] Code is simpler

@@ -101,6 +101,49 @@ jobs:
           python -m pytest -q -rs
           packages/meta-harness/tests/test_scenario_docker_integration.py
 
+  facet-format:
+    # 生成 Markdown が prettier 整形済みでコミットされていることを保証する。
+    # 整形されていないと、エディタや PostToolUse hook が触った瞬間に全文差分になる。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+          # 整形結果はバージョンで変わるため固定する（東アジア文字のテーブル幅など）
+          npm install -g prettier@3.9.6
+
+      - name: Build facets for both targets
+        env:
+          AI_ORCHESTRA_DIR: ${{ github.workspace }}
+        run: |
+          python scripts/orchestra-manager.py facet build --project .
+          python scripts/orchestra-manager.py facet build --target codex --project .
+
+      - name: Verify generated Markdown is prettier-formatted
+        run: >-
+          prettier --check
+          ".claude/skills/**/*.md" ".claude/rules/*.md" ".agents/skills/**/*.md"
+
+      - name: Verify build output matches the commit
+        run: |
+          # --intent-to-add で untracked な新規生成物も diff の対象にする
+          git add --intent-to-add .
+          git diff --exit-code
+
   lint:
     runs-on: ubuntu-latest
     steps:

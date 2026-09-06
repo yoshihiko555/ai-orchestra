@@ -37,16 +37,16 @@ scan を内部で実行してからグラフを検証するため、事前の `/
 
 ### Step 2: 検査項目
 
-| 検査                  | 内容                                       | 既定レベル |
-| --------------------- | ------------------------------------------ | ---------- |
-| `dangling`            | `depends_on.id` が存在しない               | error      |
-| `duplicate`           | 同一 node_id が複数ファイルに存在          | error      |
-| `cycle`               | depends_on が循環している                  | error      |
-| `unknown`             | 未定義の kind / relation / status          | error      |
-| `malformed_annotation`| code_scope のコード注釈が不正（値の無いキー、`node_id`/`kind`/`status`/`owner` の重複指定など。Issue #98） | error      |
-| `missing_frontmatter` | scope 内なのに `codd:` ブロックが無い      | warning    |
-| `orphan`              | 参照ゼロ（roots kind は除外）              | warning    |
-| `drift`               | 上流ノードが下流より新しい（追従漏れ疑い） | warning    |
+| 検査                   | 内容                                                                                                       | 既定レベル |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- | ---------- |
+| `dangling`             | `depends_on.id` が存在しない                                                                               | error      |
+| `duplicate`            | 同一 node_id が複数ファイルに存在                                                                          | error      |
+| `cycle`                | depends_on が循環している                                                                                  | error      |
+| `unknown`              | 未定義の kind / relation / status                                                                          | error      |
+| `malformed_annotation` | code_scope のコード注釈が不正（値の無いキー、`node_id`/`kind`/`status`/`owner` の重複指定など。Issue #98） | error      |
+| `missing_frontmatter`  | scope 内なのに `codd:` ブロックが無い                                                                      | warning    |
+| `orphan`               | 参照ゼロ（roots kind は除外）                                                                              | warning    |
+| `drift`                | 上流ノードが下流より新しい（追従漏れ疑い）                                                                 | warning    |
 
 検査レベルは `codd.yaml` の `checks` で `error` / `warning` / `off` に変更できる。
 

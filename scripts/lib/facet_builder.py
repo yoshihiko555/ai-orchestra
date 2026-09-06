@@ -10,6 +10,8 @@ from typing import Any
 
 import yaml
 
+from lib.md_format import format_markdown_files
+
 FACET_MANIFEST_NAME = "facet-manifest.json"
 FACET_CACHE_DIR = ".cache"
 
@@ -297,6 +299,23 @@ class FacetBuilder:
 
     def build_one(self, name: str, target: str, project_dir: Path) -> Path | None:
         """単一 composition をビルドして出力する。"""
+        generated: list[Path] = []
+        result = self._build_one(name, target, project_dir, generated)
+        format_markdown_files(generated, project_dir)
+        return result
+
+    def _build_one(
+        self,
+        name: str,
+        target: str,
+        project_dir: Path,
+        generated: list[Path],
+    ) -> Path | None:
+        """build_one の本体。生成した Markdown のパスを generated に積む。
+
+        整形は呼び出し側でまとめて行う。composition ごとに prettier を起動すると
+        build_all で数十プロセスになるため。
+        """
         composition_path = self._find_composition(name)
 
         composition = self.load_composition(composition_path)
@@ -343,6 +362,7 @@ class FacetBuilder:
         output_path = self._build_output_path(output_name, target, project_dir, comp_type)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(content, encoding="utf-8")
+        generated.append(output_path)
 
         if comp_type != "rule":
             skill_dir = output_path.parent
@@ -360,6 +380,7 @@ class FacetBuilder:
                 dst = skill_dir / "references" / f"{kname}.md"
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+                generated.append(dst)
 
             seen_script_basenames: set[str] = set()
             for sname in composition.get("scripts", []):
@@ -510,6 +531,15 @@ class FacetBuilder:
 
     def build_all(self, target: str, project_dir: Path) -> list[Path]:
         """全 composition をビルドして出力する。"""
+        generated: list[Path] = []
+        try:
+            return self._build_all(target, project_dir, generated)
+        finally:
+            # 生成物が途中までしか無くても、書けた分は整形して確定させる。
+            format_markdown_files(generated, project_dir)
+
+    def _build_all(self, target: str, project_dir: Path, generated: list[Path]) -> list[Path]:
+        """build_all の本体。整形は 1 回にまとめるため呼び出し側で行う。"""
         output_paths: list[Path] = []
         seen_names: set[str] = set()
         found_yaml_files = 0
@@ -529,7 +559,7 @@ class FacetBuilder:
                         )
                         continue
                     seen_names.add(stem)
-                    result = self.build_one(stem, target, project_dir)
+                    result = self._build_one(stem, target, project_dir, generated)
                     if result:
                         output_paths.append(result)
                         self._track_built(composition_path, built_skills, built_rules)
@@ -542,7 +572,7 @@ class FacetBuilder:
                 if stem in seen_names:
                     continue
                 seen_names.add(stem)
-                result = self.build_one(stem, target, project_dir)
+                result = self._build_one(stem, target, project_dir, generated)
                 if result:
                     output_paths.append(result)
                     self._track_built(composition_path, built_skills, built_rules)
