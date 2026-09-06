@@ -38,8 +38,30 @@ def test_scenario_dockerfile_is_dedicated_digest_pinned_and_non_root() -> None:
     dockerfile = (REPO_ROOT / "packages/loop-harness/docker/scenario/Dockerfile").read_text(
         encoding="utf-8"
     )
+    from_lines = [
+        line for line in dockerfile.splitlines() if line.strip().upper().startswith("FROM ")
+    ]
 
-    assert dockerfile.splitlines()[0].startswith("FROM node:22.17.0-bookworm-slim@sha256:")
+    # Both the Python donor stage and the Node base stage must be digest-pinned
+    # (loop-harness EV-113 requires reproducible, non-floating base images).
+    assert any(line.startswith("FROM python:3.12-slim-bookworm@sha256:") for line in from_lines), (
+        "python donor stage must be pinned to a python:3.12-slim-bookworm digest"
+    )
+    assert any(line.startswith("FROM node:22.17.0-bookworm-slim@sha256:") for line in from_lines), (
+        "node base stage must be pinned to a node:22.17.0-bookworm-slim digest"
+    )
+
+    # apt must not install its own python3 (bookworm ships 3.11, which cannot
+    # satisfy `requires-python = ">=3.12"`); python3 must resolve to the 3.12
+    # binary copied in from the donor stage instead (Issue #402).
+    apt_package_lines = {
+        line.strip().rstrip("\\").strip()
+        for line in dockerfile.splitlines()
+        if line.strip().rstrip("\\").strip() and "apt-get install" not in line
+    }
+    assert "python3" not in apt_package_lines
+    assert "python3-pip" not in apt_package_lines
+
     assert "ARG CLAUDE_CODE_VERSION=2.1.207" in dockerfile
     assert "ruff==0.15.1" in dockerfile
     assert "USER 65532:65532" in dockerfile
