@@ -1,6 +1,7 @@
 ---
 name: image-gen
-description: 'Generate an image from a text prompt via Codex CLI''s built-in image_gen
+description:
+  "Generate an image from a text prompt via Codex CLI's built-in image_gen
   skill
 
   (OpenAI gpt-image, ChatGPT auth, no API key required). Delegates to the
@@ -15,7 +16,7 @@ description: 'Generate an image from a text prompt via Codex CLI''s built-in ima
 
   Trigger: /image-gen <prompt>
 
-  '
+  "
 metadata:
   short-description: Codex image_gen による画像生成
 ---
@@ -78,10 +79,10 @@ Adobe Firefly などを使うまでもない簡単な画像を、Claude Code の
 /image-gen <プロンプト> --style none [--out <path>]          # この実行だけ style を無効化
 ```
 
-| 指定             | 解釈                                                                         |
-| ---------------- | ---------------------------------------------------------------------------- |
-| プロンプト       | 生成したい画像の説明（日本語/英語どちらでも可）                              |
-| `--out <path>`   | 出力先パス。未指定なら `generated-images/<slug>.png`                         |
+| 指定             | 解釈                                                                           |
+| ---------------- | ------------------------------------------------------------------------------ |
+| プロンプト       | 生成したい画像の説明（日本語/英語どちらでも可）                                |
+| `--out <path>`   | 出力先パス。未指定なら `generated-images/<slug>.png`                           |
 | `--style <name>` | 配布済みの named style を適用。予約値 `none` はこの実行だけ style を無効化する |
 
 `<slug>` はプロンプトを短い kebab-case に要約したもの。

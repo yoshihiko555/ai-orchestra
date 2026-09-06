@@ -1,6 +1,7 @@
 ---
 name: tdd
-description: Implement features using Test-Driven Development (TDD) with Red-Green-Refactor
+description:
+  Implement features using Test-Driven Development (TDD) with Red-Green-Refactor
   cycle. Use this skill when the user asks to implement something with TDD, write
   tests first, or mentions "tdd", "test-driven", "red green refactor". Also trigger
   when the user says "テスト駆動", "TDDで実装", or wants test-first development.
@@ -62,13 +63,13 @@ Before writing any code, resolve two things:
 
 Scan the project root for language markers and select the appropriate test framework and runner:
 
-| Marker File | Language | Test Framework | Run Command |
-|-------------|----------|---------------|-------------|
-| `pyproject.toml`, `setup.py` | Python | pytest | Project runner (uv/poetry/pip) + `pytest` |
-| `package.json` | TypeScript/JavaScript | vitest / jest | `npm test` or `npx vitest` / `npx jest` |
-| `go.mod` | Go | testing (stdlib) | `go test ./...` |
-| `Cargo.toml` | Rust | cargo test | `cargo test` |
-| `*.csproj`, `*.sln` | C# | xUnit / NUnit | `dotnet test` |
+| Marker File                  | Language              | Test Framework   | Run Command                               |
+| ---------------------------- | --------------------- | ---------------- | ----------------------------------------- |
+| `pyproject.toml`, `setup.py` | Python                | pytest           | Project runner (uv/poetry/pip) + `pytest` |
+| `package.json`               | TypeScript/JavaScript | vitest / jest    | `npm test` or `npx vitest` / `npx jest`   |
+| `go.mod`                     | Go                    | testing (stdlib) | `go test ./...`                           |
+| `Cargo.toml`                 | Rust                  | cargo test       | `cargo test`                              |
+| `*.csproj`, `*.sln`          | C#                    | xUnit / NUnit    | `dotnet test`                             |
 
 If multiple markers exist, prefer the one closest to the target module. If the project already has tests, follow the existing test conventions (directory structure, naming, framework).
 
@@ -80,13 +81,14 @@ Read `.claude/config/agent-routing/cli-tools.yaml` (and `.local.yaml` if present
 
 Key agents used in TDD:
 
-| Phase | Agent | Config Key | Typical Routing |
-|-------|-------|-----------|----------------|
-| Test writing | `tester` | `agents.tester.tool` | codex |
-| Implementation | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool` | codex |
-| Refactor review | `code-reviewer` | `agents.code-reviewer.tool` | claude-direct |
+| Phase           | Agent                                      | Config Key                  | Typical Routing |
+| --------------- | ------------------------------------------ | --------------------------- | --------------- |
+| Test writing    | `tester`                                   | `agents.tester.tool`        | codex           |
+| Implementation  | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool`    | codex           |
+| Refactor review | `code-reviewer`                            | `agents.code-reviewer.tool` | claude-direct   |
 
 Select the implementation agent based on `$LANG`:
+
 - Python → `backend-python-dev`
 - TypeScript/JavaScript → `frontend-dev`
 - Go → `backend-go-dev`
@@ -177,6 +179,7 @@ $TEST_CMD {test file}
 ```
 
 Refactoring targets:
+
 - Remove duplication
 - Improve naming
 - Simplify structure
@@ -212,19 +215,23 @@ Target: 80%+ line coverage on the new module.
 ## TDD Complete: {Feature Name}
 
 ### Environment
+
 - Language: $LANG
 - Test Framework: $TEST_FRAMEWORK
 - Routing: tester=$TESTER_TOOL, impl=$IMPL_TOOL
 
 ### Test Cases
+
 - [x] {test1}: {description}
 - [x] {test2}: {description}
-...
+      ...
 
 ### Coverage
+
 {Coverage report}
 
 ### Implementation Files
+
 - `{source file}`: {description}
 - `{test file}`: {N} tests
 ```

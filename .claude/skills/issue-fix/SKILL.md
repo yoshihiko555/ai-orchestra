@@ -1,12 +1,13 @@
 ---
 name: issue-fix
-description: 'GitHub Issue を起点に計画→実装→テスト→レビューの開発フローを実行する。
+description:
+  "GitHub Issue を起点に計画→実装→テスト→レビューの開発フローを実行する。
 
   Issue の内容を読み取り、コード調査・実装計画の提示・ブランチ作成・コミットまでを行う。
 
   トリガー: /issue-fix
 
-  '
+  "
 metadata:
   short-description: Issue 起点の開発フロー
 ---
@@ -183,29 +184,35 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 
 ## フォーマット
 
-```markdown
+````markdown
 ## Review Summary
 
 **レビュアー**: {選定されたレビュアー一覧}
 **変更ファイル**: {ファイル数} files, {追加行数} insertions(+), {削除行数} deletions(-)
 
 ### Critical ({count})
+
 - [{reviewer}] `{file}:{line}` - **{Issue}**
   {問題の説明 + 影響 + 修正案}
   ```{lang}
   {コードスニペット}
   ```
+````
 
 ### High ({count})
+
 - [{reviewer}] `{file}:{line}` - **{Issue}**
   {問題の説明 + 修正案}
 
 ### Medium ({count})
+
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
 
 ### Low ({count})
+
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
-```
+
+````
 
 ## Refuted Findings セクション（指摘検証フェーズを実施した場合のみ）
 
@@ -215,7 +222,7 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 ### Refuted Findings ({count})
 - [{reviewer}] `{file}:{line}` - **{Issue}**（元 severity: {Critical|High}）
   {反証理由（finding-verifier の verdict 根拠）}
-```
+````
 
 - `verdict: refuted` となった指摘を、反証理由を添えて掲載する（除外の透明性確保のため）
 - severity 格下げ（`effective_severity`）が適用された指摘は、格下げ後の severity セクションに掲載し「元 severity: {original} → 検証後: {effective}」を付記する
@@ -223,12 +230,12 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 
 ## 重要度の定義
 
-| 重要度 | 基準 | 対応 |
-|--------|------|------|
-| **Critical** | セキュリティ脆弱性、データ損失リスク、本番障害の可能性 | 必ず修正してから次に進む |
-| **High** | バグの可能性、設計上の問題、パフォーマンス劣化 | ユーザーに確認（AskUserQuestion） |
-| **Medium** | コード品質、可読性、軽微な改善 | 報告のみ。修正は任意 |
-| **Low** | スタイル、命名、コメント改善 | 報告のみ。修正は任意 |
+| 重要度       | 基準                                                   | 対応                              |
+| ------------ | ------------------------------------------------------ | --------------------------------- |
+| **Critical** | セキュリティ脆弱性、データ損失リスク、本番障害の可能性 | 必ず修正してから次に進む          |
+| **High**     | バグの可能性、設計上の問題、パフォーマンス劣化         | ユーザーに確認（AskUserQuestion） |
+| **Medium**   | コード品質、可読性、軽微な改善                         | 報告のみ。修正は任意              |
+| **Low**      | スタイル、命名、コメント改善                           | 報告のみ。修正は任意              |
 
 ## 集約ルール
 

@@ -1,12 +1,13 @@
 ---
 name: loop-issue
-description: 'GitHub Issue 番号を受け取り、loop-harness（LP-1）で実装→検証→修正の反復ループを駆動する。
+description:
+  "GitHub Issue 番号を受け取り、loop-harness（LP-1）で実装→検証→修正の反復ループを駆動する。
 
   合格後は pr-create 資産で PR を作成し、外部レビュー対応反復まで自動で継続する。
 
   トリガー: /loop-issue
 
-  '
+  "
 metadata:
   short-description: Issue 消化ループ（伴走型自律反復）
 ---
@@ -183,29 +184,35 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 
 ## フォーマット
 
-```markdown
+````markdown
 ## Review Summary
 
 **レビュアー**: {選定されたレビュアー一覧}
 **変更ファイル**: {ファイル数} files, {追加行数} insertions(+), {削除行数} deletions(-)
 
 ### Critical ({count})
+
 - [{reviewer}] `{file}:{line}` - **{Issue}**
   {問題の説明 + 影響 + 修正案}
   ```{lang}
   {コードスニペット}
   ```
+````
 
 ### High ({count})
+
 - [{reviewer}] `{file}:{line}` - **{Issue}**
   {問題の説明 + 修正案}
 
 ### Medium ({count})
+
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
 
 ### Low ({count})
+
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
-```
+
+````
 
 ## Refuted Findings セクション（指摘検証フェーズを実施した場合のみ）
 
@@ -215,7 +222,7 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 ### Refuted Findings ({count})
 - [{reviewer}] `{file}:{line}` - **{Issue}**（元 severity: {Critical|High}）
   {反証理由（finding-verifier の verdict 根拠）}
-```
+````
 
 - `verdict: refuted` となった指摘を、反証理由を添えて掲載する（除外の透明性確保のため）
 - severity 格下げ（`effective_severity`）が適用された指摘は、格下げ後の severity セクションに掲載し「元 severity: {original} → 検証後: {effective}」を付記する
@@ -223,12 +230,12 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 
 ## 重要度の定義
 
-| 重要度 | 基準 | 対応 |
-|--------|------|------|
-| **Critical** | セキュリティ脆弱性、データ損失リスク、本番障害の可能性 | 必ず修正してから次に進む |
-| **High** | バグの可能性、設計上の問題、パフォーマンス劣化 | ユーザーに確認（AskUserQuestion） |
-| **Medium** | コード品質、可読性、軽微な改善 | 報告のみ。修正は任意 |
-| **Low** | スタイル、命名、コメント改善 | 報告のみ。修正は任意 |
+| 重要度       | 基準                                                   | 対応                              |
+| ------------ | ------------------------------------------------------ | --------------------------------- |
+| **Critical** | セキュリティ脆弱性、データ損失リスク、本番障害の可能性 | 必ず修正してから次に進む          |
+| **High**     | バグの可能性、設計上の問題、パフォーマンス劣化         | ユーザーに確認（AskUserQuestion） |
+| **Medium**   | コード品質、可読性、軽微な改善                         | 報告のみ。修正は任意              |
+| **Low**      | スタイル、命名、コメント改善                           | 報告のみ。修正は任意              |
 
 ## 集約ルール
 
@@ -274,10 +281,10 @@ LOOP_STEP="$AI_ORCHESTRA_DIR/packages/loop-harness/scripts/loop_step.py"
 
 対象 `loop_id` の状況に応じて、次の 3 つの入口から **1 つだけ**を呼ぶ。
 
-| 状況                                                                                  | 呼ぶコマンド                                                                     |
-| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| 新規 Issue（state 未存在）                                                            | `python3 "$LOOP_STEP" start --issue <N> --project <project_root>`               |
-| 既存ループの再開（前回セッションがクラッシュ・断絶し `lease_token` を保持していない） | `python3 "$LOOP_STEP" attach --loop-id <id> --project <project_root>`           |
+| 状況                                                                                  | 呼ぶコマンド                                                                   |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| 新規 Issue（state 未存在）                                                            | `python3 "$LOOP_STEP" start --issue <N> --project <project_root>`              |
+| 既存ループの再開（前回セッションがクラッシュ・断絶し `lease_token` を保持していない） | `python3 "$LOOP_STEP" attach --loop-id <id> --project <project_root>`          |
 | 正規に `failed` / `stopped` で終了したループを、人間判断で再挑戦                      | `python3 "$LOOP_STEP" resume --loop-id <id> --reset-counters --project <root>` |
 
 3 入口の応答 JSON はすべて、内部で `propose` 済みの **最初の proposal** として扱う。応答の
@@ -392,15 +399,15 @@ Task は cwd を明示し、すべての git は `git -C "<params.worktree_path>
 subshell、すべての `gh` / `pr-create` は同パスを明示した Task または subshell で実行する。current
 shell の cwd に依存する git / gh / PR 操作は禁止する。
 
-| Action                 | 実行内容                                                        |
-| ---------------------- | --------------------------------------------------------------- |
-| `run_maker`            | agent-routing で Maker を選定し、指定 worktree で Task 実行     |
-| `run_checker`          | LLM 後、`python3 "$LOOP_STEP" run-checker` で検証・集約       |
-| `wait_external_review` | 必要時だけ同 action で push し、決定論 API で待機・収集          |
-| `advance_phase`        | `params.exec` 順を保ち baseline → push/PR → head を補助記録     |
-| `stop`                 | リポジトリを変更せず安全停止通知                                |
-| `exit_success`         | 成功コメント・通知を行い正常終了                                |
-| `exit_failure`         | Draft PR、失敗コメント・通知を行い失敗終了                      |
+| Action                 | 実行内容                                                    |
+| ---------------------- | ----------------------------------------------------------- |
+| `run_maker`            | agent-routing で Maker を選定し、指定 worktree で Task 実行 |
+| `run_checker`          | LLM 後、`python3 "$LOOP_STEP" run-checker` で検証・集約     |
+| `wait_external_review` | 必要時だけ同 action で push し、決定論 API で待機・収集     |
+| `advance_phase`        | `params.exec` 順を保ち baseline → push/PR → head を補助記録 |
+| `stop`                 | リポジトリを変更せず安全停止通知                            |
+| `exit_success`         | 成功コメント・通知を行い正常終了                            |
+| `exit_failure`         | Draft PR、失敗コメント・通知を行い失敗終了                  |
 
 ## `run_maker`
 
@@ -658,7 +665,7 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
     残っている場合はこの分岐に該当しない（下記へ進む。B 軸: medium/low は非ブロッキング）。
   - drain の結果 **critical/high の finding が 0 件**（medium/low のみ残存、または finding 自体が
     0 件）の場合に限り、`detect_pr_review_push_delta(loop_id,
-    params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status` で以下のとおり分岐する。
+params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status` で以下のとおり分岐する。
     **drain の critical/high が 0 件であることを確認せずに `phase_check_from_review_findings()` を呼んで
     complete することは禁止する**（critical/high finding が存在しない場合、
     `phase_check_from_review_findings()` は `passed: true` を返すため、push もレビュー待機も行わずに
@@ -891,9 +898,9 @@ params.draft_pr_exec の短い要約だけにし、レビュー本文やコマ�
 
 ### 反復サマリ
 
-| # | フェーズ | Checker 結果 | 停止/継続理由 |
-| --- | -------- | -------------- | ------------- |
-| {iteration} | {phase} | {severity 件数・失敗種別だけの要約} | {reason} |
+| #           | フェーズ | Checker 結果                        | 停止/継続理由 |
+| ----------- | -------- | ----------------------------------- | ------------- |
+| {iteration} | {phase}  | {severity 件数・失敗種別だけの要約} | {reason}      |
 
 ### 無視した非許可指摘
 
@@ -903,8 +910,8 @@ params.draft_pr_exec の短い要約だけにし、レビュー本文やコマ�
 
 {PASSED かつ `params.non_blocking_open` が 1 件以上ある場合のみ表示。0 件ならこのセクション自体を省略する}
 
-| severity | path:line | 抜粋（200 字まで） |
-| -------- | --------- | ------------------- |
+| severity      | path:line       | 抜粋（200 字まで）   |
+| ------------- | --------------- | -------------------- |
 | {medium\|low} | `{path}:{line}` | {レビュー本文の抜粋} |
 
 ### 次のアクション

@@ -1,6 +1,7 @@
 ---
 name: handoff
-description: 'Generate a task handoff file so Codex CLI can continue work when Claude
+description:
+  'Generate a task handoff file so Codex CLI can continue work when Claude
   Code
 
   hits rate limits. Use this skill when the user says "handoff", "引き継ぎ",

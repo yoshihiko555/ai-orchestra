@@ -1,6 +1,7 @@
 ---
 name: codd-impact
-description: 'Classify downstream documentation impact of a change into Green/Amber/Gray
+description:
+  'Classify downstream documentation impact of a change into Green/Amber/Gray
 
   confidence bands by traversing the `depends_on` graph. Runs `codd impact --diff
   <ref>`.

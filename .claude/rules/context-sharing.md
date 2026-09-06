@@ -20,13 +20,13 @@
 
 ## 自動動作
 
-| イベント | hook | 動作 |
-|---------|------|------|
-| セッション開始 | `load-task-state.py` | `init_context_dir()` でディレクトリ初期化 |
-| サブエージェント起動前 | `inject-shared-context.py` | 既存エントリー + working-context を prompt に注入 |
-| サブエージェント完了後 | `capture-task-result.py` | 結果サマリーを `session/entries/` に書き出し |
-| ファイル編集後 | `update-working-context.py` | 変更ファイルを `working-context.json` に追記 |
-| セッション終了 | `cleanup-session-context.py` | `session/` と `working-context.json` を削除 |
+| イベント               | hook                         | 動作                                              |
+| ---------------------- | ---------------------------- | ------------------------------------------------- |
+| セッション開始         | `load-task-state.py`         | `init_context_dir()` でディレクトリ初期化         |
+| サブエージェント起動前 | `inject-shared-context.py`   | 既存エントリー + working-context を prompt に注入 |
+| サブエージェント完了後 | `capture-task-result.py`     | 結果サマリーを `session/entries/` に書き出し      |
+| ファイル編集後         | `update-working-context.py`  | 変更ファイルを `working-context.json` に追記      |
+| セッション終了         | `cleanup-session-context.py` | `session/` と `working-context.json` を削除       |
 
 ## 注入形式
 

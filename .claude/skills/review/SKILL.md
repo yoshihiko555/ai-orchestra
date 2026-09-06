@@ -1,10 +1,10 @@
 ---
 name: review
-description: 'Run code reviews using specialized reviewer agents.
+description: "Run code reviews using specialized reviewer agents.
 
   Supports individual or batch review modes with smart reviewer selection.
 
-  '
+  "
 metadata:
   short-description: Multi-agent code review (smart selection)
 ---
@@ -15,29 +15,35 @@ metadata:
 
 ## フォーマット
 
-```markdown
+````markdown
 ## Review Summary
 
 **レビュアー**: {選定されたレビュアー一覧}
 **変更ファイル**: {ファイル数} files, {追加行数} insertions(+), {削除行数} deletions(-)
 
 ### Critical ({count})
+
 - [{reviewer}] `{file}:{line}` - **{Issue}**
   {問題の説明 + 影響 + 修正案}
   ```{lang}
   {コードスニペット}
   ```
+````
 
 ### High ({count})
+
 - [{reviewer}] `{file}:{line}` - **{Issue}**
   {問題の説明 + 修正案}
 
 ### Medium ({count})
+
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
 
 ### Low ({count})
+
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
-```
+
+````
 
 ## Refuted Findings セクション（指摘検証フェーズを実施した場合のみ）
 
@@ -47,7 +53,7 @@ metadata:
 ### Refuted Findings ({count})
 - [{reviewer}] `{file}:{line}` - **{Issue}**（元 severity: {Critical|High}）
   {反証理由（finding-verifier の verdict 根拠）}
-```
+````
 
 - `verdict: refuted` となった指摘を、反証理由を添えて掲載する（除外の透明性確保のため）
 - severity 格下げ（`effective_severity`）が適用された指摘は、格下げ後の severity セクションに掲載し「元 severity: {original} → 検証後: {effective}」を付記する
@@ -55,12 +61,12 @@ metadata:
 
 ## 重要度の定義
 
-| 重要度 | 基準 | 対応 |
-|--------|------|------|
-| **Critical** | セキュリティ脆弱性、データ損失リスク、本番障害の可能性 | 必ず修正してから次に進む |
-| **High** | バグの可能性、設計上の問題、パフォーマンス劣化 | ユーザーに確認（AskUserQuestion） |
-| **Medium** | コード品質、可読性、軽微な改善 | 報告のみ。修正は任意 |
-| **Low** | スタイル、命名、コメント改善 | 報告のみ。修正は任意 |
+| 重要度       | 基準                                                   | 対応                              |
+| ------------ | ------------------------------------------------------ | --------------------------------- |
+| **Critical** | セキュリティ脆弱性、データ損失リスク、本番障害の可能性 | 必ず修正してから次に進む          |
+| **High**     | バグの可能性、設計上の問題、パフォーマンス劣化         | ユーザーに確認（AskUserQuestion） |
+| **Medium**   | コード品質、可読性、軽微な改善                         | 報告のみ。修正は任意              |
+| **Low**      | スタイル、命名、コメント改善                           | 報告のみ。修正は任意              |
 
 ## 集約ルール
 
@@ -101,15 +107,15 @@ metadata:
 
 ## Reviewers
 
-| Reviewer | Focus |
-|----------|-------|
-| `code-reviewer` | 可読性、保守性、バグ検出 |
-| `security-reviewer` | 脆弱性、権限、情報漏洩 |
-| `performance-reviewer` | 計算量、I/O、最適化 |
-| `spec-reviewer` | 設計書との整合性 |
-| `architecture-reviewer` | アーキテクチャ妥当性 |
-| `ux-reviewer` | UX、アクセシビリティ |
-| `adversarial-reviewer` | 堅牢性の敵対的検証（境界値、異常入力、エラー経路、競合/並行、リソース枯渇、API 誤用） |
+| Reviewer                | Focus                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------- |
+| `code-reviewer`         | 可読性、保守性、バグ検出                                                              |
+| `security-reviewer`     | 脆弱性、権限、情報漏洩                                                                |
+| `performance-reviewer`  | 計算量、I/O、最適化                                                                   |
+| `spec-reviewer`         | 設計書との整合性                                                                      |
+| `architecture-reviewer` | アーキテクチャ妥当性                                                                  |
+| `ux-reviewer`           | UX、アクセシビリティ                                                                  |
+| `adversarial-reviewer`  | 堅牢性の敵対的検証（境界値、異常入力、エラー経路、競合/並行、リソース枯渇、API 誤用） |
 
 **Note**: `finding-verifier` は上記 7 レビュアーの選定対象ではなく、Phase 3.5 でレビュアー出力の Critical/High 指摘を反証する専任エージェント。
 
@@ -136,6 +142,7 @@ file_contexts = 各変更ファイルのソースコード（上記ルールで�
 ```
 
 **ドキュメントのみ判定**: `.md` ファイルのみの変更 → 原則レビュースキップ（ユーザーに報告して終了）
+
 - ただし仕様書・API ドキュメント（`spec/`, `api/`, `openapi` 等を含むパス）の `.md` 変更は `spec-reviewer` にフォールバック
 
 ### Phase 1: スマートレビュアー選定
@@ -151,28 +158,28 @@ file_contexts = 各変更ファイルのソースコード（上記ルールで�
 
 変更ファイルのパスからの専門レビュアー追加:
 
-| パターン | 追加レビュアー |
-|---------|--------------|
-| `packages/core/`, `packages/*/hooks/`, フレームワーク基盤 | + architecture-reviewer |
-| `auth`, `login`, `session`, `token`, `password`, `secret`, `permission` | + security-reviewer |
-| `api/`, `routes/`, `endpoints/`, `graphql/`, `handler` | + security-reviewer |
-| `db/`, `migration`, `schema`, `model`, `prisma`, `drizzle` | + performance-reviewer |
-| `components/`, `pages/`, `views/`, `ui/`, `styles/`, `css`, `.tsx`, `.jsx` | + ux-reviewer |
-| `config/`, `settings`, `.env`, `docker`, `infra/`, `terraform` | + security-reviewer |
-| 仕様書・要件ドキュメントへのソースコード関連変更 | + spec-reviewer |
-| 新モジュール/パッケージ作成（新ディレクトリ） | + architecture-reviewer |
+| パターン                                                                   | 追加レビュアー          |
+| -------------------------------------------------------------------------- | ----------------------- |
+| `packages/core/`, `packages/*/hooks/`, フレームワーク基盤                  | + architecture-reviewer |
+| `auth`, `login`, `session`, `token`, `password`, `secret`, `permission`    | + security-reviewer     |
+| `api/`, `routes/`, `endpoints/`, `graphql/`, `handler`                     | + security-reviewer     |
+| `db/`, `migration`, `schema`, `model`, `prisma`, `drizzle`                 | + performance-reviewer  |
+| `components/`, `pages/`, `views/`, `ui/`, `styles/`, `css`, `.tsx`, `.jsx` | + ux-reviewer           |
+| `config/`, `settings`, `.env`, `docker`, `infra/`, `terraform`             | + security-reviewer     |
+| 仕様書・要件ドキュメントへのソースコード関連変更                           | + spec-reviewer         |
+| 新モジュール/パッケージ作成（新ディレクトリ）                              | + architecture-reviewer |
 
 #### Step 3: diff コンテンツスキャン
 
 Phase 0 で収集した diff の**追加行（`+` プレフィックス）のみ**を対象にスキャンし、以下のシグナルが含まれる場合に対応するレビュアーを追加（コメント・文字列内の誤検知を軽減するため、削除行は無視する）:
 
-| ドメイン | diff 内のシグナル例 | 追加レビュアー |
-|---------|-------------------|--------------|
-| セキュリティ | SQL (`SELECT`, `INSERT`, `.query(`, `.raw(`), 入力処理 (`request.body`, `req.params`, `JSON.parse`), 危険操作 (`eval(`, `exec(`, `subprocess`), 認証 (`password`, `token`, `jwt`, `hash`), ネットワーク (`http`, `fetch(`, `cors`, `cookie`) | + security-reviewer |
-| パフォーマンス | DB クエリ (`SELECT`, `JOIN`, `findMany`), ループ (`for`, `while`, `forEach` + 大量データ), 非同期 (`Promise.all`, `concurrent`), キャッシュ (`cache`, `memo`, `redis`) | + performance-reviewer |
-| UI/UX | コンポーネント (`className`, `style`, `css`), アクセシビリティ (`aria-`, `role=`, `tabIndex`, `alt=`), 状態 (`loading`, `error`, `empty`, `skeleton`) | + ux-reviewer |
-| アーキテクチャ | 新規ファイル/ディレクトリ作成, 新しい依存関係の追加, クラス/インターフェース定義 (`class`, `interface`, `abstract`) | + architecture-reviewer |
-| 仕様整合 | API コントラクト変更, スキーマ変更, OpenAPI/Swagger 定義 | + spec-reviewer |
+| ドメイン       | diff 内のシグナル例                                                                                                                                                                                                                          | 追加レビュアー          |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| セキュリティ   | SQL (`SELECT`, `INSERT`, `.query(`, `.raw(`), 入力処理 (`request.body`, `req.params`, `JSON.parse`), 危険操作 (`eval(`, `exec(`, `subprocess`), 認証 (`password`, `token`, `jwt`, `hash`), ネットワーク (`http`, `fetch(`, `cors`, `cookie`) | + security-reviewer     |
+| パフォーマンス | DB クエリ (`SELECT`, `JOIN`, `findMany`), ループ (`for`, `while`, `forEach` + 大量データ), 非同期 (`Promise.all`, `concurrent`), キャッシュ (`cache`, `memo`, `redis`)                                                                       | + performance-reviewer  |
+| UI/UX          | コンポーネント (`className`, `style`, `css`), アクセシビリティ (`aria-`, `role=`, `tabIndex`, `alt=`), 状態 (`loading`, `error`, `empty`, `skeleton`)                                                                                        | + ux-reviewer           |
+| アーキテクチャ | 新規ファイル/ディレクトリ作成, 新しい依存関係の追加, クラス/インターフェース定義 (`class`, `interface`, `abstract`)                                                                                                                          | + architecture-reviewer |
+| 仕様整合       | API コントラクト変更, スキーマ変更, OpenAPI/Swagger 定義                                                                                                                                                                                     | + spec-reviewer         |
 
 **選定結果**: Step 2 と Step 3 の union（どちらかでマッチすれば追加、重複は 1 回のみ）
 
@@ -191,15 +198,16 @@ union の結果が多すぎる場合、以下のルールで **最大 4 レビ�
 
 diff サイズとリスクシグナルに応じてモデルを選択:
 
-| 条件 | モデル | Task パラメータ |
-|------|--------|----------------|
-| ≤ 100 行 かつ リスク override なし | sonnet | `model="sonnet"` を明示指定 |
-| ≤ 100 行 かつ リスク override あり | config のモデル | `model` パラメータ省略 |
-| > 100 行 | config のモデル | `model` パラメータ省略（フロントマター値を使用） |
+| 条件                               | モデル          | Task パラメータ                                  |
+| ---------------------------------- | --------------- | ------------------------------------------------ |
+| ≤ 100 行 かつ リスク override なし | sonnet          | `model="sonnet"` を明示指定                      |
+| ≤ 100 行 かつ リスク override あり | config のモデル | `model` パラメータ省略                           |
+| > 100 行                           | config のモデル | `model` パラメータ省略（フロントマター値を使用） |
 
 diff サイズは `git diff` の実質変更行（`+`/`-` 行の合計、空行・コメントのみの行を除く）で判定する。
 
 **リスク override**: 以下の条件に該当する場合、diff サイズが ≤ 100 行でも sonnet ダウングレードを適用しない:
+
 - Phase 1 で `security-reviewer` が選定された（認証・脆弱性関連の変更）
 - Phase 1 で `spec-reviewer` が選定された（API コントラクト・スキーマ変更）
 
@@ -261,11 +269,11 @@ Task(subagent_type="finding-verifier", run_in_background=true, prompt="""
 
 **verdict の扱い**:
 
-| verdict | 意味 | Phase 4 集約への扱い |
-|---------|------|---------------------|
-| `confirmed` | 指摘が妥当と確認 | そのまま集約対象 |
-| `refuted` | 誤検知・再現しないと判断 | 集約から除外し、「Refuted Findings」として反証理由を明示 |
-| `uncertain` | 判断保留 | 集約対象に残す（Phase 5 で Critical は Fail 扱い） |
+| verdict     | 意味                     | Phase 4 集約への扱い                                     |
+| ----------- | ------------------------ | -------------------------------------------------------- |
+| `confirmed` | 指摘が妥当と確認         | そのまま集約対象                                         |
+| `refuted`   | 誤検知・再現しないと判断 | 集約から除外し、「Refuted Findings」として反証理由を明示 |
+| `uncertain` | 判断保留                 | 集約対象に残す（Phase 5 で Critical は Fail 扱い）       |
 
 - `effective_severity` が報告された場合、Phase 4 の集約では格下げ後の severity を採用し、検証結果として明示する
 - `finding-verifier` を呼ばなかった Medium/Low、および `verify_findings: false` 時の全指摘は検証結果欄なしでそのまま扱う
@@ -281,35 +289,43 @@ Task(subagent_type="finding-verifier", run_in_background=true, prompt="""
 全レビュアーの結果を重要度別に集約して報告する。
 
 **重複指摘の統合**: 複数レビュアーが同一ファイル・同一箇所を指摘した場合:
+
 - severity が最も高いものを採用し、他のレビュアー名を `[{reviewer1}, {reviewer2}]` で併記
 - 異なる観点の指摘（例: security と performance）は別エントリとして残す
 
-```markdown
+````markdown
 ## Review Summary
 
 **レビュアー**: {選定されたレビュアー一覧}
 **変更ファイル**: {ファイル数} files, {追加行数} insertions(+), {削除行数} deletions(-)
 
 ### Critical ({count})
+
 - [{reviewer}] `{file}:{line}` - **{Issue}**
   {問題の説明 + 影響 + 修正案}
   ```{lang}
   {コードスニペット}
   ```
+````
 
 ### High ({count})
+
 - [{reviewer}] `{file}:{line}` - **{Issue}**
   {問題の説明 + 修正案}
 
 ### Medium ({count})
+
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
 
 ### Low ({count})
+
 - [{reviewer}] `{file}:{line}` - {1行サマリ}
 
 ### Refuted Findings ({count})
+
 - [{reviewer}] `{file}:{line}` - **{Issue}**（元 severity: {Critical|High}）
   {反証理由（finding-verifier の verdict 根拠）}
+
 ```
 
 **Refuted Findings セクション**: Phase 3.5 で `verdict: refuted` となった指摘を掲載する。Critical/High として一度は挙がったが検証で除外された指摘の透明性を確保するため、反証理由を添えて明示する。`verify_findings: false` の場合、またはこのセクションに該当する指摘がない場合は省略してよい。
@@ -368,21 +384,26 @@ Critical 指摘をサブエージェントで自動修正する。
 修正エージェント起動パターン:
 
 ```
+
 Task(subagent_type="{fix_agent}", prompt="""
 以下の Critical 指摘を修正してください。
 
 ## 対象ファイル
+
 {file_path}
 
 ## Critical 指摘一覧
+
 {critical_issues のリスト（レビュアー名、行番号、問題の説明、修正案を含む）}
 
 ## コンテキスト
+
 {Phase 0 で収集したファイルコンテキスト}
 
 指摘の修正案に従い、コードを修正してください。
 修正内容を簡潔に報告してください。
 """)
+
 ```
 
 **注意**:
@@ -409,22 +430,25 @@ Task(subagent_type="{fix_agent}", prompt="""
 ループ制御:
 
 ```
+
 loop_count = 0
 max_loops = cli-tools.yaml の review.max_loops（デフォルト: 3）
 
 while loop_count < max_loops:
-    Phase 0-4: レビュー実行（新規/変更 Critical・High には Phase 3.5 を再適用）
-    if flip-flop 検出:
-        NEEDS_REVIEW として Final Report を出力してループ停止
-    Phase 5: 判定
-    if passed:
-        Final Report を出力して終了
-    Phase 6: Auto-Fix（verify_findings: true → confirmed Critical のみ / false → 全 Critical）
-    loop_count += 1
+Phase 0-4: レビュー実行（新規/変更 Critical・High には Phase 3.5 を再適用）
+if flip-flop 検出:
+NEEDS_REVIEW として Final Report を出力してループ停止
+Phase 5: 判定
+if passed:
+Final Report を出力して終了
+Phase 6: Auto-Fix（verify_findings: true → confirmed Critical のみ / false → 全 Critical）
+loop_count += 1
 
 # ループ上限到達
+
 Final Report（残存 Critical 付き）を出力
-```
+
+````
 
 #### Final Report フォーマット
 
@@ -454,7 +478,7 @@ Final Report（残存 Critical 付き）を出力
 
 ### Auto-Fix Summary
 {各ループで行った修正の概要（confirmed Critical のみが対象である旨を含む）}
-```
+````
 
 ### 全モードへの適用
 
@@ -495,10 +519,10 @@ Phase 3.5（指摘検証）と Phase 5-7（Pass/Fail 判定 → Auto-Fix → Re-
 
 グループに含まれるレビュアーを起動する。
 
-| グループ | レビュアー |
-|---------|-----------|
-| `impl` | code-reviewer + security-reviewer + performance-reviewer + adversarial-reviewer |
-| `design` | spec-reviewer + architecture-reviewer |
+| グループ | レビュアー                                                                      |
+| -------- | ------------------------------------------------------------------------------- |
+| `impl`   | code-reviewer + security-reviewer + performance-reviewer + adversarial-reviewer |
+| `design` | spec-reviewer + architecture-reviewer                                           |
 
 1. Phase 0 のコンテキスト事前収集を実行
 2. モデル選択を実行（Phase 2 と同じ）

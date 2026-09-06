@@ -1,6 +1,7 @@
 ---
 name: preflight
-description: 'Create a preflight implementation plan through interactive dialogue
+description:
+  'Create a preflight implementation plan through interactive dialogue
   with the user.
 
   Clarifies scope, risks, and task breakdown, then reflects them in Plans.md.

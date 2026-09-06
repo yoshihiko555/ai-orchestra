@@ -1,6 +1,6 @@
 ---
 name: pr-create
-description: '現在のブランチから Pull Request を作成する。
+description: "現在のブランチから Pull Request を作成する。
 
   PULL_REQUEST_TEMPLATE.md を読み込みセクションを自動生成する。
 
@@ -12,7 +12,7 @@ description: '現在のブランチから Pull Request を作成する。
 
   トリガー: /pr-create
 
-  '
+  "
 metadata:
   short-description: GitHub PR の作成
 ---

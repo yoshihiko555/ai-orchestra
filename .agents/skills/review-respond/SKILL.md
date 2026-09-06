@@ -1,6 +1,7 @@
 ---
 name: review-respond
-description: 'カレントブランチの PR に付いた bot（CodeRabbit / Codex 等）のレビュー指摘を
+description:
+  "カレントブランチの PR に付いた bot（CodeRabbit / Codex 等）のレビュー指摘を
 
   pr_review_threads.py で取得し、severity と対応方針（採用/非採用）を分類したうえで、
 
@@ -12,7 +13,7 @@ description: 'カレントブランチの PR に付いた bot（CodeRabbit / Cod
 
   トリガー: /review-respond
 
-  '
+  "
 metadata:
   short-description: PR の bot レビュー指摘への自動対応
 ---
