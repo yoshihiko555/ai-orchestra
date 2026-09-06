@@ -136,12 +136,12 @@ _ALLOWED_IDLE_COMMANDS = frozenset({"docker-init", "tini", "timeout", "sleep"})
 _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
 # Codex review, PR #262, High: these are set by the container's own `docker run` invocation
 # (build_scenario_container_command's HOME/TMPDIR tmpfs mounts and the container image's own
-# PATH) or -- for GIT_DIR/GIT_WORK_TREE, see the Issue #409 note below -- attached only to
-# `execute_claude()`'s own `docker exec -e` flags, never the container's own startup env. The
-# host-derived `checker_env` passed into execute_mechanical() must never override any of these --
-# e.g. `checker_env["HOME"]` is a *host* scratch-home path (see loop_driver_support.maker_env's
-# `scratch_home`) that does not exist inside the container's filesystem namespace, and the host's
-# own `PATH` almost never resolves to this hardened image's toolchain.
+# PATH), or -- for GIT_DIR/GIT_WORK_TREE, see the Issue #409 note below -- resolved entirely
+# through the `.git` pointer overlay, never as an env var anywhere. The host-derived `checker_env`
+# passed into execute_mechanical() must never override any of these -- e.g. `checker_env["HOME"]`
+# is a *host* scratch-home path (see loop_driver_support.maker_env's `scratch_home`) that does not
+# exist inside the container's filesystem namespace, and the host's own `PATH` almost never
+# resolves to this hardened image's toolchain.
 #
 # Codex review, PR #262, High (round 6): `XDG_CONFIG_HOME` joins this reserved set for the same
 # reason as `HOME`. `loop_driver_support.maker_env()` always derives it from the same host
@@ -152,28 +152,28 @@ _RUNTIME_LABELS = runtime_lifecycle.RuntimeLabels(DOCKER_LABEL)
 # filesystem namespace, failing only under Docker. Treating it as container-owned means tools
 # fall back to the container's own `$HOME/.config` under the writable `/home/loop` tmpfs instead.
 #
-# Issue #409: GIT_DIR/GIT_WORK_TREE were previously part of every process's env inside the
-# scenario container (via `ScenarioContainerSpec.env`, which `docker exec` inherits unless
-# overridden), so a Checker's mechanical `pytest -q` run could never `git init`/`git init --bare`
-# a fixture repo under its own `tmp_path` -- every such invocation resolved `$GIT_DIR` to this
-# action's own ephemeral Git plumbing instead. The primary fix for that (design pivot) is on the
-# `.git` pointer overlay itself: `loop_git_ephemeral.prepare_ephemeral_git()` now rewrites the
-# worktree's pinned `.git` pointer to `gitdir: <ephemeral_dir>` (a path mounted 1:1 into every
-# container) and sets `core.bare false` on the ephemeral repo, so a container process resolves
-# the *action's own* repository correctly through the `.git` file alone, with no env needed at
-# all -- and a brand-new `tmp_path` fixture repo's own `.git` file is untouched by any of this,
-# so its own `git init` never collides with the action's ephemeral Git plumbing either way.
-# GIT_DIR/GIT_WORK_TREE stay reserved here (never forwarded from a host-derived env into a
-# mechanical exec) as belt-and-braces defense-in-depth only; `_start()` also keeps them out of
-# the container's own startup env entirely, attaching them explicitly only to `execute_claude()`'s
-# exec (see `_claude_git_env` there) for the `claude -p` session specifically.
+# Issue #409 (design pivot, belt-and-braces removed): GIT_DIR/GIT_WORK_TREE were previously part
+# of every process's env inside the scenario container (via `ScenarioContainerSpec.env`, which
+# `docker exec` inherits unless overridden), so a Checker's mechanical `pytest -q` run could never
+# `git init`/`git init --bare` a fixture repo under its own `tmp_path` -- every such invocation
+# resolved `$GIT_DIR` to this action's own ephemeral Git plumbing instead. The fix is on the `.git`
+# pointer overlay itself: `loop_git_ephemeral.prepare_ephemeral_git()` rewrites the worktree's
+# pinned `.git` pointer to `gitdir: <ephemeral_dir>` (a path mounted 1:1 into every container) and
+# sets `core.bare false` on the ephemeral repo, so a container process resolves the *action's own*
+# repository correctly through the `.git` file alone, with no env needed at all. `GIT_DIR`/
+# `GIT_WORK_TREE` env was originally also attached to `execute_claude()`'s own `docker exec` as
+# belt-and-braces on top of that overlay, but Docker E2E proved this env var is actively harmful,
+# not just redundant: a Maker's own Bash tool call that itself runs `git init <dir>` then
+# `git -C <dir> commit` (e.g. inside a `pytest` run) has that inner `-C <dir>` resolution
+# overridden by the ambient `GIT_DIR`/`GIT_WORK_TREE` env, redirecting it onto this action's own
+# ephemeral repository instead of the Maker's own fixture -- the exact same failure class this
+# same Issue already fixed for the Checker's mechanical exec. GIT_DIR/GIT_WORK_TREE therefore stay
+# reserved here (never forwarded from a host-derived env into a mechanical exec) purely as
+# defense-in-depth, and are never attached to any exec at all, `execute_claude()` included -- the
+# `.git` pointer overlay is now the sole resolution mechanism for every process in every container.
 _MECHANICAL_ENV_RESERVED_KEYS = frozenset(
     {"HOME", "TMPDIR", "PATH", "GIT_DIR", "GIT_WORK_TREE", "XDG_CONFIG_HOME"}
 )
-# Issue #409: the only two env keys `execute_claude()`'s own `docker exec` needs that must never
-# be part of the scenario container's own `docker run` env (see `_start()`'s `container_env`
-# split and `_MECHANICAL_ENV_RESERVED_KEYS` above for why).
-_CLAUDE_EXEC_ONLY_ENV_KEYS = frozenset({"GIT_DIR", "GIT_WORK_TREE"})
 # Codex review, PR #262, Critical (round 7): `_mechanical_exec_env()` used to forward the entire
 # host-derived `checker_env` (minus only the container-reserved keys above) into every mechanical
 # `docker exec`. `checker_env` is `loop_driver_support.maker_env(os.environ, ...)`, which only
@@ -265,11 +265,6 @@ class DockerActionRuntime:
         self._isolated_network: str | None = None
         self.git_session: git_ephemeral.EphemeralGitSession | None = None
         self.settings_bundle: docker_settings.DockerSettingsBundle | None = None
-        # Issue #409: GIT_DIR/GIT_WORK_TREE (from `build_maker_git_mount_spec()`/
-        # `build_checker_git_mount_spec()`), split out of `container_env` in `_start()` so
-        # `execute_claude()` can attach them only to its own `docker exec`, never the container's
-        # startup env. Empty for a "classifier" kind, which has no Git mounts at all.
-        self._claude_git_env: dict[str, str] = {}
         self._started = False
         self._scenario_start_attempted = False
         self._scenario_removed = False
@@ -320,15 +315,20 @@ class DockerActionRuntime:
             if self.settings_bundle is None:
                 raise DockerActionError("trusted Docker settings bundle is unavailable")
             command = docker_settings.rewrite_claude_settings(command, self.settings_bundle)
+        # Issue #409 (design pivot, belt-and-braces removed): no GIT_DIR/GIT_WORK_TREE env is
+        # attached here (or anywhere else) any more -- a Maker's own Bash tool call that itself
+        # runs `git init <dir>` then `git -C <dir> commit` (e.g. inside a `pytest` run) had that
+        # inner `-C <dir>` resolution overridden by an ambient GIT_DIR/GIT_WORK_TREE env,
+        # redirecting it onto this action's own ephemeral repository instead of the Maker's own
+        # fixture. The `.git` pointer overlay (`loop_git_ephemeral.prepare_ephemeral_git()`'s
+        # `gitdir: <ephemeral_dir>` pinned pointer + `core.bare false`) is the sole mechanism this
+        # exec -- like every other exec into this container -- resolves the action's own
+        # repository through.
         return self._execute(
             command,
             cwd="/tmp" if self.request.kind == "classifier" else cwd,
             timeout_seconds=timeout_seconds,
-            # Issue #409: GIT_DIR/GIT_WORK_TREE reach only this exec (never the mechanical exec
-            # path, and never the container's own startup env -- see `_start()`), so a Maker/
-            # Checker's `claude -p` session (and any Bash tool call it makes) still resolves the
-            # action's own ephemeral Git plumbing correctly.
-            env={**self._broker_exec_env(), **self._claude_git_env},
+            env=self._broker_exec_env(),
         )
 
     def execute_mechanical(
@@ -599,24 +599,16 @@ class DockerActionRuntime:
         )
         self._raise_if_cancelled()
         mounts, container_env, workdir = self._prepare_mounts()
-        # Issue #409: GIT_DIR/GIT_WORK_TREE (present in `container_env` only for kind
-        # maker/checker, via `build_maker_git_mount_spec()`/`build_checker_git_mount_spec()`)
-        # must never be part of the scenario container's own `docker run` startup env -- `docker
-        # exec` otherwise inherits it for *every* exec into this container, including the
-        # Checker's mechanical `pytest -q` run. A brand-new `tmp_path` fixture repo's own `git
-        # init` is unaffected either way (its own `.git` never collides with the action's), but
-        # any invocation resolving the *action's own* worktree without env would previously have
-        # been at the mercy of whatever `$GIT_DIR` happened to be forwarded here. The primary fix
-        # for env-less resolution is on the `.git` pointer overlay itself (`loop_git_ephemeral.
-        # prepare_ephemeral_git()`'s `gitdir: <ephemeral_dir>` pinned pointer + `core.bare
-        # false`); popping these keys here and stashing them on `self._claude_git_env` for
-        # `execute_claude()` alone is belt-and-braces on top of that, scoped to the `claude -p`
-        # session specifically.
-        self._claude_git_env = {
-            key: container_env.pop(key)
-            for key in _CLAUDE_EXEC_ONLY_ENV_KEYS
-            if key in container_env
-        }
+        # Issue #409 (design pivot, belt-and-braces removed): `container_env` (from
+        # `build_maker_git_mount_spec()`/`build_checker_git_mount_spec()`) never carries
+        # GIT_DIR/GIT_WORK_TREE at all any more -- those mount specs' `env` is now always empty.
+        # No process anywhere (the scenario container's own `docker run` startup env, any
+        # `docker exec` including `execute_claude()`'s) is ever given a GIT_DIR/GIT_WORK_TREE env
+        # var; the `.git` pointer overlay (`loop_git_ephemeral.prepare_ephemeral_git()`'s
+        # `gitdir: <ephemeral_dir>` pinned pointer + `core.bare false`) is the sole resolution
+        # mechanism. See `_MECHANICAL_ENV_RESERVED_KEYS`'s own comment for why an ambient
+        # GIT_DIR/GIT_WORK_TREE env, even scoped only to `execute_claude()`'s exec, turned out to
+        # be actively harmful rather than merely redundant.
         # Issue #407: the scenario container's *startup* env (this `container_env`, later handed
         # to `ScenarioContainerSpec(env=...)` below) previously carried no `RUFF_CACHE_DIR`
         # default for any `kind` -- only `_mechanical_exec_env()` (used by the Checker's mechanical

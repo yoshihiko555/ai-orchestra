@@ -20,7 +20,8 @@ codd:
 **対象**: LP-2（`loop_driver.py` の headless `claude -p` 実行）のみ。LP-1（セッション内伴走型、`loop_step.py`）は対象外
 **関連**: `design:loop-harness`（基本設計）、`design:loop-harness-cli`（CLI 詳細設計。§2.2 に現行の多層防御と本 Issue への申し送りがある）、
 `adr:ADR-20260712-035`（meta-harness の Docker + ephemeral broker 移行。本設計の流用元）、`adr:ADR-20260715-039`（本設計の決定を記録する ADR）、
-`adr:ADR-20260906-053`（LP-2 実運用フィードバックによる git env スコープ・tmpfs・観測性の調整）
+`adr:ADR-20260906-053`（LP-2 実運用フィードバックによる git env 撤廃（`.git` overlay 一本化）・
+tmpfs・観測性の調整）
 
 > 本書は `docs/design/loop-harness-cli.md` §2.2 末尾の「残余リスク（同一 UID 前提）」および
 > Issue #231（イメージキャッシュ肥大化）の教訓を踏まえ、Maker/Checker の実行境界を
@@ -304,13 +305,18 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
     4.3.2 節でこの `pinned_git_pointer` を `<worktree_path>/.git` に **ro で上書き bind mount**
     することで、worktree 自体は rw でも `.git` ポインタだけはコンテナから書き換え不能かつ、
     コンテナ内で到達可能な参照になる。
-    **[Fix-16. 2026-09-07]** これにより `.git` overlay 自体が git 解決の**主制御**に昇格する
+    **[Fix-16. 2026-09-07]** これにより `.git` overlay 自体が git 解決の**唯一の制御**に昇格する
     （従来は host gitdir を指す内容のコピーだったため、コンテナ内では到達不能で改ざん防止のみを
     担っていた。実プロジェクト ai-orchestra Issue #347 の LP-2 無人実行と Docker E2E
     `test_maker_commit_round_trip_uses_production_profile_and_cleanup` で本番構成におけるこの乖離
-    が判明し、ADR-20260906-053 で是正した）。事後処理（4.3.3 節）の改ざん検知は、上記の host
-    オリジナル内容のスナップショットと host `.git` の実体を比較する形で継続する（overlay 用の
-    合成内容とは別に保持する）。
+    が判明し、ADR-20260906-053 で是正した）。**[2026-09-07 最終決定]** `GIT_DIR`/`GIT_WORK_TREE`
+    env はコンテナ内のいかなるプロセス（`claude -p` を含む）にも付与しない
+    （belt-and-braces として `claude -p` exec にだけ残す中間案も採らない。Maker が Bash 経由で
+    走らせる pytest 内の `git init` + commit が env に引きずられ ephemeral repo 側へ落ちる事故
+    ——Checker で観測した 656 件失敗と同じクラス——を Maker 側にも残さないため。詳細は
+    ADR-20260906-053 参照）。事後処理（4.3.3 節）の改ざん検知は、上記の host オリジナル内容の
+    スナップショットと host `.git` の実体を比較する形で継続する（overlay 用の合成内容とは別に
+    保持する）。
 11. **[Fix-10. 2026-07-17 PR #256 レビュー指摘反映。High]** `ephemeral_dir` の作成（手順4）より前に、
     Maker がまだ到達できない `common_dir` を `GIT_DIR` とし、`baseline_sha` の tree から
     `read-tree` で新規構築した host 専用の一時 index に対して、**`target_sha`（＝`baseline_sha`）
@@ -342,23 +348,25 @@ fast-forward-only の `fetch` + 期待値照合つき `update-ref`（CAS）を�
     ため `.git` だけが ro になる。**[Fix-3. Fix-16]**）
   - `<ephemeral_dir>` → 同パス、rw
   - `<common_dir>/objects` → 同パス、**ro**
-- env: 既存 `maker_env()`（層2 の認証剥奪。git/gh 資格情報を渡さない方針は継続）に加え、
-  `GIT_DIR=<ephemeral_dir>` / `GIT_WORK_TREE=<worktree_path>` を明示する。これにより Maker の
-  `git add`/`git commit`/`git status`/`git diff`（既存 `--allowedTools` の許可範囲。§2.2 参照）は
-  ephemeral repo の index/ref に対して働き、ファイル自体は実 worktree 上で編集される。
-  **[ADR-20260906-053. Fix-16]** `.git` overlay が `gitdir: <ephemeral_dir>` を指す合成内容に
-  改訂されたことで、overlay 自体がコンテナ内で git 解決の主制御となった。これに伴い
-  `GIT_DIR`/`GIT_WORK_TREE` は belt-and-braces の冗長化として位置づけを変え、`docker run` の
-  コンテナ全体 env ではなく `claude -p` を起動する `docker exec` の env にのみ付与する。
-  `mechanical.commands`（pytest 等の機械検証）を起動する exec には付与しない。Docker E2E
-  （`test_maker_commit_round_trip_uses_production_profile_and_cleanup`）で、env をコンテナ全体に
-  残したまま機械検証だけ unset する代替案は「機械検証 exec が worktree 内の git を一切解決できなく
-  なる」ため成立しないことが確認された（改訂前の overlay は host 側 unreachable gitdir を指して
-  おり、overlay 単独では機械検証の git 解決を担保できなかったため）。overlay の主制御化により、
-  機械検証 exec は env なしでも `.git` → `gitdir: <ephemeral_dir>` の通常解決で成立する。詳細は
-  ADR-20260906-053 参照。
+- env: 既存 `maker_env()`（層2 の認証剥奪。git/gh 資格情報を渡さない方針は継続）を使用する。
+  **[ADR-20260906-053. Fix-16. 2026-09-07 最終決定]** `GIT_DIR`/`GIT_WORK_TREE` は **コンテナ内の
+  いかなるプロセス（`claude -p` を含む）にも付与しない**。belt-and-braces（`claude -p` exec にだけ
+  env を冗長付与する案）は採らない。`.git` overlay（`gitdir: <ephemeral_dir>`）が git 解決の
+  **唯一の制御**であり、Maker の `git add`/`git commit`/`git status`/`git diff`（既存
+  `--allowedTools` の許可範囲。§2.2 参照）はこの overlay 経由で ephemeral repo の index/ref に
+  対して働き、ファイル自体は実 worktree 上で編集される。
+  - 機械検証（`mechanical.commands`）の exec に env を付与しない理由: env を継承すると worktree 内
+    で `git init` を行うテスト等が ephemeral repo 側へ誤誘導される（#409 で実測 656 failed /
+    429 errors）。
+  - `claude -p` exec にも env を付与しない理由（belt-and-braces 廃止）: env を残すと、Maker が
+    Bash 経由で走らせる pytest 内の `git init <dir>` + commit が env に引きずられて ephemeral
+    repo 側へ落ち、Checker で発生したのと同じクラスの失敗が Maker 側にも残存し得る。env を完全に
+    排除することで、この経路自体を構造的に排除する。
+  - Docker E2E（`test_maker_commit_round_trip_uses_production_profile_and_cleanup`）で、env を
+    一切付与しなくても `.git` → `gitdir: <ephemeral_dir>` の通常解決が Maker・機械検証の双方で
+    成立することを実証済み。詳細は ADR-20260906-053 参照。
 - **[Fix-3 補足. 2026-09-07 改訂]** `.git` overlay が `gitdir: <ephemeral_dir>` を指すよう改訂
-  されたことで、Maker が `GIT_DIR`/`GIT_WORK_TREE` を無視して `.git` 経由の自動解決を試みても、
+  されたことで、env が存在しないコンテナ内で Maker が `.git` 経由の自動解決を行っても、
   到達先の `<ephemeral_dir>` はコンテナにマウントされているため正しく解決される（改訂前は到達先が
   host 専用の `common_dir/worktrees/<name>` で解決不能だったが、これは意図した挙動ではなく
   overlay を改ざん防止としてのみ機能させていた副作用だった。ADR-20260906-053 参照）。`.git` の
@@ -504,15 +512,12 @@ reset のみ**に限定され、いずれも driver（host、信頼境界内の�
    実質使われないが、選択的な除外がまた別の抜け漏れを生む再発防止のため一律で同じ手順を適用する。
 2. コンテナには `<worktree_path>` を **ro**（確定方針 6）、`ephemeral_dir_checker` を **ro**、
    `<common_dir>/objects` を **ro** でマウントする。`.git` の ro overlay（4.3.1 節 Fix-3/Fix-16）は
-   Checker のコンテナにも同様に適用する。**[ADR-20260906-053. 2026-09-07 改訂]** Checker の
-   `mechanical.commands` exec は `GIT_DIR`/`GIT_WORK_TREE` env を持たないため、
-   `gitdir: <ephemeral_dir_checker>` を指すこの overlay が worktree 内で git を解決する**唯一の
-   手段**になる（Maker と同様、単なる改ざん防止ではなく load-bearing）。
-   **[ADR-20260906-053]** Maker（4.3.2 節）と同様、`GIT_DIR=<ephemeral_dir_checker>` /
-   `GIT_WORK_TREE=<worktree_path>` は LLM レビュアー（`claude -p`、読み取り専用）を起動する
-   `docker exec` の env にのみ付与し、`mechanical.commands` の exec には付与しない（機械検証内で
-   `git init` を使うテストが誤って ephemeral repo を踏まないようにするため。詳細は
-   ADR-20260906-053 参照）。
+   Checker のコンテナにも同様に適用する。**[ADR-20260906-053. 2026-09-07 最終決定]** Maker（4.3.2
+   節）と同様、`GIT_DIR`/`GIT_WORK_TREE` はコンテナ内のいかなるプロセス（`mechanical.commands`
+   exec・LLM レビュアー `claude -p` exec のいずれにも）にも付与しない。したがって
+   `gitdir: <ephemeral_dir_checker>` を指すこの overlay が、worktree 内で git を解決する**唯一の
+   手段**になる（Maker と同様、単なる改ざん防止ではなく load-bearing）。詳細は
+   ADR-20260906-053 参照。
 3. コンテナ破棄後、`ephemeral_dir_checker` は書き戻し不要（Checker は commit しない）のため
    `shutil.rmtree` するのみ。共有 common dir への書き込みは一切発生しない。
 

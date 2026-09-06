@@ -775,7 +775,10 @@ def test_maker_scenario_container_env_includes_ruff_cache_dir_default(
         runtime_dir=tmp_path / "runtime", ephemeral_dir=tmp_path / "runtime" / "git-ephemeral"
     )
     bundle = docker_settings.DockerSettingsBundle(tmp_path / "trusted")
-    mount_spec = SimpleNamespace(mounts=(), env={"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"})
+    # Issue #409 (design pivot, belt-and-braces removed): `build_maker_git_mount_spec()`'s real
+    # `env` is always empty -- the `.git` pointer overlay is the sole resolution mechanism, no
+    # GIT_DIR/GIT_WORK_TREE env anywhere. This stub mirrors that.
+    mount_spec = SimpleNamespace(mounts=(), env={})
 
     class Broker:
         internal_network = "lh-internal"
@@ -857,14 +860,14 @@ def test_maker_scenario_container_env_includes_ruff_cache_dir_default(
         seen_specs[0].env["RUFF_CACHE_DIR"]
         == docker_action._MECHANICAL_ENV_DEFAULTS["RUFF_CACHE_DIR"]
     )
-    # Issue #409: GIT_DIR/GIT_WORK_TREE (from `build_maker_git_mount_spec()`) must never reach
+    # Issue #409 (design pivot, belt-and-braces removed): GIT_DIR/GIT_WORK_TREE must never reach
     # the scenario container's own startup env -- `docker exec` inherits it for every exec
-    # otherwise. They are stashed on `_claude_git_env` instead, for `execute_claude()`'s own exec
-    # to attach, as belt-and-braces on top of the actual `.git`-pointer-overlay fix in
-    # `loop_git_ephemeral.py` (design pivot -- see that module's `_pinned_git_pointer_content()`).
+    # otherwise. No `_claude_git_env`-style stash exists any more either; the `.git` pointer
+    # overlay in `loop_git_ephemeral.py` (see `_pinned_git_pointer_content()`) is the sole
+    # resolution mechanism for every exec into this container, `execute_claude()` included.
     assert "GIT_DIR" not in seen_specs[0].env
     assert "GIT_WORK_TREE" not in seen_specs[0].env
-    assert runtime._claude_git_env == {"GIT_DIR": "/git", "GIT_WORK_TREE": "/work"}
+    assert not hasattr(runtime, "_claude_git_env")
 
 
 def test_start_fails_before_any_docker_setup_when_budget_already_exhausted(
@@ -1123,15 +1126,18 @@ def test_execute_claude_forwards_ruff_cache_dir_default_to_docker_exec(
     runtime.execute_claude(["claude", "-p", "prompt"], "/tmp", 30, {})
 
 
-def test_execute_claude_attaches_claude_git_env_but_mechanical_exec_never_sees_it(
+def test_execute_claude_never_attaches_git_env_and_mechanical_exec_never_sees_it_either(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Issue #409: GIT_DIR/GIT_WORK_TREE must reach only `execute_claude()`'s own `docker exec`
-    (via `self._claude_git_env`, populated by `_start()`), never the scenario container's own
-    startup env and never `execute_mechanical()`'s `docker exec` -- otherwise a Checker's
-    mechanical `pytest -q` run resolves `$GIT_DIR` to this action's own ephemeral Git plumbing
-    instead of a test fixture's own `tmp_path`-rooted repo.
+    """Issue #409 (design pivot, belt-and-braces removed): GIT_DIR/GIT_WORK_TREE must never
+    reach any exec into the scenario container -- not the container's own startup env, not
+    `execute_claude()`'s `docker exec` (a Maker's own Bash tool call that itself runs
+    `git init <dir>` then `git -C <dir> commit` had that inner `-C <dir>` resolution overridden
+    by an ambient GIT_DIR/GIT_WORK_TREE env, redirecting it onto this action's own ephemeral
+    repository instead of the Maker's own fixture), and not `execute_mechanical()`'s `docker
+    exec` either. The `.git` pointer overlay (`loop_git_ephemeral.py`'s `_pinned_git_pointer_
+    content()`) is the sole resolution mechanism for every exec into this container.
     """
     runtime = docker_action.DockerActionRuntime(
         _request(tmp_path, kind="classifier"),
@@ -1140,15 +1146,14 @@ def test_execute_claude_attaches_claude_git_env_but_mechanical_exec_never_sees_i
     runtime.container_name = "lh-action"
     runtime._started = True
     runtime.broker = SimpleNamespace(base_url="http://lh-broker:8790", run_token="run-token")
-    runtime._claude_git_env = {"GIT_DIR": "/ephemeral/git", "GIT_WORK_TREE": "/action/worktree"}
     monkeypatch.setattr(docker_action, "enforce_scenario_container_idle", lambda *_a, **_k: None)
 
     def claude_exec(
         command: list[str], _cwd: str, _timeout: float, _env: dict[str, str]
     ) -> subprocess.CompletedProcess[str]:
         rendered = " ".join(command)
-        assert "--env GIT_DIR=/ephemeral/git" in rendered
-        assert "--env GIT_WORK_TREE=/action/worktree" in rendered
+        assert "GIT_DIR" not in rendered
+        assert "GIT_WORK_TREE" not in rendered
         return subprocess.CompletedProcess(command, 0, '{"result":"ok"}', "")
 
     runtime.host_child_runner = claude_exec

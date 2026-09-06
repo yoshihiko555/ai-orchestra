@@ -88,7 +88,17 @@ class BindMountSpec:
 
 @dataclass(frozen=True)
 class MakerGitMountSpec:
-    """Ordered mounts and environment needed to expose an ephemeral Git repository."""
+    """Ordered mounts needed to expose an ephemeral Git repository.
+
+    Issue #409 (design pivot, belt-and-braces removed): `env` is always empty. The `.git`
+    pointer overlay (`pinned_git_pointer`, pointing at `ephemeral_dir`; see
+    `loop_git_ephemeral_support._pinned_git_pointer_content()`) plus `core.bare false` on the
+    ephemeral repository is the *only* mechanism a container relies on to resolve this
+    repository -- no process inside a Maker/Checker container, including `claude -p`'s own
+    `docker exec`, is ever given `GIT_DIR`/`GIT_WORK_TREE` env. Docker E2E proved the overlay
+    alone resolves correctly with no env at all; the field stays for a future caller that might
+    need to attach ad hoc env of its own, but no current one does.
+    """
 
     mounts: tuple[BindMountSpec, ...]
     env: Mapping[str, str]
@@ -96,7 +106,11 @@ class MakerGitMountSpec:
 
 @dataclass(frozen=True)
 class CheckerGitMountSpec:
-    """Ordered read-only mounts and environment for one Checker container."""
+    """Ordered read-only mounts for one Checker container.
+
+    Issue #409 (design pivot, belt-and-braces removed): `env` is always empty -- see
+    `MakerGitMountSpec`'s own docstring for why.
+    """
 
     mounts: tuple[BindMountSpec, ...]
     env: Mapping[str, str]
@@ -466,6 +480,16 @@ def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpe
     currently unimplemented -- `execution_backend` stays `none` through Phase 2) MUST preserve
     this ordering when translating `mounts` into `-v`/bind-mount flags; reordering (e.g. sorting
     mounts by path) would silently drop the `.git` write protection.
+
+    Issue #409 (design pivot, belt-and-braces removed): `env` is deliberately empty -- the
+    `.git` pointer overlay (`pinned_git_pointer`) alone, not a `GIT_DIR`/`GIT_WORK_TREE` env
+    var, is the only mechanism this repository resolves through inside a container. A Maker's
+    own Bash tool calls (e.g. a `pytest` run that itself does `git init <dir>` then
+    `git -C <dir> commit`) proved that an ambient `GIT_DIR`/`GIT_WORK_TREE` env, even scoped
+    only to `claude -p`'s own `docker exec`, still redirects *that inner* `git` invocation's
+    plain `-C <dir>` resolution onto this action's own ephemeral repository instead of the
+    Maker's own fixture -- the exact same failure class Issue #409 already fixed for the
+    Checker's mechanical exec. See `loop_git_ephemeral_support._pinned_git_pointer_content()`.
     """
     common_objects = _validate_common_objects_mount_source(session)
     return MakerGitMountSpec(
@@ -483,10 +507,7 @@ def build_maker_git_mount_spec(session: EphemeralGitSession) -> MakerGitMountSpe
                 True,
             ),
         ),
-        env={
-            "GIT_DIR": str(session.ephemeral_dir),
-            "GIT_WORK_TREE": str(session.worktree_path),
-        },
+        env={},
     )
 
 
@@ -535,6 +556,11 @@ def build_checker_git_mount_spec(
     reads ``baseline_sha``'s tree through ``common_dir``, so ``common_dir/objects`` must already be
     confirmed to be a real, untampered directory or that read fails with a confusing, unrelated
     error instead of the intended "shared git objects mount source is not a trusted directory".
+
+    Issue #409 (design pivot, belt-and-braces removed): ``env`` is deliberately empty -- see
+    ``MakerGitMountSpec``'s own docstring and ``build_maker_git_mount_spec``'s for why an ambient
+    ``GIT_DIR``/``GIT_WORK_TREE`` env, even scoped only to a container's own trusted exec paths,
+    is never attached at all; the ``.git`` pointer overlay is the sole resolution mechanism.
     """
     common_objects = _validate_common_objects_mount_source(session)
     _verify_checker_baseline_matches_branch_tip(session, runner=runner)
@@ -555,10 +581,7 @@ def build_checker_git_mount_spec(
                 True,
             ),
         ),
-        env={
-            "GIT_DIR": str(session.ephemeral_dir),
-            "GIT_WORK_TREE": str(session.worktree_path),
-        },
+        env={},
     )
 
 
