@@ -43,6 +43,16 @@ def _git(args: list[str], cwd: Path) -> str:
     return result.stdout.strip()
 
 
+def _pr_list_json(*numbers: int) -> str:
+    """Return the `gh pr list --head <branch> --state open --json number --limit 1` stdout
+    `_lookup_open_pr_number` parses. Pass no `numbers` to simulate no OPEN PR for the branch
+    (Issue #274 follow-up: `--state open` filters CLOSED/MERGED PRs out server-side, so that
+    case also covers "a CLOSED PR exists but no OPEN one does" -- unlike `gh pr view <branch>`,
+    which returns a PR regardless of state and requires the caller to filter it, `gh pr list
+    --state open` never returns a non-OPEN PR to filter in the first place)."""
+    return json.dumps([{"number": n} for n in numbers]) + "\n"
+
+
 def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     _git(["init", "-b", "main"], path)
@@ -2663,9 +2673,9 @@ def test_draft_pr_pushes_branch_before_creating_pr(
     real_run = subprocess.run
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[:3] == ["gh", "pr", "view"]:
-            calls.append("view")
-            return subprocess.CompletedProcess(cmd, 1, "", "no PR found")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            calls.append("list")
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(), "")
         if cmd[:3] == ["gh", "pr", "create"]:
             calls.append("create")
             return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -2686,7 +2696,7 @@ def test_draft_pr_pushes_branch_before_creating_pr(
     )
     d._draft_pr(proposal, state)
 
-    assert calls == ["push", "view", "create"]
+    assert calls == ["push", "list", "create"]
 
 
 def test_draft_pr_pushes_branch_before_converting_existing_pr(
@@ -2714,9 +2724,9 @@ def test_draft_pr_pushes_branch_before_converting_existing_pr(
     real_run = subprocess.run
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[:3] == ["gh", "pr", "view"]:
-            calls.append("view")
-            return subprocess.CompletedProcess(cmd, 0, "42\n", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            calls.append("list")
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
         if cmd[:3] == ["gh", "pr", "ready"]:
             calls.append("ready")
             return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -2737,7 +2747,7 @@ def test_draft_pr_pushes_branch_before_converting_existing_pr(
     )
     d._draft_pr(proposal, state)
 
-    assert calls == ["push", "view", "ready"]
+    assert calls == ["push", "list", "ready"]
 
 
 def test_draft_pr_stops_safely_when_pending_diff_leaks_a_secret(
@@ -3493,17 +3503,17 @@ def test_execute_advance_exec_records_zero_baseline_before_creating_new_pr(
 
     monkeypatch.setattr(prw, "record_baseline", fake_record_baseline)
 
-    view_calls = 0
+    list_calls = 0
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        nonlocal view_calls
-        if cmd[:3] == ["gh", "pr", "view"]:
-            view_calls += 1
-            if view_calls == 1:
-                # No PR exists yet for this branch.
-                return subprocess.CompletedProcess(cmd, 1, "", "no PR found")
+        nonlocal list_calls
+        if cmd[:3] == ["gh", "pr", "list"]:
+            list_calls += 1
+            if list_calls == 1:
+                # No OPEN PR exists yet for this branch.
+                return subprocess.CompletedProcess(cmd, 0, _pr_list_json(), "")
             # Post-creation lookup resolves the real PR number.
-            return subprocess.CompletedProcess(cmd, 0, "99\n", "")
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(99), "")
         if cmd[:3] == ["gh", "pr", "create"]:
             call_order.append("gh_pr_create")
             return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -3544,15 +3554,15 @@ def test_create_or_reuse_pr_reports_created_on_crash_retry_of_own_action(
     monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
     monkeypatch.setattr(prw, "record_baseline", lambda *_a, **_k: None)
 
-    view_calls = 0
+    list_calls = 0
 
     def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        nonlocal view_calls
-        if cmd[:3] == ["gh", "pr", "view"]:
-            view_calls += 1
-            if view_calls == 1:
-                return subprocess.CompletedProcess(cmd, 1, "", "no PR found")
-            return subprocess.CompletedProcess(cmd, 0, "99\n", "")
+        nonlocal list_calls
+        if cmd[:3] == ["gh", "pr", "list"]:
+            list_calls += 1
+            if list_calls == 1:
+                return subprocess.CompletedProcess(cmd, 0, _pr_list_json(), "")
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(99), "")
         if cmd[:3] == ["gh", "pr", "create"]:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -3563,10 +3573,12 @@ def test_create_or_reuse_pr_reports_created_on_crash_retry_of_own_action(
     assert (pr_number, created) == (99, True)
 
     # Crash-restart: a fresh LoopDriver instance retries the *same* advance_phase action_id.
-    # `gh pr view` now finds the PR `d1` already created above.
+    # `gh pr list` now finds the PR `d1` already created above.
     d2 = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(
-        driver.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess([], 0, "99\n", "")
+        driver.subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, _pr_list_json(99), ""),
     )
 
     retried_pr_number, retried_created = d2._create_or_reuse_pr(state, "main", action_id)
@@ -3592,7 +3604,7 @@ def test_create_or_reuse_pr_reuses_unrelated_preexisting_pr_as_before(
     monkeypatch.setattr(
         driver.subprocess,
         "run",
-        lambda *_a, **_k: subprocess.CompletedProcess([], 0, "77\n", ""),
+        lambda *_a, **_k: subprocess.CompletedProcess([], 0, _pr_list_json(77), ""),
     )
 
     pr_number, created = d._create_or_reuse_pr(state, "main", action_id)
@@ -3622,8 +3634,8 @@ def test_create_or_reuse_pr_does_not_misattribute_unrelated_pr_after_failed_crea
     monkeypatch.setattr(prw, "record_baseline", lambda *_a, **_k: None)
 
     def fake_run_create_fails(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 1, "", "no PR found")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(), "")
         if cmd[:3] == ["gh", "pr", "create"]:
             raise subprocess.CalledProcessError(1, cmd, "", "gh pr create failed")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -3643,8 +3655,8 @@ def test_create_or_reuse_pr_does_not_misattribute_unrelated_pr_after_failed_crea
             return subprocess.CompletedProcess(cmd, 0, "somebody-else\n", "")
         if cmd[:3] == ["gh", "pr", "view"] and "createdAt" in cmd:
             return subprocess.CompletedProcess(cmd, 0, "2999-01-01T00:00:00Z\n", "")
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, "55\n", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(55), "")
         if cmd[:3] == ["gh", "api", "user"]:
             return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -3685,8 +3697,8 @@ def test_create_or_reuse_pr_heals_created_true_when_confirmed_write_was_lost(
         if cmd[:3] == ["gh", "pr", "view"] and "createdAt" in cmd:
             # Created *after* the intent journaled above -- our own crash-orphaned creation.
             return subprocess.CompletedProcess(cmd, 0, "2999-01-01T00:00:00Z\n", "")
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, "99\n", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(99), "")
         if cmd[:3] == ["gh", "api", "user"]:
             return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -3727,8 +3739,8 @@ def test_create_or_reuse_pr_rejects_own_preexisting_pr_created_before_intent(
         if cmd[:3] == ["gh", "pr", "view"] and "createdAt" in cmd:
             # Created long *before* the intent journaled above -- not this action's creation.
             return subprocess.CompletedProcess(cmd, 0, "2000-01-01T00:00:00Z\n", "")
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, "42\n", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
         if cmd[:3] == ["gh", "api", "user"]:
             return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -3764,8 +3776,8 @@ def test_create_or_reuse_pr_fails_safe_when_ownership_lookup_fails(
             return subprocess.CompletedProcess(cmd, 0, "loop-bot\n", "")
         if cmd[:3] == ["gh", "pr", "view"] and "createdAt" in cmd:
             return subprocess.CompletedProcess(cmd, 0, "2999-01-01T00:00:00Z\n", "")
-        if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, "99\n", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(99), "")
         if cmd[:3] == ["gh", "api", "user"]:
             return subprocess.CompletedProcess(cmd, 1, "", "auth error")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -3776,6 +3788,156 @@ def test_create_or_reuse_pr_fails_safe_when_ownership_lookup_fails(
 
     assert (pr_number, created) == (99, False)
     assert d2._load_persisted_pr_creation_confirmed(action_id) is None
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [
+        (0, _pr_list_json(42), 42),
+        # Empty result covers both "no PR at all" and "a PR exists but is CLOSED/MERGED" --
+        # `--state open` filters the latter out server-side, so both look identical here.
+        (0, _pr_list_json(), None),
+        (1, "", None),
+        (0, "", None),
+        (0, "not json\n", None),
+        (0, "{}\n", None),
+        (0, '[{"nope": 1}]\n', None),
+        (0, "[1, 2]\n", None),
+    ],
+)
+def test_lookup_open_pr_number_filters_by_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    expected: int | None,
+) -> None:
+    """Issue #274 follow-up (run 7 of #347, hardening request): querying via `gh pr list --head
+    <branch> --state open --limit 1` rather than `gh pr view <branch>` avoids depending on
+    `gh`'s internal ordering to prefer an OPEN PR over a CLOSED one when both exist for the
+    same branch name (e.g. a previous run's CLOSED Draft PR plus a brand-new OPEN one) --
+    `--state open` filters server-side, so a non-empty result is guaranteed OPEN by
+    construction. Any `gh` failure, empty result, or malformed/unexpected JSON also degrades to
+    None, matching the prior fail-closed default of falling through to `gh pr create`."""
+    project_dir = str(tmp_path)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert cmd == [
+            "gh",
+            "pr",
+            "list",
+            "--head",
+            "main",
+            "--state",
+            "open",
+            "--json",
+            "number",
+            "--limit",
+            "1",
+        ]
+        return subprocess.CompletedProcess(cmd, returncode, stdout, "")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    assert driver._lookup_open_pr_number(project_dir, "main") == expected
+
+
+def test_create_or_reuse_pr_creates_new_pr_when_existing_one_is_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #274 (run 7 of #347): a CLOSED PR (#406) left over from an earlier, abandoned run
+    on the same branch name must not be reused -- `_create_or_reuse_pr` must fall through to
+    `gh pr create` exactly as if no PR existed, and report `created=True` for the brand-new
+    OPEN PR it creates (not the stale closed one). Since the lookup now uses `gh pr list --state
+    open` (hardening request), the server-side filter means #406 never appears in the result at
+    all -- the first call returns empty, exactly as if no PR existed yet."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "main"
+    state.worktree_path = project_dir
+    action_id = "act-closed-reuse-001"
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
+    monkeypatch.setattr(prw, "record_baseline", lambda *_a, **_k: None)
+
+    list_calls = 0
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal list_calls
+        if cmd[:3] == ["gh", "pr", "list"]:
+            list_calls += 1
+            if list_calls == 1:
+                # No OPEN PR for this branch -- CLOSED PR #406 exists but `--state open`
+                # already filtered it out server-side (the exact Issue #274 run 7 scenario).
+                return subprocess.CompletedProcess(cmd, 0, _pr_list_json(), "")
+            # Post-creation lookup resolves the brand-new OPEN PR.
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(412), "")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    pr_number, created = d._create_or_reuse_pr(state, "main", action_id)
+
+    assert (pr_number, created) == (412, True)
+
+
+def test_draft_pr_creates_new_draft_when_existing_pr_is_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #274 follow-up: a CLOSED PR for `state.branch` must not be "converted" via
+    `gh pr ready --undo` (a silent no-op on a closed PR) -- a fresh Draft PR must be created
+    instead, exactly as if no PR had ever existed for this branch. Since the lookup uses
+    `gh pr list --state open` (hardening request), the CLOSED PR simply never appears in the
+    result -- the lookup returns empty, exactly as if no PR existed."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "loop/issue-1"
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    # code L1: same push-guard setup as the sibling `create`/`convert` tests above.
+    baseline = _git(["rev-parse", "HEAD"], Path(project_dir))
+    d._remote_head_baseline = baseline
+    monkeypatch.setattr(lds, "get_remote_head", lambda *_a, **_k: baseline)
+    calls: list[str] = []
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *_a, **_k: calls.append("push"))
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
+
+    # code L1: see the sibling `create` test above for why `git` commands must pass through.
+    real_run = subprocess.run
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            calls.append("list")
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(), "")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            calls.append("create")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd and cmd[0] == "gh":
+            raise AssertionError(f"unexpected command: {cmd}")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = lc.ProposeResult(
+        action="exit_failure",
+        action_id="act-draft-pr-closed",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    d._draft_pr(proposal, state)
+
+    assert calls == ["push", "list", "create"]
 
 
 def test_gh_host_from_origin_url_extracts_host_across_url_forms() -> None:
@@ -3816,7 +3978,7 @@ def test_pr_authored_by_us_pins_gh_api_host_from_trusted_origin_url(
 
     monkeypatch.setattr(driver.subprocess, "run", fake_run)
 
-    assert d._pr_authored_by_us(project_dir, "main") is True
+    assert d._pr_authored_by_us(project_dir, 42) is True
     assert seen_me_cmds == [
         ["gh", "api", "--hostname", "ghe.example.com", "user", "--jq", ".login"]
     ]
