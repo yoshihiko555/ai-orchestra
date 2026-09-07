@@ -306,7 +306,10 @@ class TestIsCliEnabled:
 
 
 class TestNormalizeCliToolsConfig:
-    """normalize_cli_tools_config の旧 gemini → antigravity 後方互換（EV-18）。
+    """normalize_cli_tools_config の旧 gemini → antigravity 後方互換（agent-routing EV-18）。
+
+    ここでの EV-18 は `docs/evaluation/agent-routing.md` の EV-18（旧 gemini 設定の
+    後方互換）を指す。`docs/evaluation/core.md` の EV-18（自動アーカイブの冪等性）とは別物。
 
     トップレベル `gemini.enabled: false` は、単一レイヤー内で
     `antigravity.enabled` が明示されていない場合に限り
@@ -315,7 +318,7 @@ class TestNormalizeCliToolsConfig:
     """
 
     def test_legacy_gemini_disabled_maps_to_antigravity_disabled(self) -> None:
-        """EV-18: 旧 gemini.enabled: false → antigravity.enabled: false 相当。"""
+        """agent-routing EV-18: 旧 gemini.enabled: false → antigravity.enabled: false 相当。"""
         result = hook_common.normalize_cli_tools_config({"gemini": {"enabled": False}})
         assert result["antigravity"]["enabled"] is False
 
