@@ -95,6 +95,11 @@ TERMINAL_VERDICT_PATTERNS: tuple[str, ...] = (
     "looks good to me",
     "approved",
 )
+# `chatgpt-codex-connector[bot]`'s own PR summary comment marker (Issue #347 run 8, PR #413
+# 2026-09-07): unlike `TERMINAL_VERDICT_PATTERNS`, this comment carries no natural-language
+# verdict phrase when Codex finds no issues -- it only reacts with a GitHub emoji and edits
+# this one comment's status table in place. See `_matches_codex_summary_completed`.
+CODEX_SUMMARY_COMMENT_MARKER = "codex-pull-request-review-summary"
 REVIEWER_UNAVAILABLE_REASON = "rate_limited"
 RATE_LIMIT_PATTERNS: tuple[str, ...] = (
     "more reviews will be available in",
@@ -1708,7 +1713,20 @@ def _review_matches_iteration_head(raw: dict[str, Any], iteration_head_sha: str)
 def _is_issue_comment_completion_signal(
     item: ReviewItem, baseline: dict[str, Any], config: PrReviewConfig
 ) -> bool:
-    """Return True when a trusted, post-baseline issue comment is a terminal review verdict."""
+    """Return True when a trusted, post-baseline issue comment is a terminal review verdict.
+
+    Issue #347 run 8 (PR #413, 2026-09-07): Codex's own PR summary comment's `created_at` never
+    changes when it is edited in place on every review run (only `body` and the GitHub-side
+    `updated_at` do). This is only harmless for the *first* review of a freshly created PR: the
+    zero baseline recorded before `gh pr create` (`_create_or_reuse_pr`) predates Codex's first,
+    "in progress" post of this same comment, so a `created_at`-based baseline-time check still
+    lets its later "Completed" edit through. On a *later* push, though, `record_baseline`'s
+    drain-before-push re-baselining snapshots this same still-existing comment again: its key
+    joins `processed_comment_ids` and `baseline_recorded_at` moves past its (unchanged)
+    `created_at`, so this function's own key check and `_is_after_baseline_time` both reject its
+    next in-place edit -- a known gap, not fixed here. Codex re-editing the same comment for a
+    second push is therefore not detected as a completion signal by this path.
+    """
     if _comment_key(item) in set(_string_list(baseline.get("processed_comment_ids"))):
         return False
     if not verify_origin(item.raw, config.reviewer_allowlist):
@@ -1720,13 +1738,44 @@ def _is_issue_comment_completion_signal(
     iteration_sha = baseline.get("iteration_head_sha")
     if isinstance(iteration_sha, str) and iteration_sha and iteration_sha[:7] not in item.body:
         return False
-    return _matches_terminal_verdict(item.body)
+    if not isinstance(iteration_sha, str) or not iteration_sha:
+        iteration_sha = None
+    return _matches_terminal_verdict(item.body) or _matches_codex_summary_completed(
+        item.body, iteration_sha
+    )
 
 
 def _matches_terminal_verdict(body: str) -> bool:
     """Return True when body casefold-contains a terminal review verdict phrase."""
     normalized = (body or "").casefold()
     return any(pattern.casefold() in normalized for pattern in TERMINAL_VERDICT_PATTERNS)
+
+
+def _matches_codex_summary_completed(body: str, iteration_sha: str | None) -> bool:
+    """Return True when Codex's own PR summary comment marks a review row Completed.
+
+    Issue #347 run 8 (PR #413, 2026-09-07): when `chatgpt-codex-connector[bot]` finds no
+    issues, it never posts a `review` object or a `TERMINAL_VERDICT_PATTERNS` phrase -- it only
+    reacts with a GitHub emoji (an event this module cannot observe via `gh api`) and flips the
+    `Status` cell of its own summary comment's markdown table (marker:
+    `CODEX_SUMMARY_COMMENT_MARKER`) from e.g. "In progress" to "Completed" for that row. That
+    comment is created once per PR and edited in place on every subsequent review run, so its
+    table can carry rows for several past commits at once; matching is scoped to individual
+    table rows (lines starting with `|`) rather than a body-wide substring search so a stale
+    "Completed" row for an *earlier* commit never counts as this iteration's verdict. When
+    `iteration_sha` is unknown (no push has been recorded for this baseline yet), any Completed
+    row is accepted.
+    """
+    if not body or CODEX_SUMMARY_COMMENT_MARKER not in body:
+        return False
+    short_sha = iteration_sha[:7] if iteration_sha else None
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|") or "Completed" not in stripped:
+            continue
+        if short_sha is None or short_sha in stripped:
+            return True
+    return False
 
 
 def _issue_comment_completion_outcome(
@@ -1981,8 +2030,22 @@ def _is_auto_generated_comment(body: str, config: PrReviewConfig) -> bool:
 
 
 def _is_positive_review_summary(item: ReviewItem) -> bool:
+    """Return True for a review/comment body that must never become an imported finding.
+
+    Issue #347 run 8 (PR #413, 2026-09-07): Codex's own PR summary comment (marker:
+    `CODEX_SUMMARY_COMMENT_MARKER`) is a status dashboard, never a finding -- when Codex has
+    actual suggestions it posts them as separate `review_comment` items instead. Without this
+    check, `_finding_from_item` would import that dashboard comment itself as a fail-safe
+    "high"/`needs_classification` finding the moment `_is_issue_comment_completion_signal`
+    (via `_matches_codex_summary_completed`) recognizes it as the review's terminal signal --
+    turning a genuinely clean, no-issues review into a phantom blocking finding. This check is
+    intentionally independent of the comment's Completed/In progress status: the dashboard
+    itself is never a finding regardless of which row is currently marked complete.
+    """
     if item.source not in {"review", "issue_comment"}:
         return False
+    if item.source == "issue_comment" and CODEX_SUMMARY_COMMENT_MARKER in item.body:
+        return True
     normalized = re.sub(r"\s+", " ", item.body).strip().casefold().rstrip(".!")
     return normalized in POSITIVE_REVIEW_SUMMARIES or (
         item.source == "issue_comment" and _matches_terminal_verdict(item.body)

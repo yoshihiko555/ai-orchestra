@@ -1121,6 +1121,110 @@ def test_ev194_issue_comment_completion_signal_false_for_auto_generated_reply() 
     assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
 
 
+def _codex_summary_issue_comment(
+    *, trusted: bool = True, status: str = "Completed", sha: str = "abc1234def", **extra: Any
+) -> dict[str, Any]:
+    """Build a `chatgpt-codex-connector[bot]` PR summary comment (Issue #347 run 8, PR #413).
+
+    Mirrors the real comment's shape: a single markdown table row whose `Status` cell flips
+    between "In progress" and "Completed" as Codex edits the comment in place, with the
+    reviewed commit's short sha in the `Commit` cell. Codex never posts a natural-language
+    verdict phrase (`TERMINAL_VERDICT_PATTERNS`) when it finds no issues.
+    """
+    short_sha = sha[:7]
+    body = (
+        "<!-- codex-pull-request-review-summary -->\n"
+        "## Codex Review Summary\n"
+        "This comment shows the latest Codex review activity on this pull request.\n"
+        "| Review | Status | Commit | Review trigger |\n"
+        "| --- | --- | --- | --- |\n"
+        f"| \U0001f4dd **Code Review** | ✅ **{status}** "
+        f'<relative-time datetime="2026-07-09T00:00:01Z">...</relative-time> '
+        f"| `{short_sha}` | PR opened |\n"
+        "Codex reacts with \U0001f440 while any review is running, comments if it has "
+        "suggestions, and reacts with \U0001f44d once all reviews finish with no findings."
+    )
+    data = {
+        "id": 21,
+        "created_at": "2026-07-09T00:00:01+00:00",
+        "body": body,
+        **extra,
+    }
+    return _trusted(data) if trusted else _untrusted(data)
+
+
+def test_ev168_matches_codex_summary_completed_true_for_completed_row_matching_sha() -> None:
+    body = _codex_summary_issue_comment()["body"]
+
+    assert prw._matches_codex_summary_completed(body, "abc1234def") is True
+
+
+def test_ev168_matches_codex_summary_completed_false_for_in_progress_row() -> None:
+    body = _codex_summary_issue_comment(status="In progress")["body"]
+
+    assert prw._matches_codex_summary_completed(body, "abc1234def") is False
+
+
+def test_ev168_matches_codex_summary_completed_false_for_completed_row_with_different_sha() -> None:
+    body = _codex_summary_issue_comment(sha="ffffffffff")["body"]
+
+    assert prw._matches_codex_summary_completed(body, "abc1234def") is False
+
+
+def test_ev168_matches_codex_summary_completed_false_when_marker_missing() -> None:
+    body = "| \U0001f4dd **Code Review** | ✅ **Completed** | `abc1234` | PR opened |"
+
+    assert prw._matches_codex_summary_completed(body, "abc1234def") is False
+
+
+def test_ev168_matches_codex_summary_completed_accepts_any_completed_row_when_sha_unknown() -> None:
+    body = _codex_summary_issue_comment(sha="ffffffffff")["body"]
+
+    assert prw._matches_codex_summary_completed(body, None) is True
+
+
+def test_ev168_issue_comment_completion_signal_true_for_codex_summary_completed() -> None:
+    item = prw._review_item_from_issue_comment(_codex_summary_issue_comment())
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is True
+
+
+def test_ev168_issue_comment_completion_signal_false_for_codex_summary_in_progress() -> None:
+    item = prw._review_item_from_issue_comment(_codex_summary_issue_comment(status="In progress"))
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_wait_for_completion_returns_issue_comment_completed_for_codex_summary_completed() -> None:
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [_codex_summary_issue_comment()],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "issue_comment_completed"
+    assert outcome.completed is True
+    assert outcome.issue_comment_ids == ("issue_comment:21",)
+
+
 def test_wait_for_completion_returns_issue_comment_completed_for_trusted_terminal_comment() -> None:
     client = FakeClient(
         {
@@ -1676,6 +1780,43 @@ def test_collect_review_findings_skips_terminal_issue_comment(
     assert result.findings == ()
     assert result.needs_classification_count == 0
     assert "issue_comment:20" in result.processed_comment_ids
+
+
+def test_ev168_collect_review_findings_skips_codex_summary_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #347 run 8: the Codex summary dashboard itself must never become a finding.
+
+    Without `_is_positive_review_summary`'s `CODEX_SUMMARY_COMMENT_MARKER` check, this comment
+    (which `_matches_codex_summary_completed` now recognizes as the review's completion signal)
+    would be imported as a fail-safe "high"/`needs_classification` finding, turning a genuinely
+    clean review into a phantom blocking finding.
+    """
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [_codex_summary_issue_comment()],
+        }
+    )
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, _config(), client, 1, _lease(project_dir)
+    )
+
+    assert result.findings == ()
+    assert result.needs_classification_count == 0
+    assert "issue_comment:21" in result.processed_comment_ids
 
 
 _CODERABBIT_MARKER = "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->"
