@@ -1715,31 +1715,55 @@ def _is_issue_comment_completion_signal(
 ) -> bool:
     """Return True when a trusted, post-baseline issue comment is a terminal review verdict.
 
-    Issue #347 run 8 (PR #413, 2026-09-07): Codex's own PR summary comment's `created_at` never
+    Issue #347 run 9 (PR #415, 2026-09-07): Codex's own PR summary comment's `created_at` never
     changes when it is edited in place on every review run (only `body` and the GitHub-side
-    `updated_at` do). This is only harmless for the *first* review of a freshly created PR: the
+    `updated_at` do). This is harmless for the *first* review of a freshly created PR -- the
     zero baseline recorded before `gh pr create` (`_create_or_reuse_pr`) predates Codex's first,
     "in progress" post of this same comment, so a `created_at`-based baseline-time check still
-    lets its later "Completed" edit through. On a *later* push, though, `record_baseline`'s
+    lets its later "Completed" edit through -- but on a *later* push, `record_baseline`'s
     drain-before-push re-baselining snapshots this same still-existing comment again: its key
     joins `processed_comment_ids` and `baseline_recorded_at` moves past its (unchanged)
-    `created_at`, so this function's own key check and `_is_after_baseline_time` both reject its
-    next in-place edit -- a known gap, not fixed here. Codex re-editing the same comment for a
-    second push is therefore not detected as a completion signal by this path.
+    `created_at`, so the generic key/time gates below would otherwise reject every subsequent
+    in-place edit of this one comment forever, no matter how many more times Codex re-reviews.
+    This comment is therefore exempted from those two gates specifically (and only) when
+    `iteration_sha` is known: freshness is instead established a few lines down by the row-scoped
+    sha match (`iteration_sha[:7] not in item.body` / `_matches_codex_summary_completed`), which
+    only accepts a Completed row naming the *current* iteration's head sha -- a stale edit still
+    carrying an earlier commit's row cannot pass. `verify_origin` and `_is_auto_generated_comment`
+    still apply unconditionally, so this exemption cannot be used to spoof a completion signal
+    from an untrusted author or through an unrelated auto-generated comment. When `iteration_sha`
+    is unknown (no push recorded yet for this baseline), the generic gates apply as before.
+
+    `updated_at` is deliberately not consulted here even though it is the field GitHub actually
+    bumps on each in-place edit: `ReviewItem` does not carry it, and the row-scoped sha match
+    above already pins freshness to this iteration on its own (the sha changes on every push, so
+    a stale edit's row cannot match it), making an `updated_at` field unnecessary.
+
+    This freshness substitute relies on `loop_driver._run_wait_external_review` always calling
+    `record_iteration_head` (which refreshes `iteration_head_sha` to the just-pushed commit)
+    before this poll begins, including on a driver-crash resume (see
+    `_already_pushed_this_iteration`'s `iteration_head_recorded_iteration` check) -- so
+    `iteration_sha` here is never a stale, earlier iteration's value by the time this function
+    runs.
     """
-    if _comment_key(item) in set(_string_list(baseline.get("processed_comment_ids"))):
-        return False
-    if not verify_origin(item.raw, config.reviewer_allowlist):
-        return False
-    if not _is_after_baseline_time(item, str(baseline.get("baseline_recorded_at") or "")):
-        return False
-    if _is_auto_generated_comment(item.body, config):
-        return False
     iteration_sha = baseline.get("iteration_head_sha")
-    if isinstance(iteration_sha, str) and iteration_sha and iteration_sha[:7] not in item.body:
-        return False
     if not isinstance(iteration_sha, str) or not iteration_sha:
         iteration_sha = None
+    is_recurring_codex_summary = (
+        iteration_sha is not None and CODEX_SUMMARY_COMMENT_MARKER in item.body
+    )
+    if not is_recurring_codex_summary:
+        if _comment_key(item) in set(_string_list(baseline.get("processed_comment_ids"))):
+            return False
+    if not verify_origin(item.raw, config.reviewer_allowlist):
+        return False
+    if not is_recurring_codex_summary:
+        if not _is_after_baseline_time(item, str(baseline.get("baseline_recorded_at") or "")):
+            return False
+    if _is_auto_generated_comment(item.body, config):
+        return False
+    if iteration_sha is not None and iteration_sha[:7] not in item.body:
+        return False
     return _matches_terminal_verdict(item.body) or _matches_codex_summary_completed(
         item.body, iteration_sha
     )
