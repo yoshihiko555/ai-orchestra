@@ -1225,6 +1225,93 @@ def test_wait_for_completion_returns_issue_comment_completed_for_codex_summary_c
     assert outcome.issue_comment_ids == ("issue_comment:21",)
 
 
+def test_ev168_issue_comment_completion_signal_true_for_recurring_codex_summary_completed() -> None:
+    """Freshness (Issue #347 run 9, PR #415): a re-baselined summary edit is still detected.
+
+    Simulates the second-push scenario: the comment's id is already in
+    `processed_comment_ids` and `baseline_recorded_at` is after its (unchanged) `created_at`
+    because `record_baseline` re-snapshotted it before this push -- but its table row now names
+    the *current* iteration's head sha, so it must still be recognized as completion.
+    """
+    item = prw._review_item_from_issue_comment(_codex_summary_issue_comment(sha="11312fc0000"))
+    baseline = {
+        "baseline_recorded_at": "2026-09-07T00:00:02+00:00",
+        "processed_comment_ids": ("issue_comment:21",),
+        "iteration_head_sha": "11312fc0000",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is True
+
+
+def test_ev168_issue_comment_completion_signal_false_for_recurring_codex_summary_stale_sha() -> (
+    None
+):
+    """The freshness substitute is the row-scoped sha match, not a blanket gate skip."""
+    item = prw._review_item_from_issue_comment(_codex_summary_issue_comment(sha="abc1234def"))
+    baseline = {
+        "baseline_recorded_at": "2026-09-07T00:00:02+00:00",
+        "processed_comment_ids": ("issue_comment:21",),
+        "iteration_head_sha": "11312fc0000",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev168_issue_comment_completion_signal_false_for_recurring_codex_summary_when_iteration_sha_unknown() -> (
+    None
+):
+    """Without a known `iteration_sha`, the generic processed/baseline-time gates still apply."""
+    item = prw._review_item_from_issue_comment(_codex_summary_issue_comment())
+    baseline = {
+        "baseline_recorded_at": "2026-09-07T00:00:02+00:00",
+        "processed_comment_ids": ("issue_comment:21",),
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_ev168_issue_comment_completion_signal_false_for_recurring_codex_summary_untrusted_author() -> (
+    None
+):
+    """The gate exemption never bypasses `verify_origin`."""
+    item = prw._review_item_from_issue_comment(
+        _codex_summary_issue_comment(trusted=False, sha="11312fc0000")
+    )
+    baseline = {
+        "baseline_recorded_at": "2026-09-07T00:00:02+00:00",
+        "processed_comment_ids": ("issue_comment:21",),
+        "iteration_head_sha": "11312fc0000",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
+
+
+def test_wait_for_completion_returns_issue_comment_completed_for_recurring_codex_summary() -> None:
+    """Integration (Issue #347 run 9, PR #415): second-push re-baselined summary is detected."""
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/issues/12/comments": [
+                _codex_summary_issue_comment(sha="11312fc0000")
+            ],
+        }
+    )
+    baseline = {
+        "baseline_review_id": 10,
+        "baseline_recorded_at": "2026-09-07T00:00:02+00:00",
+        "processed_comment_ids": ("issue_comment:21",),
+        "iteration_head_sha": "11312fc0000",
+    }
+
+    outcome = prw.wait_for_completion(
+        12, baseline, _config(), client, sleeper=lambda _seconds: None
+    )
+
+    assert outcome.signal == "issue_comment_completed"
+    assert outcome.completed is True
+    assert outcome.issue_comment_ids == ("issue_comment:21",)
+
+
 def test_wait_for_completion_returns_issue_comment_completed_for_trusted_terminal_comment() -> None:
     client = FakeClient(
         {
