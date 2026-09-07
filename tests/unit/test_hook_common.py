@@ -269,6 +269,47 @@ class TestLoadPackageConfig:
         assert result == {}
 
 
+class TestNormalizeCliToolsConfig:
+    """normalize_cli_tools_config のテスト。
+
+    EV-18（境界 / must）: 旧トップレベル gemini.enabled: false は
+    antigravity.enabled: false と等価に扱われる（後方互換）。
+    EV-19 の tool 値読み替えは test_agent_router_e2e.py で covered のため、
+    ここではトップレベル gemini: キーの enabled 互換に絞る。
+    """
+
+    def test_legacy_gemini_enabled_false_disables_antigravity(self) -> None:
+        """トップレベル gemini.enabled: false は antigravity.enabled: false に反映される。"""
+        result = hook_common.normalize_cli_tools_config({"gemini": {"enabled": False}})
+        assert result["antigravity"]["enabled"] is False
+
+    def test_explicit_antigravity_enabled_wins_over_legacy_gemini(self) -> None:
+        """同一 dict 内で antigravity.enabled が明示されていればそちらを優先する。"""
+        result = hook_common.normalize_cli_tools_config(
+            {"antigravity": {"enabled": True}, "gemini": {"enabled": False}}
+        )
+        assert result["antigravity"]["enabled"] is True
+
+    def test_legacy_gemini_enabled_true_does_not_enable_antigravity(self) -> None:
+        """gemini.enabled: true は無効化フォールバックのトリガーにならない（enabled は付与しない）。"""
+        result = hook_common.normalize_cli_tools_config({"gemini": {"enabled": True}})
+        assert "enabled" not in result.get("antigravity", {})
+
+    def test_legacy_gemini_model_flags_not_carried_over(self) -> None:
+        """gemini 固有値（model/flags）は antigravity に引き継がれない。"""
+        result = hook_common.normalize_cli_tools_config(
+            {"gemini": {"enabled": False, "model": "gemini-legacy", "flags": "--legacy"}}
+        )
+        antigravity = result["antigravity"]
+        assert antigravity == {"enabled": False}
+
+    def test_does_not_mutate_input(self) -> None:
+        """入力 dict は変更されない（新しい dict を返す）。"""
+        original = {"gemini": {"enabled": False}}
+        hook_common.normalize_cli_tools_config(original)
+        assert "antigravity" not in original
+
+
 class TestLoadCliToolsConfig:
     """load_cli_tools_config のテスト（Issue #125: レイヤーごとの正規化）。"""
 

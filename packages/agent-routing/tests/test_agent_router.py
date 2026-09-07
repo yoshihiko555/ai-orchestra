@@ -329,6 +329,25 @@ def test_build_cli_suggestion_codex() -> None:
     assert "--full-auto" in result
 
 
+def test_build_cli_suggestion_codex_includes_stdin_redirect() -> None:
+    """EV-10: Codex CLI 提案は stdin を `< /dev/null` で封じる。
+
+    antigravity 側の「`< /dev/null` を含まない」（EV-11,
+    test_build_cli_suggestion_antigravity_no_stdin_redirect）と対になる正の確認。
+    非対話サブプロセス実行で stdin 待ちハングを避けるため必須。
+    """
+    config = {
+        "codex": {
+            "model": "gpt-5.3-codex",
+            "sandbox": {"analysis": "read-only"},
+            "flags": "--full-auto",
+        },
+    }
+    result = route_config.build_cli_suggestion("codex", "tester", "テスト", config)
+    assert result is not None
+    assert "< /dev/null" in result
+
+
 def test_build_cli_suggestion_antigravity() -> None:
     config = {"antigravity": {"model": "gemini-3.1-pro-high"}}
     result = route_config.build_cli_suggestion("antigravity", "researcher", "調べて", config)
