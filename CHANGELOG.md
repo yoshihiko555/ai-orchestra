@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`loop-harness`: Docker 隔離の Checker 機械検証がコンテナ内 Python 3.11 で collection error になる問題を修正（Issue #402）**: scenario image の Python を 3.12 系にし、`requires-python = ">=3.12"` を満たすようにした。
 - **`loop-harness`: Docker 隔離の Maker が残す `.ruff_cache`（0600）で後続 Checker が起動拒否される問題を修正（Issue #407）**: action コンテナ起動時に `RUFF_CACHE_DIR` をコンテナ tmpfs へ向けるようにした。
 - **`loop-harness`: driver が同名ブランチの閉じた PR を再利用してレビュー待ちのまま止まる問題を修正（Issue #274）**: 既存 PR の検出で `state` を確認するようにし、CLOSED/MERGED な PR（過去実行の Draft PR 等）は「PR が存在しない」扱いにして新規作成するようにした。
+- **`loop-harness`: Codex の指摘なしレビュー（要約コメントの Completed）を完了として認識せずタイムアウトしていた問題を修正（Issue #347）**: `chatgpt-codex-connector[bot]` が指摘なしのときに投稿する PR 要約コメントの `Completed` 状態を外部レビュー完了として扱うようにした。あわせて、この要約コメント自体が phantom finding として誤インポートされないようにした。
 
 ## [0.3.3] - 2026-08-20
 
