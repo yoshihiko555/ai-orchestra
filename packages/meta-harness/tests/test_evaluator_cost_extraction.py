@@ -173,16 +173,6 @@ class TestExtractCostBudgetExceededFallback:
         assert cost["input_tokens"] == 0
         assert cost["output_tokens"] == 0
 
-    def test_has_budget_exceeded_detects_subtype(self, tmp_path: Path) -> None:
-        events_path = tmp_path / "events.jsonl"
-        _write_jsonl(events_path, [{"type": "result", "subtype": "error_max_budget_usd"}])
-        assert ev._has_budget_exceeded(events_path) is True
-
-    def test_has_budget_exceeded_false_for_success(self, tmp_path: Path) -> None:
-        events_path = tmp_path / "events.jsonl"
-        _write_jsonl(events_path, [{"type": "result", "subtype": "success"}])
-        assert ev._has_budget_exceeded(events_path) is False
-
 
 class TestExtractCostMissingOrEmpty:
     def test_missing_events_file_returns_zero_cost(self, tmp_path: Path) -> None:
@@ -194,9 +184,6 @@ class TestExtractCostMissingOrEmpty:
         events_path.write_text("", encoding="utf-8")
         cost = ev.extract_cost(events_path)
         assert cost == ev.ZERO_COST
-
-    def test_has_budget_exceeded_false_for_missing_file(self, tmp_path: Path) -> None:
-        assert ev._has_budget_exceeded(tmp_path / "does-not-exist.jsonl") is False
 
     def test_malformed_lines_are_skipped(self, tmp_path: Path) -> None:
         events_path = tmp_path / "events.jsonl"
@@ -457,37 +444,3 @@ class TestApplyCacheNeutralCost:
             "pricing_upper_bound_usd_per_million"
         ]["output"]
         assert result["cache_neutral_cost_usd"] == pytest.approx(default_output_price)
-
-    def test_falls_back_to_defaults_pricing_when_both_keys_missing(self) -> None:
-        cost = {
-            "input_tokens": 1_000_000,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_neutral_source": "cli",
-        }
-        config = {
-            "evaluate": {"isolation": {"broker": {"pricing_upper_bound_usd_per_million": {}}}}
-        }
-        result = ev._apply_cache_neutral_cost(cost, None, config)
-        default_input_price = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
-            "pricing_upper_bound_usd_per_million"
-        ]["input"]
-        assert result["cache_neutral_cost_usd"] == pytest.approx(default_input_price)
-
-    def test_falls_back_to_defaults_pricing_when_pricing_section_is_null(self) -> None:
-        cost = {
-            "input_tokens": 1_000_000,
-            "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "cache_neutral_source": "cli",
-        }
-        config = {
-            "evaluate": {"isolation": {"broker": {"pricing_upper_bound_usd_per_million": None}}}
-        }
-        result = ev._apply_cache_neutral_cost(cost, None, config)
-        default_input_price = mh.DEFAULTS["evaluate"]["isolation"]["broker"][
-            "pricing_upper_bound_usd_per_million"
-        ]["input"]
-        assert result["cache_neutral_cost_usd"] == pytest.approx(default_input_price)

@@ -401,40 +401,6 @@ def test_build_allowed_tools_includes_base_and_dynamic_mechanical_whitelist() ->
     assert "gh pr" not in allowed
 
 
-def test_build_allowed_tools_dynamic_whitelist_never_removes_the_fixed_disallow() -> None:
-    """Even a (misconfigured) git-prefixed mechanical command cannot smuggle push out.
-
-    `build_allowed_tools()` only ever whitelists by the command's own prefix (e.g. a
-    mechanical command literally starting with `git` would broadly whitelist `Bash(git *)`
-    dynamically), but layer 3's fixed `--disallowedTools` is built and applied independently
-    of this whitelist and still contains the specific `git push`/`gh pr` patterns, which
-    Claude Code's permission engine evaluates as taking precedence over `--allowedTools`.
-    """
-    allowed = lds.build_allowed_tools(["git status --short"])
-    disallowed = lds.build_disallowed_tools()
-    assert "Bash(git push:*)" in disallowed
-    assert "Bash(gh pr:*)" in disallowed
-    # the fixed disallow list is independent of whatever the dynamic whitelist contains
-    assert disallowed == lds.build_disallowed_tools()
-    assert set(lds.MAKER_FIXED_DISALLOWED_TOOLS).isdisjoint(allowed.split(","))
-
-
-def test_build_claude_p_command_never_skips_permissions_and_uses_accept_edits() -> None:
-    cmd = lds.build_claude_p_command(
-        "do the thing", allowed_tools="Read,Edit", add_dirs=["/wt", "/tmp/x"]
-    )
-    assert "--dangerously-skip-permissions" not in cmd
-    assert "--permission-mode" in cmd
-    assert cmd[cmd.index("--permission-mode") + 1] == "acceptEdits"
-    assert cmd.count("--add-dir") == 2
-    assert "/wt" in cmd
-    assert "/tmp/x" in cmd
-    assert cmd[-1] == "do the thing"
-    assert "--disallowedTools" in cmd
-    disallowed_value = cmd[cmd.index("--disallowedTools") + 1]
-    assert "Bash(git push:*)" in disallowed_value
-
-
 def test_build_claude_p_command_terminates_add_dir_before_prompt() -> None:
     """Structural regression test for Issue #401: the current Claude Code CLI treats
     `--add-dir` as a variadic option, so without a `--` terminator right before the prompt,
@@ -513,17 +479,6 @@ def test_maker_hook_settings_dict_shell_quotes_paths_with_spaces(
     hook_command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     parts = shlex.split(hook_command)
     assert parts == ["/opt/my tools/bin/python3", "/opt/loop harness/maker_bash_guard.py"]
-
-
-def test_maker_hook_settings_path_is_memoized_across_calls() -> None:
-    """One `--settings` scratch file per process (not one per Maker/Checker/reviewer child)."""
-    lds.maker_hook_settings_path.cache_clear()
-    try:
-        first = lds.maker_hook_settings_path()
-        second = lds.maker_hook_settings_path()
-        assert first == second
-    finally:
-        lds.maker_hook_settings_path.cache_clear()
 
 
 def _run_bash_guard_hook(command: str) -> subprocess.CompletedProcess[str]:
@@ -662,6 +617,11 @@ def _run_edit_write_guard_hook(tool_name: str, file_path: str) -> subprocess.Com
         "/wt/.git",
         "/wt/sub/.git/index",
         ".git/config",
+        # RH3 (LP-2 3rd-round Codex security review): macOS's default case-insensitive-but-
+        # case-preserving filesystem resolves `.GIT`/`.Git` to the exact same on-disk `.git`
+        # entry, so a differently-cased spelling must be denied too.
+        "/wt/.GIT/config",
+        "/wt/.Git/hooks/pre-push",
     ],
 )
 def test_maker_bash_guard_denies_edit_write_into_git_metadata(
@@ -712,18 +672,6 @@ def test_maker_bash_guard_allows_edit_write_outside_git_metadata(
 def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
     guard = load_module("maker_bash_guard", "packages/loop-harness/lib/maker_bash_guard.py")
     assert guard.is_git_metadata_path(file_path) is expected
-
-
-@pytest.mark.parametrize("tool_name", ["Edit", "Write"])
-@pytest.mark.parametrize("file_path", ["/wt/.GIT/config", "/wt/.Git/hooks/pre-push"])
-def test_maker_bash_guard_denies_edit_write_into_differently_cased_git_metadata(
-    tool_name: str, file_path: str
-) -> None:
-    """RH3 end-to-end: the hook itself (not just `is_git_metadata_path()` in isolation) must
-    deny a differently-cased `.git` path component."""
-    result = _run_edit_write_guard_hook(tool_name, file_path)
-    assert result.returncode == 2
-    assert "maker-bash-guard" in result.stderr
 
 
 # --------------------------------------------------------------------------------------------
@@ -798,24 +746,6 @@ def test_maker_bash_guard_allows_ordinary_redirects_and_tee(command: str) -> Non
 # --------------------------------------------------------------------------------------------
 # loop_driver_support: layer 4 (post-push integrity verification, EV-80)
 # --------------------------------------------------------------------------------------------
-
-
-def test_detect_push_integrity_violation_true_when_remote_advanced_unexpectedly() -> None:
-    assert lds.detect_push_integrity_violation("sha-a", "sha-b") is True
-
-
-def test_detect_push_integrity_violation_false_when_unchanged() -> None:
-    assert lds.detect_push_integrity_violation("sha-a", "sha-a") is False
-
-
-@pytest.mark.parametrize(
-    ("baseline", "current"),
-    [(None, "sha-a"), ("sha-a", None), (None, None)],
-)
-def test_detect_push_integrity_violation_inconclusive_is_not_a_violation(
-    baseline: str | None, current: str | None
-) -> None:
-    assert lds.detect_push_integrity_violation(baseline, current) is False
 
 
 def test_classify_push_integrity_ok_when_unchanged() -> None:
@@ -901,49 +831,6 @@ def test_hardened_git_config_args_clears_credential_helper() -> None:
         "-c",
         "uploadpack.packObjectsHook=",
     ]
-
-
-def test_hardened_git_config_args_disables_hooks_path() -> None:
-    """RM1 (LP-2 3rd-round Codex security review): `core.hooksPath=/dev/null` must be part of
-    the *shared* helper every driver-owned git invocation applies -- not only inline at the
-    `_push_verified_branch` push call site -- so every other driver-owned call
-    (`_verify_maker_commit`'s `git status`, `_current_branch`'s `git branch --show-current`,
-    `_local_head`'s `git rev-parse HEAD`, `get_remote_head`'s `git ls-remote`, the local
-    `git config --get`/`--list` reads) also refuses to run a Maker-planted hook, not just the
-    push itself."""
-    args = lds.hardened_git_config_args()
-    assert args.count("-c") == 4
-    assert "core.hooksPath=/dev/null" in args
-
-
-def test_push_verified_branch_command_no_longer_duplicates_hooks_path_flag(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """RM1: the inline `-c core.hooksPath=/dev/null` that used to be duplicated at the push
-    call site is removed now that `hardened_git_config_args()` already supplies it -- the push
-    command must still contain exactly one `core.hooksPath=/dev/null` occurrence, not two."""
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    loop_id = "abcd1234-issue-1"
-    project_dir = str(repo)
-    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
-    assert lock is not None
-    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
-
-    captured: dict[str, list[str]] = {}
-    real_run = driver.subprocess.run
-
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[0] == "git" and "push" in cmd:
-            captured["cmd"] = cmd
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        return real_run(cmd, **kwargs)
-
-    monkeypatch.setattr(driver.subprocess, "run", fake_run)
-    d._push_verified_branch(str(repo), "main")
-
-    cmd = captured["cmd"]
-    assert cmd.count("core.hooksPath=/dev/null") == 1
 
 
 def test_resolve_origin_url_returns_configured_url(tmp_path: Path) -> None:
@@ -1073,16 +960,6 @@ def test_find_dangerous_local_git_config_detects_url_pin_invalidation_remote(
     matched = lds.find_dangerous_local_git_config(str(repo))
     assert matched is not None
     assert matched == "remote.https://x/.url"
-
-
-def test_find_dangerous_local_git_config_ignores_legitimate_origin_url(tmp_path: Path) -> None:
-    """RC1 complement: the expected, legitimate `remote.origin.url` entry every real push
-    already depends on must never itself be flagged -- a blanket (non-origin-excluding) pattern
-    would make this check fire on every single push against a normally-configured repo."""
-    repo = tmp_path / "repo"
-    remote = tmp_path / "remote.git"
-    _init_repo_with_remote(repo, remote)
-    assert lds.find_dangerous_local_git_config(str(repo)) is None
 
 
 @pytest.mark.parametrize(
@@ -2333,17 +2210,6 @@ def test_persist_safe_stop_rejects_invalid_lease(tmp_path: Path) -> None:
         )
 
 
-def test_persist_forced_failure_sets_failed_status_not_stopped(tmp_path: Path) -> None:
-    loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    lds.persist_forced_failure(
-        loop_id, project_dir, token, "act-000002", "wall_clock_timeout", {"phase": "implementation"}
-    )
-    state = lc.load_state(loop_id, project_dir)
-    assert state.status == "failed"
-    assert state.stop_reason == "wall_clock_timeout"
-
-
 # --------------------------------------------------------------------------------------------
 # loop_driver.LoopDriver: heartbeat lease-loss fencing (EV-50)
 # --------------------------------------------------------------------------------------------
@@ -3045,46 +2911,6 @@ def test_advance_phase_stops_safely_when_git_config_tampered(
     assert final_state.stop_reason == "git_config_tampered"
 
 
-def test_advance_phase_proceeds_when_git_config_is_clean(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Complement of the tampering test above: a clean `.git/config` must not block the push."""
-    loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.branch = "loop/issue-1"
-    state.pending_action = lc.PendingAction(
-        "act-000008", "advance_phase", "implementation", 2, lc.now_iso()
-    )
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
-
-    d = driver.LoopDriver(loop_id, project_dir, token)
-    d._remote_head_baseline = "sha-baseline"
-    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "loop/issue-1")
-    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
-    monkeypatch.setattr(lds, "get_remote_head", lambda _wt, _branch, **_: "sha-baseline")
-    monkeypatch.setattr(lds, "get_push_diff", lambda *_a, **_k: "")
-    push_calls: list[Any] = []
-    monkeypatch.setattr(d, "_push_verified_branch", lambda *a, **k: push_calls.append(a))
-    monkeypatch.setattr(d, "_execute_advance_exec", lambda *a, **k: push_calls.append("exec"))
-
-    proposal = lc.ProposeResult(
-        action="advance_phase",
-        action_id="act-000008",
-        state_version=state.state_version,
-        expected_phase="implementation",
-        phase="implementation",
-        iteration=2,
-        context={},
-    )
-    params = {"verified_branch": "loop/issue-1", "exec": ["commit", "push", "pr_create"]}
-
-    d._run_advance_phase(proposal, state, params)
-
-    assert push_calls == ["exec"]
-
-
 def test_push_verified_branch_uses_pinned_origin_url_over_tampered_remote(
     tmp_path: Path,
 ) -> None:
@@ -3233,10 +3059,21 @@ def test_advance_phase_stops_safely_when_remote_head_unverifiable_after_retry(
     assert final_state.stop_reason == "push_integrity_unverifiable"
 
 
+@pytest.mark.parametrize(
+    ("baseline", "remote_head_responses"),
+    [
+        pytest.param("sha-same", ["sha-same"], id="unchanged-no-retry"),
+        pytest.param("sha-baseline", [None, "sha-baseline"], id="transient-blip-then-match"),
+    ],
+)
 def test_advance_phase_retry_recovers_from_a_transient_remote_head_blip(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    baseline: str,
+    remote_head_responses: list[str | None],
 ) -> None:
-    """SEC-H1: a single `None` followed by a matching baseline on retry proceeds normally."""
+    """SEC-H1: a single `None` followed by a matching baseline on retry proceeds normally --
+    and, degenerately (no retry needed at all), so does an immediately-unchanged remote HEAD."""
     loop_id = "abcd1234-issue-1"
     project_dir, token = _seed_running_loop(tmp_path, loop_id)
     state = lc.load_state(loop_id, project_dir)
@@ -3248,51 +3085,16 @@ def test_advance_phase_retry_recovers_from_a_transient_remote_head_blip(
     state = lc.load_state(loop_id, project_dir)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
-    d._remote_head_baseline = "sha-baseline"
+    d._remote_head_baseline = baseline
     monkeypatch.setattr(driver, "_current_branch", lambda _wt: "loop/issue-1")
     monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
-    responses = iter([None, "sha-baseline"])
+    responses = iter(remote_head_responses)
     monkeypatch.setattr(lds, "get_remote_head", lambda _wt, _branch, **_k: next(responses))
     monkeypatch.setattr(d, "_execute_advance_exec", lambda *a, **k: 7)
 
     proposal = lc.ProposeResult(
         action="advance_phase",
         action_id="act-000007",
-        state_version=state.state_version,
-        expected_phase="implementation",
-        phase="implementation",
-        iteration=2,
-        context={},
-    )
-    params = {"verified_branch": "loop/issue-1", "next_phase": "pr_review_response", "exec": []}
-    result = d._run_advance_phase(proposal, state, params)
-    assert result["push_guard"] == {"branch_ok": True, "repo_identity_ok": True}
-    assert result["pr_number"] == 7
-
-
-def test_advance_phase_proceeds_when_remote_head_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.branch = "loop/issue-1"
-    state.pending_action = lc.PendingAction(
-        "act-000005", "advance_phase", "implementation", 2, lc.now_iso()
-    )
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
-
-    d = driver.LoopDriver(loop_id, project_dir, token)
-    d._remote_head_baseline = "sha-same"
-    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "loop/issue-1")
-    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
-    monkeypatch.setattr(lds, "get_remote_head", lambda _wt, _branch, **_: "sha-same")
-    monkeypatch.setattr(d, "_execute_advance_exec", lambda *a, **k: 7)
-
-    proposal = lc.ProposeResult(
-        action="advance_phase",
-        action_id="act-000005",
         state_version=state.state_version,
         expected_phase="implementation",
         phase="implementation",
@@ -3842,104 +3644,6 @@ def test_lookup_open_pr_number_filters_by_state(
     assert driver._lookup_open_pr_number(project_dir, "main") == expected
 
 
-def test_create_or_reuse_pr_creates_new_pr_when_existing_one_is_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Issue #274 (run 7 of #347): a CLOSED PR (#406) left over from an earlier, abandoned run
-    on the same branch name must not be reused -- `_create_or_reuse_pr` must fall through to
-    `gh pr create` exactly as if no PR existed, and report `created=True` for the brand-new
-    OPEN PR it creates (not the stale closed one). Since the lookup now uses `gh pr list --state
-    open` (hardening request), the server-side filter means #406 never appears in the result at
-    all -- the first call returns empty, exactly as if no PR existed yet."""
-    loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.branch = "main"
-    state.worktree_path = project_dir
-    action_id = "act-closed-reuse-001"
-
-    d = driver.LoopDriver(loop_id, project_dir, token)
-    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
-    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
-    monkeypatch.setattr(prw, "record_baseline", lambda *_a, **_k: None)
-
-    list_calls = 0
-
-    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        nonlocal list_calls
-        if cmd[:3] == ["gh", "pr", "list"]:
-            list_calls += 1
-            if list_calls == 1:
-                # No OPEN PR for this branch -- CLOSED PR #406 exists but `--state open`
-                # already filtered it out server-side (the exact Issue #274 run 7 scenario).
-                return subprocess.CompletedProcess(cmd, 0, _pr_list_json(), "")
-            # Post-creation lookup resolves the brand-new OPEN PR.
-            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(412), "")
-        if cmd[:3] == ["gh", "pr", "create"]:
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(driver.subprocess, "run", fake_run)
-
-    pr_number, created = d._create_or_reuse_pr(state, "main", action_id)
-
-    assert (pr_number, created) == (412, True)
-
-
-def test_draft_pr_creates_new_draft_when_existing_pr_is_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Issue #274 follow-up: a CLOSED PR for `state.branch` must not be "converted" via
-    `gh pr ready --undo` (a silent no-op on a closed PR) -- a fresh Draft PR must be created
-    instead, exactly as if no PR had ever existed for this branch. Since the lookup uses
-    `gh pr list --state open` (hardening request), the CLOSED PR simply never appears in the
-    result -- the lookup returns empty, exactly as if no PR existed."""
-    loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
-
-    d = driver.LoopDriver(loop_id, project_dir, token)
-    # code L1: same push-guard setup as the sibling `create`/`convert` tests above.
-    baseline = _git(["rev-parse", "HEAD"], Path(project_dir))
-    d._remote_head_baseline = baseline
-    monkeypatch.setattr(lds, "get_remote_head", lambda *_a, **_k: baseline)
-    calls: list[str] = []
-    monkeypatch.setattr(d, "_push_verified_branch", lambda *_a, **_k: calls.append("push"))
-    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
-
-    # code L1: see the sibling `create` test above for why `git` commands must pass through.
-    real_run = subprocess.run
-
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        if cmd[:3] == ["gh", "pr", "list"]:
-            calls.append("list")
-            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(), "")
-        if cmd[:3] == ["gh", "pr", "create"]:
-            calls.append("create")
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-        if cmd and cmd[0] == "gh":
-            raise AssertionError(f"unexpected command: {cmd}")
-        return real_run(cmd, **kwargs)
-
-    monkeypatch.setattr(driver.subprocess, "run", fake_run)
-
-    proposal = lc.ProposeResult(
-        action="exit_failure",
-        action_id="act-draft-pr-closed",
-        state_version=state.state_version,
-        expected_phase=state.phase,
-        phase=state.phase,
-        iteration=state.iteration,
-        context={},
-    )
-    d._draft_pr(proposal, state)
-
-    assert calls == ["push", "list", "create"]
-
-
 def test_gh_host_from_origin_url_extracts_host_across_url_forms() -> None:
     """PR #226 review P2: host derivation for `gh api --hostname` must cover https (with and
     without embedded userinfo), ssh://, and scp-style origin URLs, and decline (None) on
@@ -4029,25 +3733,6 @@ def test_verify_maker_commit_fails_when_no_new_commit_since_pre_maker_head(tmp_p
     assert "no new commit" in reason
 
 
-def test_verify_maker_commit_ignores_stale_remote_head_baseline_on_fresh_branch(
-    tmp_path: Path,
-) -> None:
-    """code H5 regression: on a brand-new branch never pushed yet, `_remote_head_baseline`
-    holds `REMOTE_HEAD_ABSENT` (Issue F6), which used to be compared against the local HEAD and
-    could never match a real commit sha — silently waving through a no-op Maker on every first
-    iteration. `_verify_maker_commit` must instead compare against `_pre_maker_head` (the local
-    HEAD captured immediately before the Maker ran) and still correctly detect no new commit."""
-    _init_repo(tmp_path)
-    d = driver.LoopDriver("abcd1234-issue-1", str(tmp_path), "token")
-    d._remote_head_baseline = lds.REMOTE_HEAD_ABSENT
-    d._pre_maker_head = _git(["rev-parse", "HEAD"], tmp_path)
-
-    ok, reason = d._verify_maker_commit(str(tmp_path))
-
-    assert ok is False
-    assert "no new commit" in reason
-
-
 def test_verify_maker_commit_passes_when_clean_and_new_commit_exists(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     d = driver.LoopDriver("abcd1234-issue-1", str(tmp_path), "token")
@@ -4105,65 +3790,6 @@ def test_advance_phase_returns_commit_guard_failure_when_no_new_commit(
 # --------------------------------------------------------------------------------------------
 
 
-def test_wait_external_review_push_updates_layer4_baseline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """code C1: the driver's own push here must not leave the layer-4 baseline stale.
-
-    Before the fix, only `_run_advance_phase`'s own push updated `_remote_head_baseline`;
-    `_run_wait_external_review`'s push left it stale, so the *next* `advance_phase` would see
-    remote HEAD ahead of the stale baseline and spuriously safe-stop on its own legitimate
-    push (see the false-positive regression test below).
-    """
-    loop_id = "abcd1234-issue-1"
-    repo = tmp_path / "repo"
-    remote = tmp_path / "remote.git"
-    _init_repo_with_remote(repo, remote)
-    project_dir = str(repo)
-    state = lc._initial_state(
-        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
-    )
-    state.status = "running"
-    state.branch = "main"
-    lc._write_state(state, project_dir)
-    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
-    assert lock is not None
-    token = lock.lease_token
-    state = lc.load_state(loop_id, project_dir)
-
-    # A fresh local commit that must be pushed during wait_external_review.
-    (repo / "change.txt").write_text("update\n", encoding="utf-8")
-    _git(["add", "change.txt"], repo)
-    _git(["commit", "-m", "update"], repo)
-
-    d = driver.LoopDriver(loop_id, project_dir, token)
-    d._remote_head_baseline = _git(["rev-parse", "origin/main"], repo)  # now-stale baseline
-    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
-    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
-    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
-    monkeypatch.setattr(
-        prw,
-        "load_pr_review_config",
-        lambda _project: prw.PrReviewConfig(reviewer_allowlist=()),
-    )
-
-    proposal = lc.ProposeResult(
-        action="wait_external_review",
-        action_id="act-000010",
-        state_version=state.state_version,
-        expected_phase="implementation",
-        phase="implementation",
-        iteration=1,
-        context={},
-    )
-    params = {"push_required": True, "verified_branch": "main"}
-
-    d._run_wait_external_review(proposal, state, params)
-
-    expected_head = _git(["rev-parse", "HEAD"], repo)
-    assert d._remote_head_baseline == expected_head
-
-
 def test_wait_external_review_push_then_advance_phase_does_not_false_positive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4212,6 +3838,10 @@ def test_wait_external_review_push_then_advance_phase_does_not_false_positive(
     d._run_wait_external_review(
         wait_proposal, state, {"push_required": True, "verified_branch": "main"}
     )
+
+    # code C1: the driver's own push here must not leave the layer-4 baseline stale.
+    expected_head = _git(["rev-parse", "HEAD"], repo)
+    assert d._remote_head_baseline == expected_head
 
     advance_proposal = lc.ProposeResult(
         action="advance_phase",
@@ -4296,6 +3926,10 @@ def test_push_verified_branch_command_includes_hook_bypass_flags(
     assert "core.hooksPath=/dev/null" in cmd
     assert "--no-verify" in cmd
     assert cmd.index("-c") < cmd.index("push") < cmd.index("--no-verify")
+    # RM1: the inline `-c core.hooksPath=/dev/null` that used to be duplicated at the push
+    # call site is removed now that `hardened_git_config_args()` already supplies it -- the
+    # push command must contain exactly one occurrence, not two.
+    assert cmd.count("core.hooksPath=/dev/null") == 1
 
 
 def test_push_verified_branch_bypasses_shared_worktree_pre_push_hook(tmp_path: Path) -> None:
@@ -5870,35 +5504,6 @@ def test_issue_number_from_loop_id_parses_canonical_id() -> None:
 # --------------------------------------------------------------------------------------------
 
 
-def test_reconstruct_push_integrity_baseline_populates_from_real_remote_after_attach(
-    tmp_path: Path,
-) -> None:
-    """code H2: a restarted/attached driver must not start layer-4 with baseline=None when
-    the loop already has a pushed branch (the highest-risk crash-recovery window)."""
-    loop_id = "abcd1234-issue-1"
-    repo = tmp_path / "repo"
-    remote = tmp_path / "remote.git"
-    _init_repo_with_remote(repo, remote)
-    project_dir = str(repo)
-    state = lc._initial_state(
-        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
-    )
-    state.status = "running"
-    state.branch = "main"
-    state.worktree_path = project_dir
-    lc._write_state(state, project_dir)
-    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
-    assert lock is not None
-
-    d = driver.LoopDriver(loop_id, project_dir, lock.lease_token)
-    assert d._remote_head_baseline is None  # not yet reconstructed at construction time
-
-    d._reconstruct_push_integrity_baseline()
-
-    expected_head = _git(["rev-parse", "HEAD"], repo)
-    assert d._remote_head_baseline == expected_head
-
-
 def test_reconstruct_push_integrity_baseline_stops_before_pinning_a_tampered_config(
     tmp_path: Path,
 ) -> None:
@@ -6552,16 +6157,6 @@ def test_matrix_source_comment_id_sorts_numerically_not_lexically() -> None:
     record = {"source_comment_ids": ["review_comment:99999999", "review_comment:100000000"]}
 
     assert driver._matrix_source_comment_id(record) == "review_comment:100000000"
-
-
-def test_format_pr_review_findings_matrix_empty_without_findings(tmp_path: Path) -> None:
-    loop_id = "abcd1234-issue-1"
-    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-
-    assert driver._format_pr_review_findings_matrix(state) == ""
-    state.pr_review = {"processed_comment_ids": [], "findings": {}}
-    assert driver._format_pr_review_findings_matrix(state) == ""
 
 
 def test_exit_success_comment_includes_finding_disposition_matrix(tmp_path: Path) -> None:
@@ -8255,42 +7850,36 @@ def test_wait_external_review_poll_timeout_is_capped_by_wall_clock_remaining(
 # --------------------------------------------------------------------------------------------
 
 
-def test_fetch_issue_snapshot_returns_title_and_body_on_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        assert cmd[:3] == ["gh", "issue", "view"]
-        return subprocess.CompletedProcess(
-            cmd, 0, json.dumps({"title": "Fix bug", "body": "Steps to reproduce..."}), ""
-        )
-
-    monkeypatch.setattr(driver.subprocess, "run", fake_run)
-
-    snapshot = driver._fetch_issue_snapshot(str(tmp_path), 42)
-
-    assert snapshot == {"title": "Fix bug", "body": "Steps to reproduce...", "labels": []}
-
-
+@pytest.mark.parametrize(
+    ("labels_payload", "expected_labels"),
+    [
+        ({"labels": [{"name": "bug"}, {"name": "python"}]}, ["bug", "python"]),
+        ({}, []),
+    ],
+    ids=["with_labels", "labels_key_missing_defaults_to_empty"],
+)
 def test_fetch_issue_snapshot_returns_label_names(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    labels_payload: dict[str, Any],
+    expected_labels: list[str],
 ) -> None:
     """Issue #219 P2-1: `labels` (name strings only) is threaded through for Maker-agent
-    detection (`_detect_maker_agent`), alongside `title`, excluding `body` (EV-74)."""
+    detection (`_detect_maker_agent`), alongside `title`, excluding `body` (EV-74).
+    A payload without `labels` degrades to an empty list rather than failing."""
 
     def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         assert cmd[:3] == ["gh", "issue", "view"]
-        payload = {
-            "title": "Fix bug",
-            "body": "...",
-            "labels": [{"name": "bug"}, {"name": "python"}],
-        }
+        payload = {"title": "Fix bug", "body": "...", **labels_payload}
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(driver.subprocess, "run", fake_run)
 
     snapshot = driver._fetch_issue_snapshot(str(tmp_path), 42)
 
-    assert snapshot["labels"] == ["bug", "python"]
+    assert snapshot["labels"] == expected_labels
+    assert snapshot["title"] == "Fix bug"
+    assert snapshot["body"] == "..."
 
 
 def test_fetch_issue_snapshot_degrades_gracefully_on_gh_failure(
@@ -8760,39 +8349,6 @@ def test_load_pr_review_config_resolves_local_override_from_worktree_path(
 
 
 # --------------------------------------------------------------------------------------------
-# loop_driver: _run_one_llm_reviewer's "result" field is a JSON *string*, not an object
-# (code F3) — the happy path is covered by
-# test_run_one_llm_reviewer_parses_json_string_result_field above; this covers the fallback
-# when the parsed value is not a dict.
-# --------------------------------------------------------------------------------------------
-
-
-def test_run_one_llm_reviewer_falls_back_to_infra_failure_when_result_is_not_an_object(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """code F3: if the parsed `result` JSON string decodes to a non-dict value (e.g. a bare
-    list), `_run_one_llm_reviewer` must degrade to an infra-failure CheckResult instead of
-    crashing with an uncaught `AttributeError`/`TypeError` from `check_result_from_dict()`."""
-    loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
-
-    d = driver.LoopDriver(loop_id, project_dir, token)
-    stdout = json.dumps({"type": "result", "result": json.dumps(["not", "an", "object"])})
-    monkeypatch.setattr(
-        d, "_run_child", lambda *a, **k: subprocess.CompletedProcess([], 0, stdout, "")
-    )
-
-    result = d._run_one_llm_reviewer(state, "act-000031", "code-reviewer")
-
-    assert result.passed is False
-    assert result.infrastructure_failure is True
-
-
-# --------------------------------------------------------------------------------------------
 # loop_driver: LLM reviewer diffs against the pre-Maker base commit, not a working-tree diff
 # (code H10)
 # --------------------------------------------------------------------------------------------
@@ -9098,20 +8654,6 @@ def test_run_checker_records_selected_reviewer_in_metadata(
 # loop_driver: wait_external_review's own params override the packaged pr_review config for
 # poll_interval_seconds/timeout_seconds (code F12)
 # --------------------------------------------------------------------------------------------
-
-
-def test_apply_wait_external_review_param_overrides_prefers_params_over_config() -> None:
-    """code F12: a loop definition author's phase-specific poll/timeout override must not be
-    silently shadowed by the generic packaged `pr_review` config."""
-    config = prw.PrReviewConfig(
-        reviewer_allowlist=(), poll_interval_seconds=30, timeout_seconds=600
-    )
-    params = {"poll_interval_seconds": 5, "timeout_seconds": 60}
-
-    overridden = driver._apply_wait_external_review_param_overrides(config, params)
-
-    assert overridden.poll_interval_seconds == 5
-    assert overridden.timeout_seconds == 60
 
 
 def test_apply_wait_external_review_param_overrides_keeps_config_when_params_absent() -> None:

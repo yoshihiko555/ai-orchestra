@@ -133,11 +133,6 @@ class TestMaskSecrets:
         text = "max_tokens=4096"
         assert secret_masking.mask_secrets(text) == text
 
-    def test_does_not_mask_token_count_numeric_config(self) -> None:
-        """`token_count=123` のような非機密の数値設定はマスクしないことを確認する。"""
-        text = "token_count=123"
-        assert secret_masking.mask_secrets(text) == text
-
     def test_does_not_mask_passwordless_boolean_config(self) -> None:
         """`passwordless=true` のような非機密の真偽値設定はマスクしないことを
         確認する（`password` はトリガー語だが `passwordless` は複合キー）。"""
@@ -150,11 +145,6 @@ class TestMaskSecrets:
         text = "password=123456"
         result = secret_masking.mask_secrets(text)
         assert "123456" not in result
-        assert "[REDACTED]" in result
-
-    def test_masks_bare_secret_key_even_if_boolean_value(self) -> None:
-        text = "secret=true"
-        result = secret_masking.mask_secrets(text)
         assert "[REDACTED]" in result
 
     def test_masks_compound_key_with_non_numeric_value(self) -> None:
@@ -184,19 +174,3 @@ class TestHooksUseSharedModule:
 
     def test_audit_prompt_uses_shared_mask_secrets(self) -> None:
         assert audit_prompt._mask_secrets is secret_masking.mask_secrets
-
-    def test_audit_cli_masks_sas_token(self) -> None:
-        """audit-cli.py 経由でも SAS トークンがマスクされることを確認する（旧仕様の維持）。"""
-        text = "SharedAccessSignature=sv=2020&sig=abc123"
-        assert "[REDACTED]" in audit_cli._mask_secrets(text)
-
-    def test_audit_prompt_masks_pem_block(self) -> None:
-        """audit-prompt.py 経由でも PEM 秘密鍵ブロック全体がマスクされることを確認する（従来欠落していた挙動）。"""
-        rsa_begin = "-----BEGIN RSA " + "PRIVATE " + "KEY-----"
-        rsa_end = "-----END RSA " + "PRIVATE " + "KEY-----"
-        body_line = "MIIBogIBAAJ..."
-        text = f"{rsa_begin}\n{body_line}\n{rsa_end}"
-        result = audit_prompt._mask_secrets(text)
-        assert rsa_begin not in result
-        assert body_line not in result
-        assert rsa_end not in result

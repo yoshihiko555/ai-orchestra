@@ -361,7 +361,7 @@
     - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_rejects_unknown_query_string_without_latching_budget
     - packages/meta-harness/tests/test_scenario_broker.py::test_allowed_query_uses_path_for_request_budget_validation
     - packages/meta-harness/tests/test_scenario_broker.py::test_token_envelope_latches_budget_and_rejects_following_request
-    - packages/meta-harness/tests/test_scenario_broker.py::test_direct_request_budget_is_rejected_before_upstream
+    - packages/meta-harness/tests/test_scenario_broker.py::test_http_handler_records_budget_upper_bound_rejection
     - packages/meta-harness/tests/test_scenario_broker.py::test_request_budget_uses_ceiling_byte_to_token_estimate
     - packages/meta-harness/tests/test_scenario_broker.py::test_request_budget_rejects_when_converted_tokens_exceed_remaining_budget
     - packages/meta-harness/tests/test_scenario_broker.py::test_request_cost_uses_converted_input_token_estimate
@@ -583,7 +583,7 @@
     packages/meta-harness/tests/test_evaluator_headless_run.py::TestScenarioExecutionEnvelope::test_evaluator_hash_treats_unset_input_bytes_per_token_as_explicit_default
     packages/meta-harness/tests/test_evaluator_headless_run.py::TestScenarioExecutionEnvelope::test_evaluator_hash_treats_unset_max_total_tokens_as_explicit_default
     packages/meta-harness/tests/test_scenario_docker.py::test_effective_broker_max_total_tokens_resolves_default_and_validates
-    packages/meta-harness/tests/test_scenario_docker.py::test_broker_env_resolves_max_total_tokens_default_override_and_null
+    packages/meta-harness/tests/test_scenario_docker.py::test_broker_env_sends_generic_and_legacy_contracts
   covered_by:
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_too_many_regression_suites_fails_before_own_runs
     - packages/meta-harness/tests/test_cross_skill_regression.py::test_regression_budget_excess_records_error_summary_and_raises
@@ -596,7 +596,7 @@
     - packages/meta-harness/tests/test_evaluator_headless_run.py::TestScenarioExecutionEnvelope::test_evaluator_hash_treats_unset_input_bytes_per_token_as_explicit_default
     - packages/meta-harness/tests/test_evaluator_headless_run.py::TestScenarioExecutionEnvelope::test_evaluator_hash_treats_unset_max_total_tokens_as_explicit_default
     - packages/meta-harness/tests/test_scenario_docker.py::test_effective_broker_max_total_tokens_resolves_default_and_validates
-    - packages/meta-harness/tests/test_scenario_docker.py::test_broker_env_resolves_max_total_tokens_default_override_and_null
+    - packages/meta-harness/tests/test_scenario_docker.py::test_broker_env_sends_generic_and_legacy_contracts
   notes: suite and shared evaluation budget limits fail closed, broker-wide spend reaches the loop budget, and configuration changes (regression.* plus Issue #261 PR2 and Issue #356 cost comparability scope: judge.model/effort, broker pricing upper bounds, broker model allowlist, broker input_bytes_per_token, broker max_total_tokens, scenario_run.max_budget_usd_default) stale old runs; unset and explicit-default input_bytes_per_token and max_total_tokens hash identically.
 
 - ev_id: EV-58
@@ -739,13 +739,13 @@
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_human_routing_patch_is_accepted
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_non_allowlisted_and_dangerous_patch_targets_are_rejected
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_malformed_allowlist_entries_fail_closed
-    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_agents_wildcard_matches_exactly_one_segment
+    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_all_released_agent_tool_values_are_accepted
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_duplicate_patch_targets_are_rejected
   covered_by:
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_human_routing_patch_is_accepted
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_non_allowlisted_and_dangerous_patch_targets_are_rejected
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_malformed_allowlist_entries_fail_closed
-    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_agents_wildcard_matches_exactly_one_segment
+    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_all_released_agent_tool_values_are_accepted
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_duplicate_patch_targets_are_rejected
   notes: exact file/key matching, one-segment wildcard semantics, malformed entries, dangerous segments, and duplicate targets fail closed.
 
@@ -971,14 +971,14 @@
     packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_non_routing_evaluation_allows_missing_base_hash
     packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_routing_config_requires_base_hash
     packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_routing_config_with_base_hash_is_valid
-    packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_non_routing_target_allows_missing_base_hash
+    packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_valid_instance_has_zero_errors
   covered_by:
     - packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_routing_config_evaluation_requires_base_hash
     - packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_routing_config_evaluation_with_base_hash_is_valid
     - packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_non_routing_evaluation_allows_missing_base_hash
     - packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_routing_config_requires_base_hash
     - packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_routing_config_with_base_hash_is_valid
-    - packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_non_routing_target_allows_missing_base_hash
+    - packages/meta-harness/tests/test_schema_validator.py::TestRunMetadataSchema::test_valid_instance_has_zero_errors
   notes: oneOf conditionals reject a missing routing-config base hash while accepting the present hash and preserving optionality for other targets in both schemas.
 
 - ev_id: EV-77
@@ -1475,15 +1475,11 @@
     packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_config_missing_key
     packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_input_key_is_null
     packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_output_key_is_null
-    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_both_keys_missing
-    packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_pricing_section_is_null
   covered_by:
     - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_computes_from_cli_sourced_cost
     - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_config_missing_key
     - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_input_key_is_null
     - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_output_key_is_null
-    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_both_keys_missing
-    - packages/meta-harness/tests/test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost::test_falls_back_to_defaults_pricing_when_pricing_section_is_null
   notes: cache_neutral_cost_usd = ((input_tokens + cache_creation_input_tokens + cache_read_input_tokens) * input_price + output_tokens * output_price) / 1e6, where input_price/output_price come from evaluate.isolation.broker.pricing_upper_bound_usd_per_million.input/.output with an explicit None-check fallback to mh.DEFAULTS per key (a `.local.yaml` override that nulls a single key, or omits/nulls the whole section, must not crash float(None); PR #379 review, P2).
 
 - ev_id: EV-116
@@ -1514,12 +1510,12 @@
   command: >-
     AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
     packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_legacy_run_completed_cost_round_trips_and_validates
-    packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_legacy_cost_without_cache_neutral_fields_is_still_valid
+    packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_valid_instance_has_zero_errors
     packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cost_with_all_cache_neutral_fields_is_valid
     packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cache_neutral_source_rejects_unknown_value
   covered_by:
     - packages/meta-harness/tests/test_schema_validator.py::TestLedgerEventSchemaOneOf::test_legacy_run_completed_cost_round_trips_and_validates
-    - packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_legacy_cost_without_cache_neutral_fields_is_still_valid
+    - packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_valid_instance_has_zero_errors
     - packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cost_with_all_cache_neutral_fields_is_valid
     - packages/meta-harness/tests/test_schema_validator.py::TestResultSchema::test_cache_neutral_source_rejects_unknown_value
   notes: the four new cost fields (cache_creation_input_tokens, cache_read_input_tokens, cache_neutral_cost_usd, cache_neutral_source) are all optional on both the result schema and the ledger event schema's cost object; pre-#378 ledger lines and result payloads carrying only the legacy 7-key cost object continue to validate unchanged after the schema update.

@@ -2612,36 +2612,6 @@ def test_record_claude_harness_promotion_changelog_truncates_many_overlay_files(
     assert ", and 1 more" in text
 
 
-def test_record_claude_harness_promotion_changelog_idempotent_on_retry(tmp_path: Path) -> None:
-    worktree = tmp_path / "changelog-worktree"
-    worktree.mkdir()
-    changelog_path = _write_changelog(worktree, _CHANGELOG_WITH_CHANGED)
-
-    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, _CLAUDE_HARNESS_MANIFEST)
-    once = changelog_path.read_text(encoding="utf-8")
-    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, _CLAUDE_HARNESS_MANIFEST)
-    twice = changelog_path.read_text(encoding="utf-8")
-
-    assert once == twice
-    slug = cli.prm._cand_slug(_CAND_ID)
-    assert twice.count(slug) == 1
-
-
-def test_record_skill_promotion_changelog_still_skips_routing_config_target_only(
-    tmp_path: Path,
-) -> None:
-    """Only routing-config remains excluded from CHANGELOG auto-insert (skill: and
-    claude-harness are both in scope now)."""
-    worktree = tmp_path / "changelog-worktree"
-    worktree.mkdir()
-    changelog_path = _write_changelog(worktree, None)
-    routing_manifest = {"target": cli.prm.ROUTING_CONFIG_TARGET, "description": "n/a"}
-
-    cli.prm._record_skill_promotion_changelog(worktree, _CAND_ID, routing_manifest)
-
-    assert not changelog_path.exists()
-
-
 def test_record_skill_promotion_changelog_raises_without_changelog_file(tmp_path: Path) -> None:
     worktree = tmp_path / "changelog-worktree"
     worktree.mkdir()

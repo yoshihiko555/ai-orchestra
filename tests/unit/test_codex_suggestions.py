@@ -150,7 +150,7 @@ class TestBuildCodexCommand:
 class TestCodexWriteMain:
     """check-codex-before-write main() のテスト。"""
 
-    def test_codex_disabled_exits(self, monkeypatch):
+    def test_codex_disabled_exits(self, monkeypatch, capsys):
         """Codex 無効時は提案なしで exit(0)。"""
         monkeypatch.setattr(codex_write, "is_cli_enabled", lambda tool, config, **kw: False)
         monkeypatch.setattr(codex_write, "load_package_config", lambda *a: {})
@@ -167,6 +167,9 @@ class TestCodexWriteMain:
         )
         with pytest.raises(SystemExit, match="0"):
             codex_write.main()
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
 
     def test_invalid_input_exits(self, monkeypatch):
         """不正な入力は exit(0)。"""
@@ -247,6 +250,16 @@ class TestIsPlanAgentTask:
             codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "プランを作成"})
             is True
         )
+        assert (
+            codex_plan.is_plan_agent_task(
+                {"subagent_type": "other", "prompt": "設計計画をまとめて"}
+            )
+            is True
+        )
+        assert (
+            codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "プランを考えて"})
+            is True
+        )
 
     def test_plan_keyword_in_prompt_english(self):
         """英語の plan キーワードで True。"""
@@ -286,26 +299,6 @@ class TestCodexPlanMain:
                         "tool_name": "Agent",
                         "tool_input": {"subagent_type": "planner"},
                         "tool_response": "plan done",
-                        "cwd": "/project",
-                    }
-                )
-            ),
-        )
-        with pytest.raises(SystemExit, match="0"):
-            codex_plan.main()
-
-    def test_error_response_exits(self, monkeypatch):
-        """エラーレスポンスは exit(0)。"""
-        monkeypatch.setattr(codex_plan, "is_cli_enabled", lambda *a, **kw: True)
-        monkeypatch.setattr(codex_plan, "load_package_config", lambda *a: {})
-        monkeypatch.setattr(
-            "sys.stdin",
-            io.StringIO(
-                json.dumps(
-                    {
-                        "tool_name": "Agent",
-                        "tool_input": {"subagent_type": "planner"},
-                        "tool_response": "An error occurred and the task failed",
                         "cwd": "/project",
                     }
                 )

@@ -24,13 +24,10 @@ class TestDerivePort:
         assert port1 == port2
 
     def test_different_projects_different_ports(self):
-        """異なるプロジェクトで異なるポートを返す可能性がある。"""
+        """異なるプロジェクトで異なるポートを返す（このパスの組では確定）。"""
         port1 = proxy_mgr._derive_port("/project/a", 8792, 100)
         port2 = proxy_mgr._derive_port("/project/b", 8792, 100)
-        # 異なるプロジェクトは異なるハッシュになるはず（確率的）
-        # ポート範囲内であることだけ確認
-        assert 8792 <= port1 < 8892
-        assert 8792 <= port2 < 8892
+        assert port1 != port2
 
     def test_port_in_range(self):
         """導出ポートが base_port + port_range 内にある。"""
@@ -59,12 +56,28 @@ class TestGetProxyConfig:
         result = proxy_mgr.get_proxy_config(config)
         assert result["enabled"] is True
         assert result["port"] == 9000
+        assert result["host"] == "127.0.0.1"  # 未指定キーはデフォルト維持
+
+        full_config = {"proxy": {"enabled": True, "port": 5555, "host": "0.0.0.0"}}
+        full_result = proxy_mgr.get_proxy_config(full_config)
+        assert full_result["host"] == "0.0.0.0"  # host も上書きされる
 
     def test_project_dir_derives_port(self):
         """project_dir が指定されるとポートが導出される。"""
         result = proxy_mgr.get_proxy_config({}, project_dir="/my/project")
-        assert result["port"] != 8792 or True  # ハッシュ次第で同じになる可能性あり
-        assert isinstance(result["port"], int)
+        assert 8792 <= result["port"] < 8892
+
+    def test_fixed_port_when_range_zero(self):
+        """port_range=0 のとき project_dir があってもポート導出しない。"""
+        config = {"proxy": {"port": 9999, "port_range": 0}}
+        result = proxy_mgr.get_proxy_config(config, project_dir="/home/user/project-a")
+        assert result["port"] == 9999
+
+    def test_no_derivation_without_project_dir(self):
+        """project_dir 未指定時はポートを導出しない。"""
+        config = {"proxy": {"port": 8792, "port_range": 100}}
+        result = proxy_mgr.get_proxy_config(config)
+        assert result["port"] == 8792
 
     def test_project_dir_alias_uses_same_port(self, tmp_path: Path):
         """同じ実体への別パスでも同じポートを使う。"""
@@ -309,6 +322,8 @@ class TestStartProxy:
             result = proxy_mgr.start_proxy({"command": "test"}, str(tmp_path))
         assert result is False
         mock_write.assert_not_called()
+        state = proxy_mgr.read_proxy_state(str(tmp_path))
+        assert state["proxy_state"] == "failed"
 
     def test_launches_supervisor(self, tmp_path):
         """起動時は raw mcp-proxy ではなく supervisor を立ち上げる。"""
@@ -332,6 +347,10 @@ class TestStartProxy:
         assert launched_cmd[1].endswith("proxy_supervisor.py")
         assert launched_cmd[2] == str(tmp_path)
         assert launched_env[proxy_mgr._SUPERVISOR_CONFIG_ENV]
+
+        # 起動後 PID ファイルの中身が実 PID になっている
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        assert proxy_mgr._read_pid(pid_path) == 43210
 
     def test_popen_failure(self, tmp_path):
         """Popen が失敗した場合、False。"""
@@ -363,6 +382,42 @@ class TestStartProxy:
             )
         assert result is False
         mock_kill.assert_called()
+
+        # PID ファイルが削除されている
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        assert proxy_mgr._read_pid(pid_path) is None
+
+    def test_port_in_use_restores_pid(self, tmp_path):
+        """ポート使用中で早期リターンする際に実プロセスの PID が復元される。"""
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 99999)  # stale PID
+
+        with (
+            patch.object(proxy_mgr, "is_proxy_running", return_value=False),
+            patch.object(proxy_mgr, "_is_port_in_use", return_value=True),
+            patch.object(proxy_mgr, "_find_pid_by_port", return_value=77777),
+            patch.object(proxy_mgr, "_looks_like_mcp_proxy", return_value=True),
+        ):
+            result = proxy_mgr.start_proxy({"command": "test"}, str(tmp_path))
+        assert result is True
+        # 実プロセスの PID に書き換えられている
+        assert proxy_mgr._read_pid(pid_path) == 77777
+
+    def test_port_in_use_removes_pid_when_lsof_fails(self, tmp_path):
+        """lsof で PID を取得できない場合は stale PID ファイルを削除し failed とする。"""
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 99999)
+
+        with (
+            patch.object(proxy_mgr, "is_proxy_running", return_value=False),
+            patch.object(proxy_mgr, "_is_port_in_use", return_value=True),
+            patch.object(proxy_mgr, "_find_pid_by_port", return_value=None),
+        ):
+            result = proxy_mgr.start_proxy({"command": "test"}, str(tmp_path))
+        assert result is False
+        assert proxy_mgr._read_pid(pid_path) is None
 
 
 class TestStopProxy:
@@ -400,6 +455,55 @@ class TestStopProxy:
         ):
             result = proxy_mgr.stop_proxy({}, str(tmp_path))
         assert result is True
+        # PID ファイルが削除されている
+        assert proxy_mgr._read_pid(str(pid_path)) is None
+
+    def test_stop_via_port_fallback(self, tmp_path):
+        """PID ファイルなしでもポートから検証済み PID を発見して停止できる。"""
+        with (
+            patch.object(proxy_mgr, "_find_pid_by_port", return_value=77777),
+            patch.object(proxy_mgr, "_looks_like_mcp_proxy", return_value=True),
+            patch.object(proxy_mgr, "_is_pid_alive", return_value=True),
+            patch("os.kill") as mock_kill,
+            patch.object(proxy_mgr, "_wait_for_exit", return_value=True),
+        ):
+            result = proxy_mgr.stop_proxy({}, str(tmp_path))
+        assert result is True
+        # ポートから発見した PID に SIGTERM が送られている
+        import signal
+
+        mock_kill.assert_any_call(77777, signal.SIGTERM)
+
+    def test_stop_via_port_fallback_skips_unverified_pid(self, tmp_path):
+        """ポートの PID が mcp-proxy と検証できない場合は kill しない。"""
+        with (
+            patch.object(proxy_mgr, "_find_pid_by_port", return_value=77777),
+            patch.object(proxy_mgr, "_looks_like_mcp_proxy", return_value=False),
+            patch("os.kill") as mock_kill,
+        ):
+            result = proxy_mgr.stop_proxy({}, str(tmp_path))
+        assert result is True
+        mock_kill.assert_not_called()
+
+    def test_sigkill_fallback(self, tmp_path):
+        """SIGTERM で終了しないプロセスに対し SIGKILL へエスカレーションする。"""
+        pid_path = tmp_path / ".claude" / ".mcp-proxy.pid"
+        pid_path.parent.mkdir(parents=True)
+        pid_path.write_text("33333")
+
+        with (
+            patch.object(proxy_mgr, "_is_pid_alive", return_value=True),
+            patch("os.kill") as mock_kill,
+            patch.object(proxy_mgr, "_wait_for_exit", return_value=False),
+        ):
+            proxy_mgr.stop_proxy({}, str(tmp_path))
+
+        # SIGTERM + SIGKILL が呼ばれている
+        import signal
+
+        kill_signals = [call.args[1] for call in mock_kill.call_args_list]
+        assert signal.SIGTERM in kill_signals
+        assert signal.SIGKILL in kill_signals
 
 
 class TestStartProxyBackground:
@@ -481,6 +585,30 @@ class TestStartProxyBackground:
         assert result is False
         mock_popen.assert_not_called()
 
+    def test_does_not_block_on_helper_process(self, tmp_path):
+        """EV-18: warmup はバックグラウンド起動後、helper の終了を待たずに返る
+        （SessionStart hook が同期的にブロックしないことの根拠。Issue #127 仕様確定）。
+        """
+        helper_process = MagicMock()
+
+        with (
+            patch.object(proxy_mgr, "get_proxy_state", return_value={"proxy_state": "stopped"}),
+            patch("subprocess.Popen", return_value=helper_process) as mock_popen,
+        ):
+            result = proxy_mgr.start_proxy_background(
+                {"command": "test", "proxy": {"port": 8792, "port_range": 0}},
+                str(tmp_path),
+            )
+
+        assert result is True
+        # start_new_session=True でデタッチし、wait()/communicate() で helper の
+        # 終了を待つことはしない（fire-and-forget）。poll() を繰り返して終了を
+        # 待つ同期的な実装も許容しない。
+        assert mock_popen.call_args.kwargs.get("start_new_session") is True
+        helper_process.wait.assert_not_called()
+        helper_process.communicate.assert_not_called()
+        helper_process.poll.assert_not_called()
+
 
 class TestFindPidByPort:
     """_find_pid_by_port のテスト。"""
@@ -509,6 +637,133 @@ class TestFindPidByPort:
             result = proxy_mgr._find_pid_by_port(8792)
         assert result is None
 
+    def test_multiple_pids_returns_first(self):
+        """lsof が複数 PID を返した場合、最初の PID を返す。"""
+        import subprocess
+
+        mock_result = subprocess.CompletedProcess(
+            args=["lsof"], returncode=0, stdout="11111\n22222\n"
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            result = proxy_mgr._find_pid_by_port(8792)
+        assert result == 11111
+
+    def test_returns_none_on_timeout(self):
+        """subprocess.TimeoutExpired（OSError のサブクラスではない）発生時は None。"""
+        import subprocess
+
+        with patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="lsof", timeout=5),
+        ):
+            result = proxy_mgr._find_pid_by_port(8792)
+        assert result is None
+
+
+class TestLooksLikeMcpProxy:
+    """_looks_like_mcp_proxy のテスト。"""
+
+    def test_matches_mcp_proxy_command(self):
+        """ps 出力が mcp-proxy コマンドに一致する場合、True。"""
+        import subprocess
+
+        mock_result = subprocess.CompletedProcess(
+            args=["ps"],
+            returncode=0,
+            stdout="mcp-proxy --pass-environment --host 127.0.0.1 --port 8792\n",
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            assert proxy_mgr._looks_like_mcp_proxy(12345) is True
+
+    def test_matches_supervisor_command(self):
+        """ps 出力が proxy_supervisor.py コマンドに一致する場合、True。"""
+        import subprocess
+
+        mock_result = subprocess.CompletedProcess(
+            args=["ps"],
+            returncode=0,
+            stdout="python3 /path/to/proxy_supervisor.py /some/project\n",
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            assert proxy_mgr._looks_like_mcp_proxy(12345) is True
+
+    def test_rejects_unrelated_command(self):
+        """無関係なコマンドの場合、False。"""
+        import subprocess
+
+        mock_result = subprocess.CompletedProcess(
+            args=["ps"], returncode=0, stdout="/usr/bin/some-other-daemon\n"
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            assert proxy_mgr._looks_like_mcp_proxy(12345) is False
+
+    def test_returns_false_on_os_error(self):
+        """OSError 発生時は False。"""
+        with patch("subprocess.run", side_effect=OSError):
+            assert proxy_mgr._looks_like_mcp_proxy(12345) is False
+
+    def test_returns_false_on_timeout(self):
+        """subprocess.TimeoutExpired 発生時は False。"""
+        import subprocess
+
+        with patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="ps", timeout=2),
+        ):
+            assert proxy_mgr._looks_like_mcp_proxy(12345) is False
+
+
+class TestCleanupOrphan:
+    """cleanup_orphan のテスト。"""
+
+    def test_noop_when_no_pid_file(self, tmp_path):
+        """PID ファイルがない場合、例外を出さず何もしない。"""
+        proxy_mgr.cleanup_orphan({}, str(tmp_path))
+
+    def test_removes_stale_pid_dead_process(self, tmp_path):
+        """プロセスが死亡している場合、stale PID ファイルを削除する。"""
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 44444)
+
+        with patch.object(proxy_mgr, "_is_pid_alive", return_value=False):
+            proxy_mgr.cleanup_orphan({}, str(tmp_path))
+        assert proxy_mgr._read_pid(pid_path) is None
+
+    def test_kills_alive_orphan(self, tmp_path):
+        """生存中の orphan プロセスは mcp-proxy と検証できれば kill する。"""
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 55555)
+
+        with (
+            patch.object(proxy_mgr, "_is_pid_alive", return_value=True),
+            patch.object(proxy_mgr, "_looks_like_mcp_proxy", return_value=True),
+            patch("os.kill") as mock_kill,
+            patch.object(proxy_mgr, "_wait_for_exit", return_value=True),
+        ):
+            proxy_mgr.cleanup_orphan({}, str(tmp_path))
+        assert proxy_mgr._read_pid(pid_path) is None
+
+        import signal
+
+        mock_kill.assert_any_call(55555, signal.SIGTERM)
+
+    def test_does_not_kill_unverified_pid(self, tmp_path):
+        """PID ファイルの PID が mcp-proxy と検証できない場合は kill せず掃除のみ行う。"""
+        pid_path = os.path.join(str(tmp_path), ".claude", ".mcp-proxy.pid")
+        os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+        proxy_mgr._write_pid(pid_path, 66666)
+
+        with (
+            patch.object(proxy_mgr, "_is_pid_alive", return_value=True),
+            patch.object(proxy_mgr, "_looks_like_mcp_proxy", return_value=False),
+            patch("os.kill") as mock_kill,
+        ):
+            proxy_mgr.cleanup_orphan({}, str(tmp_path))
+        assert proxy_mgr._read_pid(pid_path) is None
+        mock_kill.assert_not_called()
+
 
 class TestBuildProxyCommand:
     """_build_proxy_command のテスト。"""
@@ -518,11 +773,33 @@ class TestBuildProxyCommand:
         config = {"command": "uvx cocoindex-code", "args": ["--prerelease=explicit"]}
         proxy_cfg = {"host": "127.0.0.1", "port": 8800}
         result = proxy_mgr._build_proxy_command(config, proxy_cfg)
-        assert result[0] == "mcp-proxy"
-        assert "--host" in result
-        assert "8800" in result
-        assert "uvx cocoindex-code" in result
-        assert "--prerelease=explicit" in result
+        assert result == [
+            "mcp-proxy",
+            "--pass-environment",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8800",
+            "--",
+            "uvx cocoindex-code",
+            "--prerelease=explicit",
+        ]
+
+    def test_no_args(self):
+        """args 未指定の場合、args なしのコマンドを組み立てる。"""
+        config = {"command": "my-server"}
+        proxy_cfg = {"port": 9999}
+        cmd = proxy_mgr._build_proxy_command(config, proxy_cfg)
+        assert cmd == [
+            "mcp-proxy",
+            "--pass-environment",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9999",
+            "--",
+            "my-server",
+        ]
 
     def test_no_command_raises(self):
         """command がない場合、ValueError。"""

@@ -6,7 +6,6 @@ import io
 import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -16,7 +15,6 @@ core_hooks_dir = str(REPO_ROOT / "packages" / "core" / "hooks")
 if core_hooks_dir not in sys.path:
     sys.path.insert(0, core_hooks_dir)
 
-lint_on_save = load_module("lint_on_save_test", "packages/quality-gates/hooks/lint-on-save.py")
 post_impl_review = load_module(
     "post_impl_review_test", "packages/quality-gates/hooks/post-implementation-review.py"
 )
@@ -26,9 +24,6 @@ post_test_analysis = load_module(
 test_gate_checker = load_module(
     "test_gate_checker_test", "packages/quality-gates/hooks/test-gate-checker.py"
 )
-test_tampering_detector = load_module(
-    "test_tampering_detector_test", "packages/quality-gates/hooks/test-tampering-detector.py"
-)
 
 
 def _make_stdin(data: dict, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -36,107 +31,8 @@ def _make_stdin(data: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(data)))
 
 
-class TestLintOnSave:
-    """lint-on-save.py のテスト。"""
-
-    def test_run_lint_commands_uses_fallback_command(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """先頭コマンドがない場合はフォールバックを試す。"""
-        file_path = str(tmp_path / "pkg" / "sample.py")
-        Path(file_path).parent.mkdir(parents=True)
-        calls: list[tuple[list[str], str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> SimpleNamespace:
-            calls.append((cmd, kwargs["cwd"]))
-            if cmd[0] == "uv":
-                raise FileNotFoundError
-            return SimpleNamespace(returncode=0, stdout="fixed", stderr="")
-
-        monkeypatch.setattr(lint_on_save.subprocess, "run", fake_run)
-
-        results = lint_on_save.run_lint_commands(file_path)
-
-        assert [call[0][0] for call in calls] == ["uv", "ruff", "uv", "ruff"]
-        assert all(call[1] == str(Path(file_path).parent) for call in calls)
-        assert results == [
-            {"name": "ruff format", "success": True, "output": "fixed"},
-            {"name": "ruff check", "success": True, "output": "fixed"},
-        ]
-
-    def test_main_outputs_lint_summary(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """lint 結果があれば JSON 出力する。"""
-        monkeypatch.setattr(
-            lint_on_save,
-            "run_lint_commands",
-            lambda _: [
-                {"name": "ruff format", "success": True, "output": "1 file reformatted"},
-                {"name": "ruff check", "success": False, "output": "line too long"},
-            ],
-        )
-        _make_stdin(
-            {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/example.py"}},
-            monkeypatch,
-        )
-
-        with pytest.raises(SystemExit, match="0"):
-            lint_on_save.main()
-
-        captured = capsys.readouterr()
-        output = json.loads(captured.out)
-        assert "[Lint Issues found]" in output["hookSpecificOutput"]["additionalContext"]
-        assert "ruff format" in output["hookSpecificOutput"]["additionalContext"]
-        assert "ruff check" in output["hookSpecificOutput"]["additionalContext"]
-
-    def test_main_ignores_non_python_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Python 以外のファイルは処理しない。"""
-        _make_stdin(
-            {"tool_name": "Write", "tool_input": {"file_path": "/tmp/example.md"}},
-            monkeypatch,
-        )
-
-        with pytest.raises(SystemExit, match="0"):
-            lint_on_save.main()
-
-
 class TestPostImplementationReview:
     """post-implementation-review.py のテスト。"""
-
-    def test_should_suggest_review_false_when_already_suggested(self) -> None:
-        """一度提案済みなら再提案しない。"""
-        state = {"files": ["a.py", "b.py", "c.py"], "total_lines": 120, "review_suggested": True}
-        assert post_impl_review.should_suggest_review(state) is False
-
-    def test_main_suggests_review_when_file_threshold_reached(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """3 ファイル目の変更でレビュー提案を出す。"""
-        post_impl_review.save_state(
-            str(tmp_path),
-            {"files": ["a.py", "b.py"], "total_lines": 20, "review_suggested": False},
-        )
-        _make_stdin(
-            {
-                "tool_name": "Edit",
-                "cwd": str(tmp_path),
-                "tool_input": {"file_path": "c.py", "content": "print(1)\nprint(2)\n"},
-            },
-            monkeypatch,
-        )
-
-        with pytest.raises(SystemExit, match="0"):
-            post_impl_review.main()
-
-        captured = capsys.readouterr()
-        output = json.loads(captured.out)
-        assert "[Review Suggestion]" in output["hookSpecificOutput"]["additionalContext"]
-        # 提案時にカウンタはリセットされるため、直前の状態はメッセージにのみ残る。
-        assert "3 files modified" in output["hookSpecificOutput"]["additionalContext"]
-        state = post_impl_review.load_state(str(tmp_path))
-        assert state["review_suggested"] is True
-        assert state["files"] == []
 
     def test_main_skips_non_code_extension(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -161,28 +57,6 @@ class TestPostImplementationReview:
 class TestPostTestAnalysis:
     """post-test-analysis.py のテスト。"""
 
-    def test_record_test_result_resets_counters_on_success(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """成功時は test gate カウンタをリセットする。"""
-        post_test_analysis.save_test_gate_state(
-            str(tmp_path),
-            {
-                "files_modified_since_test": ["a.py"],
-                "lines_modified_since_test": 42,
-                "last_test_result": None,
-                "warned": True,
-            },
-        )
-
-        post_test_analysis.record_test_result("pytest", True, str(tmp_path))
-
-        state = post_test_analysis.load_test_gate_state(str(tmp_path))
-        assert state["files_modified_since_test"] == []
-        assert state["lines_modified_since_test"] == 0
-        assert state["warned"] is False
-        assert state["last_test_result"]["passed"] is True
-
     def test_build_codex_command_uses_loaded_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """cli-tools 設定から Codex コマンドを組み立てる。"""
         monkeypatch.setattr(
@@ -203,80 +77,6 @@ class TestPostTestAnalysis:
         assert "workspace-write" in command
         assert "--dangerously-fast" in command
         assert "< /dev/null" in command
-
-    def test_emit_quality_gate_event_records_audit_event(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """audit ログへ quality_gate event を書き出す。"""
-        captured: dict = {}
-        monkeypatch.setattr(
-            post_test_analysis,
-            "resolve_project_root_from_hook_data",
-            lambda data: data["cwd"],
-        )
-        monkeypatch.setattr(
-            post_test_analysis,
-            "load_quality_gate_config",
-            # block_on_failed_test を明示的に無効化し、このテストの焦点である
-            # audit イベント記録と block_on_failed_test の既定値（EV-11/12/19、
-            # 2026-07-03 裁定で opt-out 方式・既定 True）検証を分離する。
-            lambda _project_dir, config=None: {"enabled": True, "block_on_failed_test": False},
-        )
-        monkeypatch.setattr(
-            post_test_analysis, "load_trace_state", lambda **_kwargs: {"tid": "tid-1"}
-        )
-        monkeypatch.setattr(
-            post_test_analysis,
-            "emit_event",
-            lambda event_type, payload, **kwargs: captured.update(
-                {"type": event_type, "payload": payload, "kwargs": kwargs}
-            ),
-        )
-
-        blocking = post_test_analysis.emit_quality_gate_event(
-            {"session_id": "sid-1", "cwd": "/project"},
-            command="pytest -q",
-            exit_code=1,
-            gate_passed=False,
-            output="FAILED",
-        )
-
-        assert blocking is False
-        assert captured["type"] == "quality_gate"
-        assert captured["payload"]["passed"] is False
-        assert captured["kwargs"]["tid"] == "tid-1"
-
-    def test_main_outputs_debug_suggestion_for_failed_test(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """失敗したテストコマンドでは Codex 提案を出す。"""
-        monkeypatch.setattr(
-            post_test_analysis, "emit_quality_gate_event", lambda *_args, **_kwargs: False
-        )
-        monkeypatch.setattr(
-            post_test_analysis,
-            "load_package_config",
-            lambda *args: {"codex": {"model": "gpt-test", "sandbox": {"analysis": "read-only"}}},
-        )
-        _make_stdin(
-            {
-                "tool_name": "Bash",
-                "cwd": str(tmp_path),
-                "tool_input": {"command": "pytest -q"},
-                "tool_response": {"exit_code": 1, "stdout": "FAILED test_example.py::test_case"},
-            },
-            monkeypatch,
-        )
-
-        with pytest.raises(SystemExit, match="0"):
-            post_test_analysis.main()
-
-        captured = capsys.readouterr()
-        output = json.loads(captured.out)
-        assert "[Codex Debug Suggestion]" in output["hookSpecificOutput"]["additionalContext"]
-        state = post_test_analysis.load_test_gate_state(str(tmp_path))
-        assert state["last_test_result"]["passed"] is False
-        assert state["last_test_result"]["command"] == "pytest -q"
 
     def test_main_successful_exit_with_error_text_does_not_block_quality_gate(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -341,25 +141,6 @@ class TestPostTestAnalysis:
         captured = capsys.readouterr()
         assert "[quality-gates] quality gate blocked" in captured.err
 
-    def test_main_ignores_non_test_bash_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """テストコマンド以外の Bash は無視する。"""
-        _make_stdin(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": "echo hello"},
-                "tool_response": {"exit_code": 0, "stdout": "hello"},
-            },
-            monkeypatch,
-        )
-
-        with pytest.raises(SystemExit, match="0"):
-            post_test_analysis.main()
-
-    def test_is_test_command_includes_lint_and_typecheck(self) -> None:
-        """quality gate 対象として ruff check と mypy を維持する。"""
-        assert post_test_analysis.is_test_command("ruff check .")
-        assert post_test_analysis.is_test_command("mypy src/")
-
 
 class TestTestGateChecker:
     """test-gate-checker.py のテスト。"""
@@ -423,133 +204,3 @@ class TestTestGateChecker:
         state = test_gate_checker.load_test_gate_state(str(tmp_path))
         assert state["warned"] is True
         assert state["files_modified_since_test"] == ["src/main.py"]
-
-    def test_main_skips_when_quality_gate_disabled(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """quality gate 無効時は state を更新しない。"""
-        monkeypatch.setattr(
-            test_gate_checker,
-            "load_package_config",
-            lambda *args: {"features": {"quality_gate": {"enabled": False}}},
-        )
-        _make_stdin(
-            {
-                "tool_name": "Write",
-                "cwd": str(tmp_path),
-                "tool_input": {"file_path": "src/main.py", "content": "print(1)\n"},
-            },
-            monkeypatch,
-        )
-
-        with pytest.raises(SystemExit, match="0"):
-            test_gate_checker.main()
-
-        state_file = tmp_path / ".claude" / "state" / test_gate_checker.STATE_FILENAME
-        assert not state_file.exists()
-
-
-class TestTestTamperingDetector:
-    """test-tampering-detector.py のテスト。"""
-
-    def test_main_warns_when_skip_marker_is_added(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """skip マーカー追加時に警告を出す。"""
-        monkeypatch.setattr(
-            test_tampering_detector,
-            "collect_tampering_findings",
-            lambda _data: [
-                {
-                    "type": "pattern",
-                    "file_path": "tests/test_auth.py",
-                    "label": "@pytest.mark.skip / @unittest.skip",
-                    "snippet": "@pytest.mark.skip",
-                }
-            ],
-        )
-        _make_stdin(
-            {
-                "tool_name": "Write",
-                "tool_input": {"file_path": "tests/test_auth.py", "content": "@pytest.mark.skip"},
-            },
-            monkeypatch,
-        )
-
-        with pytest.raises(SystemExit, match="0"):
-            test_tampering_detector.main()
-
-        output = json.loads(capsys.readouterr().out)
-        assert "[Warning]" in output["hookSpecificOutput"]["additionalContext"]
-        assert "@pytest.mark.skip" in output["hookSpecificOutput"]["additionalContext"]
-
-    def test_collect_findings_for_delete_command(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """削除コマンド時は deleted test file を報告する。"""
-        monkeypatch.setattr(
-            test_tampering_detector,
-            "get_deleted_test_files",
-            lambda _project_dir, _delete_targets: ["tests/x.py"],
-        )
-        monkeypatch.setattr(
-            test_tampering_detector,
-            "get_all_deleted_test_files",
-            lambda _project_dir: ["tests/x.py"],
-        )
-
-        findings = test_tampering_detector.collect_tampering_findings(
-            {
-                "tool_name": "Bash",
-                "cwd": str(tmp_path),
-                "tool_input": {"command": "rm tests/x.py"},
-            }
-        )
-
-        assert findings == [
-            {
-                "type": "deleted_test_file",
-                "file_path": "tests/x.py",
-                "label": "deleted test file",
-                "snippet": "",
-            }
-        ]
-
-    def test_non_test_file_does_not_warn_for_type_ignore(self) -> None:
-        """通常コードの suppression だけでは警告しない。"""
-        findings = test_tampering_detector.scan_added_lines(
-            "src/main.py",
-            ["# type: ignore[attr-defined]"],
-        )
-
-        assert findings == []
-
-    def test_extract_delete_targets_supports_bash_wrapper(self) -> None:
-        """bash -lc 経由の git rm からも削除ターゲットを取れる。"""
-        targets = test_tampering_detector.extract_delete_targets(
-            "Bash",
-            {"command": 'bash -lc "git rm tests/*.py"'},
-            "/project",
-        )
-
-        assert targets == ["tests/*.py"]
-
-    def test_extract_delete_targets_collects_multiple_delete_commands(self) -> None:
-        """複数の rm もすべて拾う。"""
-        targets = test_tampering_detector.extract_delete_targets(
-            "Bash",
-            {"command": "rm tests/a.py && rm tests/b.py"},
-            "/project",
-        )
-
-        assert targets == ["tests/a.py", "tests/b.py"]
-
-    def test_extract_delete_targets_collects_semicolon_separated_commands(self) -> None:
-        """セミコロン区切りの rm も拾う。"""
-        targets = test_tampering_detector.extract_delete_targets(
-            "Bash",
-            {"command": "rm tests/a.py; rm tests/b.py"},
-            "/project",
-        )
-
-        assert targets == ["tests/a.py", "tests/b.py"]

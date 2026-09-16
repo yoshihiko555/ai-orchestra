@@ -324,8 +324,8 @@ class TestOracleFixtureMaterializationTiming:
         いずれも実体が存在しないため両者の hash が一致し（"missing" 同士）、検出は発火しない
         （`TestOracleFixtureTamperDetection` が実 fixture content で検出自体を検証する）。
         """
-        call_order, _materialize_args, hard_failure, errors = (
-            self._run_lifecycle_with_tracked_calls(git_project, monkeypatch)
+        call_order, materialize_args, hard_failure, errors = self._run_lifecycle_with_tracked_calls(
+            git_project, monkeypatch
         )
 
         assert hard_failure is False, errors
@@ -335,27 +335,8 @@ class TestOracleFixtureMaterializationTiming:
             "run_headless_scenario",
             "materialize_fixtures",
         ]
-
-    def test_tamper_restore_materialize_still_runs_after_headless_scenario(
-        self, git_project: Path, monkeypatch
-    ) -> None:
-        """改ざん対策（PR #326 round 4/5）の維持: snapshot 前 materialize を追加しても、
-        候補実行後・oracle 実行前の再 materialize が引き続き存在すること。両呼び出しとも
-        attempt 開始時に固定した同一の immutable copy（`_snapshot_trusted_oracle_fixtures` の
-        戻り値）を source に取ること。
-
-        `_materialize_current_oracle_fixtures` の責務は「復元のみ」で変わらない（改ざんの
-        試行検出は `_run_attempt_lifecycle` 側が復元の直前に別途行う。`Issue #267` 残スコープ、
-        `TestOracleFixtureTamperDetection` 参照）。本テストは呼び出し順序・引数のみを検証する。"""
-        call_order, materialize_args, hard_failure, errors = self._run_lifecycle_with_tracked_calls(
-            git_project, monkeypatch
-        )
-
-        assert hard_failure is False, errors
-        scenario_index = call_order.index("run_headless_scenario")
-        assert "materialize_fixtures" in call_order[scenario_index + 1 :]
         # 両 materialize とも attempt 開始時に固定した同一の immutable copy を source に取る
-        # （TOCTOU 対策。信頼済み package_dir を都度読まない）。
+        # （TOCTOU 対策。信頼済み package_dir を都度読まない。PR #326 round 4/5 改ざん対策の維持）。
         assert [args[1] for args in materialize_args] == [
             self._TRUSTED_COPY_SENTINEL,
             self._TRUSTED_COPY_SENTINEL,

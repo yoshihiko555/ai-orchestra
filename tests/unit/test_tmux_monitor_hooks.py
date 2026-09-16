@@ -82,6 +82,7 @@ class TestTmuxFormatOutput:
         captured = capsys.readouterr()
         assert "hello" in captured.out
         assert "[Bash]" in captured.out
+        assert "→" in captured.out
         assert "done" in captured.out
         assert "running" in captured.out
 

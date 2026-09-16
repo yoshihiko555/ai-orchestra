@@ -216,18 +216,6 @@ def test_detect_agent_detects_dotted_ascii_trigger_adjacent_to_japanese() -> Non
 
 
 # ---------------------------------------------------------------------------
-# is_cli_enabled（hook_common からの re-export、後方互換確認）
-# ---------------------------------------------------------------------------
-
-
-def test_is_cli_enabled_backward_compat_import() -> None:
-    """route_config.is_cli_enabled は hook_common からの re-export として動作する。"""
-    assert route_config.is_cli_enabled("codex", {"codex": {"enabled": True}}) is True
-    assert route_config.is_cli_enabled("codex", {"codex": {"enabled": False}}) is False
-    assert route_config.is_cli_enabled("codex", {}) is True
-
-
-# ---------------------------------------------------------------------------
 # get_agent_tool
 # ---------------------------------------------------------------------------
 

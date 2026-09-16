@@ -96,6 +96,35 @@ class TestParseTasks:
         assert len(tasks["done"]) == 1
         assert len(tasks["WIP"]) == 1
 
+    def test_custom_marker_strings_supported_for_all_four_states(self) -> None:
+        """resolve_markers で任意文字列マーカーを指定しても4状態すべて解釈できる。"""
+        markers = resolve_markers(
+            {
+                "markers": {
+                    "todo": "task:todo",
+                    "wip": "task:wip",
+                    "done": "task:done",
+                    "blocked": "task:blocked",
+                }
+            }
+        )
+        marker_pattern, marker_to_state = build_marker_parser(markers)
+        content = "\n".join(
+            [
+                "- `task:wip` 実装中",
+                "- `task:todo` テスト作成",
+                "- `task:done` 設計完了",
+                "- `task:blocked` 連携待ち — 理由: 外部API未提供",
+            ]
+        )
+
+        tasks = parse_tasks(content, marker_pattern, marker_to_state)
+
+        assert tasks["WIP"] == [{"task": "実装中", "reason": None}]
+        assert tasks["TODO"] == [{"task": "テスト作成", "reason": None}]
+        assert tasks["done"] == [{"task": "設計完了", "reason": None}]
+        assert tasks["blocked"] == [{"task": "連携待ち", "reason": "外部API未提供"}]
+
 
 # ---------------------------------------------------------------------------
 # format_summary

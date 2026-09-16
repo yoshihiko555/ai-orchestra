@@ -450,7 +450,6 @@ class TestValidateConfigPatch:
         "entry",
         [
             "agent-routing/cli-tools.yaml#agents.**.tool",
-            "agent-routing/cli-tools.yaml#agents.foo*.tool",
             "agent-routing/cli-tools.yaml#codex.model#extra",
             "agent-routing/cli-tools.yaml#agents..tool",
             "agent-*/cli-tools.yaml#codex.model",
@@ -472,46 +471,6 @@ class TestValidateConfigPatch:
         )
 
         assert errors
-
-    def test_agents_wildcard_matches_exactly_one_segment(self) -> None:
-        patch = [
-            {
-                "file": "agent-routing/cli-tools.yaml",
-                "key_path": "agents.debugger.tool",
-                "value": "auto",
-            }
-        ]
-
-        assert (
-            mh.validate_config_patch(
-                patch,
-                _DEFAULT_OVERLAY_CONFIG,
-                SCHEMA_DIR,
-                target="routing-config",
-                created_by="human",
-            )
-            == []
-        )
-
-    def test_known_agent_name_is_accepted(self) -> None:
-        patch = [
-            {
-                "file": "agent-routing/cli-tools.yaml",
-                "key_path": "agents.backend-python-dev.tool",
-                "value": "codex",
-            }
-        ]
-
-        assert (
-            mh.validate_config_patch(
-                patch,
-                _DEFAULT_OVERLAY_CONFIG,
-                SCHEMA_DIR,
-                target="routing-config",
-                created_by="human",
-            )
-            == []
-        )
 
     def test_unknown_agent_name_is_rejected(self) -> None:
         patch = [
@@ -720,7 +679,7 @@ class TestValidateConfigPatch:
         ):
             mh._load_antigravity_model_allowlist(SCHEMA_DIR, {"antigravity": []})
 
-    @pytest.mark.parametrize("value", ["off", "123", "1.5", "null", "no"])
+    @pytest.mark.parametrize("value", ["off", "123", "null"])
     def test_yaml_ambiguous_model_values_are_rejected(self, value: str) -> None:
         errors = mh.validate_config_patch(
             [

@@ -10,10 +10,6 @@ _README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 _JSON_FENCE_RE = re.compile(r"```json\n(.*?)\n```", re.DOTALL)
 
 
-def test_readme_exists() -> None:
-    assert _README_PATH.is_file(), f"{_README_PATH} が存在しません"
-
-
 def test_readme_documents_hook_inventory() -> None:
     """独自 README を持つ他パッケージ（audit / fail-logs 等）と同様に hook 一覧を記載する。"""
     content = _README_PATH.read_text(encoding="utf-8")

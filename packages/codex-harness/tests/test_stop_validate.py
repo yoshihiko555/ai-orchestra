@@ -114,10 +114,6 @@ class TestRunCommand:
         result = stop_validate.run_command("true", tmp_path)  # type: ignore[arg-type]
         assert result["passed"] is False
 
-    def test_list_entry_is_reported_as_failed(self, tmp_path: Path) -> None:
-        result = stop_validate.run_command(["true"], tmp_path)  # type: ignore[arg-type]
-        assert result["passed"] is False
-
     def test_non_string_command_is_reported_as_failed(self, tmp_path: Path) -> None:
         result = stop_validate.run_command({"command": 123, "timeout": 5}, tmp_path)
         assert result["passed"] is False

@@ -393,23 +393,19 @@ def test_extract_python_module_leading_indent_is_not_docstring() -> None:
 
 
 def test_extract_reports_malformed_annotation_duplicate_node_id() -> None:
-    # `codd:node_id` が複数回指定された場合、採用されるのは最初の値のみだが、
-    # 重複自体を malformed_annotation として報告する（黙って握りつぶさない）。
-    text = '"""\ncodd:node_id code:first\ncodd:node_id code:second\ncodd:implements design:x\n"""\n'
+    # `codd:node_id` および `codd:kind` が複数回指定された場合、採用されるのは
+    # 最初の値のみだが、重複自体を malformed_annotation として報告する
+    # （黙って握りつぶさない）。従来は最初の truthy 値だけを見て検証をすり抜けていた。
+    text = (
+        '"""\ncodd:node_id code:first\ncodd:node_id code:second\n'
+        "codd:kind code\ncodd:kind requirement\n"
+        'codd:implements design:x\n"""\n'
+    )
     node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
     assert node is not None
     assert node.node_id == "code:first"  # 最初の値のみ採用
-    assert any("codd:node_id" in e and "2 回" in e for e in errors)
-
-
-def test_extract_reports_malformed_annotation_duplicate_kind() -> None:
-    # 正しい `codd:kind code` の後に禁止された `codd:kind requirement` が
-    # 続いても、従来は最初の truthy 値だけを見て検証をすり抜けていた。
-    # 重複自体をエラーとして報告する。
-    text = '"""\ncodd:kind code\ncodd:kind requirement\ncodd:implements design:x\n"""\n'
-    node, errors = cx.extract_code_node("src/mod.py", text, INLINE_CONFIDENCE)
-    assert node is not None
     assert node.kind == "code"  # 最初の値のみ採用
+    assert any("codd:node_id" in e and "2 回" in e for e in errors)
     assert any("codd:kind" in e and "2 回" in e for e in errors)
 
 

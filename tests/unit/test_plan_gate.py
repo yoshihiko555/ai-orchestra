@@ -179,11 +179,19 @@ class TestCheckPlanGateMain:
 class TestSetPlanGateMain:
     """set-plan-gate main() のテスト。"""
 
-    def test_non_agent_tool_exits_0(self, monkeypatch):
-        """Agent/Task 以外は exit(0)。"""
-        _make_stdin({"tool_name": "Bash", "tool_input": {}}, monkeypatch)
+    def test_non_agent_tool_exits_0(self, monkeypatch, tmp_path):
+        """Agent/Task 以外は exit(0) し、subagent_type が plan agent でも gate を作らない。"""
+        _make_stdin(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"subagent_type": "planner"},
+                "cwd": str(tmp_path),
+            },
+            monkeypatch,
+        )
         with pytest.raises(SystemExit, match="0"):
             set_gate.main()
+        assert not (tmp_path / ".claude" / "state" / "plan-gate.json").exists()
 
     def test_non_plan_agent_exits_0(self, monkeypatch):
         """plan エージェント以外は exit(0)。"""

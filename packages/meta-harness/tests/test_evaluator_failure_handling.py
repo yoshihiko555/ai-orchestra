@@ -84,9 +84,7 @@ class TestWorktreeCreationFailureIsRecordedAsError:
         assert run_completed[-1]["verdict"] == "error"
         assert run_completed[-1]["run_id"] == result["run_id"]
 
-    def test_metadata_still_written_even_on_failure(self, tmp_path: Path) -> None:
-        result, main_root = _run_attempt(tmp_path, manifest_source_commit="0" * 40)
-        run_dir = mh.runs_dir(main_root, mh.DEFAULTS) / result["run_id"]
+        # metadata.json は失敗時にも書き込まれる
         metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
         assert metadata["run_id"] == result["run_id"]
         assert metadata["finished_at"] is not None

@@ -129,7 +129,11 @@ class TestQualityScoreMissingReportPenaltyZeroesOutTerm:
         score_with_full_critical = mh.quality_score(1.0, 6.0, config)
         assert score_with_full_critical == 70.0  # 70 + max(0, 30 - 30) = 70
 
-    def test_honest_report_with_zero_penalty_scores_higher_than_missing(self) -> None:
+    def test_honest_low_quality_report_scores_higher_than_missing_report(self) -> None:
+        """reward-hacking 耐性: penalty=5（境界に近い低品質だが self_report あり）が
+        penalty=6（self_report 欠落）を上回ることを検証する。既存2等式（penalty=0/6）
+        からの自明な比較ではなく、penalty=6 に隣接する低品質報告と比較することで
+        「self_report を省略する方が得」という誘因が存在しないことを実証する。"""
         config = {
             "scoring": {
                 "critical_weight": 70,
@@ -138,9 +142,11 @@ class TestQualityScoreMissingReportPenaltyZeroesOutTerm:
                 "penalty_missing_report": 6,
             }
         }
-        honest_zero_penalty = mh.quality_score(1.0, 0.0, config)
+        honest_low_quality = mh.quality_score(1.0, 5.0, config)
         missing_report_penalty = mh.quality_score(1.0, 6.0, config)
-        assert honest_zero_penalty > missing_report_penalty
+        assert honest_low_quality == 75.0
+        assert missing_report_penalty == 70.0
+        assert honest_low_quality > missing_report_penalty
 
 
 class TestWriteCandidateFinalReportArtifact:

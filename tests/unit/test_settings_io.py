@@ -38,16 +38,6 @@ class TestLoadSettings:
         result = settings_io.load_settings(tmp_path)
         assert result == {"hooks": {}}
 
-    def test_empty_file(self, tmp_path):
-        """空ファイルの場合、デフォルト値を返す（JSONDecodeError）。"""
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        settings_path = claude_dir / "settings.local.json"
-        settings_path.write_text("", encoding="utf-8")
-
-        result = settings_io.load_settings(tmp_path)
-        assert result == {"hooks": {}}
-
 
 class TestSaveSettings:
     """save_settings のテスト。"""

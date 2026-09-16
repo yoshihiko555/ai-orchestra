@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from tests.module_loader import load_module
@@ -125,10 +123,3 @@ class TestGenerateHtmlGracefulDegradation:
         events = [{"type": "route_decision"}]
         result = generate_html(events)
         assert "<!DOCTYPE html>" in result
-
-    def test_output_to_file(self, sample_events: list[dict], tmp_path: Path) -> None:
-        out = tmp_path / "dashboard.html"
-        content = generate_html(sample_events)
-        out.write_text(content, encoding="utf-8")
-        assert out.exists()
-        assert out.stat().st_size > 0

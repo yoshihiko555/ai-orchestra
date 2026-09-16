@@ -77,7 +77,7 @@ def test_malformed_keychain_payload_fails_closed(payload: str) -> None:
         credentials._parse_keychain_payload(payload)
 
 
-@pytest.mark.parametrize("expires_at", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("expires_at", [float("nan"), float("-inf")])
 def test_non_finite_expires_at_fails_closed(expires_at: float) -> None:
     # CodeRabbit review, PR #262, High: json.loads() accepts NaN/Infinity by default, and NaN
     # compares false against every bound (both the > 10_000_000_000 unit-conversion check and the

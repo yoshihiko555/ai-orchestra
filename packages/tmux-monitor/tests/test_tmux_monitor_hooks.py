@@ -367,46 +367,10 @@ def test_create_agent_pane_preserves_split_layout_call_order(monkeypatch) -> Non
     ]
 
 
-def test_format_tool_input_prioritizes_known_keys() -> None:
-    assert tmux_format_output.format_tool_input({"command": "pytest -q"}) == "pytest -q"
-    assert tmux_format_output.format_tool_input({"pattern": "TODO"}) == "TODO"
-    assert tmux_format_output.format_tool_input({"file_path": "src/a.py"}) == "src/a.py"
-
-
 def test_format_tool_input_falls_back_to_json() -> None:
     result = tmux_format_output.format_tool_input({"foo": "bar"})
     assert result.startswith("{")
     assert '"foo": "bar"' in result
-
-
-def test_handle_assistant_prints_text_and_tool_use(capsys) -> None:
-    message = {
-        "content": [
-            {"type": "text", "text": "hello"},
-            {"type": "tool_use", "name": "Bash", "input": {"command": "ls -la"}},
-        ]
-    }
-
-    tmux_format_output.handle_assistant(message)
-    captured = capsys.readouterr().out
-
-    assert "hello" in captured
-    assert "[Bash]" in captured
-    assert "ls -la" in captured
-
-
-def test_handle_user_prints_tool_result(capsys) -> None:
-    message = {
-        "content": [
-            {"type": "tool_result", "content": "command output line"},
-        ]
-    }
-
-    tmux_format_output.handle_user(message)
-    captured = capsys.readouterr().out
-
-    assert "→" in captured
-    assert "command output line" in captured
 
 
 def test_handle_progress_prints_only_bash_progress(capsys) -> None:

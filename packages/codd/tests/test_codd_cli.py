@@ -234,19 +234,6 @@ def test_validate_unknown_flags_node_id_without_colon(tmp_path) -> None:
     assert "コロンが無いか複数ある" in messages
 
 
-def test_validate_unknown_flags_node_id_with_extra_separator(tmp_path) -> None:
-    # EV-12: node_id にコロンが複数個ある（余分なセパレータ）場合も unknown error。
-    # `partition(":")` は先頭コロンで区切ってしまい "design" を prefix として誤って
-    # 受理する回帰があったため、明示的にこのケースを検証する。
-    doc = "---\ncodd:\n  node_id: design:foo:bar\n  kind: design\n  status: draft\n---\n# body\n"
-    _write(tmp_path, "docs/s.md", doc)
-    result = cli.scan_project(tmp_path, _config())
-    grouped = _checks(result, _config(), tmp_path)
-    messages = " ".join(f.message for f in grouped.get("unknown", []))
-    assert "design:foo:bar" in messages
-    assert "コロンが無いか複数ある" in messages
-
-
 def test_validate_unknown_flags_kind_node_id_prefix_mismatch(tmp_path) -> None:
     # EV-12: kind は正しい語彙だが node_id のプレフィックスが kind と対応しない
     # （例: kind=requirement なのに node_id は "design:" プレフィックス）。
@@ -265,37 +252,6 @@ def test_validate_accepts_requirement_abbreviated_req_prefix(tmp_path) -> None:
     result = cli.scan_project(tmp_path, _config())
     grouped = _checks(result, _config(), tmp_path)
     assert grouped.get("unknown", []) == []
-
-
-def test_validate_node_id_without_colon_reports_single_finding(tmp_path) -> None:
-    # Codex レビュー反映: 形式不正（コロン無し）と kind プレフィックス不一致を
-    # 二重報告しない（1 ノードにつき unknown finding は 1 件のみ）。
-    doc = (
-        "---\ncodd:\n  node_id: designwithoutcolon\n  kind: design\n  status: draft\n---\n# body\n"
-    )
-    _write(tmp_path, "docs/s.md", doc)
-    result = cli.scan_project(tmp_path, _config())
-    grouped = _checks(result, _config(), tmp_path)
-    node_id_findings = [f for f in grouped.get("unknown", []) if "designwithoutcolon" in f.message]
-    assert len(node_id_findings) == 1
-
-
-def test_validate_flags_node_id_with_empty_prefix_or_slug(tmp_path) -> None:
-    # EV-12: プレフィックス側・スラッグ側どちらが空でも `<kind>:<file-slug>` 形式でない。
-    _write(
-        tmp_path,
-        "docs/a.md",
-        '---\ncodd:\n  node_id: ":a"\n  kind: design\n  status: draft\n---\n# body\n',
-    )
-    _write(
-        tmp_path,
-        "docs/b.md",
-        '---\ncodd:\n  node_id: "design:"\n  kind: design\n  status: draft\n---\n# body\n',
-    )
-    result = cli.scan_project(tmp_path, _config())
-    grouped = _checks(result, _config(), tmp_path)
-    messages = [f.message for f in grouped.get("unknown", [])]
-    assert sum("コロンが無いか複数ある" in m for m in messages) == 2
 
 
 def test_validate_unmapped_custom_kind_skips_prefix_check(tmp_path) -> None:
@@ -428,25 +384,6 @@ def test_batch_commit_times_handles_non_ascii_paths(tmp_path) -> None:
     assert batched["docs/日本語.md"] != clean.stat().st_mtime
 
 
-def test_log_commit_times_handles_pathspec_magic_like_filename(tmp_path) -> None:
-    # git にノードパスを素朴な `--` pathspec として渡すと、`:(bad.md` のような
-    # 先頭が `:(` のファイル名（正当なファイル名だが pathspec magic 構文と衝突する）
-    # 1件だけで `fatal: Invalid pathspec magic` になり、`_git_output_bytes` が None を
-    # 返して呼び出し全体が空 dict にフォールバックしていた。`:(literal)` を各パスへ
-    # 前置し、pathspec magic として解釈させないことで回避する
-    # （レビュー対応: 8巡目 codd.py:418）。
-    _init_repo(tmp_path)
-    _write(tmp_path, "docs/normal.md", "# normal\n")
-    _write(tmp_path, ":(bad.md", "# bad\n")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-m", "init")
-
-    times = cli._log_commit_times(tmp_path, ["docs/normal.md", ":(bad.md"])
-
-    assert "docs/normal.md" in times
-    assert ":(bad.md" in times
-
-
 def test_batch_commit_times_survives_pathspec_magic_like_filename(tmp_path) -> None:
     # `_log_commit_times()` が literal pathspec 化されていないと、`:(bad.md` の
     # ような1ファイルの存在だけで一括 `git log` 全体が失敗し、同じバッチ内の
@@ -463,6 +400,10 @@ def test_batch_commit_times_survives_pathspec_magic_like_filename(tmp_path) -> N
 
     assert batched["docs/normal.md"] != normal.stat().st_mtime
     assert batched["docs/normal.md"] == cli.commit_time(tmp_path, "docs/normal.md")
+    # 低レベル関数 `_log_commit_times()` 自体も pathspec magic 風のファイル名を
+    # 直接処理できることを確認する（元 test_log_commit_times_handles_pathspec_magic_like_filename）。
+    times = cli._log_commit_times(tmp_path, ["docs/normal.md", ":(bad.md"])
+    assert ":(bad.md" in times
 
 
 def test_log_commit_times_splits_pathspecs_across_multiple_git_log_batches(
@@ -1040,17 +981,6 @@ def test_path_in_scope_single_star_is_segment_aware() -> None:
     assert cli.path_in_scope(_ROOT, ".claude/rules/sub/deep.md", config) is False  # 単層を跨がない
 
 
-def test_path_in_scope_character_class_matches_like_path_glob() -> None:
-    # `[ab]` のような glob 文字クラスは、通常走査（collect_files の Path.glob）と
-    # 削除後 impact 判定（_scope_pattern_to_regex）とで解釈が一致しなければならない
-    # （Issue #98 レビュー対応）。以前は `[` `]` をリテラルエスケープしており、
-    # `docs/[ab].md` が `a.md` / `b.md` にマッチしなかった。
-    config = _config(scope={"include": ["docs/[ab].md"], "exclude": []})
-    assert cli.path_in_scope(_ROOT, "docs/a.md", config) is True
-    assert cli.path_in_scope(_ROOT, "docs/b.md", config) is True
-    assert cli.path_in_scope(_ROOT, "docs/c.md", config) is False
-
-
 def test_path_in_scope_character_class_negation() -> None:
     config = _config(scope={"include": ["docs/[!ab].md"], "exclude": []})
     assert cli.path_in_scope(_ROOT, "docs/c.md", config) is True
@@ -1148,6 +1078,7 @@ def test_path_in_scope_character_class_matches_path_glob_behavior(tmp_path) -> N
 
     assert collected == {"docs/a.md"}
     assert cli.path_in_scope(tmp_path, "docs/a.md", config) is True
+    assert cli.path_in_scope(tmp_path, "docs/b.md", config) is True
     assert cli.path_in_scope(tmp_path, "docs/c.md", config) is False
 
 
@@ -2007,51 +1938,6 @@ def test_resolve_ref_symlink_target_tracks_root_internal_absolute_link_text(tmp_
     assert (
         cli._resolve_ref_symlink_target(tmp_path, "aliases/mod.py", abs_target) == "shared/mod.py"
     )
-
-
-def test_compute_impact_result_ignores_absolute_ref_symlink_target(tmp_path) -> None:
-    # ref 側の symlink が root 外の絶対パスを指す場合、root 外ファイルの内容を旧
-    # node_id として誤って復元・dangling 判定に取り込んではいけない（9巡目レビュー
-    # 対応: codd.py:1089）。修正前は `combined` が絶対パスのまま `..` 始まりでない
-    # ため root 外判定をすり抜け、そのパスで `git show` を試みてしまっていた。
-    # root 内の絶対パスは 11巡目レビュー対応（codd.py:1103）で正しく root 相対へ
-    # 変換して追跡されるようになったため、この検証には genuinely root 外となる
-    # パス（root = tmp_path のサブディレクトリ、ターゲットは兄弟ディレクトリ）を
-    # 使う必要がある。
-    root = tmp_path / "proj"
-    root.mkdir()
-    _write(tmp_path, "outside/actual.md", _doc("design:d", "design"))
-    (root / "docs").mkdir()
-    (root / "docs" / "link.md").symlink_to(tmp_path / "outside" / "actual.md")
-    _init_repo(root)
-    _git(root, "add", "-A")
-    _git(root, "commit", "-m", "init")
-    (root / "docs" / "link.md").unlink()  # symlink 自体を削除（ターゲットは残す）
-
-    result = cli.compute_impact_result(root, _config(), "HEAD")
-
-    assert "docs/link.md" not in result.deleted_upstream
-
-
-def test_compute_impact_result_recovers_dangling_design_via_root_internal_absolute_ref_symlink(
-    tmp_path,
-) -> None:
-    # ref 側の symlink が root 内の絶対パスを指す場合は、working tree 側
-    # `_symlink_target_relpath` と同じ規約で root 相対へ変換して追跡し、旧 node_id
-    # を正しく復元できる必要がある（11巡目レビュー対応: codd.py:1103）。ターゲット
-    # 自身は scope 外（docs/**/*.md に含まれない）のため、alias（docs/link.md）を
-    # 削除すると design:d はグラフから完全に失われ、dangling として検出されるべき。
-    _init_repo(tmp_path)
-    _write(tmp_path, "shared/actual.md", _doc("design:d", "design"))
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "link.md").symlink_to(tmp_path / "shared" / "actual.md")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-m", "init")
-    (tmp_path / "docs" / "link.md").unlink()  # symlink 自体を削除（ターゲットは残す）
-
-    result = cli.compute_impact_result(tmp_path, _config(), "HEAD")
-
-    assert "docs/link.md" in result.deleted_upstream
 
 
 def test_compute_impact_result_reports_deleted_code_upstream_with_pep263_encoding(

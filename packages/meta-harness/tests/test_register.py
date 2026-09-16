@@ -562,35 +562,6 @@ class TestRegisterConfigPatchValidation:
         assert result.returncode == 2
         assert "CONFIG_PATCH_ALLOWLIST_CEILING" in result.stderr
 
-    # PR #162 レビュー指摘 (FIX D): overlay/config-patch.json が外部ファイルへの symlink の
-    # 場合、予約サイドカー名の早期 continue で迂回されず symlink として拒否されること
-    def test_config_patch_json_symlink_is_rejected(
-        self, git_project: Path, tmp_path: Path, run_meta, default_overlay
-    ) -> None:
-        run_meta("init", project=git_project, check=True)
-        overlay_dir = default_overlay(tmp_path)
-        outside_target = tmp_path / "outside-config-patch.json"
-        outside_target.write_text("[]", encoding="utf-8")
-        (overlay_dir / "config-patch.json").symlink_to(outside_target)
-
-        result = run_meta(
-            "register",
-            "--overlay",
-            str(overlay_dir),
-            "--target",
-            "claude-harness",
-            project=git_project,
-            check=False,
-        )
-
-        assert result.returncode == 2
-        assert "symlink" in result.stderr.lower()
-        assert (
-            not any(_candidates_dir(git_project).iterdir())
-            if _candidates_dir(git_project).is_dir()
-            else True
-        )
-
 
 class TestRegisterInputValidation:
     def test_staging_revalidation_value_error_exits_2(

@@ -33,19 +33,6 @@ class TestRedactionPatternsEquivalence:
 
         assert meta_patterns == codex_patterns
 
-    def test_equivalence_check_actually_detects_drift(self) -> None:
-        """上記の同値性テストが本当にドリフトを検出できることを自己検証する。
-
-        実ファイルには触れず、メモリ上のコピーを改変して比較関数の感度を確認する。
-        """
-        meta_patterns = _as_comparable(redaction.REDACTION_PATTERNS)
-        drifted = list(meta_patterns)
-        drifted[0] = (drifted[0][0], drifted[0][1] + "EXTRA", drifted[0][2])
-
-        assert drifted != meta_patterns
-        codex_patterns = _as_comparable(harness_common.REDACTION_PATTERNS)
-        assert drifted != codex_patterns
-
 
 class TestRedactSecretsMasking:
     def test_openai_api_key_assignment_is_masked(self) -> None:

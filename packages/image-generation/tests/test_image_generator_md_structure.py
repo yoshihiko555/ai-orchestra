@@ -118,18 +118,12 @@ SKILL_PHASE3 = _section(SKILL_SECTIONS, "Phase 3")
 class TestSandboxPolicyResidualRisk:
     """レビュー修正 2: Residual risk 節が style の supply-chain リスクに言及する。"""
 
-    def test_residual_risk_mentions_style_as_untrusted_input(self) -> None:
+    def test_residual_risk_mentions_style_supply_chain_risk(self) -> None:
         assert "Style definition files are untrusted input" in SANDBOX_POLICY
-
-    def test_residual_risk_mentions_default_style_automatic_inclusion(self) -> None:
         assert "default_style" in SANDBOX_POLICY
         assert "automatically" in SANDBOX_POLICY.lower()
-
-    def test_residual_risk_mentions_sync_propagation(self) -> None:
         assert "sync" in SANDBOX_POLICY.lower()
         assert "every project" in SANDBOX_POLICY.lower()
-
-    def test_residual_risk_applies_existing_defense_in_depth_to_style(self) -> None:
         assert "defense-in-depth" in SANDBOX_POLICY.lower()
 
 

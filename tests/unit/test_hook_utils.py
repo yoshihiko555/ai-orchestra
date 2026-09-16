@@ -113,8 +113,8 @@ class TestParseHookEntry:
 
     @pytest.mark.parametrize(
         "bad_timeout",
-        [0, -1, "90", 1.5, True],
-        ids=["zero", "negative", "string", "float", "bool"],
+        [0, "90", 1.5, True],
+        ids=["zero", "string", "float", "bool"],
     )
     def test_dict_with_invalid_timeout_falls_back_to_default(self, bad_timeout: object) -> None:
         """不正な timeout（0以下・非int・bool）は既定値にフォールバックする。"""

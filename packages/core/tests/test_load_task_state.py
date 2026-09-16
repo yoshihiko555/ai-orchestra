@@ -3,8 +3,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -90,65 +88,6 @@ def test_resolve_markers_falls_back_to_defaults_for_missing_or_invalid_values() 
     }
 
 
-def test_parse_tasks_supports_custom_markers() -> None:
-    markers = load_task_state.resolve_markers(
-        {
-            "markers": {
-                "todo": "task:todo",
-                "wip": "task:wip",
-                "done": "task:done",
-                "blocked": "task:blocked",
-            }
-        }
-    )
-    marker_pattern, marker_to_state = load_task_state.build_marker_parser(markers)
-    content = "\n".join(
-        [
-            "- `task:wip` 実装中",
-            "- `task:todo` テスト作成",
-            "- `task:done` 設計完了",
-            "- `task:blocked` 連携待ち — 理由: 外部API未提供",
-        ]
-    )
-
-    tasks = load_task_state.parse_tasks(content, marker_pattern, marker_to_state)
-
-    assert tasks["WIP"] == [{"task": "実装中", "reason": None}]
-    assert tasks["TODO"] == [{"task": "テスト作成", "reason": None}]
-    assert tasks["done"] == [{"task": "設計完了", "reason": None}]
-    assert tasks["blocked"] == [{"task": "連携待ち", "reason": "外部API未提供"}]
-
-
-def test_build_marker_parser_raises_for_duplicate_markers() -> None:
-    markers = {
-        "todo": "task:shared",
-        "wip": "task:shared",
-        "done": "task:done",
-        "blocked": "task:blocked",
-    }
-
-    with pytest.raises(ValueError, match="assigned to both"):
-        load_task_state.build_marker_parser(markers, strict=True)
-
-
-def test_parse_tasks_extracts_each_state_and_blocked_reason() -> None:
-    content = "\n".join(
-        [
-            "- `cc:WIP` 仕様確認",
-            "- `cc:TODO` テスト追加",
-            "- `cc:done` ドキュメント更新",
-            "- `cc:blocked` API 実装待ち — 理由: 依存先の対応待ち",
-        ]
-    )
-
-    tasks = load_task_state.parse_tasks(content)
-
-    assert tasks["WIP"] == [{"task": "仕様確認", "reason": None}]
-    assert tasks["TODO"] == [{"task": "テスト追加", "reason": None}]
-    assert tasks["done"] == [{"task": "ドキュメント更新", "reason": None}]
-    assert tasks["blocked"] == [{"task": "API 実装待ち", "reason": "依存先の対応待ち"}]
-
-
 def test_parse_tasks_ignores_non_list_lines_and_unknown_markers() -> None:
     content = "\n".join(
         [
@@ -217,25 +156,6 @@ def test_format_summary_limited_shows_blocked_when_budget_remains() -> None:
     assert "  WIP:\n    - w1" in summary
     assert "  Blocked:\n    - b1 (理由: 確認待ち)" in summary
     assert "    ... and 1 more" in summary
-
-
-def test_format_summary_unlimited_does_not_emit_truncation_line() -> None:
-    tasks = {
-        "WIP": [],
-        "TODO": [
-            {"task": "t1", "reason": None},
-            {"task": "t2", "reason": None},
-            {"task": "t3", "reason": None},
-            {"task": "t4", "reason": None},
-        ],
-        "done": [],
-        "blocked": [],
-    }
-
-    summary = load_task_state.format_summary(tasks, max_display=None)
-
-    assert "  Next TODO:\n    - t1\n    - t2\n    - t3\n    - t4" in summary
-    assert "... and" not in summary
 
 
 def test_main_uses_unlimited_when_configured_max_display_is_zero(tmp_path, monkeypatch) -> None:

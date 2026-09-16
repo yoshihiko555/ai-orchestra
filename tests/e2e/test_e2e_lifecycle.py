@@ -85,36 +85,6 @@ class TestLifecycleOrchestraUpdate:
         finally:
             policy_path.write_text(original, encoding="utf-8")
 
-    @requires_writable_repo
-    def test_config_update_preserves_local(self, e2e_project: Path, orchestra_dir: Path) -> None:
-        """#72: config 値変更 → ベース更新、local 保持"""
-        run_orchex("setup", "essential", project=e2e_project)
-        run_session_start(e2e_project, "s1")
-
-        # Create local override
-        config_dir = e2e_project / ".claude" / "config" / "agent-routing"
-        config_dir.mkdir(parents=True, exist_ok=True)
-        local_config = config_dir / "cli-tools.local.yaml"
-        local_config.write_text("codex:\n  model: e2e-local-model\n", encoding="utf-8")
-
-        # Modify base config
-        base_config = orchestra_dir / "packages" / "agent-routing" / "config" / "cli-tools.yaml"
-        original = base_config.read_text(encoding="utf-8")
-        try:
-            base_config.write_text(original + "\n# E2E_CONFIG_TEST\n", encoding="utf-8")
-
-            run_session_start(e2e_project, "s2")
-
-            # Base updated
-            synced_base = (config_dir / "cli-tools.yaml").read_text(encoding="utf-8")
-            assert "E2E_CONFIG_TEST" in synced_base
-
-            # Local preserved
-            assert local_config.is_file()
-            assert "e2e-local-model" in local_config.read_text(encoding="utf-8")
-        finally:
-            base_config.write_text(original, encoding="utf-8")
-
 
 class TestLifecycleUninstall:
     """9.3 パッケージ削除 → クリーンアップ"""

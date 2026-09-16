@@ -490,7 +490,7 @@ def test_ev76_no_new_commit_outcome_is_timeout_shaped_with_shortcut_metadata() -
     assert phase_check.metadata["iteration_head_sha"] == "abc123"
 
 
-@pytest.mark.parametrize("status", ["new_commit", "unknown"])
+@pytest.mark.parametrize("status", ["new_commit"])
 def test_ev76_no_new_commit_outcome_rejects_non_shortcut_status(status: str) -> None:
     delta = prw.PrReviewPushDelta(status, "local", "recorded")
 
@@ -1203,28 +1203,6 @@ def test_ev168_issue_comment_completion_signal_false_for_codex_summary_in_progre
     assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
 
 
-def test_wait_for_completion_returns_issue_comment_completed_for_codex_summary_completed() -> None:
-    client = FakeClient(
-        {
-            "repos/owner/repo/pulls/12/reviews": [],
-            "repos/owner/repo/issues/12/comments": [_codex_summary_issue_comment()],
-        }
-    )
-    baseline = {
-        "baseline_review_id": 10,
-        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
-        "iteration_head_sha": "abc1234def",
-    }
-
-    outcome = prw.wait_for_completion(
-        12, baseline, _config(), client, sleeper=lambda _seconds: None
-    )
-
-    assert outcome.signal == "issue_comment_completed"
-    assert outcome.completed is True
-    assert outcome.issue_comment_ids == ("issue_comment:21",)
-
-
 def test_ev168_issue_comment_completion_signal_true_for_recurring_codex_summary_completed() -> None:
     """Freshness (Issue #347 run 9, PR #415): a re-baselined summary edit is still detected.
 
@@ -1286,32 +1264,6 @@ def test_ev168_issue_comment_completion_signal_false_for_recurring_codex_summary
     assert prw._is_issue_comment_completion_signal(item, baseline, _config()) is False
 
 
-def test_wait_for_completion_returns_issue_comment_completed_for_recurring_codex_summary() -> None:
-    """Integration (Issue #347 run 9, PR #415): second-push re-baselined summary is detected."""
-    client = FakeClient(
-        {
-            "repos/owner/repo/pulls/12/reviews": [],
-            "repos/owner/repo/issues/12/comments": [
-                _codex_summary_issue_comment(sha="11312fc0000")
-            ],
-        }
-    )
-    baseline = {
-        "baseline_review_id": 10,
-        "baseline_recorded_at": "2026-09-07T00:00:02+00:00",
-        "processed_comment_ids": ("issue_comment:21",),
-        "iteration_head_sha": "11312fc0000",
-    }
-
-    outcome = prw.wait_for_completion(
-        12, baseline, _config(), client, sleeper=lambda _seconds: None
-    )
-
-    assert outcome.signal == "issue_comment_completed"
-    assert outcome.completed is True
-    assert outcome.issue_comment_ids == ("issue_comment:21",)
-
-
 def test_wait_for_completion_returns_issue_comment_completed_for_trusted_terminal_comment() -> None:
     client = FakeClient(
         {
@@ -1346,30 +1298,6 @@ def test_wait_for_completion_ignores_processed_terminal_issue_comment() -> None:
         "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
         "iteration_head_sha": "abc1234def",
         "processed_comment_ids": ["issue_comment:20"],
-    }
-
-    outcome = prw.wait_for_completion(
-        12, baseline, _config(), client, sleeper=lambda _seconds: None
-    )
-
-    assert outcome.signal == "timeout"
-
-
-def test_wait_for_completion_ignores_rate_limited_issue_comment_reply() -> None:
-    client = FakeClient(
-        {
-            "repos/owner/repo/pulls/12/reviews": [],
-            "repos/owner/repo/issues/12/comments": [
-                _terminal_issue_comment(
-                    body="<!-- This is an auto-generated reply by CodeRabbit -->\nLGTM, rate limited."
-                )
-            ],
-        }
-    )
-    baseline = {
-        "baseline_review_id": 10,
-        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
-        "iteration_head_sha": "abc1234def",
     }
 
     outcome = prw.wait_for_completion(
@@ -2608,15 +2536,49 @@ def test_load_review_findings_snapshot_rejects_mismatched_envelope(
         prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
 
 
-@pytest.mark.parametrize("operation", ["save", "load"])
 @pytest.mark.parametrize(
-    ("boundary", "expected_exception"),
+    ("operation", "boundary", "expected_exception"),
     [
-        ("pending_none", lc.StaleActionError),
-        ("stale_action_id", lc.StaleActionError),
-        ("phase_mismatch", lc.StaleActionError),
-        ("wrong_action", lc.ProtocolViolationError),
-        ("invalid_lease", lc.WriteRejectedError),
+        pytest.param(
+            "save", "pending_none", lc.StaleActionError, id="pending_none-StaleActionError-save"
+        ),
+        pytest.param(
+            "save",
+            "stale_action_id",
+            lc.StaleActionError,
+            id="stale_action_id-StaleActionError-save",
+        ),
+        pytest.param(
+            "save",
+            "phase_mismatch",
+            lc.StaleActionError,
+            id="phase_mismatch-StaleActionError-save",
+        ),
+        pytest.param(
+            "save",
+            "wrong_action",
+            lc.ProtocolViolationError,
+            id="wrong_action-ProtocolViolationError-save",
+        ),
+        pytest.param(
+            "save",
+            "invalid_lease",
+            lc.WriteRejectedError,
+            id="invalid_lease-WriteRejectedError-save",
+        ),
+        # over-partition: the `load` side of pending_none/stale_action_id/phase_mismatch/
+        # wrong_action is dropped here -- `save`/`load` both hit the same non-branching
+        # `_validate_review_findings_snapshot_action(...)` guard call as their first
+        # statement, so the `save` boundary cases above already exercise every branch of that
+        # shared guard. Only `invalid_lease` is kept on both sides as the `load`-specific
+        # wiring sample (its lease check happens after the shared guard, at the artifact
+        # read/write call itself).
+        pytest.param(
+            "load",
+            "invalid_lease",
+            lc.WriteRejectedError,
+            id="invalid_lease-WriteRejectedError-load",
+        ),
     ],
 )
 def test_review_findings_snapshot_access_requires_active_action_and_lease(

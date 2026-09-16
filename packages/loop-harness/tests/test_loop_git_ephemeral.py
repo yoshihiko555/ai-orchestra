@@ -1416,28 +1416,6 @@ def test_finalize_rejects_symlinked_objects_fanout_directory(
     git_ephemeral.cleanup_ephemeral_git(session)
 
 
-def test_finalize_rejects_symlinked_objects_pack_directory(
-    linked_worktree: GitFixture,
-    tmp_path: Path,
-) -> None:
-    """Fix-8 PoC: a symlinked objects/pack directory is rejected the same way as a fanout dir."""
-    session = _prepare(linked_worktree)
-    _maker_commit(session)
-
-    other_repo = tmp_path / "other-repo-pack"
-    other_repo.mkdir()
-    _git("init", "--bare", "--initial-branch=main", cwd=other_repo)
-    ephemeral_pack = Path(session.ephemeral_dir, "objects", "pack")
-    shutil.rmtree(ephemeral_pack, ignore_errors=True)
-    ephemeral_pack.symlink_to(other_repo / "objects" / "pack")
-
-    with pytest.raises(git_ephemeral.EphemeralGitInfrastructureError, match="symlink"):
-        git_ephemeral.finalize_ephemeral_git(session)
-
-    assert _shared_ref(session) == session.baseline_sha
-    git_ephemeral.cleanup_ephemeral_git(session)
-
-
 def test_finalize_rejects_checkout_branch_change_before_cas(
     linked_worktree: GitFixture,
 ) -> None:

@@ -53,13 +53,6 @@ class TestAgentRouting:
         output = _run_router("research the latest React documentation", e2e_project)
         assert "Agent Routing" in output or "researcher" in output
 
-    def test_tool_auto_routing(self, e2e_project: Path) -> None:
-        """#64: tool: auto のエージェント"""
-        _setup_with_routing(e2e_project)
-        output = _run_router("設計を相談したい", e2e_project)
-        # auto ルーティングで何かしらの提案が出る
-        assert len(output.strip()) > 0 or output == ""  # 提案なしも正常
-
     def test_tool_codex_routing(self, e2e_project: Path) -> None:
         """#65: tool: codex のエージェント — Codex CLI 使用提案"""
         _setup_with_routing(e2e_project)
@@ -68,10 +61,11 @@ class TestAgentRouting:
         assert "Agent Routing" in output or "debugger" in output or "codex" in output.lower()
 
     def test_tool_claude_direct_routing(self, e2e_project: Path) -> None:
-        """#66: tool: claude-direct のエージェント"""
+        """#66: tool: claude-direct のエージェント（architect）は外部 CLI 実行コマンドを提案しない"""
         _setup_with_routing(e2e_project)
-        output = _run_router("テストを書いて", e2e_project)
-        assert "Agent Routing" in output or "tester" in output or output.strip() == ""
+        output = _run_router("アーキテクチャを設計して", e2e_project)
+        assert "codex exec" not in output
+        assert "agy -p" not in output
 
     def test_codex_disabled_suppresses_codex(self, e2e_project: Path) -> None:
         """#67: codex.enabled: false 時に Codex 提案が抑制"""

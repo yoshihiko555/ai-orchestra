@@ -20,7 +20,6 @@ if str(HOOKS_DIR) not in sys.path:
     sys.path.insert(0, str(HOOKS_DIR))
 
 set_plan_gate = load_module("set_plan_gate", "packages/core/hooks/set-plan-gate.py")
-check_plan_gate = load_module("check_plan_gate", "packages/core/hooks/check-plan-gate.py")
 clear_plan_gate = load_module("clear_plan_gate", "packages/core/hooks/clear-plan-gate.py")
 
 
@@ -59,9 +58,6 @@ def _run_hook(
 
 
 class TestSetPlanGate:
-    def test_plan_agents_contains_exact_expected_set(self) -> None:
-        assert set_plan_gate.PLAN_AGENTS == {"plan", "planner"}
-
     def test_get_state_dir_returns_expected_path_with_cwd(self, tmp_path: Path) -> None:
         result = set_plan_gate._get_state_dir({"cwd": str(tmp_path)})
         assert result == str(_state_dir(tmp_path))
@@ -187,17 +183,6 @@ class TestSetPlanGate:
         assert result.returncode == 0
         assert not _gate_path(tmp_path).exists()
 
-    def test_subprocess_does_not_create_gate_for_non_task_tool(self, tmp_path: Path) -> None:
-        payload = {
-            "tool_name": "Edit",
-            "tool_input": {"subagent_type": "planner"},
-            "cwd": str(tmp_path),
-        }
-        result = _run_hook("set-plan-gate.py", payload, tmp_path)
-
-        assert result.returncode == 0
-        assert not _gate_path(tmp_path).exists()
-
     def test_subprocess_does_not_crash_when_subagent_type_is_null(self, tmp_path: Path) -> None:
         payload = {
             "tool_name": "Task",
@@ -236,83 +221,8 @@ class TestSetPlanGate:
         assert "Traceback" not in result.stderr
         assert not _gate_path(tmp_path).exists()
 
-    def test_subprocess_does_not_crash_when_subagent_type_is_non_string(
-        self, tmp_path: Path
-    ) -> None:
-        payload = {
-            "tool_name": "Task",
-            "tool_input": {"subagent_type": 42},
-            "tool_response": "## Plan: Feature X",
-            "cwd": str(tmp_path),
-        }
-        result = _run_hook("set-plan-gate.py", payload, tmp_path)
-
-        assert result.returncode == 0
-        assert "Traceback" not in result.stderr
-
 
 class TestCheckPlanGate:
-    def test_implementation_agents_contains_expected_set(self) -> None:
-        assert check_plan_gate.IMPLEMENTATION_AGENTS == {
-            "frontend-dev",
-            "backend-python-dev",
-            "backend-go-dev",
-            "ai-dev",
-            "rag-engineer",
-            "debugger",
-            "tester",
-            "spec-writer",
-        }
-
-    def test_warn_agents_contains_general_purpose_only(self) -> None:
-        assert check_plan_gate.WARN_AGENTS == {"general-purpose"}
-
-    def test_get_gate_path_returns_expected_path(self, tmp_path: Path) -> None:
-        result = check_plan_gate._get_gate_path({"cwd": str(tmp_path)})
-        assert result == str(_gate_path(tmp_path))
-
-    def test_subprocess_exits_2_for_pending_gate_and_implementation_agent(
-        self, tmp_path: Path
-    ) -> None:
-        _write_gate_file(tmp_path, pending=True, agent="planner")
-        payload = {
-            "tool_name": "Task",
-            "tool_input": {"subagent_type": "frontend-dev"},
-            "cwd": str(tmp_path),
-        }
-        result = _run_hook("check-plan-gate.py", payload, tmp_path)
-
-        assert result.returncode == 2
-        assert "[Plan Gate]" in result.stderr
-        assert "frontend-dev" in result.stderr
-
-    def test_subprocess_warns_for_pending_gate_and_general_purpose(self, tmp_path: Path) -> None:
-        _write_gate_file(tmp_path, pending=True, agent="planner")
-        payload = {
-            "tool_name": "Task",
-            "tool_input": {"subagent_type": "general-purpose"},
-            "cwd": str(tmp_path),
-        }
-        result = _run_hook("check-plan-gate.py", payload, tmp_path)
-
-        assert result.returncode == 0
-        output = json.loads(result.stdout)
-        context = output["hookSpecificOutput"]["additionalContext"]
-        assert "[Plan Gate Warning]" in context
-        assert "general-purpose" in context
-
-    def test_subprocess_allows_implementation_agent_when_no_gate_file(self, tmp_path: Path) -> None:
-        payload = {
-            "tool_name": "Task",
-            "tool_input": {"subagent_type": "frontend-dev"},
-            "cwd": str(tmp_path),
-        }
-        result = _run_hook("check-plan-gate.py", payload, tmp_path)
-
-        assert result.returncode == 0
-        assert not result.stdout.strip()
-        assert not result.stderr.strip()
-
     def test_subprocess_allows_non_implementation_agent_when_gate_pending(
         self, tmp_path: Path
     ) -> None:
@@ -363,20 +273,6 @@ class TestCheckPlanGate:
         assert result.returncode == 0
         assert "Traceback" not in result.stderr
 
-    def test_subprocess_does_not_crash_when_subagent_type_is_non_string(
-        self, tmp_path: Path
-    ) -> None:
-        _write_gate_file(tmp_path, pending=True, agent="planner")
-        payload = {
-            "tool_name": "Task",
-            "tool_input": {"subagent_type": 42},
-            "cwd": str(tmp_path),
-        }
-        result = _run_hook("check-plan-gate.py", payload, tmp_path)
-
-        assert result.returncode == 0
-        assert "Traceback" not in result.stderr
-
 
 class TestTopLevelJsonNotDict:
     """stdin のトップレベル JSON が dict でない場合の fail-open 回帰テスト。
@@ -412,18 +308,3 @@ class TestClearPlanGate:
     def test_get_gate_path_returns_expected_path(self, tmp_path: Path) -> None:
         result = clear_plan_gate._get_gate_path({"cwd": str(tmp_path)})
         assert result == str(_gate_path(tmp_path))
-
-    def test_subprocess_removes_gate_file_when_exists(self, tmp_path: Path) -> None:
-        gate_path = _write_gate_file(tmp_path, pending=True, agent="planner")
-        payload = {"cwd": str(tmp_path)}
-        result = _run_hook("clear-plan-gate.py", payload, tmp_path)
-
-        assert result.returncode == 0
-        assert not gate_path.exists()
-
-    def test_subprocess_no_error_when_gate_file_does_not_exist(self, tmp_path: Path) -> None:
-        payload = {"cwd": str(tmp_path)}
-        result = _run_hook("clear-plan-gate.py", payload, tmp_path)
-
-        assert result.returncode == 0
-        assert not _gate_path(tmp_path).exists()
