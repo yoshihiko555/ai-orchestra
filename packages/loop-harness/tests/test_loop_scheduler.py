@@ -178,6 +178,11 @@ def test_active_loop_ids_filters_running_and_waiting_external(tmp_path: Path) ->
     _seed_state(tmp_path, "aaaaaaaa-issue-1", status="running")
     _seed_state(tmp_path, "aaaaaaaa-issue-2", status="waiting_external")
     _seed_state(tmp_path, "aaaaaaaa-issue-3", status="passed")
+    # EV-51: terminal statuses (stopped/failed) must never be reported as active either --
+    # `respawn_orphaned_active_loops()`'s own terminal-status guard is a no-op unless
+    # `active_loop_ids()` already excludes them here.
+    _seed_state(tmp_path, "aaaaaaaa-issue-4", status="stopped")
+    _seed_state(tmp_path, "aaaaaaaa-issue-5", status="failed")
     active = scheduler.active_loop_ids(str(tmp_path))
     assert active == {"aaaaaaaa-issue-1", "aaaaaaaa-issue-2"}
 
@@ -470,45 +475,6 @@ def test_reap_finished_workers_restarts_abnormal_exit_when_not_terminal(
 
     assert result == [loop_id]
     assert runtime.workers[loop_id] is respawned
-
-
-def test_reap_finished_workers_does_not_restart_when_stopped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _init_repo(tmp_path)
-    project_dir = str(tmp_path)
-    loop_id = "aaaaaaaa-issue-1"
-    _seed_state(tmp_path, loop_id, status="stopped")
-    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
-
-    def _fail_spawn(lid: str, project: str) -> None:
-        raise AssertionError("must not restart a safety-stopped loop")
-
-    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
-
-    result = scheduler.reap_finished_workers(runtime, project_dir)
-
-    assert result == []
-    assert loop_id not in runtime.workers
-
-
-def test_reap_finished_workers_does_not_restart_when_failed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _init_repo(tmp_path)
-    project_dir = str(tmp_path)
-    loop_id = "aaaaaaaa-issue-1"
-    _seed_state(tmp_path, loop_id, status="failed")
-    runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
-
-    def _fail_spawn(lid: str, project: str) -> None:
-        raise AssertionError("must not restart a normally-failed loop")
-
-    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
-
-    result = scheduler.reap_finished_workers(runtime, project_dir)
-
-    assert result == []
 
 
 def test_reap_finished_workers_does_not_restart_when_passed(
@@ -825,28 +791,6 @@ def test_respawn_orphaned_active_loops_skips_when_lease_still_alive(
 
     assert result == []
     assert loop_id not in runtime.workers
-
-
-@pytest.mark.parametrize("status", ["stopped", "failed"])
-def test_respawn_orphaned_active_loops_never_touches_terminal_status(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
-) -> None:
-    """EV-51: a safety-stopped (or normally-failed) loop must never be auto-restarted, even
-    with no lease at all."""
-    _init_repo(tmp_path)
-    project_dir = str(tmp_path)
-    loop_id = "aaaaaaaa-issue-1"
-    _seed_state(tmp_path, loop_id, status=status)
-    runtime = scheduler.SchedulerRuntime()
-
-    def _fail_spawn(lid: str, project: str) -> None:
-        raise AssertionError(f"must not respawn a {status} loop")
-
-    monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
-
-    result = scheduler.respawn_orphaned_active_loops(runtime, project_dir)
-
-    assert result == []
 
 
 def test_respawn_orphaned_active_loops_respects_concurrency_cap(
@@ -1965,21 +1909,6 @@ def test_render_cron_entry_is_alive_command_omits_definition_id_for_default(
     assert "--definition" not in is_alive_command
 
 
-def test_render_cron_entry_is_alive_command_differs_across_definitions(tmp_path: Path) -> None:
-    """J4: two definitions in the same project must not collide on the same liveness guard, or
-    a running scheduler for one definition would block the other's cron entry from ever
-    starting its own scheduler."""
-    entry_default = scheduler.render_cron_entry(str(tmp_path))
-    entry_custom = scheduler.render_cron_entry(str(tmp_path), definition_id="custom-loop")
-
-    def _is_alive_command(entry: str) -> str:
-        start = entry.rindex(" && ", 0, entry.index("is-alive"))
-        end = entry.index(" || ", start)
-        return entry[start:end]
-
-    assert _is_alive_command(entry_default) != _is_alive_command(entry_custom)
-
-
 def test_render_cron_entry_is_alive_and_fallback_share_project_and_definition_args(
     tmp_path: Path,
 ) -> None:
@@ -2272,12 +2201,6 @@ def test_render_launchd_plist_label_includes_definition_id_for_non_default(
 def test_render_launchd_plist_label_omits_definition_id_for_default(tmp_path: Path) -> None:
     plist = scheduler.render_launchd_plist(str(tmp_path))
     assert "custom-loop" not in _launchd_label(plist)
-
-
-def test_render_launchd_plist_label_differs_across_definitions(tmp_path: Path) -> None:
-    plist_default = scheduler.render_launchd_plist(str(tmp_path))
-    plist_custom = scheduler.render_launchd_plist(str(tmp_path), definition_id="custom-loop")
-    assert _launchd_label(plist_default) != _launchd_label(plist_custom)
 
 
 # --------------------------------------------------------------------------------------------

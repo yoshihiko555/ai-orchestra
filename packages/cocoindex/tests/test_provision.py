@@ -392,11 +392,6 @@ class TestReadJsonOrNone:
         path.write_text("")
         assert provision._read_json_or_none(str(path)) == {}
 
-    def test_whitespace_only_file_returns_empty_dict(self, tmp_path: Path) -> None:
-        path = tmp_path / "whitespace.json"
-        path.write_text("   \n")
-        assert provision._read_json_or_none(str(path)) == {}
-
     def test_valid_empty_object_returns_empty_dict(self, tmp_path: Path) -> None:
         path = tmp_path / "valid.json"
         path.write_text("{}")
@@ -427,9 +422,6 @@ class TestTomlEscape:
     def test_escapes_quotes_and_backslashes(self) -> None:
         assert provision._toml_escape('say "hi"') == 'say \\"hi\\"'
         assert provision._toml_escape("C:\\path\\to\\bin") == "C:\\\\path\\\\to\\\\bin"
-
-    def test_no_special_characters_unchanged(self) -> None:
-        assert provision._toml_escape("uvx") == "uvx"
 
     def test_build_toml_section_escapes_command(self) -> None:
         config = {

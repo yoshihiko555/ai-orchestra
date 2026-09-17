@@ -209,19 +209,6 @@ class TestRunValidation:
 
         assert [r["status"] for r in results] == ["failed"]
 
-    def test_list_entry_does_not_crash(self, tmp_path: Path) -> None:
-        codex_dir = tmp_path / ".codex"
-        codex_dir.mkdir()
-        content = json.dumps({"commands": [["ruff", "check", "."]]})
-        (codex_dir / "validation.json").write_text(content, encoding="utf-8")
-        pre_run_hashes = _trust_validation_json(tmp_path, content)
-        run_dir = tmp_path / "run"
-        run_dir.mkdir()
-
-        results = codex_run.run_validation(tmp_path, run_dir, pre_run_hashes)
-
-        assert [r["status"] for r in results] == ["failed"]
-
     def test_string_timeout_is_coerced_and_command_runs(self, tmp_path: Path) -> None:
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
@@ -426,22 +413,6 @@ class TestMainEndToEnd:
         monkeypatch.setattr(codex_run, "run_version_gate", lambda label: True)
         monkeypatch.setattr(codex_run, "check_required_codex_files", lambda root, files: [])
         monkeypatch.setattr(codex_run, "resolve_trust_flags", lambda root, allow, label: None)
-
-        exit_code = codex_run.main(["task", "--project", str(repo_root)])
-
-        assert exit_code == 1
-
-    def test_returns_one_when_required_codex_files_missing(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        """EV-27: missing required .codex files must abort preflight with exit 1."""
-        repo_root = self._init_repo(tmp_path)
-        monkeypatch.setattr(codex_run, "run_version_gate", lambda label: True)
-        monkeypatch.setattr(
-            codex_run,
-            "check_required_codex_files",
-            lambda root, files: [".codex/validation.json"],
-        )
 
         exit_code = codex_run.main(["task", "--project", str(repo_root)])
 

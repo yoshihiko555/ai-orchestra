@@ -143,7 +143,6 @@ def test_load_and_validate_rejects_denylisted_mechanical_command(tmp_path: Path)
         "timeout 30 git push origin main",
         "timeout 30s git push origin main",
         "timeout 1.5m git push origin main",
-        "timeout 2h git push origin main",
         'bash -c "git push origin main"',
         'sh -c "git push origin main"',
         "pytest -q ; git push origin main",

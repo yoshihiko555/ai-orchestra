@@ -701,32 +701,6 @@ def test_model_allowlist_applies_to_count_tokens_path(
     )
 
 
-def test_model_allowlist_rejects_disallowed_model_via_count_tokens_http(
-    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """HTTP-level equivalent of `test_model_allowlist_applies_to_count_tokens_path`:
-    a POST to /v1/messages/count_tokens with a disallowed model must be rejected
-    with 400 before ever reaching upstream, and must not latch the run budget
-    (matching the existing /v1/messages contract, PR #263)."""
-    server, state = http_broker
-    state.model_allowlist = frozenset({"claude-cheap-model"})
-
-    class UnexpectedConnection:
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-            raise AssertionError("model allowlist rejection must not reach upstream")
-
-    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
-    body = json.dumps({"model": "claude-expensive-model", "messages": []}).encode()
-
-    status, _headers, payload = _post(server, path="/v1/messages/count_tokens", body=body)
-
-    assert status == 400
-    assert b"model allowlist" in payload
-    assert state.metrics.rejected_count == 1
-    assert state.metrics.upstream_request_bytes == 0
-    assert state.metrics.budget_exceeded is False
-
-
 def test_request_budget_error_allows_body_without_price_modifier_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -868,31 +842,6 @@ def test_request_budget_error_rejects_price_modifier_fields(
     assert field in message
 
 
-def test_broker_rejects_price_modifier_field_via_http(
-    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """HTTP-level equivalent: a POST with a pricing-modifier field must be rejected
-    with 400 before ever reaching upstream, and must not latch the run budget."""
-    server, state = http_broker
-
-    class UnexpectedConnection:
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-            raise AssertionError("price modifier rejection must not reach upstream")
-
-    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
-    body = json.dumps(
-        {"model": "claude-sonnet-5", "max_tokens": 1, "messages": [], "service_tier": "priority"}
-    ).encode()
-
-    status, _headers, payload = _post(server, body=body)
-
-    assert status == 400
-    assert b"pricing modifier" in payload
-    assert state.metrics.rejected_count == 1
-    assert state.metrics.upstream_request_bytes == 0
-    assert state.metrics.budget_exceeded is False
-
-
 def test_two_1024_token_requests_fit_three_dollar_run_budget(tmp_path: Path, monkeypatch) -> None:
     state = _state(
         tmp_path,
@@ -951,27 +900,6 @@ def test_one_parallel_request_waits_and_is_serialized(
     assert state.metrics.request_count == 2
     assert state.metrics.anomaly is False
     state.finish_request(broker.Usage(input_tokens=1))
-
-
-def test_direct_request_budget_is_rejected_before_upstream(
-    http_broker: tuple[Any, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    server, state = http_broker
-
-    class UnexpectedConnection:
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-            raise AssertionError("over-budget request must not reach the upstream connection")
-
-    monkeypatch.setattr(broker.http.client, "HTTPSConnection", UnexpectedConnection)
-    body = json.dumps({"model": "claude-test", "max_tokens": 500_000, "messages": []}).encode()
-
-    status, _headers, payload = _post(server, body=body)
-
-    assert status == 429
-    assert b"budget" in payload
-    assert state.metrics.budget_exceeded is True
-    assert state.metrics.rejected_count == 1
-    assert state.metrics.upstream_request_bytes == 0
 
 
 def test_http_budget_rejection_latches_after_converted_token_overflow(

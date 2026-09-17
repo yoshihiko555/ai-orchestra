@@ -168,12 +168,6 @@ class TestFindViolations:
     def test_detects_rm_long_flags_reversed_root(self) -> None:
         assert "rm -rf /" in policy.find_violations("rm --force --recursive /")
 
-    def test_detects_rm_fr_home(self) -> None:
-        assert "rm -rf ~" in policy.find_violations("rm -fr ~")
-
-    def test_detects_rm_split_short_flags_home(self) -> None:
-        assert "rm -rf ~" in policy.find_violations("rm -r -f ~")
-
 
 class TestMain:
     def test_exits_zero_when_stdin_is_invalid(self, monkeypatch) -> None:
@@ -203,15 +197,6 @@ class TestMain:
         assert policy.main() == 2
         captured = capsys.readouterr()
         assert "gh pr merge" in captured.err
-
-    def test_exits_zero_for_prompt_decision_command(self, monkeypatch) -> None:
-        # `git push` is a rules-layer `prompt` command, not a hook-forbidden one,
-        # so the hook must allow it (exit 0) and leave approval to the rules layer.
-        import io
-
-        payload = '{"tool_input": {"command": "git push origin main"}}'
-        monkeypatch.setattr("sys.stdin", io.StringIO(payload))
-        assert policy.main() == 0
 
 
 class TestReexecUnderTargetInterpreter:

@@ -1,37 +1,18 @@
 """codex exec / gemini -p の検知ロジックのテスト。
 
-log-cli-tools.py と orchestration-route-audit.py の両方で使われている
-正規表現パターンが正しく動作することを検証する。
+`packages/audit/hooks/audit-cli.py` が実際に使う正規表現パターンを import して
+検証する（ローカルにハードコードされたコピーは実装から drift しうるため使わない）。
 """
-
-import re
 
 import pytest
 
-# --- 検知パターン（log-cli-tools.py / route-audit.py と同一） ---
+from tests.module_loader import load_module
 
-CODEX_EXEC_RE = re.compile(
-    r"(?:^|&&|\|\||;|\|)\s*"
-    r"(?:timeout\s+\d+\s+)?"
-    r"(?:\w+=\S+\s+)*codex\s+exec\b",
-    re.IGNORECASE,
-)
+audit_cli = load_module("audit_cli", "packages/audit/hooks/audit-cli.py")
 
-GEMINI_EXEC_RE = re.compile(
-    r"(?:^|&&|\|\||;|\|)\s*"
-    r"(?:timeout\s+\d+\s+)?"
-    r"(?:\w+=\S+\s+)*gemini(?=\s|$)"
-    r"(?:(?!&&|\|\||;|\|).)*\s+-p\b",
-    re.IGNORECASE,
-)
-
-ANTIGRAVITY_EXEC_RE = re.compile(
-    r"(?:^|&&|\|\||;|\|)\s*"
-    r"(?:timeout\s+\d+\s+)?"
-    r"(?:\w+=\S+\s+)*agy(?=\s|$)"
-    r"(?:(?!&&|\|\||;|\|).)*\s+(?:-p|--print|--prompt)(?=\s|$)",
-    re.IGNORECASE,
-)
+CODEX_EXEC_RE = audit_cli.CODEX_EXEC_RE
+GEMINI_EXEC_RE = audit_cli.GEMINI_EXEC_RE
+ANTIGRAVITY_EXEC_RE = audit_cli.ANTIGRAVITY_EXEC_RE
 
 
 # --- codex exec: 検知すべきケース ---

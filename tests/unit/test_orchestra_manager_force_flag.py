@@ -12,8 +12,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from tests.module_loader import load_module
 
@@ -160,11 +163,23 @@ class TestRunInitialSyncForce:
         assert mock_apply.call_args.kwargs == {"dry_run": True}
         assert config_path.read_text(encoding="utf-8") == original_config
 
-    def test_continues_when_config_merge_raises_toml_merge_error(
-        self, tmp_path: Path, monkeypatch, capsys
+    @pytest.mark.parametrize(
+        "make_exception",
+        [
+            pytest.param(lambda: manager_mod.TomlMergeError("bad merge"), id="toml_merge_error"),
+            pytest.param(
+                lambda: tomllib.TOMLDecodeError("bad toml", "doc", 0), id="toml_decode_error"
+            ),
+            pytest.param(lambda: OSError("permission denied"), id="os_error"),
+        ],
+    )
+    def test_continues_when_config_merge_raises(
+        self, tmp_path: Path, monkeypatch, capsys, make_exception
     ) -> None:
-        """R19: apply_codex_harness_config raising TomlMergeError must not crash
-        run_initial_sync (already fail-soft in the implementation; this pins it)."""
+        """R19: apply_codex_harness_config raising TomlMergeError / tomllib.TOMLDecodeError /
+        OSError must not crash run_initial_sync. The implementation catches all three types
+        in a single except clause (already fail-soft); this pins that each type falls into
+        the same warn-and-continue branch."""
         orchestra_dir = tmp_path / "orchestra"
         (orchestra_dir / "packages").mkdir(parents=True)
         _make_orchestra_with_codex_harness(orchestra_dir)
@@ -181,61 +196,7 @@ class TestRunInitialSyncForce:
         with patch.object(
             manager_mod,
             "apply_codex_harness_config",
-            side_effect=manager_mod.TomlMergeError("bad merge"),
-        ):
-            manager.run_initial_sync(project_dir, dry_run=False)
-
-        assert "警告" in capsys.readouterr().err
-
-    def test_continues_when_config_merge_raises_toml_decode_error(
-        self, tmp_path: Path, monkeypatch, capsys
-    ) -> None:
-        """R19: same as above but for tomllib.TOMLDecodeError."""
-        import tomllib
-
-        orchestra_dir = tmp_path / "orchestra"
-        (orchestra_dir / "packages").mkdir(parents=True)
-        _make_orchestra_with_codex_harness(orchestra_dir)
-        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
-
-        project_dir = tmp_path / "project"
-        (project_dir / ".claude").mkdir(parents=True)
-        (project_dir / ".codex").mkdir()
-        (project_dir / ".claude" / "orchestra.json").write_text(
-            json.dumps({"installed_packages": ["codex-harness"]}), encoding="utf-8"
-        )
-
-        manager = OrchestraManager(orchestra_dir)
-        with patch.object(
-            manager_mod,
-            "apply_codex_harness_config",
-            side_effect=tomllib.TOMLDecodeError("bad toml", "doc", 0),
-        ):
-            manager.run_initial_sync(project_dir, dry_run=False)
-
-        assert "警告" in capsys.readouterr().err
-
-    def test_continues_when_config_merge_raises_os_error(
-        self, tmp_path: Path, monkeypatch, capsys
-    ) -> None:
-        """R19: same as above but for OSError (e.g. permission denied on write)."""
-        orchestra_dir = tmp_path / "orchestra"
-        (orchestra_dir / "packages").mkdir(parents=True)
-        _make_orchestra_with_codex_harness(orchestra_dir)
-        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
-
-        project_dir = tmp_path / "project"
-        (project_dir / ".claude").mkdir(parents=True)
-        (project_dir / ".codex").mkdir()
-        (project_dir / ".claude" / "orchestra.json").write_text(
-            json.dumps({"installed_packages": ["codex-harness"]}), encoding="utf-8"
-        )
-
-        manager = OrchestraManager(orchestra_dir)
-        with patch.object(
-            manager_mod,
-            "apply_codex_harness_config",
-            side_effect=OSError("permission denied"),
+            side_effect=make_exception(),
         ):
             manager.run_initial_sync(project_dir, dry_run=False)
 

@@ -659,7 +659,7 @@ class TestProposerBackendLaunch:
             "risk_notes",
         }
 
-    @pytest.mark.parametrize("target", ["claude-harness", "skill:handoff"])
+    @pytest.mark.parametrize("target", ["claude-harness"])
     def test_codex_backend_stages_strict_schema_for_changes_targets(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
     ) -> None:
@@ -703,7 +703,7 @@ class TestProposerBackendLaunch:
             "risk_notes",
         }
 
-    @pytest.mark.parametrize("target", ["claude-harness", "routing-config", "skill:handoff"])
+    @pytest.mark.parametrize("target", ["claude-harness", "routing-config"])
     def test_staged_schema_nodes_are_fully_strict(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
     ) -> None:

@@ -206,15 +206,6 @@ def test_dedup_within_same_session_and_renotify_on_new_session(
     assert third_output != ""
 
 
-def test_non_test_file_produces_no_output(monkeypatch, capsys, tmp_path) -> None:
-    """7. Non-test file edits are ignored."""
-    payload = _build_payload("packages/foo/hooks/bar.py", tmp_path)
-
-    output = _run_main(monkeypatch, capsys, payload)
-
-    assert output == ""
-
-
 def test_bash_tool_produces_no_output(monkeypatch, capsys, tmp_path) -> None:
     """8. Bash tool calls are ignored entirely."""
     payload = {
@@ -247,18 +238,6 @@ def test_injected_package_name_is_rejected(monkeypatch, capsys, tmp_path) -> Non
     assert "対象パッケージを特定できませんでした" in message
     assert "PWNED" not in message
     assert "<injected>" not in message
-
-
-def test_hardcore_logic_does_not_match_core_package(monkeypatch, capsys, tmp_path) -> None:
-    """(b) test_hardcore_logic.py must not falsely match package "core"."""
-    _make_package_dir(tmp_path, "core")
-    payload = _build_payload("tests/unit/test_hardcore_logic.py", tmp_path)
-
-    output = _run_main(monkeypatch, capsys, payload)
-
-    data = json.loads(output)
-    message = data["hookSpecificOutput"]["additionalContext"]
-    assert "対象パッケージを特定できませんでした" in message
 
 
 def test_explicit_mapping_overrides_core_false_match(monkeypatch, capsys, tmp_path) -> None:

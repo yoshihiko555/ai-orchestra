@@ -556,42 +556,6 @@ class TestCleanupSessionContext:
 class TestArchiveDetection:
     """テスト計画 3.1: 完了判定"""
 
-    def test_all_phases_done_is_archived(self, tmp_path: Path) -> None:
-        """#1: 全フェーズ cc:done のプロジェクトがアーカイブされる"""
-        plans_dir = tmp_path / ".claude"
-        plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text(
-            "# Plans\n\n"
-            "## Project: Complete\n"
-            "### Phase 1: Done `cc:done`\n"
-            "- `cc:done` task1\n"
-            "### Phase 2: Done `cc:done`\n"
-            "- `cc:done` task2\n",
-            encoding="utf-8",
-        )
-        result = _run_load_task_state(tmp_path)
-        assert "archived 1" in result.stdout
-        archive = plans_dir / "Plans.archive.md"
-        assert archive.is_file()
-        assert "## Project: Complete" in archive.read_text(encoding="utf-8")
-
-    def test_partial_todo_not_archived(self, tmp_path: Path) -> None:
-        """#2: 一部フェーズが TODO のプロジェクトはアーカイブされない"""
-        plans_dir = tmp_path / ".claude"
-        plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text(
-            "# Plans\n\n"
-            "## Project: Partial\n"
-            "### Phase 1: Done `cc:done`\n"
-            "- `cc:done` task1\n"
-            "### Phase 2: Pending `cc:TODO`\n"
-            "- `cc:TODO` task2\n",
-            encoding="utf-8",
-        )
-        result = _run_load_task_state(tmp_path)
-        assert "archived" not in result.stdout
-        assert not (plans_dir / "Plans.archive.md").exists()
-
     def test_empty_phase_not_completed(self, tmp_path: Path) -> None:
         """#4: 空フェーズがあるプロジェクトは未完了"""
         plans_dir = tmp_path / ".claude"

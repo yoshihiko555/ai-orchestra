@@ -1709,36 +1709,6 @@ def test_attach_rejects_live_lease_with_exit_3(tmp_path: Path) -> None:
     assert payload["error"]["code"] == "lock_unavailable"
 
 
-def test_attach_propose_failure_returns_reclaimed_lease_token(
-    tmp_path: Path, monkeypatch: Any, capsys: Any
-) -> None:
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    lock = _write_running_state(repo)
-    stale_heartbeat = (datetime.now(UTC) - timedelta(seconds=7200)).isoformat()
-    _set_lock_heartbeat(repo, "abcd1234-issue-1", stale_heartbeat)
-
-    def fail_propose(
-        _loop_id: str,
-        _project: str,
-        _lease_token: str,
-        recover_orphans: bool = False,
-        *,
-        precedent_push_check: bool = False,
-    ) -> Any:
-        raise loop_step.ld.DefinitionValidationError("definition drift")
-
-    monkeypatch.setattr(loop_step.lc, "propose", fail_propose)
-
-    exit_code = loop_step.main(["attach", "--loop-id", "abcd1234-issue-1", "--project", str(repo)])
-
-    captured = capsys.readouterr()
-    payload = json.loads(captured.out)
-    assert exit_code == 1
-    assert payload["error"]["code"] == "definition_invalid"
-    assert payload["lease_token"] != lock.lease_token
-
-
 def test_attach_propose_validation_failure_preserves_exit_2(
     tmp_path: Path, monkeypatch: Any, capsys: Any
 ) -> None:

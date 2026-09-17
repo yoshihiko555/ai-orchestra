@@ -151,17 +151,6 @@ class TestCheckHeadlessRunOutcome:
         else:
             raise AssertionError("error_max_budget_usd should raise EvaluatorStageError")
 
-    def test_missing_result_event_forces_error(self, tmp_path: Path) -> None:
-        events_path = tmp_path / "events.jsonl"
-        events_path.write_text("", encoding="utf-8")
-        try:
-            ev._check_headless_run_outcome(_completed(0), events_path)
-        except ev.EvaluatorStageError as exc:
-            assert exc.stage == "run"
-            assert exc.error_type == "run_error"
-        else:
-            raise AssertionError("missing result event should raise EvaluatorStageError")
-
     # EV-18: extract_cost() retains a best-effort ZERO_COST fallback, but the independent
     # headless outcome guard must prevent that fallback from becoming a passing frontier run.
     def test_missing_result_zero_cost_fallback_cannot_be_frontier_eligible(

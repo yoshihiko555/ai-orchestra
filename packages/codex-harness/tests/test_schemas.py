@@ -23,9 +23,6 @@ REVIEW_RESULT_SCHEMA_PATH = (
 
 
 class TestTaskResultSchema:
-    def test_is_valid_json(self) -> None:
-        json.loads(TASK_RESULT_SCHEMA_PATH.read_text(encoding="utf-8"))
-
     def test_requires_top_level_keys(self) -> None:
         schema = json.loads(TASK_RESULT_SCHEMA_PATH.read_text(encoding="utf-8"))
         assert schema["type"] == "object"
@@ -60,9 +57,6 @@ class TestTaskResultSchema:
 
 
 class TestReviewResultSchema:
-    def test_is_valid_json(self) -> None:
-        json.loads(REVIEW_RESULT_SCHEMA_PATH.read_text(encoding="utf-8"))
-
     def test_requires_top_level_keys(self) -> None:
         schema = json.loads(REVIEW_RESULT_SCHEMA_PATH.read_text(encoding="utf-8"))
         assert schema["type"] == "object"

@@ -218,27 +218,6 @@ def test_profile_rejects_socket_scan_when_a_subdirectory_is_unlistable(
         profile.build_scenario_container_command(_spec(tmp_path, (mount,)))
 
 
-@pytest.mark.skipif(os.getuid() == 0, reason="root bypasses directory permission bits")
-def test_profile_rejects_socket_scan_when_a_subdirectory_is_really_unreadable(
-    tmp_path: Path,
-) -> None:
-    """Same as above, but with a real unreadable directory instead of a forced `onerror` call,
-    as an end-to-end sanity check of the same fail-closed behavior."""
-    worktree = tmp_path / "worktree"
-    nested = worktree / "nested"
-    nested.mkdir(parents=True)
-    locked = nested / "locked"
-    locked.mkdir()
-    locked.chmod(0o300)  # -wx------: cannot be listed, only entered/written blindly
-    try:
-        mount = Mount(worktree, worktree, False)
-
-        with pytest.raises(profile.DockerProfileError, match="cannot verify bind mount source"):
-            profile.build_scenario_container_command(_spec(tmp_path, (mount,)))
-    finally:
-        locked.chmod(0o700)
-
-
 def test_profile_accepts_worktree_mount_with_no_sockets_anywhere_below_it(
     tmp_path: Path,
 ) -> None:

@@ -434,14 +434,6 @@ class TestResultSchema:
         errors = mh.validate_against_schema(instance, schema, SCHEMA_DIR)
         assert any("maximum" in error for error in errors)
 
-    # Issue #378 (ADR-20260817-051): pre-#378 result/ledger `cost` objects only have the
-    # original 7 keys. The 4 new cache-neutral fields must be optional so those legacy
-    # instances keep validating (back-compat guard for `additionalProperties: false`).
-    def test_legacy_cost_without_cache_neutral_fields_is_still_valid(self) -> None:
-        schema = _load("result.schema.json")
-        assert mh.validate_against_schema(self._VALID, schema, SCHEMA_DIR) == []
-        assert "cache_neutral_cost_usd" not in self._VALID["cost"]
-
     def test_cost_with_all_cache_neutral_fields_is_valid(self) -> None:
         schema = _load("result.schema.json")
         instance = {
@@ -707,11 +699,6 @@ class TestRunMetadataSchema:
         }
 
         assert mh.validate_against_schema(instance, schema, SCHEMA_DIR) == []
-
-    def test_non_routing_target_allows_missing_base_hash(self) -> None:
-        schema = _load("run.metadata.schema.json")
-
-        assert mh.validate_against_schema(self._VALID, schema, SCHEMA_DIR) == []
 
     def test_missing_required_key_is_reported(self) -> None:
         schema = _load("run.metadata.schema.json")

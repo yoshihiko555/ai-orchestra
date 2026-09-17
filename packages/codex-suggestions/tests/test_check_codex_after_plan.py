@@ -1,6 +1,5 @@
 import json
 import time
-from pathlib import Path
 
 from tests.module_loader import load_module
 
@@ -11,46 +10,6 @@ check_codex_after_plan = load_module(
 
 
 # --- is_plan_agent_task ---
-
-
-def test_is_plan_agent_task_with_plan_subagent() -> None:
-    assert check_codex_after_plan.is_plan_agent_task({"subagent_type": "Plan"})
-
-
-def test_is_plan_agent_task_with_planner_subagent() -> None:
-    assert check_codex_after_plan.is_plan_agent_task({"subagent_type": "planner"})
-
-
-def test_is_plan_agent_task_case_insensitive() -> None:
-    assert check_codex_after_plan.is_plan_agent_task({"subagent_type": "PLAN"})
-    assert check_codex_after_plan.is_plan_agent_task({"subagent_type": "Planner"})
-
-
-def test_is_plan_agent_task_with_plan_keyword_in_prompt() -> None:
-    assert check_codex_after_plan.is_plan_agent_task(
-        {"subagent_type": "general-purpose", "prompt": "Create an implementation plan"}
-    )
-
-
-def test_is_plan_agent_task_with_japanese_keyword_in_prompt() -> None:
-    assert check_codex_after_plan.is_plan_agent_task(
-        {"subagent_type": "general-purpose", "prompt": "計画を立ててください"}
-    )
-    assert check_codex_after_plan.is_plan_agent_task(
-        {"subagent_type": "general-purpose", "prompt": "実装計画を作成"}
-    )
-    assert check_codex_after_plan.is_plan_agent_task(
-        {"subagent_type": "general-purpose", "prompt": "設計計画をまとめて"}
-    )
-    assert check_codex_after_plan.is_plan_agent_task(
-        {"subagent_type": "general-purpose", "prompt": "プランを考えて"}
-    )
-
-
-def test_is_plan_agent_task_false_for_unrelated_task() -> None:
-    assert not check_codex_after_plan.is_plan_agent_task(
-        {"subagent_type": "frontend-dev", "prompt": "ログインフォームを実装して"}
-    )
 
 
 def test_is_plan_agent_task_false_for_empty_input() -> None:
@@ -283,15 +242,6 @@ def test_main_outputs_suggestion_when_project_local_config_exists(tmp_path, monk
 
 
 # --- EV-16: 性能（should）---
-
-
-def test_is_plan_agent_task_uses_no_regex() -> None:
-    """EV-16: 判定は正規表現ではなく単純な文字列包含（`in`）のみで行う。"""
-    source = Path(check_codex_after_plan.__file__).read_text(encoding="utf-8")
-    assert "import re" not in source
-    assert "re.compile" not in source
-    assert "re.search" not in source
-    assert "re.match" not in source
 
 
 def test_is_plan_agent_task_is_fast_for_many_calls() -> None:

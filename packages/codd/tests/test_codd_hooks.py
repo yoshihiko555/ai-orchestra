@@ -1721,14 +1721,22 @@ class TestValidateHookCommitAllClassification:
             True,
         )
 
-    def test_dash_amfix_attached_message_value_is_not_misread_as_interactive(self) -> None:
-        """`-amfix` は `-a` + `-m` の attached value `"fix"` であり、値中の `i` を
-        `-i`（interactive）と誤認してはならない（B-1: bot レビュー Critical 対応）。"""
-        assert validate_hook._classify_commit_invocation("git commit -amfix") == (True, False)
-
-    def test_dash_ma_attached_value_is_not_misread_as_dash_a(self) -> None:
-        """`-ma` は `-m` の attached value `"a"` であり、`--all` 相当ではない（B-1）。"""
-        assert validate_hook._classify_commit_invocation("git commit -ma") == (False, False)
+    @pytest.mark.parametrize(
+        ("invocation_suffix", "expected"),
+        [
+            ("-amfix", (True, False)),
+            ("-ma", (False, False)),
+        ],
+    )
+    def test_dash_amfix_attached_message_value_is_not_misread_as_interactive(
+        self, invocation_suffix: str, expected: tuple[bool, bool]
+    ) -> None:
+        """`-amfix` は `-a` + `-m` の attached value `"fix"` であり値中の `i` を
+        `-i`（interactive）と誤認してはならない。`-ma` は `-m` の attached value
+        `"a"` であり `--all` 相当ではない（B-1: bot レビュー Critical 対応）。"""
+        assert (
+            validate_hook._classify_commit_invocation(f"git commit {invocation_suffix}") == expected
+        )
 
     def test_dash_u_bare_does_not_consume_following_dash_m_value(self) -> None:
         """`-u`（`--untracked-files`）は attached optional value のみを取り、次トークン

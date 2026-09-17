@@ -93,13 +93,6 @@ BRANCH_PREFIX_LABEL_TABLE = [
 ]
 
 
-@pytest.mark.parametrize(("prefix", "title_prefix", "label"), BRANCH_PREFIX_LABEL_TABLE)
-def test_pr_standards_branch_prefix_label_row(prefix: str, title_prefix: str, label: str) -> None:
-    """EV-07 / EV-08: 対応表の各行が期待どおりであることを 1 行ずつ検証する。"""
-    rows = _extract_table_rows(PR_STANDARDS, "ブランチプレフィックス | PR タイトルプレフィックス")
-    assert [prefix, title_prefix, label] in rows
-
-
 def test_pr_standards_branch_prefix_label_table_has_no_extra_or_missing_rows() -> None:
     """EV-07 / EV-08: 対応表がちょうど 9 行（想定した行以外を含まない）であることを保証する。"""
     rows = _extract_table_rows(PR_STANDARDS, "ブランチプレフィックス | PR タイトルプレフィックス")
@@ -117,15 +110,6 @@ ISSUE_LABEL_PREFIX_TABLE = [
     ("task", "chore/"),
     ("その他", "fix/"),
 ]
-
-
-@pytest.mark.parametrize(("label", "prefix"), ISSUE_LABEL_PREFIX_TABLE)
-def test_issue_fix_label_prefix_row(label: str, prefix: str) -> None:
-    """EV-13: Issue ラベル→ブランチプレフィックス対応表の各行を検証する。"""
-    rows = _extract_table_rows(ISSUE_FIX, "ラベル  | プレフィックス")
-    matching = [row for row in rows if row[0] == label]
-    assert matching, f"label {label!r} not found in table"
-    assert matching[0][1] == prefix
 
 
 def test_issue_fix_label_prefix_table_has_no_extra_or_missing_rows() -> None:

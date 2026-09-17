@@ -551,25 +551,6 @@ def test_fetch_bot_allowlist_matches_via_rest_app_slug_join(
     assert comment_authors == ["my-review-bot-bot-actor[bot]"]
 
 
-def test_fetch_bot_allowlist_rest_join_miss_falls_back_to_pseudo(
-    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
-) -> None:
-    """When the REST join has no entry for a comment id, login-based matching still applies."""
-    thread = _thread("T1", comments=[_comment(7, "coderabbitai[bot]", "inline finding")])
-    fake = FakeRun(
-        [
-            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
-            (_is_graphql, _ok(_threads_page([thread]))),
-            (_is_issue_comments, _ok([])),
-            (_is_review_comments, _ok([])),
-        ]
-    )
-    monkeypatch.setattr(prt.subprocess, "run", fake)
-    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
-    comment_authors = [c["author"] for c in result["unresolved_threads"][0]["comments"]]
-    assert comment_authors == ["coderabbitai[bot]"]
-
-
 # --- fetch: reply_target_id normalization (Fix B) --------------------------------
 
 
@@ -781,29 +762,6 @@ def test_fetch_no_skipped_issue_comments_when_none_auto_generated(
 # --- fetch: config loading error contract (Fix E) ----------------------------------
 
 
-def test_fetch_config_load_unexpected_exception_returns_json_error(
-    monkeypatch: pytest.MonkeyPatch, loop_harness_project: Path
-) -> None:
-    """Non-`ConfigError` failures (e.g. malformed YAML) must still hit the JSON contract."""
-    prw_module = prt._import_pr_review_wait()
-    assert prw_module is not None
-
-    def _raise(_project_dir: str) -> None:
-        raise ValueError("boom: invalid YAML")
-
-    monkeypatch.setattr(prw_module, "load_pr_review_config", _raise)
-    fake = FakeRun(
-        [
-            (_is_repo_view, _ok({"nameWithOwner": "o/r"})),
-            (_is_graphql, _ok(_threads_page([]))),
-            (_is_issue_comments, _ok([])),
-        ]
-    )
-    monkeypatch.setattr(prt.subprocess, "run", fake)
-    result = prt.fetch_review_threads(1, str(loop_harness_project), 30)
-    assert result == {"error": "pr_review_config_invalid", "detail": "boom: invalid YAML"}
-
-
 def test_cmd_fetch_config_load_unexpected_exception_exits_2(
     monkeypatch: pytest.MonkeyPatch,
     loop_harness_project: Path,
@@ -832,6 +790,7 @@ def test_cmd_fetch_config_load_unexpected_exception_exits_2(
     assert exit_code == 2
     payload = json.loads(captured.out)
     assert payload["error"] == "pr_review_config_invalid"
+    assert payload["detail"] == "boom: invalid YAML"
     assert captured.err == ""
 
 

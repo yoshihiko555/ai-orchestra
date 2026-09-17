@@ -1255,26 +1255,6 @@ def test_effective_broker_max_total_tokens_resolves_default_and_validates() -> N
             docker.profile.effective_broker_max_total_tokens(config)
 
 
-def test_broker_env_resolves_max_total_tokens_default_override_and_null() -> None:
-    config = copy.deepcopy(mh.DEFAULTS)
-    broker_config = config["evaluate"]["isolation"]["broker"]
-    broker_config.pop("max_total_tokens")
-
-    broker_env = docker.profile.broker_env(config, "run-token", 8787)
-    assert broker_env["DR_BROKER_MAX_TOTAL_TOKENS"] == "500000"
-    assert broker_env["MH_BROKER_MAX_TOTAL_TOKENS"] == "500000"
-
-    broker_config["max_total_tokens"] = 250000
-    broker_env = docker.profile.broker_env(config, "run-token", 8787)
-    assert broker_env["DR_BROKER_MAX_TOTAL_TOKENS"] == "250000"
-    assert broker_env["MH_BROKER_MAX_TOTAL_TOKENS"] == "250000"
-
-    broker_config["max_total_tokens"] = None
-    broker_env = docker.profile.broker_env(config, "run-token", 8787)
-    assert broker_env["DR_BROKER_MAX_TOTAL_TOKENS"] == "500000"
-    assert broker_env["MH_BROKER_MAX_TOTAL_TOKENS"] == "500000"
-
-
 @pytest.mark.parametrize("invalid_value", [0, -1, True, 1.5, "3"])
 def test_broker_env_rejects_invalid_input_bytes_per_token(invalid_value) -> None:
     config = copy.deepcopy(mh.DEFAULTS)

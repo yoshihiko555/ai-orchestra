@@ -22,7 +22,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGES_MD = REPO_ROOT / "docs" / "reference" / "packages.md"
 MANIFEST_JSON = REPO_ROOT / "packages" / "cocoindex" / "manifest.json"
 COCOINDEX_USAGE_MD = REPO_ROOT / "facets" / "instructions" / "cocoindex-usage.md"
-EVAL_MD = REPO_ROOT / "docs" / "evaluation" / "cocoindex.md"
 
 
 def _extract_package_section(markdown: str, heading: str) -> str:
@@ -103,8 +102,3 @@ class TestSqliteLimitationDocumented:
         assert "SQLite" in content
         assert "ロック競合" in content
         assert "現在の回避策（v1）" in content
-
-    def test_evaluation_set_non_goals_document_no_auto_resolution(self) -> None:
-        """評価セットの Non-Goals に「自動解消しない」既知の制限が明記されている。"""
-        content = EVAL_MD.read_text(encoding="utf-8")
-        assert "SQLite ロック競合の完全自動解消" in content

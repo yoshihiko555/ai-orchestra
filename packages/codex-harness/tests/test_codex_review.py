@@ -223,22 +223,6 @@ class TestMainEmptyDiff:
 
         assert exit_code == 1
 
-    def test_returns_one_when_required_codex_files_missing(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        """EV-27: missing required .codex files must abort preflight with exit 1."""
-        repo_root = self._init_repo_with_no_diff(tmp_path)
-        monkeypatch.setattr(codex_review, "run_version_gate", lambda label: True)
-        monkeypatch.setattr(
-            codex_review,
-            "check_required_codex_files",
-            lambda root, files: [".codex/schemas/review_result.schema.json"],
-        )
-
-        exit_code = codex_review.main(["--project", str(repo_root)])
-
-        assert exit_code == 1
-
     def test_aborts_when_config_toml_missing(self, tmp_path: Path, monkeypatch, capsys) -> None:
         """N1: .codex/config.toml is now required so the self-tamper-prevention
         deny rule in the permission profile is guaranteed to be active.

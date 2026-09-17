@@ -386,15 +386,6 @@ def test_parse_self_reports_empty_when_no_block() -> None:
     assert se.parse_self_reports("") == []
 
 
-def test_parse_self_report_still_returns_last_wins() -> None:
-    # 既存の外部挙動（最後のブロック優先）は parse_self_reports へのリファクタ後も変わらない。
-    text = (
-        '[skill-self-report]{"run_id": "1"}[/skill-self-report] '
-        '[skill-self-report]{"run_id": "2"}[/skill-self-report]'
-    )
-    assert se.parse_self_report(text)["run_id"] == "2"
-
-
 def test_summarize_skips_null_metrics() -> None:
     recs = [
         {

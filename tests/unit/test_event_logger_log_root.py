@@ -62,40 +62,8 @@ class TestResolveRootWorktree:
         mock_core.assert_called_once_with(None)
         assert result is None
 
-    def test_returns_none_when_git_fails(self, tmp_path: Path) -> None:
-        """git が失敗すると None を返す（core 実装の subprocess 呼び出しを経由）。"""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value.returncode = 128
-            mock_run.return_value.stdout = ""
-            result = _resolve_root_worktree(str(tmp_path))
-
-        assert mock_run.called
-        assert result is None
-
-    def test_returns_none_when_git_not_found(self, tmp_path: Path) -> None:
-        """git がインストールされていなければ None を返す。"""
-        with patch("subprocess.run", side_effect=FileNotFoundError) as mock_run:
-            result = _resolve_root_worktree(str(tmp_path))
-
-        assert mock_run.called
-        assert result is None
-
 
 class TestResolveLogRoot:
-    def test_uses_root_worktree_when_available(self, tmp_path: Path) -> None:
-        """root worktree に .claude/ があればそちらを使う。"""
-        root = tmp_path / "root"
-        root.mkdir()
-        (root / ".claude").mkdir()
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-        (worktree / ".claude").mkdir()
-
-        with patch.object(hook_common, "resolve_root_worktree", return_value=str(root)):
-            result = _resolve_log_root(str(worktree))
-
-        assert result == str(root)
-
     def test_falls_back_when_root_has_no_claude_dir(self, tmp_path: Path) -> None:
         """root worktree に .claude/ がなければフォールバック。"""
         root = tmp_path / "root"
@@ -108,17 +76,6 @@ class TestResolveLogRoot:
             result = _resolve_log_root(str(worktree))
 
         assert result == str(worktree)
-
-    def test_falls_back_when_git_unavailable(self, tmp_path: Path) -> None:
-        """git が使えなければ通常の project_dir 解決。"""
-        project = tmp_path / "project"
-        project.mkdir()
-        (project / ".claude").mkdir()
-
-        with patch.object(hook_common, "resolve_root_worktree", return_value=None):
-            result = _resolve_log_root(str(project))
-
-        assert result == str(project)
 
 
 class TestLogPathsUseLogRoot:

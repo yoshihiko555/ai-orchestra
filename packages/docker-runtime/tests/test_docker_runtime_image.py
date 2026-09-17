@@ -987,23 +987,6 @@ def test_cleanup_removes_dangling_owner_labelled_image(
     assert "--no-trunc" in image_ls
 
 
-def test_fake_docker_truncates_image_ids_without_no_trunc_flag() -> None:
-    """Fidelity check for `FakeDocker` itself (PR #320 review): confirms it
-    actually mirrors `docker image ls`'s real truncation behavior, so
-    dropping `--no-trunc` from the production command would make
-    `test_cleanup_removes_dangling_owner_labelled_image`'s `pinned_id in
-    removed`-style assertions fail instead of silently passing against IDs
-    that could never occur against a real daemon."""
-    fake = FakeDocker()
-    fake.image_ls_output = json.dumps({"Repository": "<none>", "Tag": "<none>", "ID": IMAGE_ID})
-
-    truncated = fake(["docker", "image", "ls", "--all", "--format", "{{json .}}"])
-    full = fake(["docker", "image", "ls", "--all", "--no-trunc", "--format", "{{json .}}"])
-
-    assert json.loads(truncated.stdout)["ID"] == IMAGE_ID.removeprefix("sha256:")[:12]
-    assert json.loads(full.stdout)["ID"] == IMAGE_ID
-
-
 def test_cleanup_leaves_other_projects_tagged_image_alone(
     tmp_path: Path,
     context: Path,

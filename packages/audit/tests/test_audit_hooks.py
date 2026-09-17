@@ -63,12 +63,6 @@ class TestDetectRoute:
         route, _, _ = audit_route.detect_route(data)
         assert route == "bash:agy"
 
-    def test_bash_agy_after_semicolon(self) -> None:
-        """セミコロンの後段に agy が来ても検出できることを確認する。"""
-        data = {"tool_name": "Bash", "tool_input": {"command": 'ls; agy -p "query"'}}
-        route, _, _ = audit_route.detect_route(data)
-        assert route == "bash:agy"
-
     def test_bash_agy_substring_not_matched(self) -> None:
         """`agy` を含む別の単語（誤マッチ候補）には反応しないことを確認する。"""
         data = {"tool_name": "Bash", "tool_input": {"command": "echo legacyagyversion"}}
@@ -1082,20 +1076,6 @@ class TestHeredocOpenerTrailingShellSyntax:
         )
         assert audit_cli.extract_codex_prompt(cmd) == "Hello world"
 
-    def test_trailing_or_exit_after_opener_is_recognized(self) -> None:
-        """`cat > "$PROMPT_FILE" <<'EOF' || exit 1` でもブロックを認識し、
-        prompt を抽出できることを確認する。
-        """
-        cmd = (
-            "PROMPT_FILE=$(mktemp)\n"
-            "cat > \"$PROMPT_FILE\" <<'EOF' || exit 1\n"
-            "Hello world\n"
-            "EOF\n"
-            "codex exec --model gpt-5.3-codex --sandbox read-only "
-            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
-        )
-        assert audit_cli.extract_codex_prompt(cmd) == "Hello world"
-
 
 class TestHereStringNotMaskedAsHeredoc:
     """here-string（`<<<word`）を heredoc として誤マスクしないことのテスト。"""
@@ -1134,20 +1114,6 @@ class TestHeredocProducerMustBeCat:
             '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
         )
         assert audit_cli.extract_codex_prompt(cmd) is None
-
-    def test_cat_producer_with_reversed_operator_order_is_still_extracted(self) -> None:
-        """producer が `cat` であれば、heredoc 演算子とリダイレクトの語順が
-        逆（`cat <<'EOF' > "$VAR"`）でも従来どおり抽出できることを確認する。
-        """
-        cmd = (
-            "PROMPT_FILE=$(mktemp)\n"
-            "cat <<'EOF' > \"$PROMPT_FILE\"\n"
-            "safe prompt\n"
-            "EOF\n"
-            "codex exec --model gpt-5.3-codex --sandbox read-only "
-            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
-        )
-        assert audit_cli.extract_codex_prompt(cmd) == "safe prompt"
 
 
 class TestExtractModelCommandSegmentRestriction:

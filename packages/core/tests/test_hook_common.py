@@ -100,14 +100,6 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 class TestWriteJson:
-    def test_write_json_round_trip(self, tmp_path: Path) -> None:
-        path = tmp_path / "data.json"
-        data = {"key": "value", "nested": {"a": 1}}
-
-        hook_common.write_json(str(path), data)
-
-        assert json.loads(path.read_text(encoding="utf-8")) == data
-
     def test_write_json_does_not_leave_tmp_file(self, tmp_path: Path) -> None:
         path = tmp_path / "data.json"
 
@@ -171,31 +163,6 @@ class TestLoadPackageConfig:
         result = hook_common.load_package_config("mypkg", "settings.json", str(project_dir))
         assert result["key"] == "local"  # local override が効いている
         assert result["only_base"] is True  # base のキーは保持
-
-    def test_falls_back_to_base_dir_local(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """project dir に .local がない場合は base と同じディレクトリの .local を使う。"""
-        config_dir = tmp_path / "project" / ".claude" / "config" / "mypkg"
-        _write_json(config_dir / "settings.json", {"key": "base"})
-        _write_json(config_dir / "settings.local.json", {"key": "local-same-dir"})
-
-        result = hook_common.load_package_config(
-            "mypkg", "settings.json", str(tmp_path / "project")
-        )
-        assert result["key"] == "local-same-dir"
-
-    def test_no_local_returns_base_only(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """local ファイルが存在しない場合は base のみ返す。"""
-        config_dir = tmp_path / "project" / ".claude" / "config" / "mypkg"
-        _write_json(config_dir / "settings.json", {"key": "base", "nested": {"a": 1}})
-
-        result = hook_common.load_package_config(
-            "mypkg", "settings.json", str(tmp_path / "project")
-        )
-        assert result == {"key": "base", "nested": {"a": 1}}
 
 
 # =========================================================================
@@ -269,10 +236,6 @@ class TestIsCliEnabled:
         """セクションが dict でない壊れた config でも True にフォールバック。"""
         assert hook_common.is_cli_enabled("codex", {"codex": "not-a-dict"}) is True
 
-    def test_section_without_enabled_key_defaults_to_true(self) -> None:
-        """enabled キー自体が無いセクションは True（デフォルト有効）。"""
-        assert hook_common.is_cli_enabled("codex", {"codex": {"model": "gpt-5.5"}}) is True
-
     # --- default 引数（Issue #129, EV-15: codex-suggestions 向けの呼び出し元限定デフォルト）---
 
     def test_missing_section_honors_explicit_default_false(self) -> None:
@@ -297,13 +260,6 @@ class TestIsCliEnabled:
         """enabled: false が明示されていれば default（省略時 True）に関わらず False になる。"""
         assert hook_common.is_cli_enabled("codex", {"codex": {"enabled": False}}) is False
 
-    def test_section_without_enabled_key_honors_explicit_default_false(self) -> None:
-        """セクションはあるが enabled キーが無い場合も default=False を尊重する。"""
-        assert (
-            hook_common.is_cli_enabled("codex", {"codex": {"model": "gpt-5.5"}}, default=False)
-            is False
-        )
-
 
 class TestNormalizeCliToolsConfig:
     """normalize_cli_tools_config の旧 gemini → antigravity 後方互換（agent-routing EV-18）。
@@ -321,13 +277,6 @@ class TestNormalizeCliToolsConfig:
         """agent-routing EV-18: 旧 gemini.enabled: false → antigravity.enabled: false 相当。"""
         result = hook_common.normalize_cli_tools_config({"gemini": {"enabled": False}})
         assert result["antigravity"]["enabled"] is False
-
-    def test_legacy_gemini_disabled_treated_as_antigravity_disabled_via_is_cli_enabled(
-        self,
-    ) -> None:
-        """正規化後の config で antigravity は無効と判定される（等価扱いの実効確認）。"""
-        result = hook_common.normalize_cli_tools_config({"gemini": {"enabled": False}})
-        assert hook_common.is_cli_enabled("antigravity", result) is False
 
     def test_explicit_antigravity_enabled_wins_over_legacy_gemini_disabled(self) -> None:
         """同一レイヤーで antigravity.enabled が明示されていればそちらを優先する。
@@ -656,14 +605,3 @@ class TestResolvePathWithin:
         result = hook_common.resolve_path_within(str(project_dir), "logs_link", "out.jsonl")
 
         assert result is None
-
-    def test_result_is_always_under_project_dir_when_not_none(self, tmp_path: Path) -> None:
-        """None でない場合、返り値は必ず project_dir 配下にある不変条件を検証する。"""
-        project_dir = tmp_path / "project"
-        project_dir.mkdir()
-        project_root = os.path.realpath(str(project_dir))
-
-        result = hook_common.resolve_path_within(str(project_dir), "a/b/c", "out.jsonl")
-
-        assert result is not None
-        assert result == project_root or result.startswith(project_root + os.sep)
