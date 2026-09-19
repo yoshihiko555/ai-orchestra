@@ -91,6 +91,7 @@ def _config(
     *,
     checkruns: tuple[str, ...] = (),
     auto_generated_markers: tuple[str, ...] = prw.DEFAULT_AUTO_GENERATED_MARKERS,
+    retrigger_comment: str | None = None,
 ) -> prw.PrReviewConfig:
     return prw.PrReviewConfig(
         reviewer_allowlist=(
@@ -105,6 +106,7 @@ def _config(
         poll_interval_seconds=1,
         timeout_seconds=0,
         auto_generated_markers=auto_generated_markers,
+        retrigger_comment=retrigger_comment,
     )
 
 
@@ -3992,3 +3994,337 @@ def test_resolve_addressed_findings_skips_when_origin_not_verified(
 
     state = lc.load_state("abcd1234-issue-1", project_dir)
     assert "resolved_thread_ids" not in state.pr_review["findings"]["sig-addressed"]
+
+
+# --- pr_review.retrigger_comment (Issue #274 "新規事項 6") -----------------------------------
+
+
+def test_parse_pr_review_config_retrigger_comment_defaults_to_none() -> None:
+    config = prw.parse_pr_review_config(
+        {"pr_review": {"reviewer_allowlist": [{"app_slug": "codex-app"}]}}
+    )
+    assert config.retrigger_comment is None
+
+
+def test_parse_pr_review_config_retrigger_comment_accepts_string() -> None:
+    config = prw.parse_pr_review_config(
+        {
+            "pr_review": {
+                "reviewer_allowlist": [{"app_slug": "codex-app"}],
+                "retrigger_comment": "@codex review",
+            }
+        }
+    )
+    assert config.retrigger_comment == "@codex review"
+
+
+def test_parse_pr_review_config_retrigger_comment_rejects_empty_string() -> None:
+    with pytest.raises(prw.ConfigError, match="retrigger_comment"):
+        prw.parse_pr_review_config(
+            {
+                "pr_review": {
+                    "reviewer_allowlist": [{"app_slug": "codex-app"}],
+                    "retrigger_comment": "   ",
+                }
+            }
+        )
+
+
+def test_parse_pr_review_config_retrigger_comment_rejects_non_string() -> None:
+    with pytest.raises(prw.ConfigError, match="retrigger_comment"):
+        prw.parse_pr_review_config(
+            {
+                "pr_review": {
+                    "reviewer_allowlist": [{"app_slug": "codex-app"}],
+                    "retrigger_comment": 123,
+                }
+            }
+        )
+
+
+def test_gh_api_client_post_issue_comment_builds_expected_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(prw.subprocess, "run", fake_run)
+    client = prw.GhApiClient("owner/repo")
+
+    client.post_issue_comment("owner/repo", 12, "@codex review")
+
+    assert calls == [
+        [
+            "gh",
+            "api",
+            "repos/owner/repo/issues/12/comments",
+            "-X",
+            "POST",
+            "-f",
+            "body=@codex review",
+        ]
+    ]
+
+
+def test_gh_api_client_post_issue_comment_raises_on_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="comment creation failed")
+
+    monkeypatch.setattr(prw.subprocess, "run", fake_run)
+    client = prw.GhApiClient("owner/repo")
+
+    with pytest.raises(prw.GitHubApiError, match="comment creation failed"):
+        client.post_issue_comment("owner/repo", 12, "@codex review")
+
+
+def test_gh_api_client_post_issue_comment_raises_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(args: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=args, timeout=30)
+
+    monkeypatch.setattr(prw.subprocess, "run", fake_run)
+    client = prw.GhApiClient("owner/repo")
+
+    with pytest.raises(prw.GitHubApiError):
+        client.post_issue_comment("owner/repo", 12, "@codex review")
+
+
+def test_post_retrigger_comment_is_noop_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch, pr_review={"processed_comment_ids": []})
+    lease_token = _lease(project_dir)
+
+    class _BoomClient:
+        def post_issue_comment(self, _repo: str, _issue_number: int, _body: str) -> None:
+            raise AssertionError("must not call the client when retrigger_comment is unset")
+
+    posted = prw.post_retrigger_comment(
+        12,
+        _config(),
+        _BoomClient(),
+        "owner/repo",
+        loop_id="abcd1234-issue-1",
+        project_dir=project_dir,
+        lease_token=lease_token,
+    )
+
+    assert posted is False
+    journal = lc.journal_path("abcd1234-issue-1", project_dir)
+    assert not journal.exists()
+
+
+def test_post_retrigger_comment_posts_and_journals_when_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch, pr_review={"processed_comment_ids": []})
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir, "act-1")
+    calls: list[tuple[str, int, str]] = []
+
+    class _RecordingClient:
+        def post_issue_comment(self, repo: str, issue_number: int, body: str) -> None:
+            calls.append((repo, issue_number, body))
+
+    config = prw.PrReviewConfig(
+        reviewer_allowlist=_config().reviewer_allowlist, retrigger_comment="@codex review"
+    )
+
+    posted = prw.post_retrigger_comment(
+        12,
+        config,
+        _RecordingClient(),
+        "owner/repo",
+        loop_id="abcd1234-issue-1",
+        project_dir=project_dir,
+        lease_token=lease_token,
+        action_id="act-1",
+    )
+
+    assert posted is True
+    assert calls == [("owner/repo", 12, "@codex review")]
+    journal = lc.journal_path("abcd1234-issue-1", project_dir)
+    events = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert events[-1]["event"] == "pr_review_retrigger_comment_posted"
+    assert events[-1]["action_id"] == "act-1"
+    assert events[-1]["payload"]["pr_number"] == 12
+
+
+def test_post_retrigger_comment_invalid_lease_prevents_post_and_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lease-fenced (CodeRabbit finding on PR #418): an invalid/stale lease token must be
+    rejected by the pre-POST validation-only `_fenced_pr_review_write` section -- the same
+    `guarded_lease_section` gate `record_iteration_head` already uses -- *before* the network
+    POST, so a stale worker can neither post a duplicate comment nor journal an event for an
+    action it no longer owns."""
+    project_dir = _setup_state(tmp_path, monkeypatch, pr_review={"processed_comment_ids": []})
+    _lease(project_dir)  # a lock now exists; the token below intentionally does not match it
+
+    class _BoomClient:
+        def post_issue_comment(self, _repo: str, _issue_number: int, _body: str) -> None:
+            raise AssertionError("must not call gh api with an invalid lease")
+
+    config = prw.PrReviewConfig(
+        reviewer_allowlist=_config().reviewer_allowlist, retrigger_comment="@codex review"
+    )
+
+    with pytest.raises(lc.WriteRejectedError):
+        prw.post_retrigger_comment(
+            12,
+            config,
+            _BoomClient(),
+            "owner/repo",
+            loop_id="abcd1234-issue-1",
+            project_dir=project_dir,
+            lease_token="stale-token-not-matching-lock",
+            action_id="act-1",
+        )
+
+    journal = lc.journal_path("abcd1234-issue-1", project_dir)
+    assert not journal.exists()
+
+
+def test_post_retrigger_comment_pending_action_mismatch_prevents_post_and_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid lease but a superseded/mismatched pending `action_id` must also be rejected
+    before the POST (`_validate_pr_review_fence`'s `StaleActionError`), not just an outright
+    invalid lease token -- covering the "pending action" half of the fencing gate."""
+    project_dir = _setup_state(tmp_path, monkeypatch, pr_review={"processed_comment_ids": []})
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir, "current-action")
+
+    class _BoomClient:
+        def post_issue_comment(self, _repo: str, _issue_number: int, _body: str) -> None:
+            raise AssertionError("must not call gh api for a superseded action")
+
+    config = prw.PrReviewConfig(
+        reviewer_allowlist=_config().reviewer_allowlist, retrigger_comment="@codex review"
+    )
+
+    with pytest.raises(lc.StaleActionError):
+        prw.post_retrigger_comment(
+            12,
+            config,
+            _BoomClient(),
+            "owner/repo",
+            loop_id="abcd1234-issue-1",
+            project_dir=project_dir,
+            lease_token=lease_token,
+            action_id="stale-action-id-not-pending",
+        )
+
+    journal = lc.journal_path("abcd1234-issue-1", project_dir)
+    assert not journal.exists()
+
+
+def test_own_retrigger_comment_is_not_a_completion_signal_when_untrusted() -> None:
+    """Ordinary case: the account this driver posts as is never expected in
+    `pr_review.reviewer_allowlist`, so `verify_origin()` alone excludes our own posted comment
+    from completion detection."""
+    config = _config(retrigger_comment="@codex review")
+    item = prw._review_item_from_issue_comment(
+        _untrusted({"id": 99, "created_at": "2026-07-09T00:00:01+00:00", "body": "@codex review"})
+    )
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, config) is False
+
+
+def test_own_retrigger_comment_is_not_a_completion_signal_even_when_allowlisted() -> None:
+    """Defense-in-depth (Issue #274 follow-up): even if an operator mistakenly adds the
+    driver's own posting account to `pr_review.reviewer_allowlist` -- so `verify_origin()`
+    would otherwise pass it -- `_is_own_retrigger_comment`'s body-content check still excludes
+    it unconditionally."""
+    config = _config(retrigger_comment="@codex review")
+    item = prw._review_item_from_issue_comment(
+        _trusted({"id": 99, "created_at": "2026-07-09T00:00:01+00:00", "body": "@codex review"})
+    )
+    baseline = {
+        "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+        "iteration_head_sha": "abc1234def",
+    }
+
+    assert prw._is_issue_comment_completion_signal(item, baseline, config) is False
+
+
+def test_own_retrigger_comment_is_not_imported_as_finding_even_when_allowlisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defense-in-depth (Issue #274 follow-up): a trusted-origin issue comment whose body is
+    exactly `config.retrigger_comment` must never be imported as a finding, even though
+    `verify_origin()` would otherwise pass it (mirrors the completion-signal defense-in-depth
+    test above, but for `collect_review_findings()`'s finding-import path)."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "baseline_review_id": 10,
+            "baseline_recorded_at": "2026-07-09T00:00:00+00:00",
+            "processed_comment_ids": [],
+            "findings": {},
+        },
+    )
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _trusted(
+                    {"id": 14, "created_at": "2026-07-09T00:00:01+00:00", "body": "@codex review"}
+                )
+            ],
+        }
+    )
+    config = _config(retrigger_comment="@codex review")
+
+    result = prw.collect_review_findings(
+        "abcd1234-issue-1", project_dir, 12, config, client, 1, _lease(project_dir)
+    )
+
+    assert result.findings == ()
+    assert result.ignored_untrusted_comment_count == 0
+    assert "issue_comment:14" in result.processed_comment_ids
+
+
+def test_own_retrigger_comment_is_not_escalated_as_untrusted_review() -> None:
+    """`record_ignored_untrusted_reviews` only ever receives
+    `CompletionOutcome.ignored_untrusted_reviews`, which `_review_completion_outcome()`
+    populates solely from formal `pulls/{pr}/reviews` objects. Our own retrigger comment is
+    posted as an *issue* comment (`issues/{pr}/comments`, fetched by
+    `_issue_comment_completion_outcome()` instead) and therefore can never reach that
+    untrusted-review tracking/journaling path at all, trusted or not."""
+    config = _config(retrigger_comment="@codex review")
+    client = FakeClient(
+        {
+            "repos/owner/repo/pulls/12/reviews": [],
+            "repos/owner/repo/pulls/12/comments": [],
+            "repos/owner/repo/issues/12/comments": [
+                _untrusted(
+                    {"id": 99, "created_at": "2026-07-09T00:00:01+00:00", "body": "@codex review"}
+                )
+            ],
+        }
+    )
+
+    outcome = prw.wait_for_completion(
+        12,
+        {"baseline_review_id": 0, "baseline_recorded_at": "2026-07-09T00:00:00+00:00"},
+        config,
+        client,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert outcome.completed is False
+    assert outcome.ignored_untrusted_review_count == 0
+    assert outcome.ignored_untrusted_reviews == ()

@@ -1974,6 +1974,14 @@ class LoopDriver:
         `_already_pushed_this_iteration` distinguishes that from the genuine H12 case (Maker
         made no new commits since an *earlier* iteration) by requiring the recorded head to
         belong to *this* iteration, and skips straight to the poll below when it does.
+
+        code Issue #274 "新規事項 6": between step 2 (push) and step 3 (`record_iteration_head`),
+        this also posts `pr_review.retrigger_comment` when configured (no-op otherwise) so an
+        external reviewer bot that does not automatically re-review after a push is asked to.
+        A driver crash between that post succeeding and step 3 recording the head makes a DH5
+        resume re-enter this same branch and post again (drain/push are by then no-ops) --
+        this duplicate re-post on resume is an accepted, intentional risk (see design doc
+        loop-harness-pr-review.md §2.4.1), not a bug to work around.
         """
         action_id = proposal.action_id
         pr_number = state.pr_number
@@ -2006,14 +2014,35 @@ class LoopDriver:
             self._scan_for_leaked_secrets_or_stop(proposal, state)  # SH5
             self._push_verified_branch(state.worktree_path, verified_branch)
             if pr_number is not None:
+                # Issue #274 "新規事項 6": some external reviewer bots (e.g. GitHub Codex) do
+                # not automatically re-review after a push -- posting the configured retrigger
+                # comment here (no-op when unset) asks it to. This runs *before*
+                # `record_iteration_head` (H9) below on purpose: if the post fails
+                # (`GitHubApiError`, uncaught here, propagates the same as an
+                # `record_iteration_head` failure always has), the iteration head is not
+                # recorded either, so `_already_pushed_this_iteration` returns False on a
+                # resumed retry and this whole `elif push_required:` branch (drain/push are
+                # both no-ops by then; only the post is retried) runs again instead of silently
+                # leaving the bot un-retriggered.
+                repo = _repo_name_with_owner(state.worktree_path)
+                push_client = prw.GhApiClient(repo)
+                prw.post_retrigger_comment(
+                    pr_number,
+                    config,
+                    push_client,
+                    repo,
+                    loop_id=self.loop_id,
+                    project_dir=self.project_dir,
+                    lease_token=self.lease_token,
+                    action_id=action_id,
+                )
                 # code H9: record the just-pushed PR head so the poll below cannot mistake a
                 # review of a *previous* push's head for one covering this iteration's fix.
-                repo = _repo_name_with_owner(state.worktree_path)
                 prw.record_iteration_head(
                     self.loop_id,
                     self.project_dir,
                     pr_number,
-                    prw.GhApiClient(repo),
+                    push_client,
                     self.lease_token,
                     action_id=action_id,
                     iteration=proposal.iteration,

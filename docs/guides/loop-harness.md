@@ -143,7 +143,8 @@ flowchart TD
     A[wait_external_review] --> B["pre-rebaseline drain<br/>直前反復中の指摘の取りこぼし防止"]
     B --> C["severity 分類<br/>未分類は fail-safe で high"]
     C -->|critical/high が1件以上| D["Maker へ差し戻し<br/>修正反復"]
-    D --> A
+    D --> G["push<br/>+ retrigger_comment 投稿（任意）<br/>@codex review 等で再レビューを要求"]
+    G --> A
     C -->|"critical/high ゼロ（medium/low のみ or 指摘なし）"| E[合格]
     E --> F["成功コメントに<br/>non_blocking_open（残存 medium/low）を列挙"]
 ```
@@ -188,9 +189,13 @@ pr_review:
       type: "Bot"
       author_association: ["NONE"]
   checkrun_allowlist: [] # 任意。check-run 経由のフォールバック検知を使う場合のみ
+  retrigger_comment: "@codex review" # 任意（Issue #274）。GitHub Codex 連携のように push 後に自動で
+  # 再レビューしないボットを使う場合、無人運用ではこれを設定しないと再レビューが永久に走らない
 ```
 
 あわせて、対象リポジトリに外部レビュー bot（Codex の GitHub 連携等）が実際に設定済みであることを確認する。bot が動いていない状態で `/loop-issue` を実行すると、`pr_review_response` フェーズが `pr_review.timeout_seconds`（既定 3600 秒）待った末に無進捗として扱われる。
+
+`pr_review.retrigger_comment` は既定で無効（未設定）。GitHub Codex のように push だけでは自動的に再レビューしないボットを外部レビュアーに使う場合、無人運用（`/loop-issue` を人が張り付かずに回す運用）ではこのキーを設定しないと、Maker が修正 push した後も再レビューが要求されず `pr_review.timeout_seconds` まで無進捗のまま止まってしまう。投稿アカウントを `reviewer_allowlist` に含めないこと（含めた場合も本文一致で除外される）。
 
 ---
 
