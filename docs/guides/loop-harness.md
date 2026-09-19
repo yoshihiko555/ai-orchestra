@@ -222,8 +222,50 @@ python3 packages/loop-harness/scripts/loop_status.py show --loop-id <id> [--jour
 | セッションがクラッシュ・断絶した（`pending`/`running`/`waiting_external` のまま） | `/loop-issue --attach <loop_id>`。`pending` の段階での断絶でも復旧できる |
 | ガード到達で正規に `failed`／安全停止で `stopped` になった | 原因を確認・解消したうえで `/loop-issue --resume <loop_id>`（ガードカウンタをリセットして再挑戦） |
 | 完了済みループの整理 | `python3 packages/loop-harness/scripts/loop_status.py purge [--force] [--dry-run] [--yes]`。`running`/`waiting_external` は常に保護され、既定では `passed`/`failed` かつ 30 日経過分のみが対象 |
+| LP-2 Docker 実行で `ClaudeCredentialError`（`remaining=…s < required=…s`）が出てブローカーが起動しない | トークンの残り有効期間が `lp2.wall_clock_timeout_seconds + 360` 秒未満（既定 7200 秒なら 7560 秒必要）。再ログイン（`claude` → `/login`）またはトークン失効後の再発行で TTL を更新するか、`lp2.wall_clock_timeout_seconds` を local yaml（`lp2:` 配下）で一時的に短縮する（後で戻す）。詳細は本節末尾のサブセクション参照 |
 
 `exit_failure` で終了した場合、Draft 化された PR と失敗理由を記載した Issue コメントがそのまま残る。内容を確認したうえで手動対応するか、原因を解消してから `resume` する。
+
+### LP-2 Docker 実行時に Claude OAuth トークンの残り時間（TTL）不足で起動しない
+
+LP-2（Docker 完全隔離）は Maker/Checker コンテナに Claude OAuth アクセストークンを注入して実行するが、コンテナ内では**トークンの自動更新（refresh）を行わない**。そのためブローカー起動時に、ループの残り実行時間を安全に賄えるだけの TTL が残っているかを事前チェックしている（`packages/docker-runtime/lib/docker_runtime_credentials.py` の `ClaudeOAuthCredential.assert_minimum_ttl`）。TTL 不足の場合はコンテナを起動せず、以下のエラーで即座に失敗する。
+
+```text
+Claude OAuth access token expires too soon for a refresh-less broker run
+(remaining=…s < required=…s). Run a normal Claude command to refresh the
+token, then retry.
+```
+
+このチェックは Maker/Checker（LLM レビューを伴う）実行時のみ働く。機械検証のみの Checker 実行（`start_isolated_network`）はブローカー自体を起動しないため対象外（`packages/loop-harness/lib/loop_docker_broker.py` :224-231）。
+
+必要 TTL は `minimum_ttl_seconds = max_lifetime_seconds + 300`（`TOKEN_TTL_MARGIN_SECONDS`）で、`max_lifetime_seconds = ceil(残り wall-clock 秒) + 60`（`CONTAINER_LIFETIME_MARGIN_SECONDS`、`loop_docker_action.py`）。ループ開始直後（残り = `lp2.wall_clock_timeout_seconds`）で計算すると、既定値 7200 秒のとき **必要 TTL は 7560 秒（2 時間 6 分）** になる。
+
+`lp2.wall_clock_timeout_seconds` の既定値は `packages/loop-harness/config/loop-harness.yaml:16` の `7200`。プロジェクト側で上書きする場合は `<project>/.claude/config/loop-harness/loop-harness.local.yaml` に置くが、この設定はディープマージされるため **`lp2:` の下にネストしないとトップレベルのキーは黙って無視され、既定値 7200 のまま**になる点に注意する。
+
+**残り TTL の確認方法**（トークン本体は出力しない）:
+
+```bash
+python3 - <<'EOF'
+import json, subprocess, time
+raw = subprocess.run(["/usr/bin/security","find-generic-password","-s","Claude Code-credentials","-w"], capture_output=True, text=True, check=True).stdout
+exp = json.loads(raw)["claudeAiOauth"]["expiresAt"]
+exp = exp / 1000 if exp > 10_000_000_000 else exp
+print(int(exp - time.time()), "seconds remaining")
+EOF
+```
+
+**実測に基づく既知の挙動**（保証ではなく観測結果。実行前に上記コマンドで自分の環境で確認すること）: アクセストークンの有効期間はおおむね 8 時間程度で発行される。トークンがまだ失効していない間は、`claude -p` を含む通常の Claude Code コマンドを実行しても TTL は更新されない（ある計測では `claude -p` 実行後も残り TTL が変化しなかった）。そのため、エラーメッセージにある「通常の Claude コマンドを実行してトークンを更新する」という案内は、失効前の状態には当てはまらない。実際に新しいトークンを得られたのは、(a) 再ログイン（`claude` を起動して `/login`）した場合、または (b) トークンが一度失効してから何らかの Claude コマンドを実行した場合だった。
+
+**残り TTL が不足しているときの対処**:
+
+1. 上記 (a)/(b) のいずれかの方法で新しいトークンを取得し、残り TTL を確認してから再実行する。
+2. 一時的に `lp2.wall_clock_timeout_seconds` を local yaml（`lp2:` の下）で短くする（例: 5400 秒）。ただし Maker/Checker に割り当てられる wall-clock 予算そのものが縮むトレードオフがあるため、TTL が回復したら元の値に戻す。
+
+```yaml
+# .claude/config/loop-harness/loop-harness.local.yaml
+lp2:
+  wall_clock_timeout_seconds: 5400 # 一時的な短縮。TTL 回復後に戻すこと
+```
 
 ---
 
