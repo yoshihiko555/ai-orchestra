@@ -54,6 +54,21 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # specifically protects the `git init --bare` call in `loop_git_ephemeral.py` from copying
 # owner-only-permission hook files (or anything else) out of an ambient/attacker-controlled
 # template directory into the freshly created `ephemeral_dir`.
+#
+# Issue #274 (2026-09-07): Claude Code itself injects `safe.directory` config into the ambient
+# environment via git's env-var-based config-injection mechanism (`GIT_CONFIG_COUNT`,
+# `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>`) rather than via a config file or CLI flag. Neither
+# `GIT_CONFIG_GLOBAL=/dev/null` nor `GIT_CONFIG_NOSYSTEM=1` (set below in `_run_git_unchecked`)
+# blocks this mechanism -- it bypasses config *files* entirely -- so it still leaks the ambient
+# `safe.directory` (or any other injected key/value) into every hardened host git call this module
+# makes unless it is stripped here too, along with `GIT_CONFIG_PARAMETERS` (the same class of
+# env-var config injection, used by git itself to propagate `-c` values to child processes and
+# observed ambient in practice) and `GIT_CONFIG` (per git-config(1), an unscoped `git config <key>
+# <value>` -- as `loop_git_ephemeral.py` issues for `core.bare`/`user.name`/`user.email`/
+# `safe.directory` -- writes to the file named by `GIT_CONFIG` when set, so it is added to
+# `_GIT_LOCATION_ENV_VARS` below rather than `_GIT_CONFIG_ENV_VAR_RE`, since it redirects a write
+# location like the other location vars rather than injecting a key/value pair). See
+# `_GIT_CONFIG_ENV_VAR_RE` below.
 _GIT_LOCATION_ENV_VARS = (
     "GIT_INDEX_FILE",
     "GIT_DIR",
@@ -64,7 +79,13 @@ _GIT_LOCATION_ENV_VARS = (
     "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
     "GIT_TEMPLATE_DIR",
+    "GIT_CONFIG",
 )
+
+# Matches the numbered `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` family plus `GIT_CONFIG_COUNT`
+# (mirrors the pattern already used to detect this mechanism in Maker command strings, see
+# `maker_bash_guard.py`'s `GIT_CONFIG_(?:KEY_\d+|VALUE_\d+|COUNT)` deny rule).
+_GIT_CONFIG_ENV_VAR_RE = re.compile(r"^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$")
 
 GitRunner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -76,7 +97,11 @@ def _stripped_host_env(overrides: Mapping[str, str] | None = None) -> dict[str, 
     wins, so callers that intentionally need e.g. ``GIT_DIR``/``GIT_WORK_TREE``/``GIT_INDEX_FILE``
     pointed at a specific, trusted path pass it here rather than relying on ambient inheritance.
     """
-    env = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV_VARS}
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _GIT_LOCATION_ENV_VARS and not _GIT_CONFIG_ENV_VAR_RE.match(key)
+    }
     if overrides:
         env.update(overrides)
     return env
