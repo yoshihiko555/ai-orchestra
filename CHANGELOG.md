@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`quality-gates`: `code-comments` / `code-naming` スキルを追加**: コード・テスト・コミットログ・コードコメントの書き分けと、識別子（変数・関数・クラス等）の命名を、実装時やコミットメッセージ作成時に参照できるようになった（[keitakn/engineering-skills](https://github.com/keitakn/engineering-skills) より移植、MIT）。
 - **`core`: `explain-visually` スキルを追加**: 実装計画・ブランチ差分・PR・Issue・`/review` 結果を、図解付きの HTML ページ（`.claude/docs/explain-visually/` 配下）にして開けるようになった。Google Chrome が必要（描画検証を通ってから開く）（[keitakn/engineering-skills](https://github.com/keitakn/engineering-skills) より移植、MIT）。
+- **`loop-harness`: push 後に外部レビュアーへ再レビューを要求するコメントを自動投稿できるようになった（`pr_review.retrigger_comment`、Issue #274）**: GitHub Codex 連携のように push だけでは自動的に再レビューしない外部レビュアーを使う場合に設定すると、Maker の修正 push 直後にそのコメント（例: `"@codex review"`）を自動投稿する。既定は無効（未設定）で、既存プロジェクトの挙動は変わらない。
 
 ### Changed
 

@@ -1400,6 +1400,7 @@ pr_review:
   # reviewer_allowlist:
   #   - app_slug: "chatgpt-codex-connector"
   #     type: Bot
+  # retrigger_comment: "@codex review" # 任意（Issue #274）。既定は未設定（無効）。
 
 retention:
   purge_after_days: 30 # int. 完了済みループランの state/journal を purge するまでの保持日数
@@ -1438,6 +1439,7 @@ maker:
 | `pr_review.poll_interval_seconds`           | int（秒）                                                                                             | `120`                                                        | 同上                                         |
 | `pr_review.timeout_seconds`                 | int（秒）                                                                                             | `3600`                                                       | 同上                                         |
 | `pr_review.reviewer_allowlist`              | list[dict]（`app_slug`/`login`/`type`/`author_association` 等。実スキーマは pr-review 編 2.2 節が正） | **必須キー・既定値なし**（キー欠落・空リストは起動時エラー） | 上書き可（確定値は pr-review 編 2.2 節が正） |
+| `pr_review.retrigger_comment`                | str \| None（非文字列・空文字列/空白のみは `ConfigError`。未設定/`null` は無効のまま） | `None`（無効）                                                | `.local.yaml` で設定可（Issue #274）          |
 | `retention.purge_after_days`                | int                                                                                                   | `30`                                                         | 同上                                         |
 | `notifications.macos_enabled`               | bool                                                                                                  | `true`                                                       | 同上                                         |
 | `notifications.issue_comment_enabled`       | bool                                                                                                  | `true`                                                       | 同上                                         |

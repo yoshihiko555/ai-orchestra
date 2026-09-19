@@ -158,6 +158,7 @@ class PrReviewConfig:
     poll_interval_seconds: int = DEFAULT_POLL_INTERVAL_SECONDS
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     auto_generated_markers: tuple[str, ...] = DEFAULT_AUTO_GENERATED_MARKERS
+    retrigger_comment: str | None = None
 
 
 @dataclass(frozen=True)
@@ -402,6 +403,34 @@ class GhApiClient:
             raise GitHubApiError((proc.stderr or proc.stdout or "gh api failed").strip())
         return proc.stdout or "null"
 
+    def post_issue_comment(self, repo: str, issue_number: int, body: str) -> None:
+        """Post an issue/PR conversation comment via `gh api ... -X POST` (write path).
+
+        Unlike `api()`/`_api_stdout_once()` above (read-only, retried on transient failure),
+        this performs a single, non-idempotent write: retrying it on a transient failure could
+        post the same comment twice, so callers get exactly one attempt and a `GitHubApiError`
+        on any failure rather than silent retry-induced duplication.
+        """
+        try:
+            proc = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo}/issues/{issue_number}/comments",
+                    "-X",
+                    "POST",
+                    "-f",
+                    f"body={body}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise GitHubApiError(str(exc)) from exc
+        if proc.returncode != 0:
+            raise GitHubApiError((proc.stderr or proc.stdout or "gh api failed").strip())
+
 
 def load_pr_review_config(project_dir: str) -> PrReviewConfig:
     """Load and validate layered loop-harness pr_review config."""
@@ -426,6 +455,7 @@ def parse_pr_review_config(config: dict[str, Any]) -> PrReviewConfig:
         auto_generated_markers=_parse_auto_generated_markers(
             pr_review.get("auto_generated_markers")
         ),
+        retrigger_comment=_parse_retrigger_comment(pr_review.get("retrigger_comment")),
     )
 
 
@@ -550,6 +580,55 @@ def record_iteration_head(
         )
         lc._write_state(state, project_dir)
     return sha
+
+
+def post_retrigger_comment(
+    pr_number: int,
+    config: PrReviewConfig,
+    client: GhApiClient,
+    repo: str,
+    *,
+    loop_id: str,
+    project_dir: str,
+    action_id: str | None = None,
+) -> bool:
+    """Post `pr_review.retrigger_comment` after a push so a bot reviewer re-reviews (Issue #274).
+
+    No-op (returns `False`, no API call, no journal write) when `config.retrigger_comment` is
+    unset -- this is an opt-in feature and existing loops without the key must behave exactly
+    as before. When set, posts it once as an issue comment and journals
+    `pr_review_retrigger_comment_posted` for observability, mirroring the
+    `record_iteration_head`/`record_baseline` journal-event convention above.
+
+    This posted comment is never mistaken for a reviewer signal, by two independent layers:
+    1. `verify_origin()` (2.1 節) only allowlists configured bot identities
+       (`pr_review.reviewer_allowlist`), and the account this driver posts as is never
+       expected to be on that list -- it is therefore excluded from both
+       `collect_review_findings()` (finding import) and `_is_issue_comment_completion_signal()`
+       (completion detection) the same way every other untrusted comment is.
+    2. `_is_own_retrigger_comment()` -- a body-content check, independent of origin -- excludes
+       it *unconditionally* in both of those same two call sites, so a misconfiguration that
+       accidentally allowlists the driver's own posting account still cannot turn this comment
+       into a finding or a completion signal (defense-in-depth, Issue #274 follow-up).
+    It is also never persisted to `state.pr_review["processed_comment_ids"]` via
+    `record_ignored_untrusted_reviews()`: that function only ever receives
+    `CompletionOutcome.ignored_untrusted_reviews`, which is populated solely by
+    `_review_completion_outcome()` from `pulls/{pr}/reviews` (formal review objects) -- issue
+    comments (this comment's own kind, fetched via `issues/{pr}/comments`) never flow through
+    that path at all, trusted or not.
+    """
+    if config.retrigger_comment is None:
+        return False
+    client.post_issue_comment(repo, pr_number, config.retrigger_comment)
+    lc.append_journal_event(
+        loop_id,
+        project_dir,
+        "pr_review_retrigger_comment_posted",
+        "waiter",
+        action_id,
+        {"pr_number": pr_number},
+    )
+    return True
 
 
 def detect_pr_review_push_delta(
@@ -700,6 +779,14 @@ def collect_review_findings(
     for item in review_items:
         key = _comment_key(item)
         if not _is_importable(item, baseline, processed):
+            continue
+        if _is_own_retrigger_comment(item, config):
+            # Defense-in-depth (Issue #274 follow-up): never import our own posted retrigger
+            # comment as a finding, even if an operator mistakenly allowlists the driver's own
+            # posting account (see `_is_own_retrigger_comment`'s docstring). Marked processed
+            # (not ignored-untrusted) since, unlike a genuinely untrusted comment, this one may
+            # legitimately pass `verify_origin` -- it just must never surface as a finding.
+            processed.add(key)
             continue
         if not verify_origin(item.raw, config.reviewer_allowlist):
             processed.add(key)
@@ -1710,6 +1797,22 @@ def _review_matches_iteration_head(raw: dict[str, Any], iteration_head_sha: str)
     return commit_id == iteration_head_sha
 
 
+def _is_own_retrigger_comment(item: ReviewItem, config: PrReviewConfig) -> bool:
+    """Return True for an issue comment whose body is exactly `config.retrigger_comment`.
+
+    Defense-in-depth for Issue #274's `post_retrigger_comment`: normally `verify_origin`
+    alone excludes our own posted comment (the driver's posting account is never expected in
+    `pr_review.reviewer_allowlist`). This body-based check closes the gap if an operator
+    mistakenly *does* add that account to the allowlist -- content, not just origin, is
+    checked so the comment still cannot become a completion signal or an imported finding.
+    Only applies to `issue_comment` items (the kind `post_retrigger_comment` posts) and only
+    when `retrigger_comment` is configured; unset config or a non-matching body never matches.
+    """
+    if config.retrigger_comment is None or item.source != "issue_comment":
+        return False
+    return item.body.strip() == config.retrigger_comment
+
+
 def _is_issue_comment_completion_signal(
     item: ReviewItem, baseline: dict[str, Any], config: PrReviewConfig
 ) -> bool:
@@ -1746,6 +1849,12 @@ def _is_issue_comment_completion_signal(
     `iteration_sha` here is never a stale, earlier iteration's value by the time this function
     runs.
     """
+    if _is_own_retrigger_comment(item, config):
+        # Defense-in-depth (Issue #274 follow-up): this must never become a completion signal
+        # even if an operator mistakenly puts the driver's own posting account in
+        # `pr_review.reviewer_allowlist` -- `verify_origin` alone would then no longer exclude
+        # it. Matching by body content is checked unconditionally, before `verify_origin`.
+        return False
     iteration_sha = baseline.get("iteration_head_sha")
     if not isinstance(iteration_sha, str) or not iteration_sha:
         iteration_sha = None
@@ -2702,6 +2811,17 @@ def _parse_auto_generated_markers(value: Any) -> tuple[str, ...]:
     if value is None:
         return DEFAULT_AUTO_GENERATED_MARKERS
     return tuple(_string_list(value))
+
+
+def _parse_retrigger_comment(value: Any) -> str | None:
+    """Parse pr_review.retrigger_comment: absent/None disables the feature (fail closed)."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(
+            "pr_review.retrigger_comment must be a non-empty string when set (e.g. '@codex review')"
+        )
+    return value.strip()
 
 
 def _parse_severity_markers(value: Any) -> tuple[tuple[str, str], ...]:

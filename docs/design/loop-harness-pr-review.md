@@ -138,6 +138,10 @@ loop:
 
 - ポーリング間隔: `pr_review.poll_interval_seconds = 120`（**120 秒**）
 - 完了待機の全体タイムアウト: `pr_review.timeout_seconds = 3600`（60 分）
+- `pr_review.retrigger_comment`（任意、既定は未設定＝無効。Issue #274「新規事項 6」）: 設定すると、
+  Maker の修正 push 直後に driver がこの文字列を issue コメントとして投稿し、push だけでは
+  自動的に再レビューしない外部レビュアー bot（GitHub Codex 連携等）に再レビューを要求する。
+  未設定時は従来どおり何も投稿しない。
 
 **この完了待機タイムアウトは `infrastructure_failure` ではなく、`pr_review_response` フェーズの
 無進捗（No-Progress）としてカウントする。** 具体的には、`guards.no_progress` のカウンタを 1
@@ -373,6 +377,7 @@ pr_review:
       type: "Bot"
       author_association: ["NONE"]
   checkrun_allowlist: [] # 任意。フォールバック経路（check-run）を使う場合のみ check-run 名を列挙
+  retrigger_comment: "@codex review" # 任意（Issue #274）。未設定/None なら無効のまま
 ```
 
 - `pr_review.reviewer_allowlist` が未設定（キー自体が無い、または空リスト）の場合、
@@ -442,6 +447,58 @@ issue コメントはフォールバックより優先度が高い準正シグ�
 > issue コメント完了シグナルは「レビューが完了したこと」の検知のみを行う。完了検知後の
 > `collect_review_findings()` は同じ `TERMINAL_VERDICT_PATTERNS` を肯定的 summary の判定にも再利用し、
 > 完了シグナルとなった issue コメントを finding 化せず `processed_comment_ids` に記録する。
+
+### 2.4.1 `retrigger_comment` が投稿する自分自身のコメントの扱い（Issue #274）
+
+`pr_review.retrigger_comment`（1.2 節）が設定されている場合、driver は push 直後にこの文字列を
+issue コメントとして投稿する（`post_retrigger_comment()`）。この自分自身が投稿したコメントは、
+2 層の独立した防御で完全に除外される。**投稿アカウントを `pr_review.reviewer_allowlist` に
+含めてはならない**（含めた場合も本文一致による第 2 層で除外されるが、意図的にその防御へ依存する
+運用は避けること）。
+
+- **第 1 層（発信元）**: driver がコメントを投稿するアカウントは `pr_review.reviewer_allowlist`
+  に含まれない想定である（allowlist は Codex 等の外部レビュー bot 専用）。したがって通常は
+  2.1 節の `verify_origin()` が常にこのコメントを不一致と判定し、`collect_review_findings()`
+  （finding 取り込み）にも `_is_issue_comment_completion_signal()`（2.4 節の完了シグナル判定）
+  にも一致しない。
+- **第 2 層（本文内容、防御的縦深化）**: 運用者が誤って driver の投稿元アカウントを
+  `pr_review.reviewer_allowlist` に含めてしまい第 1 層が機能しなくなった場合に備え、
+  `_is_own_retrigger_comment()` が本文が `config.retrigger_comment` と完全一致する issue
+  コメントを発信元に関わらず検出する。この判定は `_is_issue_comment_completion_signal()`・
+  `collect_review_findings()` の両方で `verify_origin()` より**先に**適用されるため、
+  たとえ発信元検証を通過しても finding にも完了シグナルにもならない。
+- **非許可コメント検知（2.3 節）としても記録されない**: `record_ignored_untrusted_reviews()`
+  が受け取る `CompletionOutcome.ignored_untrusted_reviews` は `_review_completion_outcome()`
+  が `pulls/{pr}/reviews`（正式な review オブジェクト）からのみ生成する。`retrigger_comment`
+  は `issues/{pr}/comments`（issue コメント）として投稿されるため、この経路には構造的に
+  乗らない。発信元が信頼済みか否かに関わらず、issue コメントは 2.3 節の
+  `ignored_untrusted_comment` ジャーナル・通知の対象にならない。
+
+> **投稿をスキップする 2 つの経路（H12 と DH5 を混同しないこと）**
+> `post_retrigger_comment()` は「今回の呼び出しが実際に push した」場合にのみ呼ばれる。
+> スキップする経路は判定条件も complete タイミングも異なる別々のコードパスである。
+>
+> - **H12**（1.2.1 節の no_new_commit ショートカット）: `_drain_before_push` が
+>   `detect_pr_review_push_delta()` で「今回の Maker 出力に対して一度も push していない」と
+>   判定した場合。push 分岐（push → `post_retrigger_comment()` → `record_iteration_head()`）
+>   そのものへ入る**前**に complete するため、投稿は最初から発生しない。
+> - **DH5**（本節下記の driver クラッシュからの resume）: state の
+>   `iteration_head_recorded_iteration` が今回の `proposal.iteration` と一致し、かつ local
+>   HEAD が `iteration_head_sha` と一致する場合にのみ `_already_pushed_this_iteration` が
+>   真になる。これは「今回の push は既に成功済み」を意味するため、push 分岐全体をスキップして
+>   直接 poll へ進み、投稿を再試行しない（後述のクラッシュ窓を通過済みの場合の話であり、
+>   その窓の**内側**でクラッシュした場合は次の重複投稿リスクの節が示すとおり再投稿される）。
+
+> **push とコメント投稿の間でクラッシュした場合の重複投稿リスク**
+> `post_retrigger_comment()` は `record_iteration_head()`（1.1 節・H9）の**直前**に呼ばれる。
+> 投稿が成功した直後、`record_iteration_head()` が呼ばれる前に driver がクラッシュした場合、
+> `iteration_head_sha`/`iteration_head_recorded_iteration` は更新されないままなので、
+> 次に resume した `wait_external_review` は `_already_pushed_this_iteration` が偽と判定し
+> （上記 DH5 の条件を満たさない）、push フロー全体（drain → push → retrigger_comment →
+> record_iteration_head）を再実行する（drain・push 自体は既に完了済みのため実質 no-op）。
+> この場合 `retrigger_comment` が同一 PR に 2 回投稿される可能性がある。これは許容された
+> リスクである（外部レビュアーへの再レビュー要求が重複しても、レビュー自体の正しさや完了判定
+> には影響しない）。
 
 ### 2.5 CodeRabbit レート制限応答による人間引き継ぎ（Issue #193）
 

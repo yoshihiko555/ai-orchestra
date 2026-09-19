@@ -126,6 +126,11 @@ pr_review:
       - '(?ms)^---\s*$.*\Z'
   # reviewer_allowlist is intentionally project-local. Missing or empty values
   # are rejected by the pr_review_wait phase.
+  # retrigger_comment (optional, Issue #274): some external reviewer bots (e.g. GitHub Codex)
+  # do not automatically re-review after a push. When set, the driver posts this exact comment
+  # on the PR right after pushing a fix, once per push, to ask the bot to re-review. Disabled
+  # (no comment posted) unless set explicitly.
+  # retrigger_comment: "@codex review"
 
 retention:
   purge_after_days: 30

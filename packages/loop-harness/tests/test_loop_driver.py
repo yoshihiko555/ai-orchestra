@@ -4103,6 +4103,412 @@ def test_wait_external_review_refreshes_baseline_immediately_after_push(
     assert captured_baseline["baseline"]["baseline_review_id"] == 99
 
 
+def test_wait_external_review_posts_retrigger_comment_after_push_before_record_iteration_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pr_review.retrigger_comment (Issue #274 "新規事項 6"): when configured, the driver must
+    post it after the push and before `record_iteration_head`. This ordering (mirroring F7/H9
+    above) matters because a `GitHubApiError` raised by the post is not caught here -- it
+    propagates exactly like a `record_iteration_head` failure always has -- so the iteration
+    head stays unrecorded, `_already_pushed_this_iteration` correctly makes a resumed retry
+    re-enter this same push branch (drain/push are then no-ops), and the post is retried
+    instead of silently skipped."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+    token = lock.lease_token
+    state = lc.load_state(loop_id, project_dir)
+
+    (repo / "change.txt").write_text("update\n", encoding="utf-8")
+    _git(["add", "change.txt"], repo)
+    _git(["commit", "-m", "update"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = _git(["rev-parse", "origin/main"], repo)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw,
+        "load_pr_review_config",
+        lambda _project: prw.PrReviewConfig(
+            reviewer_allowlist=(), retrigger_comment="@codex review"
+        ),
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+
+    call_order: list[str] = []
+
+    def fake_collect_review_findings(
+        _loop_id: str,
+        _project_dir: str,
+        _pr_number: int,
+        _config: Any,
+        _client: Any,
+        _iteration: int,
+        _lease_token: str,
+        **_kw: Any,
+    ) -> prw.ReviewFindingsResult:
+        call_order.append("drain")
+        empty = lc.IterationFindings(frozenset(), 0)
+        return prw.ReviewFindingsResult((), empty, empty, (), (), 0, 0)
+
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
+    monkeypatch.setattr(prw, "collect_review_findings", fake_collect_review_findings)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    def fake_record_baseline(
+        _loop_id: str,
+        _project_dir: str,
+        _pr_number: int | None,
+        _client: Any,
+        _lease_token: str,
+        **_kw: Any,
+    ) -> prw.BaselineRecord:
+        call_order.append("record_baseline")
+        return prw.BaselineRecord(99, lc.now_iso(), ())
+
+    monkeypatch.setattr(prw, "record_baseline", fake_record_baseline)
+
+    real_push_verified_branch = d._push_verified_branch
+
+    def tracked_push_verified_branch(worktree_path: str, branch: str) -> None:
+        call_order.append("push")
+        real_push_verified_branch(worktree_path, branch)
+
+    monkeypatch.setattr(d, "_push_verified_branch", tracked_push_verified_branch)
+
+    def fake_post_retrigger_comment(*_a: Any, **_k: Any) -> bool:
+        call_order.append("retrigger_comment")
+        return True
+
+    monkeypatch.setattr(prw, "post_retrigger_comment", fake_post_retrigger_comment)
+
+    def fake_record_iteration_head(
+        _loop_id: str,
+        _project_dir: str,
+        _pr_number: int,
+        _client: Any,
+        _lease_token: str,
+        **_kw: Any,
+    ) -> str:
+        call_order.append("record_iteration_head")
+        return "sha-post-push"
+
+    monkeypatch.setattr(prw, "record_iteration_head", fake_record_iteration_head)
+
+    def fake_wait_for_completion(
+        _pr: int, _baseline: dict[str, Any], _config: Any, _client: Any, **_kw: Any
+    ) -> prw.CompletionOutcome:
+        call_order.append("wait")
+        return prw.CompletionOutcome(
+            "timeout", completed=False, timed_out=True, infrastructure_failure=False
+        )
+
+    monkeypatch.setattr(prw, "wait_for_completion", fake_wait_for_completion)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-000014",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {"push_required": True, "verified_branch": "main"})
+
+    assert call_order == [
+        "drain",
+        "record_baseline",
+        "push",
+        "retrigger_comment",
+        "record_iteration_head",
+        "wait",
+    ]
+
+
+def test_wait_external_review_propagates_retrigger_comment_error_before_recording_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins WHY the retrigger post runs *before* `record_iteration_head`: a `GitHubApiError`
+    raised by the post must propagate uncaught out of `_run_wait_external_review` -- exactly
+    like a `record_iteration_head` failure always has -- and must leave the iteration head
+    unrecorded, so a resumed retry re-enters this same push branch and retries the post
+    instead of silently treating this push as already fully handled."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+    token = lock.lease_token
+    state = lc.load_state(loop_id, project_dir)
+
+    (repo / "change.txt").write_text("update\n", encoding="utf-8")
+    _git(["add", "change.txt"], repo)
+    _git(["commit", "-m", "update"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = _git(["rev-parse", "origin/main"], repo)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw,
+        "load_pr_review_config",
+        lambda _project: prw.PrReviewConfig(
+            reviewer_allowlist=(), retrigger_comment="@codex review"
+        ),
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+
+    call_order: list[str] = []
+
+    def fake_collect_review_findings(
+        _loop_id: str,
+        _project_dir: str,
+        _pr_number: int,
+        _config: Any,
+        _client: Any,
+        _iteration: int,
+        _lease_token: str,
+        **_kw: Any,
+    ) -> prw.ReviewFindingsResult:
+        call_order.append("drain")
+        empty = lc.IterationFindings(frozenset(), 0)
+        return prw.ReviewFindingsResult((), empty, empty, (), (), 0, 0)
+
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
+    monkeypatch.setattr(prw, "collect_review_findings", fake_collect_review_findings)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    def fake_record_baseline(
+        _loop_id: str,
+        _project_dir: str,
+        _pr_number: int | None,
+        _client: Any,
+        _lease_token: str,
+        **_kw: Any,
+    ) -> prw.BaselineRecord:
+        call_order.append("record_baseline")
+        return prw.BaselineRecord(99, lc.now_iso(), ())
+
+    monkeypatch.setattr(prw, "record_baseline", fake_record_baseline)
+
+    real_push_verified_branch = d._push_verified_branch
+
+    def tracked_push_verified_branch(worktree_path: str, branch: str) -> None:
+        call_order.append("push")
+        real_push_verified_branch(worktree_path, branch)
+
+    monkeypatch.setattr(d, "_push_verified_branch", tracked_push_verified_branch)
+
+    def fake_post_retrigger_comment(*_a: Any, **_k: Any) -> bool:
+        call_order.append("retrigger_comment")
+        raise prw.GitHubApiError("boom")
+
+    monkeypatch.setattr(prw, "post_retrigger_comment", fake_post_retrigger_comment)
+
+    def _boom_record_iteration_head(*_a: Any, **_k: Any) -> str:
+        call_order.append("record_iteration_head")
+        raise AssertionError("must not be reached when the retrigger post fails")
+
+    monkeypatch.setattr(prw, "record_iteration_head", _boom_record_iteration_head)
+
+    def _boom_wait_for_completion(*_a: Any, **_k: Any) -> prw.CompletionOutcome:
+        call_order.append("wait")
+        raise AssertionError("must not be reached when the retrigger post fails")
+
+    monkeypatch.setattr(prw, "wait_for_completion", _boom_wait_for_completion)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-000016",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+
+    with pytest.raises(prw.GitHubApiError, match="boom"):
+        d._run_wait_external_review(
+            proposal, state, {"push_required": True, "verified_branch": "main"}
+        )
+
+    assert call_order == ["drain", "record_baseline", "push", "retrigger_comment"]
+    assert "record_iteration_head" not in call_order
+
+    reloaded = lc.load_state(loop_id, project_dir)
+    pr_review = reloaded.pr_review if isinstance(reloaded.pr_review, dict) else {}
+    assert pr_review.get("iteration_head_recorded_iteration") is None
+    assert pr_review.get("iteration_head_sha") is None
+
+
+def test_wait_external_review_does_not_post_retrigger_comment_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pr_review.retrigger_comment unset (default) must remain a strict no-op end-to-end: the
+    driver still calls `post_retrigger_comment` unconditionally once per push, but that
+    function's own no-op branch (config.retrigger_comment is None) must mean the underlying
+    `gh api` write is never attempted."""
+    loop_id = "abcd1234-issue-1"
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    _init_repo_with_remote(repo, remote)
+    project_dir = str(repo)
+    state = lc._initial_state(
+        loop_id, "issue-loop", "abcd1234", project_dir, "main", "implementation"
+    )
+    state.status = "running"
+    state.branch = "main"
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    lock = lc.acquire_lock(loop_id, project_dir, "owner", 3600)
+    assert lock is not None
+    token = lock.lease_token
+    state = lc.load_state(loop_id, project_dir)
+
+    (repo / "change.txt").write_text("update\n", encoding="utf-8")
+    _git(["add", "change.txt"], repo)
+    _git(["commit", "-m", "update"], repo)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    d._remote_head_baseline = _git(["rev-parse", "origin/main"], repo)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
+    empty = lc.IterationFindings(frozenset(), 0)
+    monkeypatch.setattr(
+        prw,
+        "collect_review_findings",
+        lambda *a, **k: prw.ReviewFindingsResult((), empty, empty, (), (), 0, 0),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw, "record_baseline", lambda *a, **k: prw.BaselineRecord(99, lc.now_iso(), ())
+    )
+    monkeypatch.setattr(prw, "record_iteration_head", lambda *a, **k: "sha-post-push")
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "timeout", completed=False, timed_out=True, infrastructure_failure=False
+        ),
+    )
+
+    def _boom_post_issue_comment(_self: Any, *_a: Any, **_k: Any) -> None:
+        raise AssertionError("must not call gh api when retrigger_comment is unset")
+
+    monkeypatch.setattr(prw.GhApiClient, "post_issue_comment", _boom_post_issue_comment)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-000015",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {"push_required": True, "verified_branch": "main"})
+
+
+def test_wait_external_review_no_new_commit_shortcut_skips_retrigger_comment_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """code H12 regression, extended for Issue #274: the no_new_commit shortcut (no drained
+    findings and no new Maker commit) must skip the retrigger-comment post exactly like it
+    skips baseline/push/poll -- there is no new push to ask a reviewer to re-review."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    local_head = _git(["rev-parse", "HEAD"], tmp_path)
+    state.pr_number = 42
+    state.pr_review = {
+        "baseline_review_id": 0,
+        "baseline_recorded_at": lc.now_iso(),
+        "processed_comment_ids": [],
+        "iteration_head_sha": local_head,
+    }
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw,
+        "load_pr_review_config",
+        lambda _project: prw.PrReviewConfig(
+            reviewer_allowlist=(), retrigger_comment="@codex review"
+        ),
+    )
+
+    empty = lc.IterationFindings(frozenset(), 0)
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
+    monkeypatch.setattr(
+        prw,
+        "collect_review_findings",
+        lambda *a, **k: prw.ReviewFindingsResult((), empty, empty, (), (), 0, 0),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("must not run once the no_new_commit shortcut applies")
+
+    monkeypatch.setattr(prw, "record_baseline", _boom)
+    monkeypatch.setattr(d, "_push_verified_branch", _boom)
+    monkeypatch.setattr(prw, "post_retrigger_comment", _boom)
+    monkeypatch.setattr(prw, "wait_for_completion", _boom)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-000054",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(
+        proposal, state, {"push_required": True, "verified_branch": "main"}
+    )
+
+    assert result["signature"] == "pr_review_timeout"
+    assert result["metadata"]["shortcut_reason"] == "no_new_commit_to_push"
+
+
 def test_drain_before_push_shares_one_review_items_fetch_with_record_baseline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4539,6 +4945,86 @@ def test_wait_external_review_resumes_straight_to_poll_after_crash_past_record_i
     proposal = lc.ProposeResult(
         action="wait_external_review",
         action_id="act-dh5-001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(
+        proposal, state, {"push_required": True, "verified_branch": "main"}
+    )
+
+    assert poll_calls == ["polled"]
+    assert result["signature"] == "pr_review_timeout"
+
+
+def test_wait_external_review_dh5_resume_does_not_repost_retrigger_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DH5 (distinct from the H12 no_new_commit shortcut tested elsewhere): once
+    `_already_pushed_this_iteration` detects that *this* iteration's push (and its
+    `record_iteration_head`) already succeeded before a driver crash, the resumed
+    `wait_external_review` must skip the entire push branch -- including the
+    retrigger-comment post -- and go straight to polling. H12
+    (`test_wait_external_review_no_new_commit_shortcut_skips_retrigger_comment_too`) is a
+    different case: no push has ever happened for the current Maker output, detected earlier
+    (in `_drain_before_push`) by `detect_pr_review_push_delta` without any
+    `iteration_head_recorded_iteration` match requirement. DH5 requires that match precisely
+    to distinguish "this iteration's push already landed" from "nothing was ever pushed"."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    local_head = _git(["rev-parse", "HEAD"], tmp_path)
+    state.pr_number = 42
+    state.pr_review = {
+        "baseline_review_id": 0,
+        "baseline_recorded_at": lc.now_iso(),
+        "processed_comment_ids": [],
+        "iteration_head_sha": local_head,
+        "iteration_head_recorded_iteration": 1,
+    }
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw,
+        "load_pr_review_config",
+        lambda _project: prw.PrReviewConfig(
+            reviewer_allowlist=(), retrigger_comment="@codex review"
+        ),
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("must not re-run the push flow once already pushed this iteration")
+
+    monkeypatch.setattr(prw, "fetch_review_items", _boom)
+    monkeypatch.setattr(prw, "collect_review_findings", _boom)
+    monkeypatch.setattr(prw, "record_baseline", _boom)
+    monkeypatch.setattr(d, "_push_verified_branch", _boom)
+    monkeypatch.setattr(prw, "post_retrigger_comment", _boom)
+    monkeypatch.setattr(prw, "record_iteration_head", _boom)
+
+    poll_calls: list[str] = []
+
+    def fake_wait_for_completion(
+        _pr: int, _baseline: dict[str, Any], _config: Any, _client: Any, **_kw: Any
+    ) -> prw.CompletionOutcome:
+        poll_calls.append("polled")
+        return prw.CompletionOutcome(
+            "timeout", completed=False, timed_out=True, infrastructure_failure=False
+        )
+
+    monkeypatch.setattr(prw, "wait_for_completion", fake_wait_for_completion)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-dh5-002",
         state_version=state.state_version,
         expected_phase="implementation",
         phase="implementation",
