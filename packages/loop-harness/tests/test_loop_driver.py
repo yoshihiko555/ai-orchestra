@@ -693,8 +693,20 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         # GIT_CONFIG_PARAMETERS: git's own transport for propagating `-c key=value` to a child
         # process; injects arbitrary config for one invocation with no `-c`/`config` literal.
         "GIT_CONFIG_PARAMETERS=\"'url.evil.insteadof=http://x/'\" git push origin main",
+        # ...isolated variant so ONLY the GIT_CONFIG_PARAMETERS branch can match: the payload key
+        # (`core.hookspath`) and the `git status` verb trip no other deny pattern, so removing
+        # PARAMETERS from the rule makes THIS case fail — a regression the realistic push/insteadof
+        # case above cannot detect (it also matches the `git push` and `insteadof` patterns).
+        "GIT_CONFIG_PARAMETERS=\"'core.hookspath=/tmp/evil'\" git status",
+        # GIT_CONFIG_GLOBAL=<path>/GIT_CONFIG_SYSTEM=<path>: point git at an attacker-controlled
+        # config file (holding an `[alias]`/`insteadOf`/`credential.helper` the Maker wrote via an
+        # allowed non-`.git` Write) for one invocation — no `push`/`-c`/`config`/`alias.` literal.
+        # Isolated (`git status` verb) so only the GLOBAL/SYSTEM branch of the GIT_CONFIG rule matches.
+        "GIT_CONFIG_GLOBAL=/tmp/evil.cfg git status",
+        "GIT_CONFIG_SYSTEM=/tmp/evil.cfg git status",
         # bare GIT_CONFIG=<path>: redirects a scope-less `git config` write / supplies the config
-        # file a later `git -c ...` reads, again without a `config`/`-c` literal token.
+        # file a later `git -c ...` reads, again without a `config`/`-c` literal token. The second
+        # case is isolated (only the bare `GIT_CONFIG=` branch matches `git -c core.pager=cat`).
         "GIT_CONFIG=/tmp/evil git config user.name attacker",
         "GIT_CONFIG=/tmp/evil git -c core.pager=cat status",
         # credential.helper repointing
@@ -711,14 +723,20 @@ def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
 @pytest.mark.parametrize(
     "command",
     [
-        # SEC-MED: the config *file* selectors are legitimate hardening variables (the harness's
-        # own `_run_git_unchecked` sets `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM`), not the
-        # env-var config-*injection* mechanism, so they must NOT be denied by the GIT_CONFIG rule.
-        "GIT_CONFIG_GLOBAL=/dev/null git status",
-        "GIT_CONFIG_SYSTEM=/dev/null git status",
+        # SEC-MED: `GIT_CONFIG_NOSYSTEM` is a boolean toggle that only *disables* the system
+        # config; it cannot point git at a config file or inject a key, so it must NOT be denied
+        # (the rule's `_(?:...)\b` end-boundary keeps `NOSYSTEM` out — `SYSTEM` does not match the
+        # `NOSYSTEM` text right after `GIT_CONFIG_`). The file selectors `GIT_CONFIG_GLOBAL=`/
+        # `GIT_CONFIG_SYSTEM=` ARE denied for Maker command strings (see the deny test above); the
+        # driver sets those via its own subprocess env dict in `_run_git_unchecked`/`maker_env`,
+        # never as an inline `VAR=... git` shell command, so this inline deny leaves that untouched.
         "GIT_CONFIG_NOSYSTEM=1 git status",
         # a plain identifier that merely starts with GIT_CONFIG must not trip the bare `=` branch
         "echo GIT_CONFIGURATION",
+        # SEC-MED: git only honors the GIT_CONFIG* variables in uppercase, so an ordinary lowercase
+        # shell variable (`git_config=...`) has no effect on git and must NOT be denied — the
+        # GIT_CONFIG rule is matched case-sensitively via `(?-i:...)` precisely to allow this.
+        "git_config=/tmp/evil echo hi",
     ],
 )
 def test_maker_bash_guard_allows_git_config_file_selectors(command: str) -> None:
