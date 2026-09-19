@@ -18,10 +18,31 @@ git_ephemeral = load_module(
     "loop_git_ephemeral_tests",
     "packages/loop-harness/lib/loop_git_ephemeral.py",
 )
+# `loop_git_ephemeral.py`'s own `from loop_git_ephemeral_support import (...)` (triggered by the
+# `load_module` call above, which puts the lib dir on `sys.path`) already registers this module
+# under `sys.modules["loop_git_ephemeral_support"]`; import it directly rather than loading a
+# second, distinct module object via `load_module`.
+import loop_git_ephemeral_support as git_ephemeral_support  # noqa: E402
 
 BRANCH = "issue-211"
 LOOP_ID = "loop-211"
 ACTION_ID = "action-001"
+
+
+# Issue #274: Claude Code injects `safe.directory` git config via env-var config injection
+# (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`, plus `GIT_CONFIG_PARAMETERS` and
+# `GIT_CONFIG`) rather than a config file, so tests that assert on git config values must scrub it
+# from the ambient env these helpers build -- otherwise assertions like `git config safe.directory`
+# read the injected value instead of the one this fixture actually set up. Reuses the lib's own
+# `_GIT_LOCATION_ENV_VARS` / `_GIT_CONFIG_ENV_VAR_RE` (rather than a duplicated regex) so this
+# helper cannot silently drift from what `loop_git_ephemeral_support._stripped_host_env` scrubs.
+def _scrubbed_ambient_env() -> dict[str, str]:
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key not in git_ephemeral_support._GIT_LOCATION_ENV_VARS
+        and not git_ephemeral_support._GIT_CONFIG_ENV_VAR_RE.match(key)
+    }
 
 
 def _git(
@@ -33,7 +54,7 @@ def _git(
     return subprocess.run(
         ["git", *(str(arg) for arg in args)],
         cwd=cwd,
-        env=env,
+        env=env if env is not None else _scrubbed_ambient_env(),
         check=check,
         capture_output=True,
         text=True,
@@ -80,7 +101,7 @@ def _prepare(fixture: GitFixture, **kwargs: Any):
 
 def _ephemeral_env(session: Any) -> dict[str, str]:
     return {
-        **os.environ,
+        **_scrubbed_ambient_env(),
         "GIT_DIR": str(session.ephemeral_dir),
         "GIT_WORK_TREE": str(session.worktree_path),
     }
@@ -736,6 +757,14 @@ def test_checker_prepare_and_cleanup_keep_hardened_scrubbed_host_git(
         "GIT_NAMESPACE": "ambient-namespace",
         "GIT_CEILING_DIRECTORIES": str(tmp_path),
         "GIT_TEMPLATE_DIR": str(tmp_path / "ambient-template"),
+        "GIT_CONFIG": str(tmp_path / "ambient-gitconfig"),
+        # Issue #274: Claude Code's env-var git config injection (`safe.directory` etc.).
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": str(tmp_path / "ambient-safe-directory"),
+        "GIT_CONFIG_KEY_10": "url.evil.insteadof",
+        "GIT_CONFIG_VALUE_10": "https://github.com/evil/evil.git",
+        "GIT_CONFIG_PARAMETERS": "'http.proxyAuthMethod=basic'",
     }
     for key, value in poisoned.items():
         monkeypatch.setenv(key, value)
@@ -752,6 +781,33 @@ def test_checker_prepare_and_cleanup_keep_hardened_scrubbed_host_git(
         assert call.env["GIT_CONFIG_NOSYSTEM"] == "1"
         for key, value in poisoned.items():
             assert call.env.get(key) != value
+
+
+def test_stripped_host_env_removes_git_config_env_var_injection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #274: env-var git config injection must be stripped like location vars are."""
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.directory")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "/ambient/safe-directory")
+    monkeypatch.setenv("GIT_CONFIG_KEY_10", "url.evil.insteadof")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_10", "https://github.com/evil/evil.git")
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'http.proxyAuthMethod=basic'")
+    monkeypatch.setenv("GIT_CONFIG", "/ambient/gitconfig")
+    monkeypatch.setenv("GIT_DIR", "/ambient/git-dir")
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Should Survive")
+
+    env = git_ephemeral_support._stripped_host_env({"GIT_DIR": "/trusted/git-dir"})
+
+    assert "GIT_CONFIG_COUNT" not in env
+    assert "GIT_CONFIG_KEY_0" not in env
+    assert "GIT_CONFIG_VALUE_0" not in env
+    assert "GIT_CONFIG_KEY_10" not in env
+    assert "GIT_CONFIG_VALUE_10" not in env
+    assert "GIT_CONFIG_PARAMETERS" not in env
+    assert "GIT_CONFIG" not in env
+    assert env["GIT_AUTHOR_NAME"] == "Should Survive"
+    assert env["GIT_DIR"] == "/trusted/git-dir"
 
 
 def test_checker_cleanup_removes_runtime_without_changing_shared_common_dir(
