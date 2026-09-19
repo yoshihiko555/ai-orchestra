@@ -690,6 +690,13 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         "gi\\t push",
         # GIT_CONFIG_KEY_*/GIT_CONFIG_VALUE_*/GIT_CONFIG_COUNT env-var config injection
         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.evil.insteadof GIT_CONFIG_VALUE_0=x git status",
+        # GIT_CONFIG_PARAMETERS: git's own transport for propagating `-c key=value` to a child
+        # process; injects arbitrary config for one invocation with no `-c`/`config` literal.
+        "GIT_CONFIG_PARAMETERS=\"'url.evil.insteadof=http://x/'\" git push origin main",
+        # bare GIT_CONFIG=<path>: redirects a scope-less `git config` write / supplies the config
+        # file a later `git -c ...` reads, again without a `config`/`-c` literal token.
+        "GIT_CONFIG=/tmp/evil git config user.name attacker",
+        "GIT_CONFIG=/tmp/evil git -c core.pager=cat status",
         # credential.helper repointing
         "git config credential.helper '!echo pwned'",
         "git -c credential.helper=evil status",
@@ -699,6 +706,25 @@ def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
     result = _run_bash_guard_hook(command)
     assert result.returncode == 2
     assert "maker-bash-guard" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # SEC-MED: the config *file* selectors are legitimate hardening variables (the harness's
+        # own `_run_git_unchecked` sets `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM`), not the
+        # env-var config-*injection* mechanism, so they must NOT be denied by the GIT_CONFIG rule.
+        "GIT_CONFIG_GLOBAL=/dev/null git status",
+        "GIT_CONFIG_SYSTEM=/dev/null git status",
+        "GIT_CONFIG_NOSYSTEM=1 git status",
+        # a plain identifier that merely starts with GIT_CONFIG must not trip the bare `=` branch
+        "echo GIT_CONFIGURATION",
+    ],
+)
+def test_maker_bash_guard_allows_git_config_file_selectors(command: str) -> None:
+    result = _run_bash_guard_hook(command)
+    assert result.returncode == 0
+    assert result.stderr == ""
 
 
 # --------------------------------------------------------------------------------------------
