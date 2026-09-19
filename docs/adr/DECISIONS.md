@@ -58,4 +58,11 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260718-043 | Docker action の cleanup 失敗と実行取消を安全停止として扱う                          | accepted   | 2026-07-18 |
 | ADR-20260720-044 | 予算 latch を frontier 回帰判定で評価不能として中立化する                            | accepted   | 2026-07-20 |
 | ADR-20260726-045 | 永続イメージライフサイクルの脅威モデル再評価と異常系 stale cleanup の追加            | proposed   | 2026-07-26 |
+| ADR-20260728-046 | 蓄積型ログの root worktree 解決と配置規約                                              | accepted   | 2026-07-28 |
+| ADR-20260802-047 | agent-routing e2e テストを実効 config 追従の 2 階層構成にする                          | accepted   | 2026-08-02 |
+| ADR-20260814-048 | 品質軸の飽和は own suite の行動ベースシナリオ + gate/graded critical 分離で解消する（支配ルールは変更しない） | accepted   | 2026-08-14 |
+| ADR-20260814-049 | routing-config は検証専用 target と位置づけ、適応度関数の分解能は skill target の loop 運転で実証する（ADR-048 の部分 supersede） | accepted   | 2026-08-14 |
+| ADR-20260814-050 | skill target の品質分解能を gate/graded 分離（独立 graded リスト + penalty 非採点）で実現する | accepted   | 2026-08-14 |
+| ADR-20260817-051 | frontier コスト軸をキャッシュ中立コスト（cache_neutral_cost_usd）へ切替え、5 分 TTL ephemeral cache の偽 dominance 勾配を除去する | accepted   | 2026-08-17 |
+| ADR-20260817-052 | claude-harness suite を測定軸ベースで拡充し、ハーネス全体の自己改善を実測可能にする    | accepted   | 2026-08-17 |
 | ADR-20260906-053 | LP-2 Docker Checker の実行環境と観測性を実運用値に合わせる                              | accepted   | 2026-09-06 |
