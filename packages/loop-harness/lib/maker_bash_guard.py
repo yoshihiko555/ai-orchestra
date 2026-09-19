@@ -47,7 +47,10 @@ structural guarantee; this layer and layer 4 are additional safety nets).
 best-effort auxiliary layer, not a primary defense boundary. Its Bash-command text scan is
 case-insensitive (`re.IGNORECASE` on every `_DENY_PATTERNS` entry), also matches a quote/
 backslash-stripped normalization of the command (a Maker splitting a denied token across quote
-boundaries, e.g. `g"i"t push`, would otherwise slip past a literal-substring match), and denies
+boundaries, e.g. `g"i"t push`, would otherwise slip past a literal-substring match) and a
+line-continuation-joined normalization (a Maker splitting a denied token/env-var name across a
+`\`+newline, e.g. `GIT_CONFIG_GLO\<newline>BAL=...`, which bash itself rejoins before
+tokenization), and denies
 git's env-var-based config mechanism — `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`/`GIT_CONFIG_COUNT`/
 `GIT_CONFIG_PARAMETERS`, the bare `GIT_CONFIG=` assignment, and the `GIT_CONFIG_GLOBAL=`/
 `GIT_CONFIG_SYSTEM=` file selectors (which point git at an attacker-controlled config file that
@@ -246,6 +249,22 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 # tradeoff (see the module docstring).
 _QUOTE_STRIP_RE = re.compile(r"[\"'\\]")
 
+# SEC-MED (PR review): Bash removes a backslash-newline line continuation from the input stream
+# *before* tokenization, so a denied token/env-var name split across a line continuation —
+# `GIT_CONFIG_GLO\<newline>BAL=/tmp/evil.cfg git status` — is rejoined by the shell into the exact
+# same `GIT_CONFIG_GLOBAL=...` invocation, yet a scan of the raw text sees the two halves broken
+# by the `\`+newline. Stripping the whole `\`+newline sequence (matching bash's own removal)
+# before scanning reconstructs the token. The quote/backslash strip alone is insufficient here:
+# it removes the backslash but leaves the newline, so the two halves stay split. Only a bare
+# backslash *immediately* followed by a newline is a continuation; a backslash followed by other
+# text (`gi\t push`) is left for `_QUOTE_STRIP_RE` to handle as before.
+_LINE_CONTINUATION_RE = re.compile(r"\\\r?\n")
+
+
+def _strip_line_continuations(command: str) -> str:
+    """Return `command` with bash `\\`+newline line continuations removed (SEC-MED best-effort)."""
+    return _LINE_CONTINUATION_RE.sub("", command)
+
 
 def _normalize_for_bypass_scan(command: str) -> str:
     """Return `command` with quote/backslash characters removed (SEC-MED best-effort)."""
@@ -255,10 +274,14 @@ def _normalize_for_bypass_scan(command: str) -> str:
 def find_denied_match(command: str) -> str | None:
     """Return the first matched denied substring in `command`, or None if it looks clean.
 
-    Scans both the raw `command` text and its quote/backslash-stripped normalization
-    (`_normalize_for_bypass_scan`, SEC-MED) — a match against either counts as denied.
+    Scans the raw `command` text, its line-continuation-joined form (`_strip_line_continuations`,
+    which mirrors bash's pre-tokenization `\\`+newline removal), and the quote/backslash-stripped
+    normalization of that joined form (`_normalize_for_bypass_scan`, SEC-MED) — a match against
+    any of them counts as denied. Joining before the quote strip is required because the quote
+    strip removes the continuation's backslash but leaves the newline, keeping the token split.
     """
-    for candidate in (command, _normalize_for_bypass_scan(command)):
+    line_joined = _strip_line_continuations(command)
+    for candidate in (command, line_joined, _normalize_for_bypass_scan(line_joined)):
         for pattern in _DENY_PATTERNS:
             match = pattern.search(candidate)
             if match is not None:

@@ -712,6 +712,16 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         # credential.helper repointing
         "git config credential.helper '!echo pwned'",
         "git -c credential.helper=evil status",
+        # SEC-MED (PR review): a `\`+newline line continuation splits an env-var name that bash
+        # rejoins before tokenization (`GIT_CONFIG_GLO\<newline>BAL=...` -> `GIT_CONFIG_GLOBAL=...`),
+        # evading a scan of the raw text. `_strip_line_continuations` reconstructs the token.
+        "GIT_CONFIG_GLO\\\nBAL=/tmp/evil.cfg git status",
+        # same continuation bypass on the bare `GIT_CONFIG=` assignment...
+        "GIT_CON\\\nFIG=/tmp/evil git -c core.pager=cat status",
+        # ...and on the GIT_CONFIG_PARAMETERS transport (isolated payload/verb so ONLY that branch trips)
+        "GIT_CONFIG_PARAME\\\nTERS=\"'core.hookspath=/tmp/evil'\" git status",
+        # a line continuation splitting the `git push` verb itself is rejoined the same way
+        "git pu\\\nsh origin main",
     ],
 )
 def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
@@ -737,6 +747,9 @@ def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
         # shell variable (`git_config=...`) has no effect on git and must NOT be denied — the
         # GIT_CONFIG rule is matched case-sensitively via `(?-i:...)` precisely to allow this.
         "git_config=/tmp/evil echo hi",
+        # SEC-MED (PR review): line-continuation stripping only ever *fuses* halves back together,
+        # so it must not turn a benign continuation into a false-positive deny.
+        "echo hel\\\nlo world",
     ],
 )
 def test_maker_bash_guard_allows_git_config_file_selectors(command: str) -> None:
