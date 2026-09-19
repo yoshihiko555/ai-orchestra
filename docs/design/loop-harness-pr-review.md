@@ -500,6 +500,13 @@ issue コメントとして投稿する（`post_retrigger_comment()`）。この
 > リスクである（外部レビュアーへの再レビュー要求が重複しても、レビュー自体の正しさや完了判定
 > には影響しない）。
 
+`post_retrigger_comment()` は lease でフェンスされている（CodeRabbit の PR #418 指摘への対応）:
+`gh api` への投稿**前**に `_fenced_pr_review_write`（`record_iteration_head()` と同じ
+`guarded_lease_section`/`_validate_pr_review_fence` ゲート）で lease とペンディングアクションを
+検証済みバリデーション専用セクションとして通し、投稿後の journal 書き込みも同じゲートの内側で
+行う。ネットワーク呼び出し自体はロックの**外側**で行う（`gh api` が詰まった場合に他ワーカーの
+heartbeat/lease 取得を巻き込んで止めないため）。
+
 ### 2.5 CodeRabbit レート制限応答による人間引き継ぎ（Issue #193）
 
 CodeRabbit の issue コメントが次の条件をすべて満たす場合、外部レビュアー利用不可を検知する。

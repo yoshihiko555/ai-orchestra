@@ -2033,6 +2033,7 @@ class LoopDriver:
                     repo,
                     loop_id=self.loop_id,
                     project_dir=self.project_dir,
+                    lease_token=self.lease_token,
                     action_id=action_id,
                 )
                 # code H9: record the just-pushed PR head so the poll below cannot mistake a

@@ -4099,6 +4099,7 @@ def test_post_retrigger_comment_is_noop_when_unset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_dir = _setup_state(tmp_path, monkeypatch, pr_review={"processed_comment_ids": []})
+    lease_token = _lease(project_dir)
 
     class _BoomClient:
         def post_issue_comment(self, _repo: str, _issue_number: int, _body: str) -> None:
@@ -4111,6 +4112,7 @@ def test_post_retrigger_comment_is_noop_when_unset(
         "owner/repo",
         loop_id="abcd1234-issue-1",
         project_dir=project_dir,
+        lease_token=lease_token,
     )
 
     assert posted is False
@@ -4122,6 +4124,8 @@ def test_post_retrigger_comment_posts_and_journals_when_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_dir = _setup_state(tmp_path, monkeypatch, pr_review={"processed_comment_ids": []})
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir, "act-1")
     calls: list[tuple[str, int, str]] = []
 
     class _RecordingClient:
@@ -4139,6 +4143,7 @@ def test_post_retrigger_comment_posts_and_journals_when_set(
         "owner/repo",
         loop_id="abcd1234-issue-1",
         project_dir=project_dir,
+        lease_token=lease_token,
         action_id="act-1",
     )
 
@@ -4149,6 +4154,75 @@ def test_post_retrigger_comment_posts_and_journals_when_set(
     assert events[-1]["event"] == "pr_review_retrigger_comment_posted"
     assert events[-1]["action_id"] == "act-1"
     assert events[-1]["payload"]["pr_number"] == 12
+
+
+def test_post_retrigger_comment_invalid_lease_prevents_post_and_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lease-fenced (CodeRabbit finding on PR #418): an invalid/stale lease token must be
+    rejected by the pre-POST validation-only `_fenced_pr_review_write` section -- the same
+    `guarded_lease_section` gate `record_iteration_head` already uses -- *before* the network
+    POST, so a stale worker can neither post a duplicate comment nor journal an event for an
+    action it no longer owns."""
+    project_dir = _setup_state(tmp_path, monkeypatch, pr_review={"processed_comment_ids": []})
+    _lease(project_dir)  # a lock now exists; the token below intentionally does not match it
+
+    class _BoomClient:
+        def post_issue_comment(self, _repo: str, _issue_number: int, _body: str) -> None:
+            raise AssertionError("must not call gh api with an invalid lease")
+
+    config = prw.PrReviewConfig(
+        reviewer_allowlist=_config().reviewer_allowlist, retrigger_comment="@codex review"
+    )
+
+    with pytest.raises(lc.WriteRejectedError):
+        prw.post_retrigger_comment(
+            12,
+            config,
+            _BoomClient(),
+            "owner/repo",
+            loop_id="abcd1234-issue-1",
+            project_dir=project_dir,
+            lease_token="stale-token-not-matching-lock",
+            action_id="act-1",
+        )
+
+    journal = lc.journal_path("abcd1234-issue-1", project_dir)
+    assert not journal.exists()
+
+
+def test_post_retrigger_comment_pending_action_mismatch_prevents_post_and_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid lease but a superseded/mismatched pending `action_id` must also be rejected
+    before the POST (`_validate_pr_review_fence`'s `StaleActionError`), not just an outright
+    invalid lease token -- covering the "pending action" half of the fencing gate."""
+    project_dir = _setup_state(tmp_path, monkeypatch, pr_review={"processed_comment_ids": []})
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir, "current-action")
+
+    class _BoomClient:
+        def post_issue_comment(self, _repo: str, _issue_number: int, _body: str) -> None:
+            raise AssertionError("must not call gh api for a superseded action")
+
+    config = prw.PrReviewConfig(
+        reviewer_allowlist=_config().reviewer_allowlist, retrigger_comment="@codex review"
+    )
+
+    with pytest.raises(lc.StaleActionError):
+        prw.post_retrigger_comment(
+            12,
+            config,
+            _BoomClient(),
+            "owner/repo",
+            loop_id="abcd1234-issue-1",
+            project_dir=project_dir,
+            lease_token=lease_token,
+            action_id="stale-action-id-not-pending",
+        )
+
+    journal = lc.journal_path("abcd1234-issue-1", project_dir)
+    assert not journal.exists()
 
 
 def test_own_retrigger_comment_is_not_a_completion_signal_when_untrusted() -> None:

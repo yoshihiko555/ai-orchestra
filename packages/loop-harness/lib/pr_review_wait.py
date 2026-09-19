@@ -590,6 +590,7 @@ def post_retrigger_comment(
     *,
     loop_id: str,
     project_dir: str,
+    lease_token: str,
     action_id: str | None = None,
 ) -> bool:
     """Post `pr_review.retrigger_comment` after a push so a bot reviewer re-reviews (Issue #274).
@@ -599,6 +600,31 @@ def post_retrigger_comment(
     as before. When set, posts it once as an issue comment and journals
     `pr_review_retrigger_comment_posted` for observability, mirroring the
     `record_iteration_head`/`record_baseline` journal-event convention above.
+
+    Lease-fenced (CodeRabbit finding on PR #418): a stale worker whose lease/pending action is
+    no longer current must not be able to post a duplicate comment or journal an event for a
+    superseded action. This uses `_fenced_pr_review_write` -- the exact same
+    `guarded_lease_section`/`_validate_pr_review_fence` gate `record_iteration_head` and every
+    other `pr_review_wait` state mutator already use -- **twice**: once as a validation-only
+    section (empty body) *before* the network POST, so a lease already known invalid never
+    even reaches `gh api`; and again, with a freshly reloaded state, around the journal write
+    *after* the POST, mirroring how `record_iteration_head` itself loads state fresh right
+    after its own network call and only then enters the fence. Both raise the same
+    `lc.WriteRejectedError` (invalid/stale lease) / `lc.StaleActionError` (state advanced past
+    this action) / `lc.ProtocolViolationError` (wrong action type) that a `record_iteration_head`
+    fencing failure already would -- uncaught here, propagating out of `_run_wait_external_review`
+    exactly like `record_iteration_head`'s own failures always have (`run()` only catches
+    `DriverTerminated`; any of these crashes the driver process and a resumed worker retries
+    from scratch, the same "crash -> resume" pattern DH5 already relies on for this method).
+
+    The network POST itself runs *outside* both fenced sections, deliberately: holding
+    `guarded_lease_section`'s flock across a potentially slow/stalled `gh api` request would
+    block every other lease operation (heartbeat renewal, a legitimate new owner's lease
+    acquisition) for as long as the request hangs. The residual window this leaves open --
+    lease lost or the action superseded between the pre-POST validation and the POST actually
+    landing -- is accepted (see design doc loop-harness-pr-review.md §2.4.1): it can duplicate
+    the posted comment, but the post-POST re-validation still prevents a stale worker from
+    journaling the event as if it still owned the action.
 
     This posted comment is never mistaken for a reviewer signal, by two independent layers:
     1. `verify_origin()` (2.1 節) only allowlists configured bot identities
@@ -619,15 +645,24 @@ def post_retrigger_comment(
     """
     if config.retrigger_comment is None:
         return False
+    pre_state = lc.load_state(loop_id, project_dir)
+    with _fenced_pr_review_write(
+        pre_state, loop_id, project_dir, lease_token, action_id, BASELINE_ACTIONS
+    ):
+        pass
     client.post_issue_comment(repo, pr_number, config.retrigger_comment)
-    lc.append_journal_event(
-        loop_id,
-        project_dir,
-        "pr_review_retrigger_comment_posted",
-        "waiter",
-        action_id,
-        {"pr_number": pr_number},
-    )
+    post_state = lc.load_state(loop_id, project_dir)
+    with _fenced_pr_review_write(
+        post_state, loop_id, project_dir, lease_token, action_id, BASELINE_ACTIONS
+    ):
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            "pr_review_retrigger_comment_posted",
+            "waiter",
+            action_id,
+            {"pr_number": pr_number},
+        )
     return True
 
 
