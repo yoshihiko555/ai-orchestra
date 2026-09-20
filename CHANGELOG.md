@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`loop-harness`: `print-launchd` / `print-cron` が生成する常駐テンプレートが最小 `PATH` で起動し、`gh` / `docker` を解決できず discovery が黙って失敗する問題を修正**: テンプレートに生成時のシェルの `PATH` を埋め込むようになった（launchd は `EnvironmentVariables.PATH`、cron は行頭の `export PATH=...;`）。既に登録済みの plist / crontab は再生成して差し替える。
 - **`loop-harness`: LP-2 の Maker/Checker が現行 Claude Code CLI で起動前に失敗する問題を修正（Issue #401）**: `claude -p` の prompt 引数を `--add-dir`（可変長オプション）の直後に置くと、prompt がディレクトリ引数として飲み込まれ非ゼロ終了していた。`--add-dir` 群と prompt の間に `--` terminator を挿入して分離した。
 - **`loop-harness`: Docker 隔離の Checker 機械検証が一時リポジトリへの `git init` で失敗する問題を修正（Issue #409）**: `GIT_DIR`/`GIT_WORK_TREE` がコンテナ全体の環境変数として export されていたため、`pytest` がテスト内で作る一時 git リポジトリへの `git init` がすべて action 自身の ephemeral リポジトリへ誤って向いていた。これらは Maker/Checker の `claude -p` 実行にのみ渡すよう変更し、機械検証（`docker exec`）では一切見えなくした。またコンテナの `TMPDIR` を exec 可能な別 tmpfs に向け、一時ディレクトリに置かれる実行可能ファイルが動作するようにした。
 - **`loop-harness`: Checker LLM レビュー結果の解析失敗が原因不明の `infrastructure_failure` に丸め込まれる問題を修正（Issue #410）**: レビュアーの応答が ```json フェンス付きだった場合でも寛容に抽出するようにし、それでも解析できない場合や `claude -p` プロセス自体が失敗した場合は raw stdout/stderr をアーティファクトとして保存するようになった。broker のコスト超過等で Maker/Checker が失敗した際も、broker の `--print-metrics` サマリーが実行ログへ記録される。

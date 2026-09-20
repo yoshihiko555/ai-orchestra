@@ -1122,7 +1122,7 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
 cron 側は「落ちていたら起動し直す」監視役に留める）:
 
 ```cron
-*/5 * * * * pgrep -f loop_scheduler.py || /usr/bin/python3 /path/to/packages/loop-harness/scripts/loop_scheduler.py --project /path/to/repo >> /path/to/repo/.claude/loop/scheduler.log 2>&1
+*/5 * * * * export PATH=/path/to/shell/PATH; pgrep -f loop_scheduler.py || /usr/bin/python3 /path/to/packages/loop-harness/scripts/loop_scheduler.py --project /path/to/repo >> /path/to/repo/.claude/loop/scheduler.log 2>&1
 ```
 
 **launchd**（macOS、常駐サービスとして登録する場合の plist 骨子）:
@@ -1145,6 +1145,11 @@ cron 側は「落ちていたら起動し直す」監視役に留める）:
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/path/to/shell/PATH</string>
+  </dict>
   <key>StandardOutPath</key>
   <string>/path/to/repo/.claude/loop/scheduler.stdout.log</string>
   <key>StandardErrorPath</key>
@@ -1155,6 +1160,17 @@ cron 側は「落ちていたら起動し直す」監視役に留める）:
 
 - `KeepAlive: true` で `loop_scheduler.py` プロセスが落ちた場合に launchd が自動再起動する
   （cron の `pgrep` 監視と役割が重複するため、launchd 採用時は cron 登録を行わない）。
+- **テンプレート生成時の `PATH` を持ち運ぶ（EV-173）**: launchd の LaunchAgent と macOS cron は
+  ログインシェルを経由せず最小の `PATH`（`/usr/bin:/bin:/usr/sbin:/sbin` 相当）でジョブを起動する
+  ため、テンプレートに `PATH` がないと scheduler（と env を継承する worker）が bare `gh` / `docker` /
+  バージョンマネージャ配下の interpreter を解決できず、discovery が黙って失敗し続ける。
+  `render_launchd_plist` は `EnvironmentVariables.PATH`、`render_cron_entry` はコマンド先頭の
+  `export PATH=<quoted>;`（`||` 以降のフォールバック起動にも効かせるため `PATH=... cmd` 形式の
+  prefix ではなく `export`）として、`print-launchd` / `print-cron` を実行したシェルの `PATH`
+  （`sys.executable` を採る #G8 と同じ根拠。`path_env` 引数で上書き可）を埋め込む。`PATH` が
+  未設定・空のときは省略せず `ValueError` で fail-closed する（省略は修正前と同じ欠陥の再現）。
+  補間値は他の値と同じく制御文字 fail-closed（SN-cron / RM3）と XML エスケープ・shell quote・
+  `%` エスケープ（SN7）を通る。
 - 実際の配置パス（`~/Library/LaunchAgents/com.ai-orchestra.loop-scheduler.plist`）へのインストール
   手順は `loop_scheduler.py --install-launchd` 等の補助コマンドとして実装するかは、実装フェーズで
   費用対効果を見て判断する（本書では手動配置の骨子のみ確定する）。

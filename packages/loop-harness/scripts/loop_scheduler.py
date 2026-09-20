@@ -1389,11 +1389,34 @@ def _reject_launchd_unsafe_chars(value: str, field_name: str) -> None:
         )
 
 
+def _resolve_template_path_env(path_env: str | None) -> str:
+    """Return the `PATH` a resident template must carry, failing closed when it is empty.
+
+    launchd LaunchAgents and macOS cron start jobs with a minimal `PATH`
+    (`/usr/bin:/bin:/usr/sbin:/sbin`-class) and never source the login shell, so a template
+    that omits `PATH` leaves the scheduler (and every worker it spawns, which inherits its
+    environment) unable to resolve bare `gh` / `docker` / version-manager interpreters -
+    discovery (`gh api issues`) then fails on every poll with nothing labeled ever picked up.
+    The `PATH` of the shell that ran `print-launchd` / `print-cron` is the one known to work
+    (same reasoning as #G8's `sys.executable`), so it is captured at render time. An unset or
+    empty `PATH` is refused rather than silently omitted, because omission reproduces the exact
+    defect this guards against.
+    """
+    resolved = os.environ.get("PATH", "") if path_env is None else path_env
+    if not resolved:
+        raise ValueError(
+            "PATH is empty: run print-launchd / print-cron from a shell where gh and docker "
+            "resolve, or pass path_env explicitly"
+        )
+    return resolved
+
+
 def render_launchd_plist(
     project_dir: str,
     script_path: Path | None = None,
     python_bin: str | None = None,
     definition_id: str = DEFAULT_DEFINITION_ID,
+    path_env: str | None = None,
 ) -> str:
     """Render a launchd plist template for `--install-launchd`-style manual setup.
 
@@ -1455,11 +1478,13 @@ def render_launchd_plist(
     script = str(script_path or _SCRIPT_DIR / "loop_scheduler.py")
     project = str(Path(project_dir).resolve())
     python = str(python_bin or sys.executable)
+    path = _resolve_template_path_env(path_env)
     for value, field_name in (
         (script, "script_path"),
         (project, "project_dir"),
         (python, "python_bin"),
         (definition_id, "definition_id"),
+        (path, "path_env"),
     ):
         _reject_launchd_unsafe_chars(value, field_name)
     log_dir = f"{project}/.claude/loop"
@@ -1493,6 +1518,11 @@ def render_launchd_plist(
         "  <true/>\n"
         "  <key>KeepAlive</key>\n"
         "  <true/>\n"
+        "  <key>EnvironmentVariables</key>\n"
+        "  <dict>\n"
+        "    <key>PATH</key>\n"
+        f"    <string>{xml_escape(path)}</string>\n"
+        "  </dict>\n"
         "  <key>StandardOutPath</key>\n"
         f"  <string>{xml_escape(stdout_log)}</string>\n"
         "  <key>StandardErrorPath</key>\n"
@@ -1517,6 +1547,7 @@ def render_cron_entry(
     script_path: Path | None = None,
     python_bin: str | None = None,
     definition_id: str = DEFAULT_DEFINITION_ID,
+    path_env: str | None = None,
 ) -> str:
     """Render a cron entry template: an `is-alive` pidfile/flock probe restarts the scheduler
     if it died (Issue #216).
@@ -1573,11 +1604,13 @@ def render_cron_entry(
     script = str(script_path or _SCRIPT_DIR / "loop_scheduler.py")
     project = str(Path(project_dir).resolve())
     python = str(python_bin or sys.executable)
+    path = _resolve_template_path_env(path_env)
     for value, field_name in (
         (script, "script_path"),
         (project, "project_dir"),
         (python, "python_bin"),
         (definition_id, "definition_id"),
+        (path, "path_env"),
     ):
         _reject_cron_unsafe_chars(value, field_name)
     log_dir = f"{project}/.claude/loop"
@@ -1591,8 +1624,11 @@ def render_cron_entry(
         f"{shlex.quote(python)} {shlex.quote(script)} {project_args} >> "
         f"{shlex.quote(log_path)} 2>&1"
     )
+    # `export` (not a `PATH=... cmd` prefix) so the `||` fallback spawn sees it as well as the
+    # `is-alive` probe - see `_resolve_template_path_env` for why cron needs it at all.
     line = (
-        f"*/5 * * * * mkdir -p {shlex.quote(log_dir)} && {is_alive_command} || {fallback_command}\n"
+        f"*/5 * * * * export PATH={shlex.quote(path)}; mkdir -p {shlex.quote(log_dir)} && "
+        f"{is_alive_command} || {fallback_command}\n"
     )
     return line.replace("%", "\\%")
 
