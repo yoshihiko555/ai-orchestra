@@ -2212,8 +2212,10 @@ def test_render_cron_entry_creates_log_dir_before_redirect(tmp_path: Path) -> No
     """#H17: `.claude/loop/` may not exist yet on a fresh checkout; the shell's `>>` redirect
     at the end of the cron line fails outright if its parent directory is missing."""
     entry = scheduler.render_cron_entry(str(tmp_path))
-    assert entry.strip().startswith("*/5 * * * * mkdir -p")
+    # EV-173: the line now opens with `export PATH=...;`; the mkdir must still precede `>>`.
+    assert entry.strip().startswith("*/5 * * * * export PATH=")
     mkdir_index = entry.index("mkdir -p ")
+    assert mkdir_index < entry.index(" >> ")
     and_index = entry.index(" && ", mkdir_index)
     mkdir_arg = entry[mkdir_index + len("mkdir -p ") : and_index]
     assert mkdir_arg == shlex.quote(f"{tmp_path.resolve()}/.claude/loop")
@@ -2421,3 +2423,77 @@ def test_spawn_worker_forwards_definition_id_to_child_argv(
         "--definition",
         "custom-loop",
     ]
+
+
+# -- EV-173: resident templates carry the render-time PATH ---------------------------------------
+
+
+def test_render_launchd_plist_carries_render_time_path_in_environment_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-173: launchd starts a LaunchAgent with a minimal PATH and never sources the login
+    shell, so without `EnvironmentVariables.PATH` the scheduler cannot resolve bare `gh` /
+    `docker` and discovery fails silently on every poll."""
+    monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
+    plist = scheduler.render_launchd_plist(str(tmp_path))
+    assert "<key>EnvironmentVariables</key>" in plist
+    assert "<key>PATH</key>" in plist
+    assert "<string>/opt/homebrew/bin:/usr/bin:/bin</string>" in plist
+
+
+def test_render_launchd_plist_honors_explicit_path_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", "/from/environ")
+    plist = scheduler.render_launchd_plist(str(tmp_path), path_env="/explicit/bin")
+    assert "<string>/explicit/bin</string>" in plist
+    assert "/from/environ" not in plist
+
+
+def test_render_launchd_plist_xml_escapes_path_env(tmp_path: Path) -> None:
+    plist = scheduler.render_launchd_plist(str(tmp_path), path_env="/a&b/bin:/c<d>/bin")
+    assert "<string>/a&amp;b/bin:/c&lt;d&gt;/bin</string>" in plist
+    assert "/a&b/bin" not in plist
+
+
+def test_render_launchd_plist_fails_closed_on_empty_path_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-173: an omitted PATH key reproduces the exact minimal-PATH defect, so an empty or
+    unset PATH refuses to render instead of silently emitting a broken template."""
+    with pytest.raises(ValueError, match="PATH is empty"):
+        scheduler.render_launchd_plist(str(tmp_path), path_env="")
+    monkeypatch.delenv("PATH", raising=False)
+    with pytest.raises(ValueError, match="PATH is empty"):
+        scheduler.render_launchd_plist(str(tmp_path))
+
+
+def test_render_launchd_plist_fails_closed_on_cr_in_path_env(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="path_env"):
+        scheduler.render_launchd_plist(str(tmp_path), path_env="/bin\r:/usr/bin")
+
+
+def test_render_cron_entry_exports_render_time_path_before_probe_and_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-173: cron's PATH is as minimal as launchd's. `export` (not a `PATH=... cmd` prefix)
+    is used so the `||` fallback spawn sees it, not only the `is-alive` probe."""
+    monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
+    entry = scheduler.render_cron_entry(str(tmp_path))
+    assert entry.startswith("*/5 * * * * export PATH=/opt/homebrew/bin:/usr/bin:/bin; ")
+    assert entry.index("export PATH=") < entry.index("is-alive")
+    assert entry.index("export PATH=") < entry.index("||")
+
+
+def test_render_cron_entry_fails_closed_on_empty_path_env(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="PATH is empty"):
+        scheduler.render_cron_entry(str(tmp_path), path_env="")
+
+
+def test_render_cron_entry_escapes_percent_in_path_env(tmp_path: Path) -> None:
+    """SN7 applies to the exported PATH too: an unescaped `%` would split the crontab line."""
+    entry = scheduler.render_cron_entry(str(tmp_path), path_env="/opt/100%/bin:/usr/bin")
+    assert "100\\%" in entry
+    assert "100%/" not in entry.replace("100\\%", "")
+    with pytest.raises(ValueError, match="path_env"):
+        scheduler.render_cron_entry(str(tmp_path), path_env="/bin\n:/usr/bin")

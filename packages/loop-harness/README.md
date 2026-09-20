@@ -32,6 +32,8 @@ scheduler 自身は cron/launchd の登録テンプレートを生成するの�
 > - OK: `loop_scheduler.py --project /path/to/repo print-cron`
 > - NG: `loop_scheduler.py print-cron --project /path/to/repo`
 
+> **`print-cron` / `print-launchd` は `gh` と `docker` が解決できるシェルから実行する。** launchd と macOS cron はログインシェルを経由せず最小の `PATH` でジョブを起動するため、テンプレートには実行時のシェルの `PATH` が埋め込まれる（launchd は `EnvironmentVariables.PATH`、cron は行頭の `export PATH=...;`）。`PATH` が空のシェルでは生成を拒否する。
+
 ### cron の場合
 
 ```bash
