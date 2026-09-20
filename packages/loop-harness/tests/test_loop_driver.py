@@ -54,6 +54,26 @@ def _pr_list_json(*numbers: int) -> str:
     return json.dumps([{"number": n} for n in numbers]) + "\n"
 
 
+def _pr_view_json(
+    number: int,
+    is_draft: bool,
+    head_ref: str = "loop/issue-1",
+    owner: str | None = "acme",
+) -> str:
+    """Return `gh pr view <n> --json isDraft,headRefName,headRepositoryOwner,number`'s stdout
+    `_mark_pr_ready`/`_parse_pr_view_for_mark_ready` parse (Codex review, PR #429 round 3, item
+    1). `owner=None` omits `headRepositoryOwner` (simulating a `gh` response where it is
+    unavailable), rather than the empty-string edge case."""
+    payload: dict[str, Any] = {
+        "isDraft": is_draft,
+        "headRefName": head_ref,
+        "number": number,
+    }
+    if owner is not None:
+        payload["headRepositoryOwner"] = {"login": owner}
+    return json.dumps(payload) + "\n"
+
+
 def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     _git(["init", "-b", "main"], path)
@@ -2726,7 +2746,13 @@ def test_draft_pr_pushes_branch_before_creating_pr(
     )
     d._draft_pr(proposal, state)
 
-    assert calls == ["push", "list", "create"]
+    # Codex review, PR #429 round 3, item 4: a second `list` call follows `create` so this
+    # method can resolve the newly-created PR's number for the marker write below (Codex
+    # review item 4) -- it returns empty here (simulating `gh`'s search index not yet
+    # reflecting the brand-new PR), so no marker is set and this test's original push-ordering
+    # assertion stays otherwise unchanged; see `test_draft_pr_marks_freshly_created_pr_as_drafted_by_loop`
+    # for the marker-set case.
+    assert calls == ["push", "list", "create", "list"]
 
 
 def test_draft_pr_pushes_branch_before_converting_existing_pr(
@@ -2757,6 +2783,14 @@ def test_draft_pr_pushes_branch_before_converting_existing_pr(
         if cmd[:3] == ["gh", "pr", "list"]:
             calls.append("list")
             return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            calls.append("view")
+            # Codex review, PR #429 round 3, item 4: pre-`--undo` isDraft check. `true` here
+            # (already Draft) means this call does not actually convert it, so no marker write
+            # follows and this test needs no `pending_action`/fencing setup -- see
+            # `test_draft_pr_marks_existing_pr_as_drafted_by_loop_on_conversion` for the
+            # marker-set case.
+            return subprocess.CompletedProcess(cmd, 0, "true\n", "")
         if cmd[:3] == ["gh", "pr", "ready"]:
             calls.append("ready")
             return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -2777,7 +2811,174 @@ def test_draft_pr_pushes_branch_before_converting_existing_pr(
     )
     d._draft_pr(proposal, state)
 
-    assert calls == ["push", "list", "ready"]
+    assert calls == ["push", "list", "view", "ready"]
+
+
+def test_draft_pr_marks_existing_pr_as_drafted_by_loop_on_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 4): when `_draft_pr` actually converts an existing
+    Ready PR to Draft (pre-`--undo` `isDraft` was `false`, and `--undo` succeeded), it durably
+    marks `pr_review["draft_marked_pr_number"]` and journals `pr_marked_draft_by_loop`, so a
+    later `exit_success`'s `pr_mark_ready` knows this PR's Draft state was the loop's own
+    doing."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "loop/issue-1"
+    state.pending_action = lc.PendingAction(
+        "act-draft-pr-mark", "exit_failure", state.phase, state.iteration, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    baseline = _git(["rev-parse", "HEAD"], Path(project_dir))
+    d._remote_head_baseline = baseline
+    monkeypatch.setattr(lds, "get_remote_head", lambda *_a, **_k: baseline)
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *_a, **_k: None)
+
+    real_run = subprocess.run
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, "false\n", "")
+        if cmd[:3] == ["gh", "pr", "ready"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd and cmd[0] == "gh":
+            raise AssertionError(f"unexpected command: {cmd}")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = lc.ProposeResult(
+        action="exit_failure",
+        action_id="act-draft-pr-mark",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    d._draft_pr(proposal, state)
+
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.pr_review is not None
+    assert final_state.pr_review["draft_marked_pr_number"] == 42
+    event = lc.find_journal_event(
+        loop_id, project_dir, "act-draft-pr-mark", "pr_marked_draft_by_loop"
+    )
+    assert event is not None
+    assert event["payload"] == {"pr_number": 42}
+
+
+def test_draft_pr_marks_freshly_created_pr_as_drafted_by_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 4, extended per PR discussion): when no PR exists
+    yet and `_draft_pr` creates a brand-new Draft PR, that PR is also marked
+    `draft_marked_pr_number` -- without this, `advance_phase`'s later `pr_create` step would
+    reuse this same PR (`_lookup_open_pr_number`), and a subsequent `pr_review_response`
+    `exit_success` would find no marker match and leave it stuck Draft forever, reproducing
+    Issue #425 itself for this branch."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.branch = "loop/issue-1"
+    state.pending_action = lc.PendingAction(
+        "act-draft-pr-create-mark", "exit_failure", state.phase, state.iteration, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    baseline = _git(["rev-parse", "HEAD"], Path(project_dir))
+    d._remote_head_baseline = baseline
+    monkeypatch.setattr(lds, "get_remote_head", lambda *_a, **_k: baseline)
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *_a, **_k: None)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: 1)
+
+    real_run = subprocess.run
+    list_calls = 0
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal list_calls
+        if cmd[:3] == ["gh", "pr", "list"]:
+            list_calls += 1
+            # First call (before `create`): no PR yet. Second call (after `create`): resolve
+            # the newly-created PR's number, mirroring `_create_or_reuse_pr`'s own re-query.
+            return subprocess.CompletedProcess(
+                cmd, 0, _pr_list_json() if list_calls == 1 else _pr_list_json(55), ""
+            )
+        if cmd[:3] == ["gh", "pr", "create"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd and cmd[0] == "gh":
+            raise AssertionError(f"unexpected command: {cmd}")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = lc.ProposeResult(
+        action="exit_failure",
+        action_id="act-draft-pr-create-mark",
+        state_version=state.state_version,
+        expected_phase=state.phase,
+        phase=state.phase,
+        iteration=state.iteration,
+        context={},
+    )
+    d._draft_pr(proposal, state)
+
+    final_state = lc.load_state(loop_id, project_dir)
+    assert final_state.pr_review is not None
+    assert final_state.pr_review["draft_marked_pr_number"] == 55
+    event = lc.find_journal_event(
+        loop_id, project_dir, "act-draft-pr-create-mark", "pr_marked_draft_by_loop"
+    )
+    assert event is not None
+    assert event["payload"] == {"pr_number": 55}
+
+
+def test_exit_success_marks_ready_even_if_marker_predates_a_human_redraft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Documents an accepted edge case (Codex review, PR #429 round 3, item 4 discussion): the
+    marker only records "did the loop ever Draft this PR", not "who performed the *most
+    recent* Draft toggle". If a human manually re-drafts a PR the loop previously (and still)
+    has marked, `_mark_pr_ready` cannot distinguish that from the loop's own original Draft and
+    still un-drafts it. This is accepted, not a bug this round fixes -- callers who need to
+    protect a deliberate human re-draft must clear the marker themselves (not currently exposed
+    as a driver operation)."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(
+        tmp_path, loop_id, marked_pr_number=42, fence_ready=True
+    )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            # A human re-drafted it after the loop's own original draft -- still `isDraft: true`
+            # from `_mark_pr_ready`'s point of view, indistinguishable from the loop's own.
+            return subprocess.CompletedProcess(cmd, 0, _pr_view_json(42, is_draft=True), "")
+        if cmd[:3] == ["gh", "pr", "ready"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_done")
+    assert event is not None
 
 
 def test_draft_pr_stops_safely_when_pending_diff_leaks_a_secret(
@@ -6949,18 +7150,54 @@ def _exit_success_proposal(
     )
 
 
-def test_exit_success_marks_draft_pr_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A Draft PR left over from an earlier `exit_failure` (e.g. `exit_failure -> resume ->
-    exit_success`) must be un-drafted via `gh pr ready` when the loop finally exits
-    successfully, so the Issue's "succeeded" report matches the PR's real state."""
-    loop_id = "abcd1234-issue-1"
+def _seed_exit_success_state(
+    tmp_path: Path,
+    loop_id: str,
+    *,
+    branch: str = "loop/issue-1",
+    pr_number: int | None = None,
+    marked_pr_number: int | None = None,
+    action_id: str = "act-exit-success",
+    fence_ready: bool = False,
+) -> tuple[str, str, lc.LoopState]:
+    """Seed a running loop for `_run_exit_success`/`_mark_pr_ready` tests (Codex review, PR
+    #429 rounds 2-3).
+
+    `marked_pr_number`, when given, sets `state.pr_review["draft_marked_pr_number"]` (Issue
+    #425 item 4's gate -- without it, `_mark_pr_ready` skips as `not_drafted_by_loop` before
+    ever calling `gh pr view`). `fence_ready=True` additionally seeds a real `exit_success`
+    `PendingAction` matching `action_id`, so the unmocked
+    `prw.validate_exit_success_pr_mark_ready_fence`/`prw.record_pr_marked_ready` fenced writes
+    succeed against this loop's real `state.json` -- needed only by tests that expect
+    `_mark_pr_ready` to actually reach `gh pr ready`; tests expecting an earlier skip/failure
+    don't need it (and the "stale lease" test deliberately omits it).
+    """
     project_dir, token = _seed_running_loop(tmp_path, loop_id)
     state = lc.load_state(loop_id, project_dir)
     state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    state.pr_number = 42
+    state.branch = branch
+    state.pr_number = pr_number
+    if marked_pr_number is not None:
+        state.pr_review = {"draft_marked_pr_number": marked_pr_number}
+    if fence_ready:
+        state.pending_action = lc.PendingAction(
+            action_id, "exit_success", state.phase, state.iteration, lc.now_iso()
+        )
     lc._write_state(state, project_dir)
     state = lc.load_state(loop_id, project_dir)
+    return project_dir, token, state
+
+
+def test_exit_success_marks_draft_pr_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Draft PR left over from an earlier `exit_failure` (e.g. `exit_failure -> resume ->
+    exit_success`) must be un-drafted via `gh pr ready` when the loop finally exits
+    successfully, so the Issue's "succeeded" report matches the PR's real state. Fallback
+    branch-lookup path (`state.pr_number` unset): `gh pr list` resolves the PR, which this
+    loop's own marker (`draft_marked_pr_number`) confirms it drafted."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(
+        tmp_path, loop_id, marked_pr_number=42, fence_ready=True
+    )
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -6974,7 +7211,7 @@ def test_exit_success_marks_draft_pr_ready(tmp_path: Path, monkeypatch: pytest.M
         if cmd[:3] == ["gh", "pr", "list"]:
             return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
         if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, "true\n", "")
+            return subprocess.CompletedProcess(cmd, 0, _pr_view_json(42, is_draft=True), "")
         if cmd[:3] == ["gh", "pr", "ready"]:
             return subprocess.CompletedProcess(cmd, 0, "", "")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -6991,6 +7228,152 @@ def test_exit_success_marks_draft_pr_ready(tmp_path: Path, monkeypatch: pytest.M
     event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_done")
     assert event is not None
     assert event["payload"] == {"pr_number": 42}
+    # Codex review item 2/4: the marker is cleared in the same fenced write as the `done`
+    # journal above.
+    final_state = lc.load_state(loop_id, project_dir)
+    assert "draft_marked_pr_number" not in (final_state.pr_review or {})
+
+
+def test_exit_success_uses_persisted_pr_number_without_branch_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 1): when `state.pr_number` is set, it is used
+    directly -- `gh pr list --head <branch>` (which cannot express `<owner>:<branch>` and could
+    resolve to a fork's PR sharing the same branch name) is never called at all."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(
+        tmp_path, loop_id, pr_number=42, marked_pr_number=42, fence_ready=True
+    )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+    monkeypatch.setattr(driver, "_safe_repo_owner", lambda _wt: "acme")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, _pr_view_json(42, is_draft=True, owner="acme"), ""
+            )
+        if cmd[:3] == ["gh", "pr", "ready"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    assert [c[:3] for c in calls] == [["gh", "pr", "view"], ["gh", "pr", "ready"]]
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_done")
+    assert event is not None
+
+
+def test_exit_success_skips_when_persisted_number_head_ref_mismatches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 1): a persisted `pr_number` whose `headRefName` no
+    longer matches `state.branch` must not be un-drafted -- reported as `pr_head_mismatch`."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(
+        tmp_path, loop_id, pr_number=42, marked_pr_number=42, fence_ready=True
+    )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, _pr_view_json(42, is_draft=True, head_ref="someone-elses/branch"), ""
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_skipped")
+    assert event is not None
+    assert event["payload"] == {"reason": "pr_head_mismatch", "pr_number": 42}
+
+
+def test_exit_success_skips_when_persisted_number_owner_mismatches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 1): a persisted `pr_number` whose head repository
+    owner does not match this repo's owner (e.g. `--limit 1`-style ambiguity, or state drift)
+    must not be un-drafted -- reported as `pr_head_mismatch`, same as a `headRefName`
+    mismatch."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(
+        tmp_path, loop_id, pr_number=42, marked_pr_number=42, fence_ready=True
+    )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+    monkeypatch.setattr(driver, "_safe_repo_owner", lambda _wt: "acme")
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, _pr_view_json(42, is_draft=True, owner="a-fork-owner"), ""
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_skipped")
+    assert event is not None
+    assert event["payload"] == {"reason": "pr_head_mismatch", "pr_number": 42}
+
+
+def test_exit_success_skips_owner_check_when_repo_owner_unresolvable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 1): the owner cross-check is "if available" -- when
+    `_safe_repo_owner` cannot resolve the repo owner (e.g. `gh repo view` fails), the owner
+    comparison is skipped entirely (not treated as a mismatch), and `pr_mark_ready` proceeds on
+    `headRefName` alone."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(
+        tmp_path, loop_id, pr_number=42, marked_pr_number=42, fence_ready=True
+    )
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+    monkeypatch.setattr(driver, "_safe_repo_owner", lambda _wt: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, _pr_view_json(42, is_draft=True, owner="a-fork-owner"), ""
+            )
+        if cmd[:3] == ["gh", "pr", "ready"]:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_done")
+    assert event is not None
 
 
 def test_exit_success_skips_gh_pr_ready_when_pr_already_ready(
@@ -6999,12 +7382,7 @@ def test_exit_success_skips_gh_pr_ready_when_pr_already_ready(
     """A PR that is already Ready for review (not Draft) must not trigger a redundant
     `gh pr ready` call."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id, marked_pr_number=42)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7018,7 +7396,7 @@ def test_exit_success_skips_gh_pr_ready_when_pr_already_ready(
         if cmd[:3] == ["gh", "pr", "list"]:
             return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
         if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, "false\n", "")
+            return subprocess.CompletedProcess(cmd, 0, _pr_view_json(42, is_draft=False), "")
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(driver.subprocess, "run", fake_run)
@@ -7038,12 +7416,7 @@ def test_exit_success_skips_gh_pr_ready_when_no_open_pr(
     """No OPEN PR for the branch (e.g. it was never created, or already merged/closed) must
     skip `pr_mark_ready` entirely with no `gh pr view`/`gh pr ready` call."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7075,12 +7448,7 @@ def test_exit_success_skips_gh_pr_ready_when_repo_identity_not_verified(
     """An unverified repo identity must skip `pr_mark_ready` entirely, mirroring
     `_maybe_comment`'s own fail-closed gate."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7099,18 +7467,49 @@ def test_exit_success_skips_gh_pr_ready_when_repo_identity_not_verified(
     assert event["payload"] == {"reason": "repo_identity_unverified"}
 
 
+def test_exit_success_skips_when_not_drafted_by_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 4): a Draft PR this loop never marked as its own
+    (no marker at all, or a marker for a different PR number) must not be un-drafted -- a human
+    (or another process) may have drafted it deliberately. Reported as `not_drafted_by_loop`,
+    with no `gh pr view` call at all (the marker check runs before it)."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id, marked_pr_number=99)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    assert [c[:3] for c in calls] == [["gh", "pr", "list"]]
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_skipped")
+    assert event is not None
+    assert event["payload"] == {"reason": "not_drafted_by_loop", "pr_number": 42}
+
+
 def test_exit_success_completes_when_gh_pr_ready_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A `gh pr ready` failure (e.g. GitHub unreachable) must not crash `exit_success`; it is
     best-effort like the rest of `on_success.exec`/`on_failure.exec` token handling."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(
+        tmp_path, loop_id, marked_pr_number=42, fence_ready=True
+    )
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7121,7 +7520,7 @@ def test_exit_success_completes_when_gh_pr_ready_fails(
         if cmd[:3] == ["gh", "pr", "list"]:
             return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
         if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, "true\n", "")
+            return subprocess.CompletedProcess(cmd, 0, _pr_view_json(42, is_draft=True), "")
         if cmd[:3] == ["gh", "pr", "ready"]:
             return subprocess.CompletedProcess(cmd, 1, "", "error")
         raise AssertionError(f"unexpected command: {cmd}")
@@ -7137,17 +7536,55 @@ def test_exit_success_completes_when_gh_pr_ready_fails(
     assert event["payload"] == {"pr_number": 42, "step": "ready", "rc": 1}
 
 
+def test_exit_success_ready_fence_raises_on_stale_action_no_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 2): a lease lost or action superseded between the
+    read-only `gh pr view` and the `gh pr ready` mutation must abort the mutation entirely --
+    `prw.validate_exit_success_pr_mark_ready_fence` raises (here: `state.pending_action` was
+    never seeded to match this `action_id`, the same "stale action" shape
+    `_validate_pr_review_fence` already detects for every other `pr_review` mutator), and
+    `_mark_pr_ready` does not catch it: no `gh pr ready` call, no `pr_mark_ready_done` event."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id, marked_pr_number=42)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_view_json(42, is_draft=True), "")
+        if cmd[:3] == ["gh", "pr", "ready"]:
+            raise AssertionError("gh pr ready must not run once the fence is stale")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    with pytest.raises(lc.StaleActionError):
+        d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    assert [c[:3] for c in calls] == [["gh", "pr", "list"], ["gh", "pr", "view"]]
+    assert (
+        lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_done")
+        is None
+    )
+
+
 def test_exit_success_without_exec_param_behaves_as_before(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An older loop definition/state with no `exec` key in `exit_success` params (pre-#425)
     must behave exactly as before: no `gh` calls at all."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7183,12 +7620,7 @@ def test_exit_success_survives_gh_pr_list_raising(
     and crash `LoopDriver.run()` before `lc.complete()` runs -- `exit_success` must still
     complete, with the failure reported via journal instead."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7227,12 +7659,7 @@ def test_exit_success_survives_gh_pr_view_raising(
     """Same guarantee as `test_exit_success_survives_gh_pr_list_raising`, for the `gh pr view`
     step."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id, marked_pr_number=42)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7257,6 +7684,37 @@ def test_exit_success_survives_gh_pr_view_raising(
     assert event["payload"] == {"pr_number": 42, "step": "view", "error_type": error_type}
 
 
+def test_exit_success_view_reports_invalid_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 3): `gh pr view` returning rc=0 with malformed
+    (non-JSON, or non-object) stdout must not be silently treated as success -- reported as
+    `pr_mark_ready_failed step=view error_type=invalid_output`."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id, marked_pr_number=42)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, "not json\n", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_failed")
+    assert event is not None
+    assert event["payload"] == {"pr_number": 42, "step": "view", "error_type": "invalid_output"}
+
+
 @pytest.mark.parametrize(
     ("exc_factory", "error_type"),
     [
@@ -7273,12 +7731,9 @@ def test_exit_success_survives_gh_pr_ready_raising(
     """Same guarantee as `test_exit_success_survives_gh_pr_list_raising`, for the `gh pr ready`
     step."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(
+        tmp_path, loop_id, marked_pr_number=42, fence_ready=True
+    )
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7289,7 +7744,7 @@ def test_exit_success_survives_gh_pr_ready_raising(
         if cmd[:3] == ["gh", "pr", "list"]:
             return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
         if cmd[:3] == ["gh", "pr", "view"]:
-            return subprocess.CompletedProcess(cmd, 0, "true\n", "")
+            return subprocess.CompletedProcess(cmd, 0, _pr_view_json(42, is_draft=True), "")
         if cmd[:3] == ["gh", "pr", "ready"]:
             raise exc_factory()
         raise AssertionError(f"unexpected command: {cmd}")
@@ -7313,12 +7768,7 @@ def test_exit_success_pr_list_nonzero_rc_reports_failed_not_no_open_pr(
     `pr_mark_ready_failed step=pr_list rc=<n>`, not `pr_mark_ready_skipped reason=no_open_pr`,
     so a real Draft PR left un-drafted by a flaky lookup stays observable as a failure."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7351,12 +7801,7 @@ def test_exit_success_pr_list_genuinely_empty_reports_no_open_pr(
     clean `gh pr list` exit with an empty result is a genuine "no OPEN PR", reported as
     `pr_mark_ready_skipped reason=no_open_pr`, not a failure."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
@@ -7383,6 +7828,47 @@ def test_exit_success_pr_list_genuinely_empty_reports_no_open_pr(
 
 
 @pytest.mark.parametrize(
+    "malformed_stdout",
+    ["", "not json", '{"not": "a list"}', '[{"no_number": true}]', '[{"number": "42"}]'],
+    ids=["empty", "invalid-json", "non-list", "missing-number", "non-int-number"],
+)
+def test_exit_success_pr_list_malformed_rc0_output_reports_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed_stdout: str
+) -> None:
+    """Codex review (PR #429 round 3, item 3): with `rc == 0`, only a well-formed JSON array
+    (possibly empty) whose first element (if any) has an integer `number` counts as "no open
+    PR". Every other malformed shape here is `gh` misbehaving despite a clean exit, reported as
+    `pr_mark_ready_failed step=pr_list error_type=invalid_output` -- never silently misread as
+    `no_open_pr`. `_lookup_open_pr_number`/`_draft_pr` (unaffected by this item) keep their own
+    looser parsing (`_parse_first_open_pr_number`) unchanged."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, malformed_stdout, "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    failed = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_failed")
+    assert failed is not None
+    assert failed["payload"] == {"step": "pr_list", "error_type": "invalid_output"}
+    skipped = lc.find_journal_event(
+        loop_id, project_dir, proposal.action_id, "pr_mark_ready_skipped"
+    )
+    assert skipped is None
+
+
+@pytest.mark.parametrize(
     "invalid_exec",
     [
         42,
@@ -7400,12 +7886,7 @@ def test_exit_success_rejects_invalid_exec_shape(
     non-string) must not crash `exit_success` or misinterpret garbage as exec steps. It is
     reported as `pr_mark_ready_skipped reason=invalid_exec` and runs no `gh` calls."""
     loop_id = "abcd1234-issue-1"
-    project_dir, token = _seed_running_loop(tmp_path, loop_id)
-    state = lc.load_state(loop_id, project_dir)
-    state.worktree_path = project_dir
-    state.branch = "loop/issue-1"
-    lc._write_state(state, project_dir)
-    state = lc.load_state(loop_id, project_dir)
+    project_dir, token, state = _seed_exit_success_state(tmp_path, loop_id)
 
     d = driver.LoopDriver(loop_id, project_dir, token)
     monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)

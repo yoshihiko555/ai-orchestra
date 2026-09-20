@@ -57,6 +57,13 @@ POSITIVE_REVIEW_SUMMARIES = frozenset(
 )
 BASELINE_ACTIONS = frozenset({lc.Action.ADVANCE_PHASE.value, lc.Action.WAIT_EXTERNAL_REVIEW.value})
 COLLECT_ACTIONS = frozenset({lc.Action.WAIT_EXTERNAL_REVIEW.value})
+# Issue #425 round-3 review (items 2 and 4): `draft_marked_pr_number` is written only from
+# `loop_driver._draft_pr` (dispatched exclusively under `exit_failure`) and read/cleared only
+# from `loop_driver._mark_pr_ready` (dispatched exclusively under `exit_success`) -- each write
+# path is fenced against the single action that can legitimately make it, mirroring how
+# `BASELINE_ACTIONS`/`COLLECT_ACTIONS` scope every other `pr_review` mutator above.
+_DRAFT_MARK_ACTIONS = frozenset({lc.Action.EXIT_FAILURE.value})
+_PR_MARK_READY_ACTIONS = frozenset({lc.Action.EXIT_SUCCESS.value})
 DISMISS_ACTIONS = frozenset({lc.Action.RUN_MAKER.value})
 DEFAULT_STOPWORDS_EN = frozenset(
     {
@@ -683,6 +690,122 @@ def post_retrigger_comment(
             {"pr_number": pr_number},
         )
     return True
+
+
+def record_draft_marked_pr(
+    loop_id: str,
+    project_dir: str,
+    pr_number: int,
+    lease_token: str,
+    *,
+    action_id: str | None = None,
+) -> None:
+    """Durably mark that *this loop* just put `pr_number` into Draft (Issue #425 round-3
+    review, item 4).
+
+    Called only from `loop_driver._draft_pr`, and only once it has confirmed the PR was
+    actually converted (or freshly created) as Draft *by this action* -- never merely because
+    it observed the PR already in Draft state (which could be a human's own doing). A later
+    `exit_success`'s `pr_mark_ready` (see `record_pr_marked_ready` below) checks this marker
+    before ever un-drafting a PR, so a human who deliberately drafts a PR for review reasons of
+    their own is never silently overridden by the loop.
+
+    Fenced like `record_iteration_head`/`record_baseline` above: state write and journal event
+    happen inside the same `guarded_lease_section`, immediately after the `gh` mutation that
+    justified the marker succeeded. `_DRAFT_MARK_ACTIONS`-scoped, since `_draft_pr` is
+    reachable only from `exit_failure`'s `on_failure.exec`. Any fencing failure (lease lost, or
+    a later action superseded this one) is uncaught here, propagating exactly like every other
+    `pr_review_wait` state mutator's own fencing failure -- crashing the driver so a resumed
+    worker retries from scratch, rather than risking a marker write that outlives its own
+    action's authority.
+    """
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = _ensure_pr_review_state(state.pr_review)
+    pr_review["draft_marked_pr_number"] = pr_number
+    state.pr_review = pr_review
+    state.updated_at = lc.now_iso()
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, _DRAFT_MARK_ACTIONS
+    ):
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            "pr_marked_draft_by_loop",
+            "driver",
+            action_id,
+            {"pr_number": pr_number},
+        )
+        lc._write_state(state, project_dir)
+
+
+def validate_exit_success_pr_mark_ready_fence(
+    loop_id: str, project_dir: str, lease_token: str, action_id: str | None
+) -> None:
+    """Validate the lease/pending action immediately before `gh pr ready` mutates a PR (Issue
+    #425 round-3 review, item 2).
+
+    Mirrors `post_retrigger_comment`'s own "validation-only section *before* the network call"
+    half exactly (a `_fenced_pr_review_write` whose body does nothing but reload+validate under
+    the held lock) -- `loop_driver._mark_pr_ready` calls this right after its own read-only `gh
+    pr view` and right before the `gh pr ready` mutation, so a lease already lost or an action
+    already superseded is caught *before* that mutation ever runs, not just before the
+    marker-clear/journal write that follows it (`record_pr_marked_ready` below provides that
+    second, post-mutation fence, exactly like `post_retrigger_comment`'s own pair).
+
+    `_PR_MARK_READY_ACTIONS`-scoped, since `_mark_pr_ready` is reachable only from
+    `exit_success`. Raises `lc.WriteRejectedError`/`lc.StaleActionError`/
+    `lc.ProtocolViolationError` on failure -- deliberately uncaught by the caller: a fence
+    failure here means *this worker no longer owns the action*, and letting `exit_success`
+    complete anyway (notify/comment/`lc.complete()`) would violate the same "lease lost -> zero
+    writes" invariant every other terminal-action lease-loss path in this codebase enforces.
+    This is a different failure class from a `gh` call itself failing (network error, `gh`
+    missing) -- those are best-effort and must never block completion (see `_run_gh_step`); a
+    fence failure is an authority check, and completing anyway is not "trying harder", it is
+    writing as a stale owner.
+    """
+    state = lc.load_state(loop_id, project_dir)
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, _PR_MARK_READY_ACTIONS
+    ):
+        pass
+
+
+def record_pr_marked_ready(
+    loop_id: str,
+    project_dir: str,
+    pr_number: int,
+    lease_token: str,
+    *,
+    action_id: str | None = None,
+) -> None:
+    """Clear `draft_marked_pr_number` and journal `pr_mark_ready_done`, fenced together in one
+    write immediately after a successful `gh pr ready` (Issue #425 round-3 review, items 2 and
+    4).
+
+    Mirrors `record_iteration_head`'s "state write + journal in the same fenced section,
+    called fresh right after the network call" pattern, and is the second of
+    `validate_exit_success_pr_mark_ready_fence`'s "validate, mutate outside the lock, then
+    fence the journal" pair (exactly like `post_retrigger_comment`'s own two-fence shape).
+    Clearing the marker here (rather than leaving it set) keeps a since-reused PR number from
+    ever being misread as "still drafted by loop" by a future, unrelated `exit_success`.
+    """
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = _ensure_pr_review_state(state.pr_review)
+    pr_review.pop("draft_marked_pr_number", None)
+    state.pr_review = pr_review
+    state.updated_at = lc.now_iso()
+    with _fenced_pr_review_write(
+        state, loop_id, project_dir, lease_token, action_id, _PR_MARK_READY_ACTIONS
+    ):
+        lc.append_journal_event(
+            loop_id,
+            project_dir,
+            "pr_mark_ready_done",
+            "driver",
+            action_id,
+            {"pr_number": pr_number},
+        )
+        lc._write_state(state, project_dir)
 
 
 def detect_pr_review_push_delta(

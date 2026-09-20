@@ -586,13 +586,17 @@ Task(subagent_type="general-purpose", prompt="""
 
 1. 既存 PR と反復履歴・Checker 結果を確認する。新しい PR は作らない。
 2. `params.exec`（`on_success.exec` の転記。文字列リスト以外や欠落時は空として扱う）に
-   `pr_mark_ready` が含まれる場合、`params.repo_identity_verified is true` を確認したうえで
-   `params.worktree_path` を cwd に固定し、`gh pr list --head <params.branch> --state open` で
-   OPEN な PR を探す。見つかり、かつ `gh pr view <n> --json isDraft` が Draft なら
-   `gh pr ready <n>` で ready に戻す（`exit_failure` が Draft 化した PR を成功終了時に戻すため。
-   Issue #425）。PR が無い・既に ready・identity 未検証の場合は何もしない。`gh` の失敗や
-   タイムアウトは出口処理を止めず、結果ファイルに `pr_mark_ready` の失敗として記録して続行する。
-   push は伴わない。
+   `pr_mark_ready` が含まれ、かつ `params.draft_marked_pr_number`（このループの `exit_failure` が
+   実際に Draft 化した PR 番号。state 由来）が `params.pr_number` と一致する場合だけ、
+   `params.repo_identity_verified is true` を確認したうえで `params.worktree_path` を cwd に固定し、
+   `gh pr view <params.pr_number> --json isDraft,headRefName` を取得する。`headRefName` が
+   `params.branch` と一致し、かつ Draft なら、保持中の `lease_token` で
+   `python3 "$LOOP_STEP" heartbeat` を通して lease と pending action が有効であることを確認してから
+   `gh pr ready <params.pr_number>` で ready に戻す（Issue #425）。ブランチ名だけで PR を検索しない
+   （fork の同名ブランチを誤って Ready 化しうる）。marker が無い Draft PR（このループが Draft 化して
+   いない、または人間が意図的に Draft へ戻したもの）・既に ready・identity 未検証・lease 喪失の
+   場合は何もしない。`gh` の失敗やタイムアウトは出口処理を止めず、結果ファイルに `pr_mark_ready`
+   の失敗として記録して続行する。push は伴わない。
 3. 下記「通常終了の Issue コメント」に `PASSED` と要約を入れ、`params.issue_number` の対象 Issue へ
    投稿する。critical/high はゼロだが medium/low が `open`（未 dismiss）のまま残っている場合も
    `exit_success` に到達しうる（非ブロッキング。Issue #213 B 軸）。この場合、`params` が提供する

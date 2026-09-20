@@ -70,6 +70,7 @@ _PR レビュー対応ループと Codex 自動レビューの関係を示す図
     "iteration_head_action_id": "act-...", // 上記 2 つを記録した record_iteration_head() 呼び出し自身の action_id（DH5 同一アクション判定。Issue #424 PR #427 follow-up。2.4.1 節）
     "baseline_review_id": 918273645, // push/PR作成の実行前時点で存在した reviews の最大 id（無ければ 0）
     "baseline_recorded_at": "2026-07-06T10:29:00+09:00", // push/PR作成より前の記録時刻
+    "draft_marked_pr_number": 42, // このループ自身が Draft 化（変換 or 新規作成）した PR 番号（Issue #425 round-3 review item 4。5.4.2 節・EV-172 参照）。`exit_success` の `pr_mark_ready` が実際に un-draft した時点で削除される（キー自体が無くなる）
   },
 }
 ```
@@ -1144,9 +1145,41 @@ Issue へ結果コメントを投稿する。
 **成功出口側の un-draft（Issue #425）**: 失敗出口で Draft 化された PR は、そのままでは後続の
 `resume()` 反復が最終的に成功しても Draft のまま残り、Issue の「成功」報告と矛盾する。これを防ぐため
 `pr_review_response.on_success.exec: [pr_mark_ready]` を追加し、`exit_success` 到達時に
-`state.branch` の OPEN PR が実際に Draft である場合に限り `gh pr ready`（push を伴わない）で
-Ready へ戻す。repo-identity 未検証・OPEN PR 無し・既に Ready の場合は何もせず（冪等）、`gh` 呼び出し
-失敗時もログのみでベストエフォートに倒す（`exit_success` 自体はクラッシュしない）。
+対象 PR が実際に Draft である場合に限り `gh pr ready`（push を伴わない）で Ready へ戻す。
+repo-identity 未検証・対象 PR 無し・既に Ready の場合は何もせず（冪等）、`gh` 呼び出し失敗時も
+ログ + journal のみでベストエフォートに倒す（`exit_success` 自体はクラッシュしない）。
+
+**round-3 review（Codex, PR #429）による強化**:
+
+1. **番号による対象特定**: `state.pr_number` が設定されていればそれを直接使う
+   （`gh pr view <n> --json isDraft,headRefName,headRepositoryOwner,number`）。
+   `gh pr list --head <branch>` は `<owner>:<branch>` を表現できず、同名ブランチを持つ fork の PR を
+   誤って拾う可能性があるため、`state.pr_number` 未設定時のフォールバックとしてのみ使う。
+   いずれの経路でも `headRefName == state.branch` を確認し、`state.pr_number` 経路では取得できた
+   場合に限り head リポジトリの owner も比較する（不一致は `pr_head_mismatch` としてスキップ）。
+2. **lease-fenced な変更**: `gh pr ready` の直前（読み取り専用の `gh pr view` の後）で
+   `prw.validate_exit_success_pr_mark_ready_fence` により lease/pending action を検証し、成功後は
+   `prw.record_pr_marked_ready` でマーカー削除 + journal を同一の fenced write で行う
+   （`post_retrigger_comment` と同型の「検証 → ロック外でネットワーク呼び出し → journal を fence」
+   という二段構成）。このフェンス失敗（lease 消失・アクション supersede）は非捕捉で例外を伝播させ、
+   ドライバをクラッシュさせて次のワーカーに委ねる（`gh` 呼び出し自体の失敗とは異なる失敗クラス。
+   後者はベストエフォートで継続、前者は「もはやこのワーカーに書き込み権限がない」ことの検知）。
+3. **`gh pr list` 出力の厳格な検証**: rc=0 でも、空文字列・壊れた JSON・非リスト・`number` が
+   整数でない先頭要素は「PR 無し」と誤読せず `pr_mark_ready_failed step=pr_list
+   error_type=invalid_output` として報告する（`_draft_pr` が使う `_lookup_open_pr_number` 自身の
+   緩い解釈は変更しない）。
+4. **このループが Draft化した PR のみを un-draft**: `_draft_pr` が実際に Ready→Draft へ変換した
+   （変換前に `gh pr view --json isDraft` で `false` を確認できた場合のみ）、または新規に Draft PR を
+   作成した場合に限り、`pr_review["draft_marked_pr_number"]`（本節冒頭の jsonc 参照）を fenced write
+   で永続化し `pr_marked_draft_by_loop` を journal する。`_mark_pr_ready` は対象 PR 番号がこの
+   マーカーと一致する場合に限り動作し（不一致は `not_drafted_by_loop` としてスキップ。人間が意図的に
+   Draft にした PR を誤って Ready に戻さないため）、`gh pr ready` 成功後にマーカーを削除する。
+   `resume()` はこのマーカーに一切触れない（`_renumber_resumed_pr_review_findings` は
+   `findings`/`iteration_head_*` のみ対象）。既知の許容トレードオフ: マーカーは「このループが
+   *いつか* Draft にしたか」のみを記録し「直近の Draft 化を誰が行ったか」は追跡しないため、
+   マーカーが残ったまま人間が手動で再度 Draft にした場合、次の `exit_success` はそれもこのループの
+   Draft と区別できず Ready に戻す（現状は許容仕様。マーカーを外部から明示的にクリアする操作は
+   現時点で提供していない）。
 
 ### 5.5 `facets/compositions/skills/loop-issue.yaml` の骨子
 

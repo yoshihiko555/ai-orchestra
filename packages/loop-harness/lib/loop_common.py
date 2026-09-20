@@ -2179,6 +2179,11 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
             "pr_number": state.pr_number,
             "non_blocking_open": _non_blocking_open_from_last_check(state),
             "exec": copy.deepcopy(_exit_success_exec_steps(state, project_dir)),
+            "draft_marked_pr_number": (
+                state.pr_review.get("draft_marked_pr_number")
+                if isinstance(state.pr_review, dict)
+                else None
+            ),
         }
     phase_def = _load_phase_definition(state, project_dir)
     if action == Action.RUN_MAKER.value:
