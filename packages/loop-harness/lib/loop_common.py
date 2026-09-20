@@ -169,6 +169,13 @@ class GuardCounters:
     no_progress_streak: int = 0
     last_signature: str | None = None
     infrastructure_failure_count: int = 0
+    # Issue #395: secondary progress axis for the implementation phase. The combined phase
+    # signature only reflects the *failing* layer (mechanical if it fails, otherwise LLM
+    # review), so a mechanical check pinned by an environmental factor freezes the signature
+    # even while the Maker steadily clears LLM review blocking findings. Tracking the previous
+    # blocking (critical+high) LLM finding count lets a strict decrease count as progress.
+    # `None` on state.json predating this field, and whenever no llm_review layer is present.
+    last_blocking_count: int | None = None
 
 
 @dataclass
@@ -1086,6 +1093,7 @@ def evaluate_guards(
     if phase_check.passed:
         counters.no_progress_streak = 0
         counters.last_signature = None
+        counters.last_blocking_count = None
         counters.infrastructure_failure_count = 0
         return GuardDecision(_success_disposition(phase_def), next_phase=_success_next(phase_def))
     _update_phase_no_progress(counters, phase_check, phase_def)
@@ -2970,7 +2978,7 @@ def _update_phase_no_progress(
     ):
         _update_pr_review_no_progress(counters, phase_check)
         return
-    _update_no_progress(counters, phase_check.signature)
+    _update_implementation_no_progress(counters, phase_check)
 
 
 def _update_no_progress(counters: GuardCounters, signature: str) -> None:
@@ -2980,6 +2988,42 @@ def _update_no_progress(counters: GuardCounters, signature: str) -> None:
         return
     counters.no_progress_streak = 1
     counters.last_signature = signature
+
+
+def _update_implementation_no_progress(
+    counters: GuardCounters, phase_check: PhaseCheckResult
+) -> None:
+    """Update no-progress counters using a multi-axis progress signal (issue #395).
+
+    The combined phase signature reflects only the failing layer, so a mechanical check
+    pinned by an environmental factor (e.g. a baseline-failing test unrelated to the branch)
+    freezes the signature even while the Maker steadily clears LLM review blocking findings.
+    Treat a strict decrease in the blocking (critical+high) LLM finding count as progress on a
+    second axis so the guard does not stop a loop that is demonstrably improving. When no
+    llm_review layer is present the blocking count is `None` and behavior falls back to the
+    pure exact-signature comparison.
+    """
+    blocking = _llm_blocking_finding_count(phase_check)
+    signature_moved = phase_check.signature != counters.last_signature
+    if signature_moved or _blocking_count_decreased(counters.last_blocking_count, blocking):
+        counters.no_progress_streak = 1
+    else:
+        counters.no_progress_streak += 1
+    counters.last_signature = phase_check.signature
+    counters.last_blocking_count = blocking
+
+
+def _llm_blocking_finding_count(phase_check: PhaseCheckResult) -> int | None:
+    """Return the count of blocking (critical/high) LLM review findings, or None if absent."""
+    for result in phase_check.results:
+        if result.layer == "llm_review":
+            return sum(1 for f in result.findings if f.severity in BLOCKING_SEVERITIES)
+    return None
+
+
+def _blocking_count_decreased(previous: int | None, current: int | None) -> bool:
+    """Return True only when both counts are known and the blocking count strictly decreased."""
+    return previous is not None and current is not None and current < previous
 
 
 def _update_pr_review_no_progress(counters: GuardCounters, phase_check: PhaseCheckResult) -> None:

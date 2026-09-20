@@ -140,6 +140,77 @@ def test_evaluate_guards_no_progress_precedes_iteration_limit() -> None:
     assert decision.reason == "no_progress"
 
 
+def _impl_phase_check(mech_signature: str, high_count: int) -> object:
+    """Build an implementation phase check: mechanical failing (pinned signature) plus an
+    llm_review layer carrying `high_count` blocking findings."""
+    mech = lc.CheckResult(False, "mechanical", mech_signature, [], "mech.log")
+    findings = [
+        lc.Finding("high", f"Blocking finding {i}", "code-reviewer", "mod.py", 10 + i * 5)
+        for i in range(high_count)
+    ]
+    llm = lc.CheckResult(False, "llm_review", None, findings, "review.json")
+    return lc.combine_check_results(
+        [mech, llm], {"critical": 0, "high": 0}, frozenset({"mechanical", "llm_review"})
+    )
+
+
+def test_no_progress_ignored_when_llm_blocking_count_decreases_under_pinned_mechanical() -> None:
+    """issue #395: a mechanical failure pinned by an environmental factor freezes the combined
+    signature, but a strictly decreasing LLM blocking (critical+high) finding count is real
+    progress and must reset the no-progress streak instead of stopping the loop."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+
+    # Mechanical signature is identical across iterations; only the LLM High count moves (4 -> 2 -> 1).
+    first = lc.evaluate_guards(state, _impl_phase_check("pinned", 4), None, config)
+    second = lc.evaluate_guards(state, _impl_phase_check("pinned", 2), None, config)
+    third = lc.evaluate_guards(state, _impl_phase_check("pinned", 1), None, config)
+
+    assert first.disposition == "continue"
+    assert second.disposition == "continue"
+    assert third.disposition == "continue"
+    assert state.guards["implementation"].no_progress_streak == 1
+    assert state.guards["implementation"].last_blocking_count == 1
+
+
+def test_no_progress_fires_when_llm_blocking_count_stalls_under_pinned_mechanical() -> None:
+    """issue #395: once neither the mechanical signature nor the LLM blocking count moves, the
+    loop is genuinely stuck and the no-progress guard must still fire after `repeat` stalls."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+
+    first = lc.evaluate_guards(state, _impl_phase_check("pinned", 3), None, config)
+    second = lc.evaluate_guards(state, _impl_phase_check("pinned", 3), None, config)
+
+    assert first.disposition == "continue"
+    assert second.reason == "no_progress"
+
+
+def test_no_progress_fires_after_llm_blocking_progress_then_stalls() -> None:
+    """issue #395: the secondary axis only rescues real movement -- after the blocking count
+    plateaus, the guard resumes counting stalls and eventually stops the loop."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+
+    lc.evaluate_guards(state, _impl_phase_check("pinned", 4), None, config)  # streak 1
+    lc.evaluate_guards(state, _impl_phase_check("pinned", 1), None, config)  # decrease -> streak 1
+    third = lc.evaluate_guards(state, _impl_phase_check("pinned", 1), None, config)  # stall -> 2
+    assert third.reason == "no_progress"
+
+
+def test_no_progress_pure_signature_when_no_llm_layer_is_unchanged() -> None:
+    """issue #395: with no llm_review layer the blocking count is unknown, so behavior falls
+    back to the pure exact-signature comparison (unchanged from before)."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+
+    first = lc.evaluate_guards(state, _phase_check(signature="same"), None, config)
+    second = lc.evaluate_guards(state, _phase_check(signature="same"), None, config)
+
+    assert first.disposition == "continue"
+    assert second.reason == "no_progress"
+
+
 def test_evaluate_guards_iteration_limit_uses_defaults() -> None:
     state = _state()
     lc.evaluate_guards(state, _phase_check(signature="a"), None, {})

@@ -69,6 +69,7 @@ class GuardCounters:
     no_progress_streak: int = 0
     last_signature: str | None = None
     infrastructure_failure_count: int = 0
+    last_blocking_count: int | None = None  # 無進捗の第2軸: 直近の llm_review blocking 件数（Issue #395）
 
 
 @dataclass
@@ -618,18 +619,31 @@ def evaluate_guards(
     if phase_check.passed:
         counters.no_progress_streak = 0
         counters.last_signature = None
+        counters.last_blocking_count = None
         counters.infrastructure_failure_count = 0
         return GuardDecision(
             disposition=phase_def.on_success.disposition,
             next_phase=phase_def.on_success.next,
         )
 
-    # ② 無進捗判定
-    if phase_check.signature == counters.last_signature:
-        counters.no_progress_streak += 1
-    else:
+    # ② 無進捗判定（多軸。Issue #395）
+    #   フェーズシグネチャは失敗層のみを反映するため、mechanical が環境要因でピン留めされると
+    #   凍結する。llm_review の blocking（critical+high）件数を第2軸として追跡し、シグネチャが
+    #   不変でも blocking 件数が厳密に減少していれば進捗として streak をリセットする。
+    #   llm_review 層が無く件数不明（None）なら従来どおり厳密シグネチャ一致のみで判定する。
+    blocking = _llm_blocking_finding_count(phase_check)  # llm_review 層が無ければ None
+    signature_moved = phase_check.signature != counters.last_signature
+    blocking_decreased = (
+        counters.last_blocking_count is not None
+        and blocking is not None
+        and blocking < counters.last_blocking_count
+    )
+    if signature_moved or blocking_decreased:
         counters.no_progress_streak = 1
-        counters.last_signature = phase_check.signature
+    else:
+        counters.no_progress_streak += 1
+    counters.last_signature = phase_check.signature
+    counters.last_blocking_count = blocking
     if counters.no_progress_streak >= phase_def.guards.no_progress.repeat:
         return GuardDecision(disposition=phase_def.on_failure.disposition, reason="no_progress")
 
