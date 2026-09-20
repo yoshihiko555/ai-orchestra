@@ -7,3 +7,6 @@ pr_review:
     - login: "coderabbitai[bot]"
       app_slug: "coderabbitai"
       type: "Bot"
+  # 修正 push 後に Codex へ再レビューを要求する（Issue #274 新規事項 6、PR #418）。
+  # GitHub Codex は push だけでは再レビューしないため、無人運用ではこの設定が必要。
+  retrigger_comment: "@codex review"
