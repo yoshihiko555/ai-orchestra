@@ -192,6 +192,7 @@ def test_exit_success_proposal_params_include_non_blocking_open_from_last_check(
     just LP-2's own Issue comment."""
     project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
     state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
     state.pr_number = 77
     state.last_check_result = {
         "passed": True,
@@ -223,6 +224,7 @@ def test_exit_success_proposal_params_include_non_blocking_open_from_last_check(
             "body_excerpt": "[P4] optional",
         }
     ]
+    assert params["exec"] == ["pr_mark_ready"]
 
 
 def test_exit_success_proposal_params_non_blocking_open_defaults_to_empty(
@@ -232,6 +234,7 @@ def test_exit_success_proposal_params_non_blocking_open_defaults_to_empty(
     not error and must report an empty list, matching prior behavior exactly."""
     project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
     state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
     state.pr_number = 77
     state.last_check_result = {
         "passed": True,
@@ -242,7 +245,44 @@ def test_exit_success_proposal_params_non_blocking_open_defaults_to_empty(
 
     params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
 
-    assert params == {"pr_number": 77, "non_blocking_open": []}
+    assert params == {
+        "pr_number": 77,
+        "non_blocking_open": [],
+        "exec": ["pr_mark_ready"],
+    }
+
+
+def test_exit_success_proposal_params_survives_unknown_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #425 review follow-up: `exit_success`, like `stop`, must never fail on config
+    drift. A `state.phase` that no longer exists in the loop definition (e.g. a definition
+    edit landed between an earlier `exit_failure` and a later `resume()`) must not raise
+    `DefinitionValidationError` -- it degrades to `exec: []` with the rest of the params
+    intact, exactly like the lookup's own `_phase_nested(..., [])` fallback."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "no-such-phase"
+    state.pr_number = 77
+
+    params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
+
+    assert params == {"pr_number": 77, "non_blocking_open": [], "exec": []}
+
+
+def test_exit_success_proposal_params_survives_unknown_definition_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same fail-closed guarantee as the unknown-phase case above, for a `definition_id` that
+    no longer resolves to any loaded loop definition -- must not raise `InvalidStateError`."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.definition_id = "no-such-loop"
+    state.pr_number = 77
+
+    params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
+
+    assert params == {"pr_number": 77, "non_blocking_open": [], "exec": []}
 
 
 def test_custom_loop_complete_accepts_non_allowlisted_maker_without_persisting(

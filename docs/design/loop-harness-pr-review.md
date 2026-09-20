@@ -1141,6 +1141,13 @@ Task(subagent_type="general-purpose", prompt="""
 `gh pr ready --undo` で Draft に戻す）で実行する。`post_summary_comment` は 6.1 節のテンプレートで
 Issue へ結果コメントを投稿する。
 
+**成功出口側の un-draft（Issue #425）**: 失敗出口で Draft 化された PR は、そのままでは後続の
+`resume()` 反復が最終的に成功しても Draft のまま残り、Issue の「成功」報告と矛盾する。これを防ぐため
+`pr_review_response.on_success.exec: [pr_mark_ready]` を追加し、`exit_success` 到達時に
+`state.branch` の OPEN PR が実際に Draft である場合に限り `gh pr ready`（push を伴わない）で
+Ready へ戻す。repo-identity 未検証・OPEN PR 無し・既に Ready の場合は何もせず（冪等）、`gh` 呼び出し
+失敗時もログのみでベストエフォートに倒す（`exit_success` 自体はクラッシュしない）。
+
 ### 5.5 `facets/compositions/skills/loop-issue.yaml` の骨子
 
 `facets/compositions/skills/issue-fix.yaml` と同型の構造で設計する（実装フェーズで新規作成）。

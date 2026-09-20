@@ -64,6 +64,8 @@ phases:
         repeat: 2
     on_success:
       disposition: exit_success
+      exec:
+        - pr_mark_ready
     on_failure:
       disposition: exit_failure
       exec:

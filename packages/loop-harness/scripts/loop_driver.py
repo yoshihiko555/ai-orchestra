@@ -1241,7 +1241,7 @@ class LoopDriver:
         if action == lc.Action.STOP.value:
             return self._run_stop(state, params)
         if action == lc.Action.EXIT_SUCCESS.value:
-            return self._run_exit_success(state, params)
+            return self._run_exit_success(proposal, state, params)
         if action == lc.Action.EXIT_FAILURE.value:
             return self._run_exit_failure(proposal, state, params)
         raise lc.ProtocolViolationError(f"unknown action: {action}")
@@ -3285,11 +3285,112 @@ class LoopDriver:
         self._maybe_comment(state, f"loop-harness: {state.loop_id} stopped safely ({stop_reason}).")
         return {}
 
-    def _run_exit_success(self, state: lc.LoopState, params: dict[str, Any]) -> dict[str, Any]:
-        """Success terminal action: notify + Issue comment; no additional repo writes here."""
+    def _run_exit_success(
+        self, proposal: lc.ProposeResult, state: lc.LoopState, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Success terminal action: run on_success.exec (PR un-draft etc.), notify, comment."""
+        self._run_success_exec(proposal, state, list(params.get("exec") or []))
         self._notify(state, "exit_success")
         self._maybe_comment(state, _exit_success_comment(state, params))
         return {}
+
+    def _run_success_exec(
+        self, proposal: lc.ProposeResult, state: lc.LoopState, steps: list[str]
+    ) -> None:
+        """Execute `on_success.exec` tokens for `exit_success` (currently just `pr_mark_ready`).
+
+        Issue #425: `exit_failure` already drafts the PR via `_run_failure_exec`'s
+        `pr_mark_draft` token, but nothing previously un-drafted it on a later successful
+        `exit_success` (e.g. after `exit_failure -> resume -> exit_success`), leaving the PR
+        stuck Draft while the Issue reports success. Best-effort like `_run_failure_exec`:
+        unknown tokens are silently ignored, and `pr_mark_ready` itself never raises.
+        """
+        for step in steps:
+            if step == "pr_mark_ready":
+                self._mark_pr_ready(proposal.action_id, state)
+
+    def _journal_pr_mark_ready(self, action_id: str, event: str, payload: dict[str, Any]) -> None:
+        """Journal one `pr_mark_ready` outcome (Issue #425 review follow-up).
+
+        Best-effort observability alongside the stderr log lines below: `_mark_pr_ready` is
+        itself best-effort and must never raise, but a Draft PR that silently stayed Draft (or
+        a `gh` failure) should still be discoverable after the fact, mirroring how other
+        driver-level events (e.g. `_persist_push_intent`) journal outcomes that aren't
+        surfaced anywhere else. `payload` must carry no secrets/stdout dumps -- only
+        identifiers (PR number, skip reason, `gh` exit code).
+        """
+        lc.append_journal_event(self.loop_id, self.project_dir, event, "driver", action_id, payload)
+
+    def _mark_pr_ready(self, action_id: str, state: lc.LoopState) -> None:
+        """Un-draft `state.branch`'s existing OPEN PR if it is currently a Draft (Issue #425).
+
+        Best-effort and idempotent, mirroring `_draft_pr`'s own `check=False` tolerance: no
+        verified repo identity, no OPEN PR, or a PR that is already Ready for review all skip
+        silently with no push and no `gh` mutation. A `gh` failure at either step is logged to
+        stderr (mirroring `_docker_infrastructure_result`'s own stderr reporting style) but never
+        raises, so `exit_success` always completes even when GitHub is unreachable. Every outcome
+        is also journaled (`_journal_pr_mark_ready`) for later observability.
+        """
+        if not lc.is_repo_identity_verified(state):
+            self._journal_pr_mark_ready(
+                action_id, "pr_mark_ready_skipped", {"reason": "repo_identity_unverified"}
+            )
+            return
+        pr_number = _lookup_open_pr_number(state.worktree_path, state.branch)
+        if pr_number is None:
+            self._journal_pr_mark_ready(
+                action_id, "pr_mark_ready_skipped", {"reason": "no_open_pr"}
+            )
+            return
+        view = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "--json", "isDraft", "-q", ".isDraft"],
+            cwd=state.worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if view.returncode != 0:
+            print(
+                f"loop_driver: pr_mark_ready: could not read PR #{pr_number} draft state",
+                file=sys.stderr,
+            )
+            self._journal_pr_mark_ready(
+                action_id,
+                "pr_mark_ready_failed",
+                {"pr_number": pr_number, "step": "view", "rc": view.returncode},
+            )
+            return
+        if view.stdout.strip() != "true":
+            self._journal_pr_mark_ready(
+                action_id,
+                "pr_mark_ready_skipped",
+                {"reason": "not_draft", "pr_number": pr_number},
+            )
+            return
+        result = subprocess.run(
+            ["gh", "pr", "ready", str(pr_number)],
+            cwd=state.worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            print(
+                f"loop_driver: pr_mark_ready: gh pr ready failed for PR #{pr_number}",
+                file=sys.stderr,
+            )
+            self._journal_pr_mark_ready(
+                action_id,
+                "pr_mark_ready_failed",
+                {"pr_number": pr_number, "step": "ready", "rc": result.returncode},
+            )
+            return
+        print(
+            f"loop_driver: pr_mark_ready: PR #{pr_number} marked ready for review", file=sys.stderr
+        )
+        self._journal_pr_mark_ready(action_id, "pr_mark_ready_done", {"pr_number": pr_number})
 
     def _run_exit_failure(
         self, proposal: lc.ProposeResult, state: lc.LoopState, params: dict[str, Any]

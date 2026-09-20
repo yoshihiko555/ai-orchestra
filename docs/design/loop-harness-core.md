@@ -248,6 +248,8 @@ phase 遷移はループ定義（8 章）の `phases[].on_success.next` に従�
                   → 次 phase の guards[phase] は既存値があればそのまま維持、無ければ 0 初期化
                   → state.phase = next、state.iteration = guards[next].iteration（通常 0 → 1 目の run_maker へ）
   exit_success  → state.status = "passed"（loop 終了。phase は現在値のまま）
+                  → on_success.exec を実行する（Issue #425。例: `pr_review_response` の
+                    `pr_mark_ready` が、直前の失敗出口で Draft 化された PR を Ready へ戻す）
   exit_failure  → state.status = "failed"（loop 終了。phase は現在値のまま）
 ```
 
