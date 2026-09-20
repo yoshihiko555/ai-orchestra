@@ -1987,11 +1987,38 @@ class LoopDriver:
         pr_number = state.pr_number
         push_required = bool(params.get("push_required"))
         config = prw.load_pr_review_config(self.project_dir)
-        if (
+        already_pushed_via_dh5 = (
             push_required
             and pr_number is not None
             and self._already_pushed_this_iteration(state, proposal)
-        ):
+        )
+        # Issue #424 (adversarial review follow-up): gates the "not reraised -> addressed"
+        # inference further down (`resolved_signatures`) on either not having taken the DH5
+        # shortcut (`already_pushed_via_dh5`) at all, or -- Issue #424 PR #427 follow-up
+        # (CodeRabbit High / Codex P1) -- DH5 having fired for a push *this exact action* made.
+        # A bare `not already_pushed_via_dh5` gate (the original round of this fix) over-corrected:
+        # it also disabled the inference for DH5's own intended, legitimate use (a driver crash
+        # between this action's `record_iteration_head` succeeding and its poll actually
+        # starting; the respawned worker re-enters this same action/iteration). Without this
+        # `recorded_action_id == action_id` carve-out, that clean-review case would never mark
+        # its findings addressed, `include_persisted_open_blocking=True` would keep failing
+        # forever, and the next Maker -- with nothing left to fix -- would hit the H12
+        # no-new-commit shortcut every round: permanent non-convergence, not just a one-round
+        # delay. `record_iteration_head` persists `iteration_head_action_id` alongside
+        # `iteration_head_sha`/`iteration_head_recorded_iteration` precisely so this action can
+        # tell "DH5 matched *my own* push" apart from "DH5 matched some other (possibly
+        # pre-resume) action's push" -- `resume()` clears all three together
+        # (`_renumber_resumed_pr_review_findings`), so a pre-resume `iteration_head_action_id`
+        # can never equal a post-resume `action_id` either. A missing/`None` recorded id (an
+        # older state predating this field, or one `resume()` just cleared) never equals a real
+        # `action_id`, so it fails closed to the original, more conservative gate. `push_required
+        # is False` (the one-time initial-PR-creation poll, where `advance_phase` already
+        # pushed) is not gated here: it never goes through DH5 at all, and
+        # `previous_iteration_findings` is always empty on that first round regardless.
+        pr_review_for_dh5 = state.pr_review if isinstance(state.pr_review, dict) else {}
+        recorded_action_id = pr_review_for_dh5.get("iteration_head_action_id")
+        pushed_this_action = not already_pushed_via_dh5 or recorded_action_id == action_id
+        if already_pushed_via_dh5:
             pass
         elif push_required:
             verified_branch = params["verified_branch"]
@@ -2172,13 +2199,30 @@ class LoopDriver:
             item.signature for item in result.findings if item.needs_classification
         }
         resolved_signatures = (
-            (result.previous_iteration_findings.signatures - result.iteration_findings.signatures)
-            - demoted_still_open
-            - still_pending_classification
+            (
+                (
+                    result.previous_iteration_findings.signatures
+                    - result.iteration_findings.signatures
+                )
+                - demoted_still_open
+                - still_pending_classification
+            )
+            if pushed_this_action
+            else frozenset()
         )
+        commit_sha = baseline.get("iteration_head_sha")
+        actually_addressed: tuple[str, ...] = ()
         if resolved_signatures:
-            commit_sha = baseline.get("iteration_head_sha")
-            prw.mark_addressed_findings(
+            # Issue #424 (Codex P2, PR #427 follow-up): `mark_addressed_findings` only ever
+            # flips a candidate signature's persisted `status` when it is currently `"open"`
+            # (its own docstring) -- a record with a missing/unexpected `status` is silently
+            # skipped. `_open_blocking_findings` (Issue #424) fails *closed* on exactly that
+            # same missing/unexpected `status` by still treating it as open/blocking. Using the
+            # candidate `resolved_signatures` set below (rather than what this call actually
+            # returned) would resolve a GitHub thread for, and hide from `open_blocking`, a
+            # finding this call never actually marked addressed -- reintroducing a false pass
+            # for that one malformed-but-genuinely-still-open record.
+            actually_addressed = prw.mark_addressed_findings(
                 self.loop_id,
                 self.project_dir,
                 resolved_signatures,
@@ -2187,18 +2231,56 @@ class LoopDriver:
                 self.lease_token,
                 action_id=action_id,
             )
+            if actually_addressed:
+                # Issue #424: `result.open_blocking` was computed inside
+                # `collect_review_findings` (and, if classification ran,
+                # `apply_severity_classifications`) *before* `mark_addressed_findings` above
+                # flipped `actually_addressed` to `"addressed"` in state. Without this filter, a
+                # signature genuinely resolved by this very round would still show up in the
+                # stale `result.open_blocking` snapshot and `phase_check_from_review_findings`
+                # below would treat it as still-blocking forever (a permanent false-fail for
+                # exactly the findings this round just fixed).
+                result = dataclasses.replace(
+                    result,
+                    open_blocking=tuple(
+                        item
+                        for item in result.open_blocking
+                        if item.signature not in actually_addressed
+                    ),
+                )
+        # Issue #424 (Codex P2, PR #427 round 2): a driver crash between `mark_addressed_findings`
+        # (above, or on an earlier action entirely) and `resolve_addressed_findings` leaves a
+        # record `status: "addressed"` with its GitHub thread never resolved --
+        # `addressed_findings_missing_thread_resolution` selects exactly those records so this
+        # retries on every wait completion, not just the round that first flipped them, until the
+        # thread is actually confirmed resolved (`AddressedThreadOutcome`'s idempotent
+        # `"already_resolved"` status makes re-resolving an already-resolved thread harmless).
+        # Reload state fresh rather than reusing the possibly-stale `state.pr_review` captured
+        # earlier in this method (`_classify_pending_findings` above, or `mark_addressed_findings`
+        # just above, can each have written a newer `pr_review` snapshot since then).
+        pr_review_for_retry = lc.load_state(self.loop_id, self.project_dir).pr_review
+        pending_thread_resolution = prw.addressed_findings_missing_thread_resolution(
+            pr_review_for_retry
+        )
+        resolve_candidates = tuple(sorted(set(actually_addressed) | set(pending_thread_resolution)))
+        if resolve_candidates:
             addressed_result = prw.resolve_addressed_findings(
                 self.loop_id,
                 self.project_dir,
                 pr_number,
                 repo,
-                resolved_signatures,
+                resolve_candidates,
                 commit_sha,
                 self.lease_token,
                 action_id=action_id,
             )
             self._journal_addressed_findings_outcome(addressed_result, action_id)
-        return lc.phase_check_to_dict(prw.phase_check_from_review_findings(result))
+        # Issue #424: this is the one call site that opts into `include_persisted_open_blocking`
+        # -- see `phase_check_from_review_findings`'s own docstring for why only this call site
+        # (guarded by `pushed_this_action` above) may safely do so.
+        return lc.phase_check_to_dict(
+            prw.phase_check_from_review_findings(result, include_persisted_open_blocking=True)
+        )
 
     def _journal_addressed_findings_outcome(
         self, addressed_result: prw.AddressedFindingsResult, action_id: str
@@ -2352,7 +2434,18 @@ class LoopDriver:
         # blocks this iteration from proceeding. `phase_check_from_review_findings`'s `passed`
         # already encodes exactly this blocking/non-blocking distinction (see its docstring),
         # so reuse it here rather than re-deriving the severity check.
-        drained_check = prw.phase_check_from_review_findings(drained)
+        #
+        # Issue #424: `include_persisted_open_blocking` must stay at its default `False` here
+        # (spelled out explicitly rather than relying on the default, since getting this one
+        # wrong deadlocks the loop). This drain runs immediately after `run_maker`, while the
+        # findings the Maker is *currently* addressing are still `status: "open"` in
+        # `state.pr_review.findings` -- they only flip to `"addressed"` once a *later* review
+        # round confirms no reraise (`mark_addressed_findings`, below). Honoring the persisted
+        # `open_blocking` set here would make this drain "rediscover" the same still-open
+        # findings every single iteration and never let the fix be pushed, let alone reviewed.
+        drained_check = prw.phase_check_from_review_findings(
+            drained, include_persisted_open_blocking=False
+        )
         if not drained_check.passed:
             return lc.phase_check_to_dict(drained_check)
         # code H12: no drained findings and no new Maker commit means there is nothing worth
@@ -3735,20 +3828,114 @@ def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, A
     """Extract blocking `source == "pr_review"` findings from `state.last_check_result` (code L2).
 
     `state.last_check_result` is whatever the most recently *completed* action wrote via
-    `lc.complete()`; in the `pr_review_response` phase, `run_maker` is only ever proposed after
-    a `wait_external_review` action completed with `phase_check_from_review_findings()`'s
+    `lc.complete()`; in the `pr_review_response` phase, `run_maker` is normally proposed only
+    after a `wait_external_review` action completed with `phase_check_from_review_findings()`'s
     `passed: false` result (see `docs/design/loop-harness-cli.md`'s phase-guard contract), so by
     construction this is that same result -- never a stale `implementation`-phase mechanical/
-    llm_review result -- by the time `_run_maker` builds this iteration's prompt. The
-    `source == "pr_review"` filter is still applied defensively rather than trusting phase alone,
-    mirroring this module's existing "verify, don't just assume" posture (e.g. `_draft_pr`'s
-    guard calls, code L1).
+    llm_review result -- by the time `_run_maker` builds this iteration's prompt.
+
+    Issue #424 (resume-after-`exit_failure` gap): `_next_action` can also propose `run_maker`
+    directly when `resume()` reopens a loop that failed with unresolved open critical/high
+    findings, without a fresh `wait_external_review` completing *in this session* first. This is
+    still safe: `apply_action_effect()`'s `EXIT_FAILURE`/`STOP` branches never touch
+    `last_check_result`, and `resume()` itself only resets guards/status/stop_reason/
+    pending_action -- so `state.last_check_result` still holds the last `wait_external_review`'s
+    `phase_check_from_review_findings()` result (with those same open findings) exactly as if it
+    had just completed. The `source == "pr_review"` filter below is still applied defensively
+    rather than trusting phase alone, mirroring this module's existing "verify, don't just
+    assume" posture (e.g. `_draft_pr`'s guard calls, code L1).
 
     Only `severity in lc.BLOCKING_SEVERITIES` (critical/high) findings are returned (issue
     #213): the Maker fixes what actually blocks the phase from passing, never re-litigating
     medium/low findings a reviewer left as non-blocking commentary.
+
+    Issue #424 (code-reviewer follow-up): the *resume*-after-`exit_failure` gap above assumed
+    the last completed `wait_external_review` ended via `phase_check_from_review_findings()`
+    (which populates `results[].findings` with `source: "pr_review"` entries). It can instead
+    have ended via `phase_check_from_completion_outcome()` (timeout, API error, the H12
+    no-new-commit shortcut) -- none of which ever populate `results[].findings` at all, even
+    though `state.pr_review.findings` may still hold real, unresolved open blocking findings.
+
+    Issue #424 (Codex P1, PR #427 round 2): this must *merge* with, not just fall back to, the
+    persisted open set (`open_blocking_findings_from_pr_review`). A one-or-the-other choice
+    silently drops findings whenever `last_check_result` has *some* but not *all* of the
+    persisted open blocking findings -- e.g. finding A was reraised/imported this very round
+    (so it's in `last_check_result`) while finding B has been open since an earlier round and
+    wasn't reimported (so it's only in `state.pr_review.findings`). Falling back only when
+    `last_check_result` is entirely empty would show the Maker only A, it fixes A, the next
+    clean review doesn't reraise A *or* B (nobody ever told the Maker about B), and B gets
+    incorrectly marked addressed by the "not reraised -> addressed" heuristic (4.4 節).
+    Deduped by signature (`_resolve_pr_finding_signature`, since `lc.Finding` -- what
+    `last_check_result` findings are serialized as -- carries no signature field): the
+    `last_check_result` version wins when a persisted record resolves to the same signature.
     """
     last_check = state.last_check_result
+    from_last_check = _pr_review_findings_from_last_check_results(last_check)
+    persisted_map = state.pr_review.get("findings") if isinstance(state.pr_review, dict) else None
+    persisted_map = persisted_map if isinstance(persisted_map, dict) else {}
+
+    merged: dict[str, dict[str, Any]] = {}
+    unresolved: list[dict[str, Any]] = []
+    for finding in from_last_check:
+        signature = _resolve_pr_finding_signature(finding, persisted_map)
+        if signature is None:
+            unresolved.append(finding)
+        else:
+            merged[signature] = finding
+    for item in prw.open_blocking_findings_from_pr_review(state.pr_review):
+        merged.setdefault(
+            item.signature,
+            {
+                "severity": item.severity,
+                "summary": item.body_excerpt,
+                "source": "pr_review",
+                "path": item.path,
+                "line": item.line,
+            },
+        )
+    return list(merged.values()) + unresolved
+
+
+def _resolve_pr_finding_signature(
+    finding: dict[str, Any], persisted_map: dict[str, Any]
+) -> str | None:
+    """Best-effort exact join of a `last_check_result`-derived finding dict back to its
+    persisted `pr_review.findings` signature (Issue #424 PR #427 round 2, Codex P1).
+
+    `lc.Finding` (what `phase_check_from_review_findings()` serializes both `result.findings`
+    and merged `result.open_blocking` items into, and what ends up in `last_check_result`)
+    carries no signature field. `path`/`line`/the body-excerpt-derived `summary`, though, are
+    copied verbatim from the same persisted record on the same round (`_finding_from_item()`
+    for a fresh import, `_open_blocking_findings()` for a persisted-open merge) -- an exact
+    join key, not a fuzzy one. The one wrinkle: the summary text can be truncated to either
+    `EXCERPT_LIMIT` (240, `ImportedFinding.body_excerpt`) or `NON_BLOCKING_EXCERPT_LIMIT` (200,
+    `NonBlockingFinding.body_excerpt` -- itself a further truncation of the same persisted
+    `body_excerpt`) depending on which path produced this `finding`, so only the shorter of the
+    two texts' prefixes is compared. Returns `None` (the caller keeps the finding as-is, never
+    dropping it) when no persisted record matches -- e.g. a fresh import already superseded by
+    a later state write.
+    """
+    path = finding.get("path")
+    line = finding.get("line")
+    summary = str(finding.get("summary") or "")
+    for signature, record in persisted_map.items():
+        if not isinstance(record, dict):
+            continue
+        if record.get("path") != path or record.get("line") != line:
+            continue
+        persisted_excerpt = str(record.get("body_excerpt") or "")
+        shortest = min(len(summary), len(persisted_excerpt))
+        if summary[:shortest] == persisted_excerpt[:shortest]:
+            return str(signature)
+    return None
+
+
+def _pr_review_findings_from_last_check_results(last_check: Any) -> list[dict[str, Any]]:
+    """Extract blocking `source == "pr_review"` findings from a raw `last_check_result` dict.
+
+    Split out of `_pr_review_findings_from_last_check` (Issue #424) so its fallback to
+    `open_blocking_findings_from_pr_review` only applies when this primary source is empty.
+    """
     if not isinstance(last_check, dict):
         return []
     results = last_check.get("results")

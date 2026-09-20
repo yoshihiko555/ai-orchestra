@@ -66,6 +66,8 @@ _PR レビュー対応ループと Codex 自動レビューの関係を示す図
 {
   "pr_review": {
     "iteration_head_sha": "abcd1234...", // push 完了後に別途取得する、このイテレーションの head commit sha
+    "iteration_head_recorded_iteration": 3, // 上記 sha を記録した際の proposal.iteration（DH5。2.4.1 節）
+    "iteration_head_action_id": "act-...", // 上記 2 つを記録した record_iteration_head() 呼び出し自身の action_id（DH5 同一アクション判定。Issue #424 PR #427 follow-up。2.4.1 節）
     "baseline_review_id": 918273645, // push/PR作成の実行前時点で存在した reviews の最大 id（無ければ 0）
     "baseline_recorded_at": "2026-07-06T10:29:00+09:00", // push/PR作成より前の記録時刻
   },
@@ -259,6 +261,14 @@ FT-13 の無進捗 guard 経路に集計される。
 > `detect_pr_review_push_delta()` 自体を呼ばないため、無進捗判定の対象にもならない
 > （そのまま `phase_check_from_review_findings()` の失敗結果として次の Maker 反復へ渡る）。
 
+> **`include_persisted_open_blocking` は明示的に `False` を渡す（Issue #424。4.4 節）**
+> この drain は `run_maker` 直後に実行され、Maker がまさに対応中の finding はまだ `status:
+> "open"` のままなのが正常（addressed への更新は次の post-poll 判定を待つ）。
+> `phase_check_from_review_findings()` の `include_persisted_open_blocking` 引数（既定 `False`）
+> を誤って `True` にすると、この drain が毎回その「対応中の finding」を検出し続け、push が
+> 永久にできなくなる（4.4 節）。したがってここでは `False` を明示的に渡し、drain の合否判定は
+> 今回 import した差分（`result.findings`）のみに基づかせる。
+
 ### 1.3 コメント取得（3 API の使い分け）
 
 完了シグナル検知後、以下 3 種類の API を組み合わせて指摘一覧を構築する。
@@ -314,15 +324,18 @@ FT-13 の無進捗 guard 経路に集計される。
   相対パスを返す。
 - `load_review_findings_snapshot(loop_id, project_dir, action_id, lease_token)` は厳格検証済みの
   `ReviewFindingsResult` を返す。
-- JSON のトップレベル envelope は `schema_version: 2`、`loop_id`、`action_id` と
-  `ReviewFindingsResult` の 7 フィールド（`findings` / `iteration_findings` /
+- JSON のトップレベル envelope は `schema_version: 3`、`loop_id`、`action_id` と
+  `ReviewFindingsResult` の 8 フィールド（`findings` / `iteration_findings` /
   `previous_iteration_findings` / `processed_comment_ids` / `ignored_untrusted_comment_count` /
-  `needs_classification_count` / `open_non_blocking`）だけを持つ（`open_non_blocking` の追加に伴い
-  schema_version を 1 → 2 に更新。#213 対応）。後方互換として `schema_version: 1` の artifact は
-  `open_non_blocking` キー不在を許容し `()` をデフォルトに読み込む（アップグレード時に
-  `wait_external_review` 中の in-flight ループが resume 不能にならないため。v1 に
-  `open_non_blocking` が存在する場合や `schema_version` が 2 超の場合は従来どおり拒否する）。
-  上記以外の必須キーの欠損・未知キー・
+  `needs_classification_count` / `open_non_blocking` / `open_blocking`）だけを持つ（`open_blocking`
+  の追加に伴い schema_version を 2 → 3 に更新。Issue #424 対応）。後方互換として
+  `schema_version: 1` および `schema_version: 2` の artifact は読み込みを許容する:
+  v1 は `open_non_blocking` と `open_blocking` の両キー不在、v2 は `open_blocking` キー不在を許容し、
+  それぞれ欠けているフィールドは `()` をデフォルトに読み込む（アップグレード時に
+  `wait_external_review` 中の in-flight ループが resume 不能にならないため）。ただし各バージョンの
+  キー集合は厳密固定であり、v1 に `open_non_blocking`/`open_blocking` が存在する場合や v2 に
+  `open_blocking` が存在する場合は未知キーとして拒否する。`schema_version` が 3 超の場合も
+  同様に拒否する。上記以外の必須キーの欠損・未知キー・
   型不一致・未知 severity・負の件数・binding 不一致は `PrReviewWaitError` とし、部分復元しない。
 - save / load は active lease と state の current phase / pending action を検証し、`action_id` 一致に加えて
   action が `wait_external_review` である場合に限り許可する。stale action、別 action、pending action 不在を
@@ -488,6 +501,26 @@ issue コメントとして投稿する（`post_retrigger_comment()`）。この
 >   真になる。これは「今回の push は既に成功済み」を意味するため、push 分岐全体をスキップして
 >   直接 poll へ進み、投稿を再試行しない（後述のクラッシュ窓を通過済みの場合の話であり、
 >   その窓の**内側**でクラッシュした場合は次の重複投稿リスクの節が示すとおり再投稿される）。
+>
+> **DH5 は「今回の push」の同一性まで保証しない（Issue #424 PR #427 follow-up）**: 上記の
+> DH5 判定自体は「反復番号と push 済み HEAD の一致」しか見ておらず、**その push を行った
+> action** が今回実行中のアクション自身かどうかは区別しない。`resume --reset-counters`
+> （基本設計編 `resume` の事後条件）はフェーズの反復カウンタを 0 に戻すため、resume 前の
+> `iteration_head_recorded_iteration` が resume 後の最初の `wait_external_review` の
+> `proposal.iteration` と偶然一致しうる。この場合 DH5 は「今回既に push 済み」と誤判定し、
+> pr-review 編 4.3 節の無進捗判定・「reraise されなかった＝addressed」推論を、実際には
+> resume 後に一度も push していないラウンドへ誤って適用してしまう。これを避けるため
+> `record_iteration_head()` は `iteration_head_sha`/`iteration_head_recorded_iteration` と
+> 同じ fenced write で、呼び出し元の `action_id` を `iteration_head_action_id` としても
+> 永続化する。`_run_wait_external_review` は DH5 が発火しても、記録済み
+> `iteration_head_action_id` が今回実行中の `action_id` と一致する場合（＝この push は
+> 他でもないこのアクション自身が行ったと確認できる場合）に限り「reraise されなかった＝
+> addressed」推論（`resolved_signatures` の算出・`mark_addressed_findings` 呼び出し）を許可する
+> （`pushed_this_action` ゲート、5.2 節「前回の PR レビュー指摘」の元になる Maker 入力とは別の
+> 判定）。`resume()` はこの `iteration_head_action_id` も `iteration_head_recorded_iteration`
+> と同時に `None` へリセットするため、resume 前のアクション id が resume 後の `action_id` と
+> 一致することはない（`iteration_head_sha` 自体は不変。H12 の no_new_commit 判定に引き続き
+> 使われるため）。
 
 > **push とコメント投稿の間でクラッシュした場合の重複投稿リスク**
 > `post_retrigger_comment()` は `record_iteration_head()`（1.1 節・H9）の**直前**に呼ばれる。
@@ -696,12 +729,21 @@ medium/low は `dismissed` にしなくても合格をブロックしない（�
         // signature（4.2 節）をキーとする
         "first_seen_iteration": 1,
         "last_seen_iteration": 2,
-        "status": "open", // open | resolved | dismissed
+        "status": "open", // open | addressed | dismissed（addressed は Issue #235。4.4 節）
         "severity": "high", // 分類待ちがあれば fail-safe high、なければ confirmed_severity
         "confirmed_severity": "medium", // 確定前のみ null
         "pending_classification_source_comment_ids": ["issue_comment:22334455"],
         "dismiss_reason": null,
         "source_comment_ids": ["review_comment:918273645", "issue_comment:22334455"],
+        // `status: "addressed"` になった時点で `mark_addressed_findings()` が付与（4.4 節）
+        "addressed_at_commit": "cafebabecafebabe",
+        "addressed_at_iteration": 3,
+        // `resolve_addressed_findings()` が信頼済み GitHub thread を実際に resolve できたら
+        // thread_id を追記（複数 review comment が同一 thread に属する場合は重複しない）
+        "resolved_thread_ids": ["THREAD_abc123"],
+        // 4.4 節「thread_resolved による再試行」参照。`status == "addressed"` のレコードにのみ
+        // 存在しうる。欠落は `False` 扱い（fail-open で再試行対象にする）
+        "thread_resolved": true,
         // 残存した非ブロッキング指摘の報告用（成功コメント / non_blocking_open）。
         // 再掲のたびに最新値へ更新する（#213 対応）
         "path": "packages/foo/bar.py",
@@ -725,6 +767,19 @@ medium/low は `dismissed` にしなくても合格をブロックしない（�
   既存の確定 severity を上書きしないようにする。分類確定時は pending ID を除き、確定 severity を
   `severity` へ反映する。`none` なら該当 source ID を除き、確定 finding も pending ID も残らない
   signature は削除する。
+
+**`resume --reset-counters` 後の反復番号付け直し（Issue #424）**: 基本設計編の `resume` は
+対象フェーズの `GuardCounters.iteration` を 0 にリセットするため、resume 後最初の
+`wait_external_review` の反復番号は 1 から振り直される（`propose()` の `_next_action_iteration`）。
+`findings[*].first_seen_iteration`/`last_seen_iteration` は resume 前の番号のまま放置すると、
+この振り直しと衝突しうる（例: resume 前の反復 1 で addressed 済みだった finding が、resume 後の
+反復 1 で誤って new_count に混入する。あるいは真に未解決の finding が「反復 0 で見た記録」に
+一致せず不可視になる）。これを避けるため `resume` は、`status` が `"addressed"`/`"dismissed"`
+のいずれでもない finding レコードの `first_seen_iteration`/`last_seen_iteration` を両方 0 へ
+付け直す（resume 後最初の反復の `previous_iteration_findings` が問い合わせる `iteration - 1 == 0`
+に一致させるため）。`"addressed"`/`"dismissed"` レコードは歴史的記録のみに使われるため変更しない。
+この付け直しは単独では別の偽陽性を招きうるため、2.4.1 節の `iteration_head_action_id` ベースの
+`pushed_this_action` ゲート（4.4 節）と組み合わせて初めて安全になる。
 
 ### 4.2 指摘シグネチャの正規化アルゴリズム
 
@@ -810,6 +865,61 @@ dedup（4.1〜4.2 節）と無進捗判定（本節）は同じシグネチャ�
 `loop_common.py` に一箇所（`normalize_pr_finding_signature()`）だけ持つ。`IterationFindings` の
 構築（`this.signatures` の算出。blocking のみへの絞り込みを含む）も同モジュール内の単一関数に
 集約する。
+
+### 4.4 addressed 解決と `open_blocking`（Issue #235・#424）
+
+**addressed 解決（Issue #235。参考）**: blocking（critical/high）な finding が前反復で
+`open` だったにもかかわらず今反復で reraise されなかった場合（`prev.signatures -
+this.signatures`。ただし severity が demoted された medium/low finding、および
+`needs_classification` のまま残っている finding は除外する）、その差分シグネチャ集合を
+「resolved 候補」として `mark_addressed_findings()` に渡す。同関数は候補のうち **`status` が
+正確に `"open"` のレコードだけ** を `"addressed"` へ更新する（`dismissed` は resurrect しない。
+`status` が欠落・不明なレコードは対応不要と誤認しないよう更新自体をスキップする、安全側の
+fail-closed 契約）。実際に更新されたシグネチャ集合（`mark_addressed_findings()` の戻り値）
+だけを使って `resolve_addressed_findings()`（信頼済み GitHub review thread への reply +
+resolve）を呼ぶ。呼び出し候補集合ではなく実際の戻り値を使うのは、候補のまま扱うと
+「`status` が欠落・不明なため実は addressed になっていない finding」の GitHub thread を
+誤って resolve し、かつ以下の `open_blocking` からも隠してしまう恐れがあるため
+（Issue #424 PR #427 follow-up、Codex P2 指摘）。
+
+**`open_blocking`（Issue #424）**: 4.1 節の `findings` 辞書全体を対象に、`status` が
+`"addressed"`/`"dismissed"` のいずれでもない critical/high レコードを反復番号に関係なく
+累積収集したものを `open_blocking` と呼ぶ（実装は `pr_review_wait._open_blocking_findings()`。
+`status` の欠落・不明値は fail-closed で「まだ open」扱いにする）。`this.signatures`（本節、
+今反復で reraise/新規発見された blocking シグネチャ）が今回の import 差分にしか基づかないのに
+対し、`open_blocking` は「過去のどこかで見つかり、まだ addressed/dismissed になっていない」
+指摘を反復番号によらず捕捉する。resume 後にコメントが再取り込みされず今回の import が 0 件と
+なる場合でも、永続化された未解決の critical/high をこの `open_blocking` 経由で合否判定へ反映
+できる（6.1 節の合格基準 `phase_check_from_review_findings()` の `include_persisted_open_blocking`
+引数、既定 `False` の **opt-in**）。1.2.2 節の pre-rebaseline drain は明示的に `False` を渡す
+（Maker が今まさに対応中の finding はまだ `open` のままなのが正常であり、`open_blocking` を
+有効にすると毎反復「検出」され続けて push が永久にできなくなるため）。`loop_driver.
+_run_wait_external_review` の post-poll 判定（push・poll 完了後の最終合否）だけが
+`include_persisted_open_blocking=True` を指定する。
+
+**`thread_resolved` による再試行（Issue #424 PR #427 round 2）**: `mark_addressed_findings()`
+（`status` を `"addressed"` へ更新）と `resolve_addressed_findings()`（信頼済み GitHub thread へ
+reply + resolve し `thread_resolved: true` を永続化）は別々の fenced write であるため、driver が
+その間でクラッシュすると、レコードは永久に `status: "addressed"` のまま GitHub thread だけが
+未解決で残る。一度 `"addressed"` になったレコードは `_open_blocking_findings()`/`resolved_signatures`
+の差分計算から外れるため、通常の「reraise されなかった」フローでは二度と再検出されない。これを
+救済するため `addressed_findings_missing_thread_resolution()` は `pr_review.findings` 全体から
+`status == "addressed"` かつ `thread_resolved` が `true` でないレコードのシグネチャを毎回列挙する
+（フィールド欠落は `false` 扱いの fail-open）。`loop_driver._run_wait_external_review` は poll が
+完了するたびに（今回の reraise 差分が空でも）この列挙結果と今回新たに addressed になったシグネチャ
+集合を合算してから `resolve_addressed_findings()` を 1 回呼ぶ。同じ thread を再度 resolve しようと
+しても `_resolve_addressed_signature_threads()` は `already_resolved` として無害に扱うため、この
+再試行は何度実行しても安全（冪等）である。
+
+**`pushed_this_action` ゲート（Issue #424）**: 上記の addressed 解決推論（resolved 候補の算出・
+`mark_addressed_findings()` 呼び出し）は、今回の `wait_external_review` action が実際に push
+分岐を実行した場合、または 2.4.1 節の DH5 が発火したが記録済み `iteration_head_action_id` が
+今回の `action_id` と一致する場合（＝この push は他でもないこのアクション自身が行ったと確認
+できる場合）に限って許可する。それ以外（DH5 が別アクション・resume 前の記録と一致した場合）は
+resolved 候補の算出自体を行わない（`resolved_signatures` を空集合として扱う）。基本設計編
+`resume` の事後条件が `pr_review.iteration_head_recorded_iteration`/`iteration_head_action_id`
+と finding の反復番号を巻き戻すため、この巻き戻し後の数値の偶然一致だけを根拠に「reraise
+されなかった＝addressed」と誤認しないための構造的な防御である。
 
 ---
 

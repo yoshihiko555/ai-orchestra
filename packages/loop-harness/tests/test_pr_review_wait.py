@@ -2404,9 +2404,9 @@ def test_load_review_findings_snapshot_fails_closed_for_invalid_schema(
 def test_load_review_findings_snapshot_accepts_legacy_v1_payload_without_open_non_blocking(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """PR#228 review: a v1 snapshot (pre-#213, no `open_non_blocking` key) persisted by an
-    in-flight loop before this package upgraded must still be readable, defaulting
-    `open_non_blocking` to `()` -- failing closed here would strand that loop unable to
+    """PR#228 review: a v1 snapshot (pre-#213, no `open_non_blocking`/`open_blocking` key)
+    persisted by an in-flight loop before this package upgraded must still be readable,
+    defaulting both fields to `()` -- failing closed here would strand that loop unable to
     resume/classify."""
     project_dir = _setup_state(tmp_path, monkeypatch)
     lease_token = _lease(project_dir)
@@ -2418,6 +2418,7 @@ def test_load_review_findings_snapshot_accepts_legacy_v1_payload_without_open_no
         "schema_version": 1,
     }
     del payload["open_non_blocking"]
+    del payload["open_blocking"]
     lc.save_artifact(
         "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
     )
@@ -2427,6 +2428,7 @@ def test_load_review_findings_snapshot_accepts_legacy_v1_payload_without_open_no
     )
 
     assert restored.open_non_blocking == ()
+    assert restored.open_blocking == ()
 
 
 def test_load_review_findings_snapshot_rejects_v1_payload_with_open_non_blocking_key(
@@ -2451,10 +2453,59 @@ def test_load_review_findings_snapshot_rejects_v1_payload_with_open_non_blocking
         prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
 
 
+def test_load_review_findings_snapshot_accepts_legacy_v2_payload_without_open_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #424: a v2 snapshot (has `open_non_blocking`, predates `open_blocking`) persisted
+    by an in-flight loop before this package upgraded to v3 must still be readable, defaulting
+    `open_blocking` to `()` -- mirrors the v1-without-`open_non_blocking` case one tier up."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    payload = {
+        **prw._review_findings_snapshot_dict(_empty_review_findings_result()),
+        "loop_id": "abcd1234-issue-1",
+        "action_id": "action-1",
+        "schema_version": 2,
+    }
+    del payload["open_blocking"]
+    lc.save_artifact(
+        "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
+    )
+
+    restored = prw.load_review_findings_snapshot(
+        "abcd1234-issue-1", project_dir, "action-1", lease_token
+    )
+
+    assert restored.open_blocking == ()
+
+
+def test_load_review_findings_snapshot_rejects_v2_payload_with_open_blocking_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `schema_version: 2` payload that *does* carry an `open_blocking` key is still
+    rejected -- v2's own key set stays exact; only its *absence* is tolerated."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    _activate_pending_review_action(project_dir)
+    payload = {
+        **prw._review_findings_snapshot_dict(_empty_review_findings_result()),
+        "loop_id": "abcd1234-issue-1",
+        "action_id": "action-1",
+        "schema_version": 2,
+    }
+    lc.save_artifact(
+        "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
+    )
+
+    with pytest.raises(prw.PrReviewWaitError, match="invalid review findings snapshot"):
+        prw.load_review_findings_snapshot("abcd1234-issue-1", project_dir, "action-1", lease_token)
+
+
 def test_load_review_findings_snapshot_rejects_unsupported_future_schema_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A schema version newer than what this package knows how to read (e.g. 3) must fail
+    """A schema version newer than what this package knows how to read (e.g. 4) must fail
     closed, not silently coerce to the current shape."""
     project_dir = _setup_state(tmp_path, monkeypatch)
     lease_token = _lease(project_dir)
@@ -2463,7 +2514,7 @@ def test_load_review_findings_snapshot_rejects_unsupported_future_schema_version
         **prw._review_findings_snapshot_dict(_empty_review_findings_result()),
         "loop_id": "abcd1234-issue-1",
         "action_id": "action-1",
-        "schema_version": 3,
+        "schema_version": prw.REVIEW_FINDINGS_SNAPSHOT_SCHEMA_VERSION + 1,
     }
     lc.save_artifact(
         "abcd1234-issue-1", project_dir, "action-1", "review_findings.json", json.dumps(payload)
@@ -2736,6 +2787,152 @@ def test_none_classification_preserves_existing_confirmed_finding() -> None:
     assert findings_map["sig-a"]["severity"] == "medium"
     assert findings_map["sig-a"]["last_seen_iteration"] == 1
     assert findings_map["sig-a"]["source_comment_ids"] == ["review_comment:1"]
+
+
+def test_phase_check_fails_on_persisted_open_blocking_findings_with_zero_imports() -> None:
+    """Issue #424: a round that imports zero new comments (e.g. post-`resume()`, everything is
+    already in `processed_comment_ids`) must still fail (`passed=false`) when
+    `result.open_blocking` carries persisted, unresolved critical/high findings -- `passed`
+    must reflect the persisted open set, not only this round's fresh imports (EV-100's
+    2026-09-20 revision), when the caller opts in via `include_persisted_open_blocking=True`
+    (the default is `False`; only `loop_driver._run_wait_external_review`'s post-poll call
+    opts in, see that function's docstring)."""
+    persisted = prw.NonBlockingFinding(
+        signature="sig-persisted",
+        severity="high",
+        path="app.py",
+        line=42,
+        body_excerpt="unresolved from a prior round",
+    )
+    result = prw.phase_check_from_review_findings(
+        prw.ReviewFindingsResult(
+            findings=(),
+            iteration_findings=lc.IterationFindings(frozenset(), 0),
+            previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+            open_non_blocking=(),
+            processed_comment_ids=(),
+            ignored_untrusted_comment_count=0,
+            needs_classification_count=0,
+            open_blocking=(persisted,),
+        ),
+        include_persisted_open_blocking=True,
+    )
+
+    assert result.passed is False
+    assert result.results[0].passed is False
+    assert [item.severity for item in result.results[0].findings] == ["high"]
+
+
+def test_phase_check_from_review_findings_defaults_to_ignoring_open_blocking() -> None:
+    """Issue #424 (code-reviewer follow-up): `include_persisted_open_blocking` must default to
+    `False` so every pre-existing caller of this function -- including the
+    `facets/instructions/loop-issue.md` LP-1 skill's own pre-rebaseline drain step, which calls
+    this with no such keyword -- stays byte-for-byte unaffected. Only
+    `loop_driver._run_wait_external_review`'s post-poll call explicitly opts in."""
+    persisted = prw.NonBlockingFinding(
+        signature="sig-persisted",
+        severity="critical",
+        path="app.py",
+        line=1,
+        body_excerpt="unresolved from a prior round",
+    )
+    result = prw.phase_check_from_review_findings(
+        prw.ReviewFindingsResult(
+            findings=(),
+            iteration_findings=lc.IterationFindings(frozenset(), 0),
+            previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+            open_non_blocking=(),
+            processed_comment_ids=(),
+            ignored_untrusted_comment_count=0,
+            needs_classification_count=0,
+            open_blocking=(persisted,),
+        )
+    )
+
+    assert result.passed is True
+
+
+def test_phase_check_ignores_addressed_and_dismissed_blocking_findings() -> None:
+    """`_open_blocking_findings` (feeding `ReviewFindingsResult.open_blocking`) must exclude
+    both `"addressed"` and `"dismissed"` records -- unlike `_open_non_blocking_findings`
+    (medium/low findings never reach `"addressed"` in practice), a blocking finding does
+    transition `"open"` -> `"addressed"` once a later round confirms it wasn't reraised
+    (`mark_addressed_findings`), and that transition must stop it from blocking here too."""
+    findings_map = {
+        "sig-addressed": {
+            "status": "addressed",
+            "severity": "high",
+            "path": "a.py",
+            "line": 1,
+            "body_excerpt": "fixed",
+        },
+        "sig-dismissed": {
+            "status": "dismissed",
+            "severity": "critical",
+            "path": "b.py",
+            "line": 2,
+            "body_excerpt": "wontfix",
+        },
+        "sig-open": {
+            "status": "open",
+            "severity": "high",
+            "path": "c.py",
+            "line": 3,
+            "body_excerpt": "still open",
+        },
+    }
+
+    open_blocking = prw._open_blocking_findings(findings_map)
+
+    assert [item.signature for item in open_blocking] == ["sig-open"]
+
+    result = prw.phase_check_from_review_findings(
+        prw.ReviewFindingsResult(
+            findings=(),
+            iteration_findings=lc.IterationFindings(frozenset(), 0),
+            previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+            open_non_blocking=(),
+            processed_comment_ids=(),
+            ignored_untrusted_comment_count=0,
+            needs_classification_count=0,
+            open_blocking=(),
+        )
+    )
+
+    assert result.passed is True
+
+
+def test_phase_check_include_persisted_open_blocking_false_ignores_persisted_open_blocking() -> (
+    None
+):
+    """Issue #424: `include_persisted_open_blocking=False` (the default, also spelled out
+    explicitly by `loop_driver._drain_before_push`'s pre-rebaseline drain, EV-77) must ignore
+    `result.open_blocking` entirely and decide `passed` from this round's fresh `findings`
+    only -- otherwise a still-open finding the Maker is *currently* addressing (not yet
+    `"addressed"`) would make every post-Maker drain "rediscover" it and deadlock."""
+    persisted = prw.NonBlockingFinding(
+        signature="sig-persisted",
+        severity="critical",
+        path="app.py",
+        line=1,
+        body_excerpt="being worked on",
+    )
+    result = prw.phase_check_from_review_findings(
+        prw.ReviewFindingsResult(
+            findings=(),
+            iteration_findings=lc.IterationFindings(frozenset(), 0),
+            previous_iteration_findings=lc.IterationFindings(frozenset(), 0),
+            open_non_blocking=(),
+            processed_comment_ids=(),
+            ignored_untrusted_comment_count=0,
+            needs_classification_count=0,
+            open_blocking=(persisted,),
+        ),
+        include_persisted_open_blocking=False,
+    )
+
+    assert result.passed is True
+    assert result.results[0].findings == []
 
 
 def test_phase_check_passes_for_medium_low_only_findings_and_reports_non_blocking_open() -> None:
@@ -3122,6 +3319,36 @@ def test_ev101_iteration_findings_severities_filter_excludes_medium_low() -> Non
     assert blocking.new_count == 1
     # Identical blocking set across iterations stays no-progress even while lows churn.
     assert lc.evaluate_pr_review_no_progress(blocking, blocking).no_progress is True
+
+
+def test_build_pr_iteration_findings_excludes_addressed_status() -> None:
+    """Issue #424: an `"addressed"` record must not be counted as a current-iteration
+    signature/new_count even if its (frozen, pre-resume) iteration numbers happen to collide
+    with the queried iteration -- only `"dismissed"` was excluded before this fix. In the
+    normal (non-resume) flow this is a no-op (an addressed record's frozen iteration numbers
+    never match a live iteration again -- see the docstring); it only matters after
+    `resume()`'s renumbering reuses iteration 0/1."""
+    pr_review = {
+        "findings": {
+            "sig-addressed": {
+                "status": "addressed",
+                "severity": "high",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+            },
+            "sig-open": {
+                "status": "open",
+                "severity": "high",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+            },
+        }
+    }
+
+    result = lc.build_pr_iteration_findings(pr_review, 1, severities=lc.BLOCKING_SEVERITIES)
+
+    assert result.signatures == frozenset({"sig-open"})
+    assert result.new_count == 1
 
 
 def _pr_review_round(
@@ -3602,6 +3829,35 @@ def test_resolve_addressed_findings_resolves_every_accumulated_thread(
     ]
 
 
+def test_resolve_addressed_findings_persists_thread_resolved_flag_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 (Issue #424, PR #427 round 2): once every trusted thread accumulated for a
+    signature is confirmed resolved, the record must persist `thread_resolved: True` --
+    `addressed_findings_missing_thread_resolution` uses exactly this flag to decide whether a
+    driver crash between `mark_addressed_findings` and this call needs a retry."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-addressed": _open_finding_record(["review_comment:1"], status="addressed"),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule({"unresolved_threads": [_trusted_thread("THREAD-1", 1)]})
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-addressed"], "sha", lease_token
+    )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.pr_review["findings"]["sig-addressed"]["thread_resolved"] is True
+
+
 def test_resolve_addressed_findings_skips_already_resolved_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3783,6 +4039,110 @@ def test_resolve_addressed_findings_treats_is_resolved_false_as_failure(
     state = lc.load_state("abcd1234-issue-1", project_dir)
     findings = state.pr_review["findings"]
     assert "resolved_thread_ids" not in findings["sig-addressed"]
+
+
+def test_resolve_addressed_findings_leaves_thread_resolved_unset_after_retryable_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `reply_failed`/`resolve_failed` outcome is retryable, not terminal -- the record must
+    not gain `thread_resolved: True` (nor any write at all, matching the pre-existing
+    `resolved_thread_ids not in ...` assertion for this same failure shape)."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-reply-fails": _open_finding_record(["review_comment:1"], status="addressed"),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule(
+        {"unresolved_threads": [_trusted_thread("THREAD-1", 1)]}, fail_reply_for=(1,)
+    )
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-reply-fails"], "sha", lease_token
+    )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert "thread_resolved" not in state.pr_review["findings"]["sig-reply-fails"]
+
+
+def test_resolve_addressed_findings_retry_completes_after_earlier_failed_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 (Issue #424, PR #427 round 2): calling `resolve_addressed_findings` again for a
+    signature whose first attempt failed (retryable) must succeed and flip `thread_resolved` to
+    `True` once the underlying GitHub call stops failing -- proving the retry this issue adds is
+    actually idempotent and eventually convergent, not just re-attempted forever."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-retry": _open_finding_record(["review_comment:1"], status="addressed"),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    failing = _FakeGitWorkflowModule(
+        {"unresolved_threads": [_trusted_thread("THREAD-1", 1)]}, fail_reply_for=(1,)
+    )
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: failing)
+    first = prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-retry"], "sha", lease_token
+    )
+    assert first.resolved_signatures == ()
+    assert (
+        lc.load_state("abcd1234-issue-1", project_dir)
+        .pr_review["findings"]["sig-retry"]
+        .get("thread_resolved")
+        is not True
+    )
+
+    succeeding = _FakeGitWorkflowModule({"unresolved_threads": [_trusted_thread("THREAD-1", 1)]})
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: succeeding)
+    second = prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-retry"], "sha", lease_token
+    )
+
+    assert second.resolved_signatures == ("sig-retry",)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.pr_review["findings"]["sig-retry"]["thread_resolved"] is True
+
+
+def test_addressed_findings_missing_thread_resolution_selects_pending_addressed_records() -> None:
+    """Pure-function contract for `addressed_findings_missing_thread_resolution`: only
+    `"addressed"` records without `thread_resolved: True` are candidates -- `"open"`/
+    `"dismissed"` records and already `thread_resolved` records are excluded."""
+    pr_review = {
+        "findings": {
+            "sig-pending": {"status": "addressed", "severity": "high"},
+            "sig-legacy-missing-flag": {"status": "addressed", "severity": "critical"},
+            "sig-done": {"status": "addressed", "severity": "high", "thread_resolved": True},
+            "sig-still-open": {"status": "open", "severity": "high"},
+            "sig-dismissed": {"status": "dismissed", "severity": "medium"},
+        }
+    }
+
+    assert set(prw.addressed_findings_missing_thread_resolution(pr_review)) == {
+        "sig-pending",
+        "sig-legacy-missing-flag",
+    }
+
+
+def test_addressed_findings_missing_thread_resolution_handles_missing_or_malformed_pr_review() -> (
+    None
+):
+    """`None`/non-dict `pr_review` (a fresh loop with no PR review state yet) must never raise --
+    matches `open_blocking_findings_from_pr_review`'s own defensive contract."""
+    assert prw.addressed_findings_missing_thread_resolution(None) == ()
+    assert prw.addressed_findings_missing_thread_resolution({}) == ()
+    assert prw.addressed_findings_missing_thread_resolution({"findings": "not-a-dict"}) == ()
 
 
 def test_resolve_addressed_findings_reports_lease_expired_without_github_calls(
