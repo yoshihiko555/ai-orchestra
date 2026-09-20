@@ -86,9 +86,40 @@ Maker has no legitimate need for either; `find ... -exec` is unaffected since `-
 by a `-`, not a word boundary, so it does not match the bare-word pattern), and a `--config-env`
 mention split across a genuine newline into two separate statements (denied anyway, since the
 umbrella term match no longer needs to reconstruct one invocation). `.env`/`--env-file`/
-`printenv`/`environment`/an `ENV=value` assignment/`$env_name` are NOT denied: the lookaround
-boundaries require `env` to stand alone as its own word (not preceded by a word/`.`/`/`/`$`/`-`
-character, and not followed by a word/`.`/`=`/`-` character). None of this amounts to full shell parsing/evaluation, which is explicitly **not** a
+`printenv`/`environment`/an `ENV=value` assignment/`$env_name`/`config/.env` are NOT denied: the
+lookaround boundaries require `env` to stand alone as its own word (not preceded by a word/`.`/
+`$`/`-` character — note this deliberately does NOT exclude `/`, see the 4th-round update below
+— and not followed by a word/`.`/`=`/`-` character).
+
+**4th-round update (Codex review, PR #423)**: a path-qualified invocation (`/usr/bin/env -i
+...`, `/bin/env ...`) slipped past the 3rd round's rule, which excluded `/` from the lookbehind
+(mirroring this file's other path-safety patterns) — that exclusion is now removed, so any
+occurrence of the bare word `env`/`exec` preceded by a path separator is denied too (`.env`/
+`config/.env` remain allowed regardless, since the `.` immediately before `env` is still
+excluded). The same review also found `setpriv --reset-env sh -c '...'` — another
+environment-wiping wrapper this hook had never covered — which is now denied alongside `sudo`/
+`su`/`runuser`/`chpst`/`unshare`/`nsenter`/`busybox` as bare words, for the same reason `env`/
+`exec` are (each can wipe/replace the process environment or elevate/change privileges without
+literally containing `env`/`exec` as their own subcommand).
+
+**Scope statement (Codex review, PR #423, 4th round)**: this module is layer 3 of the push
+defense-in-depth described in `docs/design/loop-harness-cli.md` §2.2 "多層防御（defense-in-depth）
+の追記" (層1〜層4) — a best-effort command-string screen, not the structural boundary. Given four
+rounds of review have each found a new wrapper/bypass shape (`env` flag variants, `--config-env`,
+`exec -c`, now `setpriv`/`sudo`/`su`/`runuser`/`chpst`/`unshare`/`nsenter`/`busybox`),
+enumerating every environment-wiping or privilege-changing wrapper that could ever exist is
+explicitly NOT a goal of this layer; further, as-yet-undiscovered wrapper bypasses of this text
+scan are an accepted residual risk, *unless* they also defeat layer 4. The actual structural
+boundaries are: 層2（env 認証隔離。主軸）in the same §2.2 (push credentials are stripped from the
+Maker's child-process env regardless of which wrapper it runs through, see
+`loop_driver_support.maker_env()`); 層4（push 後整合性検証。安全網）in the same §2.2 (the driver
+records the expected local/remote HEAD around Maker execution and safely stops on any
+unexpected remote advance, regardless of how the Maker got there); and, where LP-2 Docker
+isolation is in effect, `docs/design/loop-harness-isolation.md` §1.2 "コンテナに入るもの / driver
+に残るものの対照表", whose first row states the container the Maker runs in holds **no**
+git/gh push or PR-creation credentials at all — a wrapper running inside that container has
+nothing to wipe or steal in the first place, independent of this hook recognizing it. None of
+this amounts to full shell parsing/evaluation, which is explicitly **not** a
 goal of this hook — the actual structural guarantees are layer 2 (env-level credential
 stripping, see `loop_driver_support.maker_env()`) and, for the `.git/config`-tampering vector
 specifically, the driver-side hardening in `loop_driver_support.hardened_git_config_args()` /
@@ -269,18 +300,39 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         # it) or `exec` (a plain foreground `cmd ...` needs no process replacement), and every
         # env-wipe shape from the prior rounds trivially reduces to "the word `env` is present in
         # the command" — so the whole flag/option token scan collapses into this single check.
-        # `(?<![\w./$-])`/`(?![\w.=-])` require `env`/`exec` to stand alone as their own word (not
+        # `(?<![\w.$-])`/`(?![\w.=-])` require `env`/`exec` to stand alone as their own word (not
         # part of `.env`/`--env-file`/`printenv`/`ENV=value`/`$env_name`/`environment`/`execute`),
-        # matching `env`/`exec` wherever they appear — start of command, after `/usr/bin/`, after
-        # any separator/redirect/subshell open, with no separate token-boundary tracking needed.
-        r"(?<![\w./$-])env(?![\w.=-])",
+        # matching `env`/`exec` wherever they appear — start of command, after any separator/
+        # redirect/subshell open, with no separate token-boundary tracking needed. Codex review
+        # (PR #423, 4th round): the lookbehind does NOT exclude `/`, so a path-qualified
+        # invocation (`/usr/bin/env -i ...`, `/bin/env ...`) is denied too — an earlier version of
+        # this rule excluded `/` (to mirror the `--config-env`/`GIT_CONFIG` patterns' path-safety
+        # habits elsewhere in this file) but that let `/usr/bin/env` slip through undetected.
+        # `.env`/`config/.env` stay allowed regardless: the `.` immediately before `env` is still
+        # excluded, so only a literal path SEPARATOR (`/`) or nothing before `env` triggers this.
+        r"(?<![\w.$-])env(?![\w.=-])",
         # `exec -c`/`exec -c CMD` (bash builtin) wipes the environment the same way `env -i` does,
         # by replacing the shell with `CMD` running in a stripped environment; matched the same
-        # way and for the same fail-closed reason as `env` above. `find ... -exec` is unaffected:
-        # `-exec` is preceded by `-`, which the lookbehind above excludes, not a word boundary.
-        # `docker exec` is also denied by this rule (acceptable: the Maker has no legitimate need
-        # to exec into any container either).
-        r"(?<![\w./$-])exec(?![\w.=-])",
+        # way and for the same fail-closed reason as `env` above (including the same 4th-round
+        # `/`-inclusive lookbehind, kept symmetric with the `env` rule above even though a
+        # path-qualified `/usr/bin/exec` is not a real, separately-invokable binary in practice).
+        # `find ... -exec` is unaffected: `-exec` is preceded by `-`, which the lookbehind still
+        # excludes, not a word boundary. `docker exec` is also denied by this rule (acceptable:
+        # the Maker has no legitimate need to exec into any container either).
+        r"(?<![\w.$-])exec(?![\w.=-])",
+        # Codex review (PR #423, 4th round): `setpriv`/`sudo`/`su`/`runuser`/`chpst`/`unshare`/
+        # `nsenter`/`busybox` are all environment-wiping or privilege/namespace-changing wrapper
+        # binaries in the same family as `env -i`/`exec -c` (e.g. `setpriv --reset-env sh -c
+        # '...'` clears the environment the same way `env -i` does; `sudo`/`su`/`runuser` reset
+        # env by default unless `-E`/`--preserve-environment` is passed; `busybox env -i ...`
+        # reaches the same busybox-builtin `env` applet through a different binary name).
+        # Enumerating every wrapper capable of this is explicitly not a goal (see the module
+        # docstring's scope statement below) — this list is a best-effort, non-exhaustive
+        # extension of the same fail-closed word-deny approach as `env`/`exec` above, covering
+        # the wrapper families a Codex review has actually found so far. Same lookaround shape:
+        # `su` does not false-positive on `sum`/`sudoers` (the lookahead requires a non-word/`.`/
+        # `=`/`-` character immediately after, which `sudoers`' `d`/`sum`'s `m` are not).
+        r"(?<![\w.$-])(?:setpriv|sudo|su|runuser|chpst|unshare|nsenter|busybox)(?![\w.=-])",
         # Codex review (PR #423, 3rd round): `--config-env` denied as a bare word wherever it
         # appears, with no `git` anchor or shell-separator scanning required at all — this
         # sidesteps every redirect/newline/subshell-boundary concern the 1st/2nd-round `git ...

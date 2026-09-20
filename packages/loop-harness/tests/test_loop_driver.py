@@ -783,6 +783,19 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         # rule denies the mere presence of the term regardless — an accepted, intentional
         # fail-closed false positive (see the module docstring).
         "git status\nprintf -- --config-env",
+        # Codex review (PR #423, 4th round): the 3rd round's `env`/`exec` lookbehind excluded
+        # `/`, so a path-qualified invocation slipped through undetected — `/` was removed from
+        # the lookbehind to close this (`.env`/`config/.env` remain allowed; see the allow-list
+        # test below).
+        "/usr/bin/env -i HOME=/tmp/a git p origin x",
+        "/bin/env git status",
+        # `setpriv --reset-env sh -c '...'` is another environment-wiping wrapper this hook had
+        # never covered at all (distinct from `env`/`exec`), now denied as a bare word alongside
+        # `sudo`/`su`/`runuser`/`chpst`/`unshare`/`nsenter`/`busybox` (see the module docstring's
+        # scope statement: enumerating every such wrapper is explicitly not a goal of this layer).
+        "setpriv --reset-env sh -c 'HOME=/tmp/a git p origin x'",
+        "sudo -i git status",
+        "busybox env -i git status",
     ],
 )
 def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
@@ -823,19 +836,25 @@ def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
         # longer option/filename.
         "docker compose --env-file .env up",
         # `printenv`/`environment`-as-substring: `env` is not its own word here (no preceding
-        # non-word/`.`/`/`/`$`/`-` boundary in `printenv`'s case — `print` immediately precedes
-        # `env` with a word-character `t`).
+        # non-word/`.`/`$`/`-` boundary in `printenv`'s case — `print` immediately precedes `env`
+        # with a word-character `t`).
         "printenv PATH",
         # a plain `NAME=VALUE` assignment (no `env` word at all) must not be denied.
         "ENV=prod make build",
         # `find ... -exec` must not trip the bare-word `exec` rule: `-exec` is preceded by `-`,
         # which the lookbehind excludes (only a non-word boundary that is NOT one of
-        # `\w`/`.`/`/`/`$`/`-` counts as a real word start).
+        # `\w`/`.`/`$`/`-` counts as a real word start).
         "find . -name '*.py' -exec cat {} +",
         # `$env_name` (a shell variable reference): `env` is immediately followed by `_`, a word
         # character the lookahead excludes, so this is not treated as the standalone word `env`.
         "echo $env_name",
-        # sanity: an ordinary command with neither `env`/`exec`/`--config-env` anywhere.
+        # Codex review (PR #423, 4th round) regression guard: after removing `/` from the
+        # lookbehind so a path-qualified `/usr/bin/env` is denied (see the deny-list test above),
+        # `config/.env` must still be allowed — the `.` immediately before `env` is a still-
+        # excluded boundary character regardless of the preceding `/`.
+        "cat config/.env",
+        # sanity: an ordinary command with neither `env`/`exec`/`--config-env`/wrapper-word
+        # anywhere.
         "git status",
     ],
 )
