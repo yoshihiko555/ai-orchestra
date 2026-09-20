@@ -722,6 +722,21 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         "GIT_CONFIG_PARAME\\\nTERS=\"'core.hookspath=/tmp/evil'\" git status",
         # a line continuation splitting the `git push` verb itself is rejoined the same way
         "git pu\\\nsh origin main",
+        # Codex review (PR #423, P2): `env -i`/`env --ignore-environment` wipes the entire child
+        # environment, discarding the `GIT_CONFIG_GLOBAL=/dev/null`/`GIT_CONFIG_SYSTEM=/dev/null`
+        # selectors `maker_env()` sets, so an attacker-written `~/.gitconfig` `[alias] p = push`
+        # is honored again with no denied token present.
+        "env -i HOME=/tmp/attacker-home PATH=/usr/bin git p origin main",
+        "env --ignore-environment git status",
+        # ...and the same bypass split across a `\`+newline line continuation.
+        "env -\\\ni HOME=/tmp/x git status",
+        # Codex review (PR #423, P2): `git --config-env=<name>=<envvar>` (and the space-separated
+        # form) injects a config value sourced from an environment variable for one invocation,
+        # with neither `-c`/`config` nor any `GIT_CONFIG_*` token present.
+        "X=push git --config-env=alias.p=X p origin attack",
+        "git --config-env alias.p=X status",
+        # ...and the same bypass split across a line continuation.
+        "git --config-\\\nenv=alias.p=X status",
     ],
 )
 def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
@@ -750,6 +765,13 @@ def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
         # SEC-MED (PR review): line-continuation stripping only ever *fuses* halves back together,
         # so it must not turn a benign continuation into a false-positive deny.
         "echo hel\\\nlo world",
+        # Codex review (PR #423, P2): `env FOO=bar ...` (no `-i`/`--ignore-environment`) merely
+        # sets an extra variable and does not wipe the environment, so it must not be denied.
+        "env FOO=bar git status",
+        # Codex review (PR #423, P2) regression guard: the `env -i` rule requires `-i` immediately
+        # after `env` (no filler tokens in between) precisely so a realistic Maker command using
+        # `sed`'s own `-i` flag is never reached by this rule and false-flagged.
+        "env FOO=bar sed -i 's/a/b/' f",
     ],
 )
 def test_maker_bash_guard_allows_git_config_file_selectors(command: str) -> None:

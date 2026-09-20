@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook (layer 3, defense-in-depth): hard-deny Bash push/PR-mutation bypasses and
+r"""PreToolUse hook (layer 3, defense-in-depth): hard-deny Bash push/PR-mutation bypasses and
 `Edit`/`Write` writes into the shared worktree's `.git/` tree.
 
 Injected into a Maker/Checker `claude -p` child process via `--settings` (see
@@ -57,7 +57,14 @@ git's env-var-based config mechanism — `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`
 can carry the same `insteadOf`/`credential.helper`/`alias.` keys). These are alternate ways to
 set those keys the patterns already deny via `-c`/`git config`, without a literal `-c` or `config`
 token appearing anywhere; they are matched case-sensitively (git only honors the uppercase names)
-so an ordinary lowercase `git_config=` shell variable is not false-flagged. None of this amounts to full shell parsing/evaluation, which is explicitly **not** a
+so an ordinary lowercase `git_config=` shell variable is not false-flagged. It also denies
+`env -i`/`env --ignore-environment` (Codex review, PR #423): wiping the child environment this
+way discards the `GIT_CONFIG_GLOBAL=/dev/null`/`GIT_CONFIG_SYSTEM=/dev/null` selectors
+`loop_driver_support.maker_env()` sets to suppress the user's own gitconfig, so an
+attacker-written `~/.gitconfig` alias is honored again with no denied token present; and
+`git --config-env=` (same review), which injects a config value sourced from an environment
+variable for one invocation with neither a `-c`/`config` token nor a `GIT_CONFIG_*` name
+anywhere in the command text. None of this amounts to full shell parsing/evaluation, which is explicitly **not** a
 goal of this hook — the actual structural guarantees are layer 2 (env-level credential
 stripping, see `loop_driver_support.maker_env()`) and, for the `.git/config`-tampering vector
 specifically, the driver-side hardening in `loop_driver_support.hardened_git_config_args()` /
@@ -222,6 +229,20 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         # uppercase, so a case-insensitive match would false-positive on an ordinary lowercase
         # shell variable such as `git_config=/tmp/x` that has no effect on git at all.
         r"(?-i:\bGIT_CONFIG(?:_(?:KEY_\d+|VALUE_\d+|COUNT|PARAMETERS|GLOBAL|SYSTEM)\b|=))",
+        # Codex review (PR #423, P2): `env -i .../env --ignore-environment ...` wipes the
+        # entire child environment, discarding the `GIT_CONFIG_GLOBAL=/dev/null`/
+        # `GIT_CONFIG_SYSTEM=/dev/null` selectors `maker_env()` sets to suppress the user's own
+        # gitconfig — an attacker-written `~/.gitconfig` `[alias] p = push` is then honored with
+        # no denied token (`push`/`-c`/`config`/`GIT_CONFIG_*`) anywhere in the command text.
+        # `-i` is required immediately after `env` (no `_filler` in between): a realistic Maker
+        # command like `env FOO=bar sed -i 's/a/b/' f` must not false-positive on `sed`'s own
+        # `-i` flag, which a filler gap would let this rule reach across "env FOO=bar sed" to.
+        rf"\benv\b{_SEP}(?:-[a-zA-Z0-9]*i|--ignore-environment\b)",
+        # Codex review (PR #423, P2): `git --config-env=alias.p=X ...` / `git --config-env
+        # alias.p=X ...` injects a config value sourced from an *environment variable* for one
+        # invocation, with neither `-c` nor `config` nor any `GIT_CONFIG_*` token present for the
+        # blanket `git ... config`/`GIT_CONFIG` rules above to catch.
+        rf"\bgit\b{_filler(8)}{_SEP}--config-env\b",
         rf"\bgh\b{_filler(4)}{_SEP}pr\b",  # gh pr create/merge/close/edit/...
         rf"\bgh\b{_filler(4)}{_SEP}api\b",  # gh api (REST bypass for PR mutation)
         r"\bssh\b",  # direct ssh (custom push transport / remote command execution)
