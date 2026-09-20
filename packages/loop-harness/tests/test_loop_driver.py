@@ -722,14 +722,25 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         "GIT_CONFIG_PARAME\\\nTERS=\"'core.hookspath=/tmp/evil'\" git status",
         # a line continuation splitting the `git push` verb itself is rejoined the same way
         "git pu\\\nsh origin main",
-        # Codex review (PR #423, P2): `env -i`/`env --ignore-environment` wipes the entire child
-        # environment, discarding the `GIT_CONFIG_GLOBAL=/dev/null`/`GIT_CONFIG_SYSTEM=/dev/null`
-        # selectors `maker_env()` sets, so an attacker-written `~/.gitconfig` `[alias] p = push`
-        # is honored again with no denied token present.
+        # Codex review (PR #423, 1st round): `env -i`/`env --ignore-environment` wipes the entire
+        # child environment, discarding the `GIT_CONFIG_GLOBAL=/dev/null`/
+        # `GIT_CONFIG_SYSTEM=/dev/null` selectors `maker_env()` sets, so an attacker-written
+        # `~/.gitconfig` `[alias] p = push` is honored again with no denied token present.
         "env -i HOME=/tmp/attacker-home PATH=/usr/bin git p origin main",
         "env --ignore-environment git status",
         # ...and the same bypass split across a `\`+newline line continuation.
         "env -\\\ni HOME=/tmp/x git status",
+        # Codex review (PR #423, 2nd round): a lone `-` is a GNU-`env` synonym for `-i`, and the
+        # wipe flag may be preceded by env's own other options (each consuming its own separate
+        # argument) rather than appearing immediately after `env`.
+        "env - HOME=/tmp/x git p origin main",
+        "env -u FOO -i git status",
+        "env --unset=FOO --ignore-environment git status",
+        # `-S`/`--split-string` re-parses its argument as MORE `env` options (its usual shebang
+        # purpose), so `env -S '-i CMD'` is equivalent to `env -i CMD` one level of indirection
+        # deep; failing closed on `-S` itself (without parsing what it re-parses into) closes
+        # this without needing to recurse.
+        "env -S '-i git p origin main'",
         # Codex review (PR #423, P2): `git --config-env=<name>=<envvar>` (and the space-separated
         # form) injects a config value sourced from an environment variable for one invocation,
         # with neither `-c`/`config` nor any `GIT_CONFIG_*` token present.
@@ -737,6 +748,13 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         "git --config-env alias.p=X status",
         # ...and the same bypass split across a line continuation.
         "git --config-\\\nenv=alias.p=X status",
+        # Codex review (PR #423, 2nd round): the rule must scan to the actual shell statement
+        # separator rather than a fixed token count — 5 padding `-C DIR` pairs (10 tokens) exceed
+        # the 1st round's `_filler(8)` bound and previously slipped through undenied.
+        "X=push git -C /tmp/work -C . -C . -C . -C . --config-env=alias.p=X p origin attack",
+        # ...and the padding tokens can themselves be `${IFS}`-separated (SC2) without breaking
+        # the unbounded scan.
+        "git${IFS}--config-env=alias.p=X${IFS}p${IFS}origin${IFS}attack",
     ],
 )
 def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
@@ -768,10 +786,16 @@ def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
         # Codex review (PR #423, P2): `env FOO=bar ...` (no `-i`/`--ignore-environment`) merely
         # sets an extra variable and does not wipe the environment, so it must not be denied.
         "env FOO=bar git status",
-        # Codex review (PR #423, P2) regression guard: the `env -i` rule requires `-i` immediately
-        # after `env` (no filler tokens in between) precisely so a realistic Maker command using
-        # `sed`'s own `-i` flag is never reached by this rule and false-flagged.
+        # Codex review (PR #423, P2) regression guard: `_find_env_wipe`'s scan stops at the
+        # wrapped command's own name (`sed`), so a realistic Maker command using `sed`'s own
+        # `-i` flag is never reached by this rule and false-flagged.
         "env FOO=bar sed -i 's/a/b/' f",
+        # Codex review (PR #423, 2nd round): `-u`/`--unset` only removes a variable and takes its
+        # own separate argument (`FOO`); it is not itself a wipe flag and must not be denied.
+        "env -u FOO git status",
+        # Codex review (PR #423, 2nd round) regression guard: the `env` word-boundary anchor
+        # must not match inside `--env-file`/`.env` (`_ENV_WORD_RE`'s negative lookbehind).
+        "docker compose --env-file .env up",
     ],
 )
 def test_maker_bash_guard_allows_git_config_file_selectors(command: str) -> None:

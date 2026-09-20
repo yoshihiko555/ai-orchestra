@@ -57,14 +57,23 @@ git's env-var-based config mechanism — `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`
 can carry the same `insteadOf`/`credential.helper`/`alias.` keys). These are alternate ways to
 set those keys the patterns already deny via `-c`/`git config`, without a literal `-c` or `config`
 token appearing anywhere; they are matched case-sensitively (git only honors the uppercase names)
-so an ordinary lowercase `git_config=` shell variable is not false-flagged. It also denies
-`env -i`/`env --ignore-environment` (Codex review, PR #423): wiping the child environment this
-way discards the `GIT_CONFIG_GLOBAL=/dev/null`/`GIT_CONFIG_SYSTEM=/dev/null` selectors
+so an ordinary lowercase `git_config=` shell variable is not false-flagged. It also denies any
+`env` invocation that wipes its child environment (Codex review, PR #423) — `env -i`, a lone
+`env -` (a GNU-`env` synonym for `-i`), `env --ignore-environment` (and any getopt_long
+unambiguous prefix of it, e.g. `--ignore-e`), a combined short-option cluster containing `i`
+(`-iu`, ...), or `-S`/`--split-string` (which re-parses its own argument as more `env` options,
+so `env -S '-i CMD'` is a wipe one level of indirection deep) — wherever it appears among `env`'s
+own other leading options (`NAME=VALUE` assignments; `-u`/`--unset`/`-C`/`--chdir`/`-a`/
+`--argv0`/`-P`/`-L`/`-U`, each consuming its own separate following argument), via a dedicated
+token scan (`_find_env_wipe`) rather than a single regex. Wiping the child environment this way
+discards the `GIT_CONFIG_GLOBAL=/dev/null`/`GIT_CONFIG_SYSTEM=/dev/null` selectors
 `loop_driver_support.maker_env()` sets to suppress the user's own gitconfig, so an
-attacker-written `~/.gitconfig` alias is honored again with no denied token present; and
-`git --config-env=` (same review), which injects a config value sourced from an environment
-variable for one invocation with neither a `-c`/`config` token nor a `GIT_CONFIG_*` name
-anywhere in the command text. None of this amounts to full shell parsing/evaluation, which is explicitly **not** a
+attacker-written `~/.gitconfig` alias is honored again with no denied token present. Also denied:
+`git --config-env=`/`git --config-env <name>=<envvar>` (same review), which injects a config
+value sourced from an environment variable for one invocation with neither a `-c`/`config` token
+nor a `GIT_CONFIG_*` name anywhere in the command text — matched by an unbounded scan to the
+next shell statement separator rather than a fixed token count, so it cannot be evaded by padding
+with enough harmless-looking `git` options. None of this amounts to full shell parsing/evaluation, which is explicitly **not** a
 goal of this hook — the actual structural guarantees are layer 2 (env-level credential
 stripping, see `loop_driver_support.maker_env()`) and, for the `.git/config`-tampering vector
 specifically, the driver-side hardening in `loop_driver_support.hardened_git_config_args()` /
@@ -229,20 +238,22 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         # uppercase, so a case-insensitive match would false-positive on an ordinary lowercase
         # shell variable such as `git_config=/tmp/x` that has no effect on git at all.
         r"(?-i:\bGIT_CONFIG(?:_(?:KEY_\d+|VALUE_\d+|COUNT|PARAMETERS|GLOBAL|SYSTEM)\b|=))",
-        # Codex review (PR #423, P2): `env -i .../env --ignore-environment ...` wipes the
-        # entire child environment, discarding the `GIT_CONFIG_GLOBAL=/dev/null`/
-        # `GIT_CONFIG_SYSTEM=/dev/null` selectors `maker_env()` sets to suppress the user's own
-        # gitconfig — an attacker-written `~/.gitconfig` `[alias] p = push` is then honored with
-        # no denied token (`push`/`-c`/`config`/`GIT_CONFIG_*`) anywhere in the command text.
-        # `-i` is required immediately after `env` (no `_filler` in between): a realistic Maker
-        # command like `env FOO=bar sed -i 's/a/b/' f` must not false-positive on `sed`'s own
-        # `-i` flag, which a filler gap would let this rule reach across "env FOO=bar sed" to.
-        rf"\benv\b{_SEP}(?:-[a-zA-Z0-9]*i|--ignore-environment\b)",
-        # Codex review (PR #423, P2): `git --config-env=alias.p=X ...` / `git --config-env
-        # alias.p=X ...` injects a config value sourced from an *environment variable* for one
-        # invocation, with neither `-c` nor `config` nor any `GIT_CONFIG_*` token present for the
-        # blanket `git ... config`/`GIT_CONFIG` rules above to catch.
-        rf"\bgit\b{_filler(8)}{_SEP}--config-env\b",
+        # Codex review (PR #423, 2nd round): `git --config-env=alias.p=X ...` / `git
+        # --config-env alias.p=X ...` injects a config value sourced from an *environment
+        # variable* for one invocation, with neither `-c` nor `config` nor any `GIT_CONFIG_*`
+        # token present for the blanket `git ... config`/`GIT_CONFIG` rules above to catch.
+        # Unlike most patterns above, this is NOT bounded by `_filler()`'s fixed token count: a
+        # 1st-round fix used `_filler(8)`, but a Maker can pad arbitrarily many harmless-looking
+        # options before `--config-env` (`git -C /tmp/work -C . -C . -C . -C . --config-env=...`,
+        # 5 `-C` pairs = 10 tokens > 8), so the token repetition here is unbounded — it still
+        # cannot cross a real shell statement separator (`;`/`&`/`|`) or a subshell/command-
+        # substitution boundary (backtick, `(`/`)`, which also blocks `$( ... )`), so it cannot
+        # falsely fuse two unrelated statements into one match, matching the exact tradeoff
+        # `_filler()`'s docstring describes for its own bounded case. `$` itself stays part of
+        # the allowed token character class (unlike the excluded separator characters) so an
+        # `${IFS}`-obfuscated separator between the padding tokens is still recognized as a
+        # separator by `_SEP` rather than swallowed as inert token text (SC2, mirrored here).
+        rf"\bgit\b(?:{_SEP}[^\s;&|`()]+)*?{_SEP}--config-env\b",
         rf"\bgh\b{_filler(4)}{_SEP}pr\b",  # gh pr create/merge/close/edit/...
         rf"\bgh\b{_filler(4)}{_SEP}api\b",  # gh api (REST bypass for PR mutation)
         r"\bssh\b",  # direct ssh (custom push transport / remote command execution)
@@ -292,6 +303,84 @@ def _normalize_for_bypass_scan(command: str) -> str:
     return _QUOTE_STRIP_RE.sub("", command)
 
 
+# --------------------------------------------------------------------------------------------
+# Codex review (PR #423, 2nd round): `env -i`/`env --ignore-environment`/`env -` (a lone `-` is
+# a GNU-`env` synonym for `-i`)/`env -S ...` (re-parses its argument as MORE `env` options/args,
+# so `env -S '-i CMD'` is equivalent to `env -i CMD` — a wipe hidden one level of indirection
+# deep) wipes the entire child environment, discarding the `GIT_CONFIG_GLOBAL=/dev/null`/
+# `GIT_CONFIG_SYSTEM=/dev/null` selectors `loop_driver_support.maker_env()` sets to suppress the
+# user's own gitconfig; an attacker-written `~/.gitconfig` `[alias] p = push` is then honored
+# again with no denied token (`push`/`-c`/`config`/`GIT_CONFIG_*`) anywhere in the command text.
+#
+# This is deliberately NOT one of the `_DENY_PATTERNS` regexes: whether a given `-i`/`-S`-shaped
+# token is the wipe flag depends on *where* it sits relative to `env`'s own other options
+# (`NAME=VALUE` assignments; `-u`/`--unset`/`-C`/`--chdir`/`-a`/`--argv0`/`-P`/`-L`/`-U`, each of
+# which consumes its own following argument) versus the *wrapped command's own name* and args
+# (e.g. `sed`'s own `-i` in `env FOO=bar sed -i 's/a/b/' f`, which has nothing to do with `env`
+# and must never be treated as a wipe) — a single fixed-shape regex for "the wipe flag can be
+# preceded by an unbounded, variably-shaped run of other env options" was judged unreadable, so
+# this is implemented as a small dedicated left-to-right token scan instead.
+_ENV_WORD_RE = re.compile(r"(?<![\w.-])env(?=\s|\$\{IFS\}|\$IFS)", re.IGNORECASE)
+_ENV_STATEMENT_SPLIT_RE = re.compile(r"[;&|\n]")
+_ENV_TOKEN_SPLIT_RE = re.compile(r"(?:\s|\$\{IFS\}|\$IFS)+")
+# Short-option cluster containing `i` (`-i`, `-iu`, `-vi`, ...) or `S` (`-S`, `-uS`, ...)
+# anywhere: GNU getopt clusters short flags together, and either letter enables the wipe
+# (`-S`'s re-parsed string commonly starts with `-i`, so failing closed on `-S` itself — without
+# trying to parse what it re-parses into — is the safe choice, same rationale as the `-c
+# alias.<name>=<value>` fail-closed choice above). `S` is matched case-sensitively together with
+# `i` in one pattern for simplicity; GNU env has no lowercase `-s` option, so this cannot
+# false-positive on a real flag, only (acceptably) on characters that merely happen to spell one.
+_ENV_WIPE_SHORT_RE = re.compile(r"-[a-zA-Z0-9]*[iS][a-zA-Z0-9]*")
+# Long form, plus GNU getopt_long's unambiguous-prefix matching (`--ignore-e`, `--ignore-env`,
+# ... all resolve to `--ignore-environment`) — anchored on the `--i` prefix rather than the full
+# word so any accepted abbreviation is still caught; `--split-string` is `-S`'s long form.
+_ENV_WIPE_LONG_RE = re.compile(r"--(?:i[\w-]*|split-string)", re.IGNORECASE)
+# A short-option cluster whose LAST letter takes a separate following argument (its own value is
+# consumed as the next token, so it must be skipped along with the flag itself rather than
+# inspected for a wipe): `-u`/`-C`/`-a`/`-P`/`-L`/`-U` (GNU `-u NAME`/`-C DIR`/`-a ARGV0`; BSD
+# `-P altpath`/`-L`/`-U user[/class]`). A cluster ending in `i`/`S` is already caught by
+# `_ENV_WIPE_SHORT_RE` above and never reaches this check.
+_ENV_ARG_TAKING_SHORT_RE = re.compile(r"-[a-zA-Z0-9]*[uCaPLU]")
+_ENV_ARG_TAKING_LONG = frozenset({"--unset", "--chdir", "--argv0"})
+
+
+def _find_env_wipe(command: str) -> str | None:
+    """Return a description of the first `env` environment-wipe found in `command`, or None.
+
+    For each `env` occurrence (anchored so it cannot match inside `--env-file`/`.env`/
+    `printenv`), scans the tokens of that same shell statement (stopping at `;`/`&`/`|`/newline,
+    same boundary `_filler()` respects for the regex patterns above) left-to-right: a `NAME=VALUE`
+    assignment or a recognized `env` option (optionally consuming its own separate argument) is
+    skipped, a wipe flag (`-i`/`-S`/a lone `-`/`--ignore-environment`/`--split-string`, in any
+    position among those leading options) is denied immediately, and the first token that is
+    none of these — the wrapped command's own name — stops the scan for that `env` occurrence
+    without denying (that command's own subsequent flags, e.g. `sed -i`, are irrelevant to `env`).
+    """
+    for env_match in _ENV_WORD_RE.finditer(command):
+        statement = _ENV_STATEMENT_SPLIT_RE.split(command[env_match.end() :], maxsplit=1)[0]
+        tokens = [token for token in _ENV_TOKEN_SPLIT_RE.split(statement) if token]
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if (
+                token == "-"
+                or _ENV_WIPE_SHORT_RE.fullmatch(token)
+                or _ENV_WIPE_LONG_RE.fullmatch(token)
+            ):
+                return f"env ... {token}"
+            if "=" in token:
+                index += 1
+                continue
+            if _ENV_ARG_TAKING_SHORT_RE.fullmatch(token) or token in _ENV_ARG_TAKING_LONG:
+                index += 2  # flag + its separate argument
+                continue
+            if token.startswith("-"):
+                index += 1  # some other env option/flag, not a wipe
+                continue
+            break  # first non-option, non-assignment token: the wrapped command's own name
+    return None
+
+
 def find_denied_match(command: str) -> str | None:
     """Return the first matched denied substring in `command`, or None if it looks clean.
 
@@ -300,6 +389,7 @@ def find_denied_match(command: str) -> str | None:
     normalization of that joined form (`_normalize_for_bypass_scan`, SEC-MED) — a match against
     any of them counts as denied. Joining before the quote strip is required because the quote
     strip removes the continuation's backslash but leaves the newline, keeping the token split.
+    Also runs `_find_env_wipe` against each of the same three candidates (SEC-MED).
     """
     line_joined = _strip_line_continuations(command)
     for candidate in (command, line_joined, _normalize_for_bypass_scan(line_joined)):
@@ -307,6 +397,9 @@ def find_denied_match(command: str) -> str | None:
             match = pattern.search(candidate)
             if match is not None:
                 return match.group(0)
+        env_wipe = _find_env_wipe(candidate)
+        if env_wipe is not None:
+            return env_wipe
     return None
 
 
