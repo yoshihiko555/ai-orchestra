@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook (layer 3, defense-in-depth): hard-deny Bash push/PR-mutation bypasses and
+r"""PreToolUse hook (layer 3, defense-in-depth): hard-deny Bash push/PR-mutation bypasses and
 `Edit`/`Write` writes into the shared worktree's `.git/` tree.
 
 Injected into a Maker/Checker `claude -p` child process via `--settings` (see
@@ -47,11 +47,79 @@ structural guarantee; this layer and layer 4 are additional safety nets).
 best-effort auxiliary layer, not a primary defense boundary. Its Bash-command text scan is
 case-insensitive (`re.IGNORECASE` on every `_DENY_PATTERNS` entry), also matches a quote/
 backslash-stripped normalization of the command (a Maker splitting a denied token across quote
-boundaries, e.g. `g"i"t push`, would otherwise slip past a literal-substring match), and denies
-the `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`/`GIT_CONFIG_COUNT` env-var-based config-injection
-mechanism (an alternate way to set the same `insteadOf`/`credential.helper`/`alias.` keys the
-patterns already deny via `-c`/`git config`, without a literal `-c` or `config` token appearing
-anywhere). None of this amounts to full shell parsing/evaluation, which is explicitly **not** a
+boundaries, e.g. `g"i"t push`, would otherwise slip past a literal-substring match) and a
+line-continuation-joined normalization (a Maker splitting a denied token/env-var name across a
+`\`+newline, e.g. `GIT_CONFIG_GLO\<newline>BAL=...`, which bash itself rejoins before
+tokenization), and denies
+git's env-var-based config mechanism — `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`/`GIT_CONFIG_COUNT`/
+`GIT_CONFIG_PARAMETERS`, the bare `GIT_CONFIG=` assignment, and the `GIT_CONFIG_GLOBAL=`/
+`GIT_CONFIG_SYSTEM=` file selectors (which point git at an attacker-controlled config file that
+can carry the same `insteadOf`/`credential.helper`/`alias.` keys). These are alternate ways to
+set those keys the patterns already deny via `-c`/`git config`, without a literal `-c` or `config`
+token appearing anywhere; they are matched case-sensitively (git only honors the uppercase names)
+so an ordinary lowercase `git_config=` shell variable is not false-flagged. It also hard-denies
+the bare words `env` and `exec` appearing *anywhere* in the command text, and the literal
+`--config-env` appearing anywhere (Codex review, PR #423, 3rd round): the 2nd round attempted a
+precise wipe-flag/leading-option token scan for `env -i`/`-`/`--ignore-environment`/`-S`/
+combined clusters, and a fixed-anchor `git ... --config-env` scan, but a 3rd Codex review found
+8 further bypasses/false-positives against that approximation — an attached `--split-string=`
+argument, a getopt_long abbreviated `--chd`, a quoted shell-metacharacter smuggled inside an
+option's own argument (`-u 'A;B'`), the `exec -c` builtin (which wipes the environment the same
+way `env -i` does but was not covered at all), a redirect sitting directly before the wipe flag
+with no separating space (`env>/dev/null -i`), and `--config-env` scans that needed to treat
+`&>`/`2>&1`-style redirects and even a real (non-continuation) newline as "still the same
+statement" without also being crossable by an attacker. Approximating enough of shell option
+parsing (getopt clustering/abbreviation, quoting, redirection) to close all of these precisely,
+while not opening new ones, was judged an unwinnable game for a text-scan-only hook: the fix
+instead **fails closed** by denying the trigger words outright, matching the deliberate
+`insteadof`/`pushurl`/`credential\.helper`/blanket-`git config` precedent above. The Maker never
+legitimately needs to invoke `env` at all (`NAME=VALUE cmd` sets variables without it) or `exec`
+(a normal foreground `cmd ...` already replaces nothing it needs replaced), and every wipe-flag
+shape denied by the 2nd round's token scan trivially reduces to "the word `env` is present
+somewhere in the command", so the wipe-specific scan (`_find_env_wipe`) was deleted entirely
+in favor of this. `env -i .../-S ...` still discards the `GIT_CONFIG_GLOBAL=/dev/null`/
+`GIT_CONFIG_SYSTEM=/dev/null` selectors `loop_driver_support.maker_env()` sets, and
+`--config-env=<envvar>` still injects config from an environment variable with no `-c`/`config`/
+`GIT_CONFIG_*` token — this rule just denies the umbrella term instead of trying to characterize
+every dangerous shape under it precisely. Accepted false positives: `echo env`, `docker exec` (a
+Maker has no legitimate need for either; `find ... -exec` is unaffected since `-exec` is preceded
+by a `-`, not a word boundary, so it does not match the bare-word pattern), and a `--config-env`
+mention split across a genuine newline into two separate statements (denied anyway, since the
+umbrella term match no longer needs to reconstruct one invocation). `.env`/`--env-file`/
+`printenv`/`environment`/an `ENV=value` assignment/`$env_name`/`config/.env` are NOT denied: the
+lookaround boundaries require `env` to stand alone as its own word (not preceded by a word/`.`/
+`$`/`-` character — note this deliberately does NOT exclude `/`, see the 4th-round update below
+— and not followed by a word/`.`/`=`/`-` character).
+
+**4th-round update (Codex review, PR #423)**: a path-qualified invocation (`/usr/bin/env -i
+...`, `/bin/env ...`) slipped past the 3rd round's rule, which excluded `/` from the lookbehind
+(mirroring this file's other path-safety patterns) — that exclusion is now removed, so any
+occurrence of the bare word `env`/`exec` preceded by a path separator is denied too (`.env`/
+`config/.env` remain allowed regardless, since the `.` immediately before `env` is still
+excluded). The same review also found `setpriv --reset-env sh -c '...'` — another
+environment-wiping wrapper this hook had never covered — which is now denied alongside `sudo`/
+`su`/`runuser`/`chpst`/`unshare`/`nsenter`/`busybox` as bare words, for the same reason `env`/
+`exec` are (each can wipe/replace the process environment or elevate/change privileges without
+literally containing `env`/`exec` as their own subcommand).
+
+**Scope statement (Codex review, PR #423, 4th round)**: this module is layer 3 of the push
+defense-in-depth described in `docs/design/loop-harness-cli.md` §2.2 "多層防御（defense-in-depth）
+の追記" (層1〜層4) — a best-effort command-string screen, not the structural boundary. Given four
+rounds of review have each found a new wrapper/bypass shape (`env` flag variants, `--config-env`,
+`exec -c`, now `setpriv`/`sudo`/`su`/`runuser`/`chpst`/`unshare`/`nsenter`/`busybox`),
+enumerating every environment-wiping or privilege-changing wrapper that could ever exist is
+explicitly NOT a goal of this layer; further, as-yet-undiscovered wrapper bypasses of this text
+scan are an accepted residual risk, *unless* they also defeat layer 4. The actual structural
+boundaries are: 層2（env 認証隔離。主軸）in the same §2.2 (push credentials are stripped from the
+Maker's child-process env regardless of which wrapper it runs through, see
+`loop_driver_support.maker_env()`); 層4（push 後整合性検証。安全網）in the same §2.2 (the driver
+records the expected local/remote HEAD around Maker execution and safely stops on any
+unexpected remote advance, regardless of how the Maker got there); and, where LP-2 Docker
+isolation is in effect, `docs/design/loop-harness-isolation.md` §1.2 "コンテナに入るもの / driver
+に残るものの対照表", whose first row states the container the Maker runs in holds **no**
+git/gh push or PR-creation credentials at all — a wrapper running inside that container has
+nothing to wipe or steal in the first place, independent of this hook recognizing it. None of
+this amounts to full shell parsing/evaluation, which is explicitly **not** a
 goal of this hook — the actual structural guarantees are layer 2 (env-level credential
 stripping, see `loop_driver_support.maker_env()`) and, for the `.git/config`-tampering vector
 specifically, the driver-side hardening in `loop_driver_support.hardened_git_config_args()` /
@@ -185,12 +253,94 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
         # (the `-c` flag sets the config key inline), so it would otherwise evade the blanket
         # `git ... config` deny above.
         rf"\bgit\b{_filler(8)}{_SEP}-c{_SEP}url\.",
-        # SEC-MED: `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`/`GIT_CONFIG_COUNT` (git's
-        # env-var-based config-injection mechanism, e.g. `GIT_CONFIG_COUNT=1
-        # GIT_CONFIG_KEY_0=url.evil.insteadof GIT_CONFIG_VALUE_0=... git push ...`) sets an
-        # arbitrary config key/value pair for one invocation without a literal `-c` or
-        # `config` token anywhere in the command string, evading every pattern above.
-        r"\bGIT_CONFIG_(?:KEY_\d+|VALUE_\d+|COUNT)\b",
+        # SEC-MED: `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`/`GIT_CONFIG_COUNT`, plus the other
+        # members of git's env-var-based config mechanism that a Maker could weaponize —
+        # `GIT_CONFIG_PARAMETERS` (git's own transport for propagating `-c key=value` pairs to a
+        # child process; `GIT_CONFIG_PARAMETERS="'url.evil.insteadof=...'" git push ...` injects
+        # an arbitrary config for one invocation with neither `-c` nor `config` appearing as a
+        # literal token); the bare `GIT_CONFIG=<path>` assignment (redirects a scope-less
+        # `git config` write, or supplies the config file a `git -c ...`/`git ...` invocation
+        # reads, again without a `config`/`-c` token — the `git ... config` blanket deny only
+        # catches the `git config` subcommand shape, not `GIT_CONFIG=... git -c ...`); and the
+        # config *file* selectors `GIT_CONFIG_GLOBAL=<path>`/`GIT_CONFIG_SYSTEM=<path>`, which
+        # point git at an arbitrary attacker-controlled config file for one invocation. That file
+        # can define an `[alias]` (e.g. `p = push`) or `insteadOf`/`credential.helper` entry the
+        # Maker created earlier via an allowed `Write` to a non-`.git` path, so
+        # `GIT_CONFIG_GLOBAL=/tmp/evil.cfg git p ...` runs an aliased push with no literal
+        # `push`/`-c`/`config`/`alias.` token anywhere — evading every pattern above. Each of
+        # these sets or sources config for one invocation without a literal `-c`/`config` token
+        # (e.g. `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.evil.insteadof GIT_CONFIG_VALUE_0=... git
+        # push ...`). This mirrors the lib-side `_stripped_host_env` stripping (EV-170) so the
+        # guard and lib recognize the same env-var mechanism.
+        #
+        # `GIT_CONFIG_NOSYSTEM` is deliberately NOT denied: it is a boolean toggle (`=1`) that
+        # only *disables* reading the system config, so it cannot inject any config key/file. The
+        # `_(?:...GLOBAL|SYSTEM)\b` branch's `\b` end-boundary keeps `GIT_CONFIG_NOSYSTEM` out
+        # (its text after `GIT_CONFIG_` is `NOSYSTEM`, which none of the alternatives match), and
+        # the bare `=` branch requires the assignment `=` immediately after `GIT_CONFIG`.
+        #
+        # This whole `GIT_CONFIG...` group is matched case-*sensitively* via `(?-i:...)` (which
+        # locally overrides the module-wide `re.IGNORECASE`): git only honors these variables in
+        # uppercase, so a case-insensitive match would false-positive on an ordinary lowercase
+        # shell variable such as `git_config=/tmp/x` that has no effect on git at all.
+        r"(?-i:\bGIT_CONFIG(?:_(?:KEY_\d+|VALUE_\d+|COUNT|PARAMETERS|GLOBAL|SYSTEM)\b|=))",
+        # Codex review (PR #423, 3rd round): fail-closed pivot. Two prior rounds tried to
+        # precisely characterize `env`'s environment-wipe flags (`-i`/`-`/`--ignore-environment`/
+        # `-S`/combined clusters/leading-option tolerance) and a fixed-anchor `git ...
+        # --config-env` scan; a 3rd Codex review found 8 further bypasses/false-positives against
+        # those approximations (an attached `--split-string=` argument, a getopt_long-abbreviated
+        # `--chd`, a quoted shell metacharacter smuggled inside an option's own argument
+        # (`-u 'A;B'`), the `exec -c` builtin — which was not covered at all — a redirect with no
+        # separating space directly before the wipe flag (`env>/dev/null -i`), and `--config-env`
+        # scans that needed `&>`/`2>&1`-style redirects and even a genuine newline to keep
+        # counting as "the same statement" without becoming crossable by an attacker). Precisely
+        # modeling getopt clustering/abbreviation/quoting/redirection with text-scan regexes alone
+        # is an unwinnable arms race, so this rule denies the bare trigger words instead: the
+        # Maker never legitimately needs `env` at all (`NAME=VALUE cmd` sets variables without
+        # it) or `exec` (a plain foreground `cmd ...` needs no process replacement), and every
+        # env-wipe shape from the prior rounds trivially reduces to "the word `env` is present in
+        # the command" — so the whole flag/option token scan collapses into this single check.
+        # `(?<![\w.$-])`/`(?![\w.=-])` require `env`/`exec` to stand alone as their own word (not
+        # part of `.env`/`--env-file`/`printenv`/`ENV=value`/`$env_name`/`environment`/`execute`),
+        # matching `env`/`exec` wherever they appear — start of command, after any separator/
+        # redirect/subshell open, with no separate token-boundary tracking needed. Codex review
+        # (PR #423, 4th round): the lookbehind does NOT exclude `/`, so a path-qualified
+        # invocation (`/usr/bin/env -i ...`, `/bin/env ...`) is denied too — an earlier version of
+        # this rule excluded `/` (to mirror the `--config-env`/`GIT_CONFIG` patterns' path-safety
+        # habits elsewhere in this file) but that let `/usr/bin/env` slip through undetected.
+        # `.env`/`config/.env` stay allowed regardless: the `.` immediately before `env` is still
+        # excluded, so only a literal path SEPARATOR (`/`) or nothing before `env` triggers this.
+        r"(?<![\w.$-])env(?![\w.=-])",
+        # `exec -c`/`exec -c CMD` (bash builtin) wipes the environment the same way `env -i` does,
+        # by replacing the shell with `CMD` running in a stripped environment; matched the same
+        # way and for the same fail-closed reason as `env` above (including the same 4th-round
+        # `/`-inclusive lookbehind, kept symmetric with the `env` rule above even though a
+        # path-qualified `/usr/bin/exec` is not a real, separately-invokable binary in practice).
+        # `find ... -exec` is unaffected: `-exec` is preceded by `-`, which the lookbehind still
+        # excludes, not a word boundary. `docker exec` is also denied by this rule (acceptable:
+        # the Maker has no legitimate need to exec into any container either).
+        r"(?<![\w.$-])exec(?![\w.=-])",
+        # Codex review (PR #423, 4th round): `setpriv`/`sudo`/`su`/`runuser`/`chpst`/`unshare`/
+        # `nsenter`/`busybox` are all environment-wiping or privilege/namespace-changing wrapper
+        # binaries in the same family as `env -i`/`exec -c` (e.g. `setpriv --reset-env sh -c
+        # '...'` clears the environment the same way `env -i` does; `sudo`/`su`/`runuser` reset
+        # env by default unless `-E`/`--preserve-environment` is passed; `busybox env -i ...`
+        # reaches the same busybox-builtin `env` applet through a different binary name).
+        # Enumerating every wrapper capable of this is explicitly not a goal (see the module
+        # docstring's scope statement below) — this list is a best-effort, non-exhaustive
+        # extension of the same fail-closed word-deny approach as `env`/`exec` above, covering
+        # the wrapper families a Codex review has actually found so far. Same lookaround shape:
+        # `su` does not false-positive on `sum`/`sudoers` (the lookahead requires a non-word/`.`/
+        # `=`/`-` character immediately after, which `sudoers`' `d`/`sum`'s `m` are not).
+        r"(?<![\w.$-])(?:setpriv|sudo|su|runuser|chpst|unshare|nsenter|busybox)(?![\w.=-])",
+        # Codex review (PR #423, 3rd round): `--config-env` denied as a bare word wherever it
+        # appears, with no `git` anchor or shell-separator scanning required at all — this
+        # sidesteps every redirect/newline/subshell-boundary concern the 1st/2nd-round `git ...
+        # --config-env` scans had to reason about. The lookaround boundaries only rule out it
+        # being a fragment of a longer option/word (e.g. a hypothetical `--config-env-file`); an
+        # unrelated mention of the exact literal (e.g. in a commit message) is still an accepted
+        # false positive, the same tradeoff `insteadof`/`pushurl`/`credential\.helper` above make.
+        r"(?<![\w-])--config-env(?![\w-])",
         rf"\bgh\b{_filler(4)}{_SEP}pr\b",  # gh pr create/merge/close/edit/...
         rf"\bgh\b{_filler(4)}{_SEP}api\b",  # gh api (REST bypass for PR mutation)
         r"\bssh\b",  # direct ssh (custom push transport / remote command execution)
@@ -218,6 +368,22 @@ _DENY_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 # tradeoff (see the module docstring).
 _QUOTE_STRIP_RE = re.compile(r"[\"'\\]")
 
+# SEC-MED (PR review): Bash removes a backslash-newline line continuation from the input stream
+# *before* tokenization, so a denied token/env-var name split across a line continuation —
+# `GIT_CONFIG_GLO\<newline>BAL=/tmp/evil.cfg git status` — is rejoined by the shell into the exact
+# same `GIT_CONFIG_GLOBAL=...` invocation, yet a scan of the raw text sees the two halves broken
+# by the `\`+newline. Stripping the whole `\`+newline sequence (matching bash's own removal)
+# before scanning reconstructs the token. The quote/backslash strip alone is insufficient here:
+# it removes the backslash but leaves the newline, so the two halves stay split. Only a bare
+# backslash *immediately* followed by a newline is a continuation; a backslash followed by other
+# text (`gi\t push`) is left for `_QUOTE_STRIP_RE` to handle as before.
+_LINE_CONTINUATION_RE = re.compile(r"\\\r?\n")
+
+
+def _strip_line_continuations(command: str) -> str:
+    """Return `command` with bash `\\`+newline line continuations removed (SEC-MED best-effort)."""
+    return _LINE_CONTINUATION_RE.sub("", command)
+
 
 def _normalize_for_bypass_scan(command: str) -> str:
     """Return `command` with quote/backslash characters removed (SEC-MED best-effort)."""
@@ -227,10 +393,14 @@ def _normalize_for_bypass_scan(command: str) -> str:
 def find_denied_match(command: str) -> str | None:
     """Return the first matched denied substring in `command`, or None if it looks clean.
 
-    Scans both the raw `command` text and its quote/backslash-stripped normalization
-    (`_normalize_for_bypass_scan`, SEC-MED) — a match against either counts as denied.
+    Scans the raw `command` text, its line-continuation-joined form (`_strip_line_continuations`,
+    which mirrors bash's pre-tokenization `\\`+newline removal), and the quote/backslash-stripped
+    normalization of that joined form (`_normalize_for_bypass_scan`, SEC-MED) — a match against
+    any of them counts as denied. Joining before the quote strip is required because the quote
+    strip removes the continuation's backslash but leaves the newline, keeping the token split.
     """
-    for candidate in (command, _normalize_for_bypass_scan(command)):
+    line_joined = _strip_line_continuations(command)
+    for candidate in (command, line_joined, _normalize_for_bypass_scan(line_joined)):
         for pattern in _DENY_PATTERNS:
             match = pattern.search(candidate)
             if match is not None:

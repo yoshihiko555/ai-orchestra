@@ -690,15 +690,178 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         "gi\\t push",
         # GIT_CONFIG_KEY_*/GIT_CONFIG_VALUE_*/GIT_CONFIG_COUNT env-var config injection
         "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=url.evil.insteadof GIT_CONFIG_VALUE_0=x git status",
+        # GIT_CONFIG_PARAMETERS: git's own transport for propagating `-c key=value` to a child
+        # process; injects arbitrary config for one invocation with no `-c`/`config` literal.
+        "GIT_CONFIG_PARAMETERS=\"'url.evil.insteadof=http://x/'\" git push origin main",
+        # ...isolated variant so ONLY the GIT_CONFIG_PARAMETERS branch can match: the payload key
+        # (`core.hookspath`) and the `git status` verb trip no other deny pattern, so removing
+        # PARAMETERS from the rule makes THIS case fail — a regression the realistic push/insteadof
+        # case above cannot detect (it also matches the `git push` and `insteadof` patterns).
+        "GIT_CONFIG_PARAMETERS=\"'core.hookspath=/tmp/evil'\" git status",
+        # GIT_CONFIG_GLOBAL=<path>/GIT_CONFIG_SYSTEM=<path>: point git at an attacker-controlled
+        # config file (holding an `[alias]`/`insteadOf`/`credential.helper` the Maker wrote via an
+        # allowed non-`.git` Write) for one invocation — no `push`/`-c`/`config`/`alias.` literal.
+        # Isolated (`git status` verb) so only the GLOBAL/SYSTEM branch of the GIT_CONFIG rule matches.
+        "GIT_CONFIG_GLOBAL=/tmp/evil.cfg git status",
+        "GIT_CONFIG_SYSTEM=/tmp/evil.cfg git status",
+        # bare GIT_CONFIG=<path>: redirects a scope-less `git config` write / supplies the config
+        # file a later `git -c ...` reads, again without a `config`/`-c` literal token. The second
+        # case is isolated (only the bare `GIT_CONFIG=` branch matches `git -c core.pager=cat`).
+        "GIT_CONFIG=/tmp/evil git config user.name attacker",
+        "GIT_CONFIG=/tmp/evil git -c core.pager=cat status",
         # credential.helper repointing
         "git config credential.helper '!echo pwned'",
         "git -c credential.helper=evil status",
+        # SEC-MED (PR review): a `\`+newline line continuation splits an env-var name that bash
+        # rejoins before tokenization (`GIT_CONFIG_GLO\<newline>BAL=...` -> `GIT_CONFIG_GLOBAL=...`),
+        # evading a scan of the raw text. `_strip_line_continuations` reconstructs the token.
+        "GIT_CONFIG_GLO\\\nBAL=/tmp/evil.cfg git status",
+        # same continuation bypass on the bare `GIT_CONFIG=` assignment...
+        "GIT_CON\\\nFIG=/tmp/evil git -c core.pager=cat status",
+        # ...and on the GIT_CONFIG_PARAMETERS transport (isolated payload/verb so ONLY that branch trips)
+        "GIT_CONFIG_PARAME\\\nTERS=\"'core.hookspath=/tmp/evil'\" git status",
+        # a line continuation splitting the `git push` verb itself is rejoined the same way
+        "git pu\\\nsh origin main",
+        # Codex review (PR #423, 1st round): `env -i`/`env --ignore-environment` wipes the entire
+        # child environment, discarding the `GIT_CONFIG_GLOBAL=/dev/null`/
+        # `GIT_CONFIG_SYSTEM=/dev/null` selectors `maker_env()` sets, so an attacker-written
+        # `~/.gitconfig` `[alias] p = push` is honored again with no denied token present. (Now
+        # denied by the bare-word `env` rule below, same as every other shape in this group.)
+        "env -i HOME=/tmp/attacker-home PATH=/usr/bin git p origin main",
+        "env --ignore-environment git status",
+        # ...and the same bypass split across a `\`+newline line continuation.
+        "env -\\\ni HOME=/tmp/x git status",
+        # Codex review (PR #423, 2nd round): a lone `-` is a GNU-`env` synonym for `-i`, and the
+        # wipe flag may be preceded by env's own other options (each consuming its own separate
+        # argument) rather than appearing immediately after `env`.
+        "env - HOME=/tmp/x git p origin main",
+        "env -u FOO -i git status",
+        "env --unset=FOO --ignore-environment git status",
+        "env -S '-i git p origin main'",
+        # Codex review (PR #423, 3rd round): a 2nd-round token-walking scan tried to precisely
+        # characterize every wipe-flag shape (and only those), and 8 further bypasses/
+        # false-positives were found against that approximation — the fix pivoted to denying the
+        # bare word `env` (and `exec`) outright rather than trying to keep enumerating shapes.
+        # Below: the 8 concrete bypasses that specifically broke the 2nd-round token scan.
+        #
+        # `--split-string=` attached (with `=`) rather than a separate argument.
+        "env --split-string='-i HOME=/tmp/a PATH=/usr/bin git p'",
+        # getopt_long unambiguous-prefix abbreviation of `--chdir` (`--chd`) — the 2nd round's
+        # arg-taking-flag set only recognized the full spelling.
+        "env --chd /tmp -i HOME=/tmp/a git p origin x",
+        # a shell metacharacter (`;`) quoted inside an option's OWN argument (`-u 'A;B'`) — the
+        # 2nd round's naive `[;&|\n]`-based statement split cut the scan short right there,
+        # hiding the `-i` that follows.
+        "env -u 'A;B' -i HOME=/tmp/a git p origin x",
+        # the `exec -c` bash builtin wipes the environment the same way `env -i` does, but the
+        # 2nd round only ever looked for `env` — this was not covered at all.
+        "exec -c env HOME=/tmp/a git p origin x",
+        # a redirect operator directly adjacent to `env` with no separating whitespace — the 2nd
+        # round's `env` word-anchor required a `\s`/`${IFS}` lookahead that a `>` redirect doesn't
+        # satisfy, so the anchor itself never matched.
+        "env>/dev/null -i HOME=/tmp/a git p origin x",
+        "env 2>/dev/null -i git status",
+        # Codex review (PR #423, P2/3rd round): `git --config-env=<name>=<envvar>` (and the
+        # space-separated form) injects a config value sourced from an environment variable for
+        # one invocation, with neither `-c`/`config` nor any `GIT_CONFIG_*` token present. (Now
+        # denied by the bare-literal `--config-env` rule, with no `git`/statement-scan needed.)
+        "X=push git --config-env=alias.p=X p origin attack",
+        "git --config-env alias.p=X status",
+        # ...and the same bypass split across a line continuation.
+        "git --config-\\\nenv=alias.p=X status",
+        # 2nd-round `_filler(8)`-bounded / unbounded-but-separator-scanned attempts: irrelevant
+        # now (no token count or statement boundary is tracked at all), but kept as regression
+        # coverage that heavy padding still doesn't evade the bare-literal rule.
+        "X=push git -C /tmp/work -C . -C . -C . -C . --config-env=alias.p=X p origin attack",
+        "git${IFS}--config-env=alias.p=X${IFS}p${IFS}origin${IFS}attack",
+        # `&>`/`2>&1`-style redirects around `--config-env` — the 2nd round's separator-scan had
+        # to treat these as "still one statement" without becoming crossable; the bare-literal
+        # rule needs no such reasoning at all.
+        "X='!touch /tmp/m' git &>/dev/null --config-env=alias.p=X p",
+        # a genuine (non-continuation) newline between `--config-env` and anything else: the
+        # 2nd-round rule required reconstructing "one invocation" across it; the bare-literal
+        # rule denies the mere presence of the term regardless — an accepted, intentional
+        # fail-closed false positive (see the module docstring).
+        "git status\nprintf -- --config-env",
+        # Codex review (PR #423, 4th round): the 3rd round's `env`/`exec` lookbehind excluded
+        # `/`, so a path-qualified invocation slipped through undetected — `/` was removed from
+        # the lookbehind to close this (`.env`/`config/.env` remain allowed; see the allow-list
+        # test below).
+        "/usr/bin/env -i HOME=/tmp/a git p origin x",
+        "/bin/env git status",
+        # `setpriv --reset-env sh -c '...'` is another environment-wiping wrapper this hook had
+        # never covered at all (distinct from `env`/`exec`), now denied as a bare word alongside
+        # `sudo`/`su`/`runuser`/`chpst`/`unshare`/`nsenter`/`busybox` (see the module docstring's
+        # scope statement: enumerating every such wrapper is explicitly not a goal of this layer).
+        "setpriv --reset-env sh -c 'HOME=/tmp/a git p origin x'",
+        "sudo -i git status",
+        "busybox env -i git status",
     ],
 )
 def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
     result = _run_bash_guard_hook(command)
     assert result.returncode == 2
     assert "maker-bash-guard" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # SEC-MED: `GIT_CONFIG_NOSYSTEM` is a boolean toggle that only *disables* the system
+        # config; it cannot point git at a config file or inject a key, so it must NOT be denied
+        # (the rule's `_(?:...)\b` end-boundary keeps `NOSYSTEM` out — `SYSTEM` does not match the
+        # `NOSYSTEM` text right after `GIT_CONFIG_`). The file selectors `GIT_CONFIG_GLOBAL=`/
+        # `GIT_CONFIG_SYSTEM=` ARE denied for Maker command strings (see the deny test above); the
+        # driver sets those via its own subprocess env dict in `_run_git_unchecked`/`maker_env`,
+        # never as an inline `VAR=... git` shell command, so this inline deny leaves that untouched.
+        "GIT_CONFIG_NOSYSTEM=1 git status",
+        # a plain identifier that merely starts with GIT_CONFIG must not trip the bare `=` branch
+        "echo GIT_CONFIGURATION",
+        # SEC-MED: git only honors the GIT_CONFIG* variables in uppercase, so an ordinary lowercase
+        # shell variable (`git_config=...`) has no effect on git and must NOT be denied — the
+        # GIT_CONFIG rule is matched case-sensitively via `(?-i:...)` precisely to allow this.
+        "git_config=/tmp/evil echo hi",
+        # SEC-MED (PR review): line-continuation stripping only ever *fuses* halves back together,
+        # so it must not turn a benign continuation into a false-positive deny.
+        "echo hel\\\nlo world",
+        # Codex review (PR #423, 3rd round): fail-closed pivot. `env FOO=bar git status`,
+        # `env FOO=bar sed -i 's/a/b/' f`, and `env -u FOO git status` were allowed under the
+        # 2nd-round token-walking scan (none of them actually wipe the environment), but that
+        # scan had 8 bypasses/false-positives against it (see the deny test above) and was
+        # replaced by a bare-word `env` deny with NO exceptions for "safe-looking" `env` usage —
+        # so all three of those cases are intentionally moved to the deny list above instead.
+        #
+        # `--env-file`/`.env` (docker compose) must not trip the bare-word `env` rule: the
+        # lookbehind/lookahead require `env` to stand alone as its own word, not a substring of a
+        # longer option/filename.
+        "docker compose --env-file .env up",
+        # `printenv`/`environment`-as-substring: `env` is not its own word here (no preceding
+        # non-word/`.`/`$`/`-` boundary in `printenv`'s case — `print` immediately precedes `env`
+        # with a word-character `t`).
+        "printenv PATH",
+        # a plain `NAME=VALUE` assignment (no `env` word at all) must not be denied.
+        "ENV=prod make build",
+        # `find ... -exec` must not trip the bare-word `exec` rule: `-exec` is preceded by `-`,
+        # which the lookbehind excludes (only a non-word boundary that is NOT one of
+        # `\w`/`.`/`$`/`-` counts as a real word start).
+        "find . -name '*.py' -exec cat {} +",
+        # `$env_name` (a shell variable reference): `env` is immediately followed by `_`, a word
+        # character the lookahead excludes, so this is not treated as the standalone word `env`.
+        "echo $env_name",
+        # Codex review (PR #423, 4th round) regression guard: after removing `/` from the
+        # lookbehind so a path-qualified `/usr/bin/env` is denied (see the deny-list test above),
+        # `config/.env` must still be allowed — the `.` immediately before `env` is a still-
+        # excluded boundary character regardless of the preceding `/`.
+        "cat config/.env",
+        # sanity: an ordinary command with neither `env`/`exec`/`--config-env`/wrapper-word
+        # anywhere.
+        "git status",
+    ],
+)
+def test_maker_bash_guard_allows_git_config_file_selectors(command: str) -> None:
+    result = _run_bash_guard_hook(command)
+    assert result.returncode == 0
+    assert result.stderr == ""
 
 
 # --------------------------------------------------------------------------------------------
