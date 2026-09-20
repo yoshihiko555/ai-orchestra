@@ -4987,6 +4987,87 @@ def test_wait_external_review_non_blocking_only_drain_still_pushes(
     assert result["signature"] == "pr_review_timeout"
 
 
+def test_drain_before_push_ignores_persisted_open_blocking_findings_from_earlier_rounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #424: a critical/high finding from an *earlier* round that is still `status:
+    "open"` in state (e.g. because it has not been reraised or resolved yet) must not make
+    every subsequent `_drain_before_push` "rediscover" it and permanently refuse to push. The
+    findings this round's Maker is actively addressing only flip to `"addressed"` once a
+    *later* review round confirms no reraise -- so `open_blocking` (persisted, cumulative)
+    must be ignored by this pre-rebaseline drain (`include_persisted_open_blocking=False`),
+    unlike the final post-poll phase check. Only genuinely new drained imports (H4) may
+    short-circuit here."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+
+    persisted_open = prw.NonBlockingFinding(
+        signature="sig-stale-open",
+        severity="high",
+        path="foo.py",
+        line=10,
+        body_excerpt="still open from an earlier round",
+    )
+    empty = lc.IterationFindings(frozenset(), 0)
+    # No fresh imports this round (`findings=()`), but a persisted open critical/high finding
+    # from an earlier round is still on record.
+    drained = prw.ReviewFindingsResult(
+        (), empty, empty, (), (), 0, 0, open_blocking=(persisted_open,)
+    )
+    monkeypatch.setattr(prw, "fetch_review_items", lambda *a, **k: [])
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: drained)
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    calls: list[str] = []
+    monkeypatch.setattr(prw, "record_baseline", lambda *a, **k: calls.append("record_baseline"))
+    monkeypatch.setattr(d, "_verify_no_git_config_tampering_or_stop", lambda *a, **k: None)
+    monkeypatch.setattr(d, "_verify_push_integrity_or_stop", lambda *a, **k: None)
+    monkeypatch.setattr(d, "_scan_for_leaked_secrets_or_stop", lambda *a, **k: None)
+    monkeypatch.setattr(d, "_push_verified_branch", lambda *a, **k: calls.append("push"))
+    monkeypatch.setattr(
+        prw,
+        "record_iteration_head",
+        lambda *a, **k: calls.append("record_iteration_head"),
+    )
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "timeout", completed=False, timed_out=True, infrastructure_failure=False
+        ),
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-000424",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(
+        proposal, state, {"push_required": True, "verified_branch": "main"}
+    )
+
+    assert calls == ["record_baseline", "push", "record_iteration_head"]
+    assert result["passed"] is False
+    assert result["signature"] == "pr_review_timeout"
+
+
 def test_wait_external_review_no_new_commit_shortcut_skips_push_and_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -6924,6 +7005,299 @@ def test_wait_external_review_marks_and_resolves_addressed_findings(
     assert resolve_args[5] == "cafebabecafebabe"
 
 
+def test_wait_external_review_open_blocking_excludes_just_addressed_signature(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #424 / EV-144 non-regression: `result.open_blocking` is computed inside
+    `collect_review_findings`, *before* `mark_addressed_findings` (called later in
+    `_run_wait_external_review`) flips a just-resolved signature's `status` to `"addressed"` in
+    state. A signature that this very round determined was resolved (`sig-fixed`, dropped out
+    of the reraised set) must never be double-counted as still-blocking via the stale
+    `open_blocking` snapshot -- otherwise every genuinely-fixed round would permanently fail."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    state.pr_review = {"iteration_head_sha": "cafebabecafebabe"}
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    # `sig-fixed` was open at `iteration - 1` and did not reraise at `iteration` -> resolved
+    # this round -- but at the point `collect_review_findings` computed `open_blocking`, its
+    # persisted `status` was still `"open"` (mark_addressed_findings has not run yet).
+    stale_open_blocking = prw.NonBlockingFinding(
+        signature="sig-fixed",
+        severity="high",
+        path="a.py",
+        line=1,
+        body_excerpt="fixed but not yet marked addressed",
+    )
+    previous = lc.IterationFindings(frozenset({"sig-fixed"}), 1)
+    current = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult(
+        (), current, previous, (), (), 0, 0, open_blocking=(stale_open_blocking,)
+    )
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+    monkeypatch.setattr(prw, "mark_addressed_findings", lambda *a, **k: ("sig-fixed",))
+    monkeypatch.setattr(
+        prw,
+        "resolve_addressed_findings",
+        lambda *a, **k: prw.AddressedFindingsResult((), (), git_workflow_unavailable=False),
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-424-ordering",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(proposal, state, {})
+
+    assert result["passed"] is True
+    assert result["results"][0]["findings"] == []
+
+
+def test_wait_external_review_dh5_shortcut_does_not_falsely_resolve_stale_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adversarial-review scenario (Issue #424, `pushed_this_action` gate), exercised through
+    the *real* `_already_pushed_this_iteration` (not mocked, matching an in-progress
+    investigation's fixture): `iteration_head_recorded_iteration` still equals this proposal's
+    `iteration` (e.g. a resume that predates the `resume()` fix clearing it, or any other future
+    path that lets this collide) and local HEAD hasn't moved since -- so the DH5 shortcut fires
+    and this action never pushes or re-baselines. `collect_review_findings` is mocked to return
+    `sig-a` in `previous_iteration_findings` but not `current` (as `_renumber_resumed_pr_review_
+    findings` would produce for a stale renumbered record) and still `open` in `open_blocking`
+    (its true, un-mutated persisted state). Without the `pushed_this_action` gate, this would
+    compute `resolved_signatures={"sig-a"}` and `mark_addressed_findings` it -- a false
+    resolution nobody's review actually confirmed. With the gate, `resolved_signatures` must
+    stay empty: `sig-a` stays `open` in real state and the phase must not pass."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    local_head = _git(["rev-parse", "HEAD"], tmp_path)
+    state.pr_number = 42
+    state.pr_review = {
+        "baseline_review_id": 0,
+        "baseline_recorded_at": lc.now_iso(),
+        "processed_comment_ids": [],
+        "iteration_head_sha": local_head,
+        "iteration_head_recorded_iteration": 1,
+        "findings": {
+            "sig-a": {
+                "status": "open",
+                "severity": "high",
+                "first_seen_iteration": 0,
+                "last_seen_iteration": 0,
+                "path": "app.py",
+                "line": 1,
+                "body_excerpt": "unresolved",
+                "source_comment_ids": ["review_comment:1"],
+            }
+        },
+    }
+    # A real (non-mocked) `mark_addressed_findings` call requires a matching pending action to
+    # pass its lease-fencing validation (`_validate_pr_review_fence`) -- set one up so that, if
+    # the `pushed_this_action` gate were absent, this test would demonstrate the actual silent
+    # false resolution the gate prevents, not an unrelated `StaleActionError`.
+    state.pending_action = lc.PendingAction(
+        "act-424-dh5-gate", lc.Action.WAIT_EXTERNAL_REVIEW.value, state.phase, 1, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "resolve_addressed_findings",
+        lambda *a, **k: prw.AddressedFindingsResult((), (), git_workflow_unavailable=False),
+    )
+
+    sig_a_open_blocking = prw.NonBlockingFinding(
+        signature="sig-a", severity="high", path="app.py", line=1, body_excerpt="unresolved"
+    )
+    previous = lc.IterationFindings(frozenset({"sig-a"}), 1)
+    current = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult(
+        (), current, previous, (), (), 0, 0, open_blocking=(sig_a_open_blocking,)
+    )
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError(
+            "must not re-run the push flow once DH5 detects an already-pushed HEAD"
+        )
+
+    monkeypatch.setattr(prw, "fetch_review_items", _boom)
+    monkeypatch.setattr(prw, "record_baseline", _boom)
+    monkeypatch.setattr(d, "_push_verified_branch", _boom)
+    monkeypatch.setattr(prw, "record_iteration_head", _boom)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-424-dh5-gate",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(
+        proposal, state, {"push_required": True, "verified_branch": "main"}
+    )
+
+    assert result["passed"] is False
+    findings = result["results"][0]["findings"]
+    assert {item["severity"] for item in findings} == {"high"}
+    assert lc.load_state(loop_id, project_dir).pr_review["findings"]["sig-a"]["status"] == "open"
+
+
+def test_resume_clears_iteration_head_recorded_iteration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #424: `resume()` must reset `pr_review["iteration_head_recorded_iteration"]` to
+    `None` so DH5 (`loop_driver._already_pushed_this_iteration`) can never match a pre-resume
+    push record against the freshly reset iteration numbering -- see
+    `_renumber_resumed_pr_review_findings`'s docstring. `iteration_head_sha` itself is left
+    untouched: it still correctly answers the independent "did local HEAD already match the
+    last push" question `_drain_before_push`'s H12 shortcut relies on."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.status = "failed"
+    state.pr_review = {
+        "iteration_head_sha": "cafebabecafebabe",
+        "iteration_head_recorded_iteration": 1,
+        "findings": {},
+    }
+    lc._write_state(state, project_dir)
+
+    resumed = lc.resume(loop_id, project_dir, True, "owner", 3600, host="local")
+
+    assert resumed.state.pr_review["iteration_head_recorded_iteration"] is None
+    assert resumed.state.pr_review["iteration_head_sha"] == "cafebabecafebabe"
+
+
+def test_wait_external_review_fails_on_persisted_open_blocking_findings_with_zero_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #424, `open_blocking` layer in isolation: a `wait_external_review` round imports
+    zero new comments (already in `processed_comment_ids`) while 2 critical/high findings are
+    still `status: "open"` in `state.pr_review.findings` (`open_blocking`) -- the phase must not
+    pass just because nothing new was imported this round. This directly reproduces the reported
+    bug's *symptom* (0 imports, `passed: true` would be wrong) without also reproducing every
+    precondition: in the real end-to-end flow, `_next_action`'s Issue #424 fix routes the very
+    next proposal after `resume()` to `run_maker` (not straight back to `wait_external_review`
+    with `previous_iteration_findings` already empty via the (c) renumbering, see
+    `_renumber_resumed_pr_review_findings`'s docstring for why that ordering matters), so this
+    exact `collect_review_findings` shape would only actually occur for a stale/duplicate
+    completion signal or a non-`pr_review_response` phase reusing this subsystem. `open_blocking`
+    is the defense-in-depth layer that still catches it either way."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    state.pr_review = {"iteration_head_sha": "cafebabecafebabe"}
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    persisted_high_1 = prw.NonBlockingFinding(
+        signature="sig-persisted-1",
+        severity="high",
+        path="a.py",
+        line=1,
+        body_excerpt="unresolved from before resume",
+    )
+    persisted_high_2 = prw.NonBlockingFinding(
+        signature="sig-persisted-2",
+        severity="high",
+        path="b.py",
+        line=2,
+        body_excerpt="also unresolved from before resume",
+    )
+    empty = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult(
+        (), empty, empty, (), (), 0, 0, open_blocking=(persisted_high_1, persisted_high_2)
+    )
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    mark_calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        prw, "mark_addressed_findings", lambda *a, **k: (mark_calls.append((a, k)), ())[1]
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-424-zero-imports",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(proposal, state, {})
+
+    assert not mark_calls
+    assert result["passed"] is False
+    findings = result["results"][0]["findings"]
+    assert {item["severity"] for item in findings} == {"high"}
+    assert {item["summary"] for item in findings} == {
+        "unresolved from before resume",
+        "also unresolved from before resume",
+    }
+
+
 def test_wait_external_review_journals_addressed_findings_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -8823,6 +9197,79 @@ def test_pr_review_findings_from_last_check_returns_empty_when_absent(tmp_path: 
     state.last_check_result = None
 
     assert driver._pr_review_findings_from_last_check(state) == []
+
+
+def test_pr_review_findings_from_last_check_falls_back_to_persisted_pr_review_findings(
+    tmp_path: Path,
+) -> None:
+    """Issue #424 (code-reviewer follow-up): when the last completed `wait_external_review`
+    ended via `phase_check_from_completion_outcome()` (e.g. `pr_review_timeout`, which never
+    populates `results[].findings`), `state.pr_review.findings` can still hold real, unresolved
+    open blocking findings -- the Maker prompt must see them via the
+    `open_blocking_findings_from_pr_review` fallback rather than silently seeing none."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.last_check_result = {
+        "passed": False,
+        "signature": "pr_review_timeout",
+        "infrastructure_failure": False,
+        "results": [],
+    }
+    state.pr_review = {
+        "findings": {
+            "sig-a": {
+                "status": "open",
+                "severity": "high",
+                "path": "app.py",
+                "line": 1,
+                "body_excerpt": "unresolved from before the timeout",
+            },
+            "sig-dismissed": {
+                "status": "dismissed",
+                "severity": "critical",
+                "path": "b.py",
+                "line": 2,
+                "body_excerpt": "wontfix",
+            },
+        }
+    }
+
+    findings = driver._pr_review_findings_from_last_check(state)
+
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "high"
+    assert findings[0]["summary"] == "unresolved from before the timeout"
+    assert findings[0]["source"] == "pr_review"
+
+
+def test_pr_review_findings_from_last_check_prefers_last_check_over_persisted_fallback(
+    tmp_path: Path,
+) -> None:
+    """The `open_blocking_findings_from_pr_review` fallback must only apply when
+    `state.last_check_result` itself has no `source: "pr_review"` findings -- when it does
+    (the normal case), those remain the sole source, never merged with the persisted set."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.last_check_result = _pr_review_last_check_result(
+        [{"severity": "high", "summary": "from last_check_result", "source": "pr_review"}]
+    )
+    state.pr_review = {
+        "findings": {
+            "sig-other": {
+                "status": "open",
+                "severity": "critical",
+                "path": "other.py",
+                "line": 9,
+                "body_excerpt": "should not appear",
+            }
+        }
+    }
+
+    findings = driver._pr_review_findings_from_last_check(state)
+
+    assert [item["summary"] for item in findings] == ["from last_check_result"]
 
 
 def test_maker_prompt_neutralizes_literal_untrusted_sentinel_in_pr_review_finding(

@@ -467,6 +467,153 @@ def test_status_transitions_and_resume(tmp_path: Path, monkeypatch: pytest.Monke
     assert resumed.lease_token != lock.lease_token
 
 
+def test_next_action_after_resume_with_open_blocking_findings_proposes_run_maker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #424: after `resume()` reopens a loop that failed with unresolved open
+    critical/high findings, `_next_action` must route back to `run_maker`, not
+    `wait_external_review`. `last_action` here is `"exit_failure"` (the just-completed
+    terminal action from *before* the resume, since `resume()` never touches
+    `last_completed_action`) -- not `"wait_external_review"` -- so the original
+    `last_action != WAIT_EXTERNAL_REVIEW` check alone would re-enter the wait and silently
+    ignore the still-open findings nobody has fixed yet (the reported false-pass bug)."""
+    state = lc._initial_state(
+        "abcd1234-issue-1", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    state.status = "running"
+    state.pr_review = {
+        "findings": {
+            "sig-a": {"status": "open", "severity": "high"},
+            "sig-b": {"status": "open", "severity": "high"},
+        }
+    }
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"checker": {"external_signal": {"source": "github"}}},
+    )
+    monkeypatch.setattr(lc, "_last_completed_action_name", lambda *_a, **_k: "exit_failure")
+
+    action = lc._next_action(state, "/tmp/project")
+
+    assert action == lc.Action.RUN_MAKER.value
+
+
+def test_next_action_after_resume_with_only_addressed_or_medium_findings_proposes_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-regression counterpart: when nothing left in `pr_review.findings` is an unresolved
+    critical/high (only `"addressed"` and open medium findings remain), `_next_action` keeps
+    its pre-#424 behavior of proposing `wait_external_review` after a resume-from-terminal
+    gap."""
+    state = lc._initial_state(
+        "abcd1234-issue-1", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    state.status = "running"
+    state.pr_review = {
+        "findings": {
+            "sig-fixed": {"status": "addressed", "severity": "high"},
+            "sig-nit": {"status": "open", "severity": "medium"},
+        }
+    }
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"checker": {"external_signal": {"source": "github"}}},
+    )
+    monkeypatch.setattr(lc, "_last_completed_action_name", lambda *_a, **_k: "exit_failure")
+
+    action = lc._next_action(state, "/tmp/project")
+
+    assert action == lc.Action.WAIT_EXTERNAL_REVIEW.value
+
+
+def test_next_action_after_run_maker_with_open_blocking_findings_still_proposes_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-regression guard against a *future* mis-fix of this same Issue #424 area, not a
+    discriminator for the originally reported bug (this already passes on the pre-fix code,
+    since the pre-fix `_next_action` never even looked at `pr_review.findings`). Right after a
+    *normal* `run_maker` completion, the findings it just tried to fix are still `status:
+    "open"` in state -- they only flip to `"addressed"` once the *next* review round confirms no
+    reraise (`mark_addressed_findings`). `_next_action` must still propose `wait_external_review`
+    here; routing to `run_maker` again just because open findings exist would loop forever
+    without ever pushing the fix -- exactly the bug an earlier, broader draft of the
+    `_has_open_blocking_pr_findings` gate (gated only on `last_action != WAIT_EXTERNAL_REVIEW`,
+    without also excluding `last_action == RUN_MAKER`) would have reintroduced."""
+    state = lc._initial_state(
+        "abcd1234-issue-1", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    state.status = "running"
+    state.pr_review = {"findings": {"sig-a": {"status": "open", "severity": "high"}}}
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"checker": {"external_signal": {"source": "github"}}},
+    )
+    monkeypatch.setattr(
+        lc, "_last_completed_action_name", lambda *_a, **_k: lc.Action.RUN_MAKER.value
+    )
+
+    action = lc._next_action(state, "/tmp/project")
+
+    assert action == lc.Action.WAIT_EXTERNAL_REVIEW.value
+
+
+def test_resume_renumbers_open_pr_review_findings_to_avoid_iteration_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #424: `resume()` resets every phase's `GuardCounters.iteration` to 0, so the first
+    post-resume `wait_external_review` round is numbered iteration 1 and reads
+    `previous_iteration_findings` from iteration 0 (`iteration - 1`). A stale
+    `first_seen_iteration`/`last_seen_iteration` from before the resume (e.g. 1/2) would
+    otherwise collide with this reused numbering. Every non-terminal (`status` not
+    `"addressed"`/`"dismissed"`) record must be renumbered to 0 so it resurfaces as
+    *previously* open without being miscounted as newly introduced this round.
+    `"addressed"`/`"dismissed"` records are left untouched."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="failed")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pr_review = {
+        "findings": {
+            "sig-open": {
+                "status": "open",
+                "severity": "high",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 2,
+            },
+            "sig-addressed": {
+                "status": "addressed",
+                "severity": "high",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+            },
+            "sig-dismissed": {
+                "status": "dismissed",
+                "severity": "medium",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+            },
+        }
+    }
+    lc._write_state(state, project_dir)
+
+    resumed = lc.resume("abcd1234-issue-1", project_dir, True, "owner", 3600, host="local")
+
+    findings = resumed.state.pr_review["findings"]
+    assert findings["sig-open"]["first_seen_iteration"] == 0
+    assert findings["sig-open"]["last_seen_iteration"] == 0
+    assert findings["sig-addressed"]["first_seen_iteration"] == 1
+    assert findings["sig-addressed"]["last_seen_iteration"] == 1
+    assert findings["sig-dismissed"]["first_seen_iteration"] == 1
+    assert findings["sig-dismissed"]["last_seen_iteration"] == 1
+    # Ties back to (a)/(b): the first post-resume round's `previous_iteration_findings` query
+    # (`iteration - 1 == 0`) now sees the renumbered open finding as previously-open.
+    previous = lc.build_pr_iteration_findings(
+        resumed.state.pr_review, 0, severities=lc.BLOCKING_SEVERITIES
+    )
+    assert previous.signatures == frozenset({"sig-open"})
+
+
 def test_complete_accepts_raw_passed_checker_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

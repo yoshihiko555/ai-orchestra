@@ -777,6 +777,70 @@ def heartbeat(loop_id: str, project_dir: str, lease_token: str) -> bool:
     return heartbeat_lock(loop_id, project_dir, lease_token)
 
 
+def _renumber_resumed_pr_review_findings(state: LoopState) -> None:
+    """Reset stale iteration bookkeeping in `pr_review` before a resume.
+
+    Issue #424: `resume()` resets every phase's `GuardCounters.iteration` to 0, so the first
+    post-resume `wait_external_review` round is numbered iteration 1 (`_next_action_iteration`)
+    and its `previous_iteration_findings` is read from iteration 0
+    (`build_pr_iteration_findings(pr_review, iteration - 1, ...)`). Two pieces of iteration
+    bookkeeping in `pr_review` predate that reset and can collide with the reused numbers:
+
+    1. A blocking finding's `first_seen_iteration`/`last_seen_iteration` from *before* the
+       resume (e.g. 1, 2). Renumbering every non-terminal (`status` not
+       `"addressed"`/`"dismissed"`) record's `first_seen_iteration`/`last_seen_iteration` to 0
+       -- matching the first post-resume round's `iteration - 1` -- makes it resurface as a
+       *previously* open finding without being miscounted as newly introduced this round.
+       `"addressed"`/`"dismissed"` records are left untouched: per `build_pr_iteration_findings`'s
+       own status filter they never feed the no-progress/addressed-resolution signature sets
+       again regardless of their iteration numbers.
+    2. `pr_review["iteration_head_recorded_iteration"]` (DH5, see
+       `loop_driver._already_pushed_this_iteration`): a pre-resume value (e.g. 1) can coincide
+       with the freshly reused iteration number of the *next* post-resume round even though no
+       push has happened in that round at all. Left unfixed, DH5 would wrongly believe "this
+       iteration already pushed" and skip straight to polling/collecting against a stale,
+       pre-resume `iteration_head_sha` -- reproducing the same false-resolution risk item 1
+       fixes for findings, but for the push-tracking side. Resetting it to `None` here makes
+       DH5 unable to match until *this* resumed attempt's own `record_iteration_head` call sets
+       it fresh (never a pre-resume value). `iteration_head_sha` itself is left untouched: it
+       still correctly answers "does local HEAD already match the last thing pushed" for
+       `_drain_before_push`'s H12 no-new-commit shortcut, independent of iteration numbering.
+
+    Adversarial review (2026-09-20, Issue #424 follow-up) confirmed that renumbering findings to
+    0 is only safe together with two other guarantees, both enforced elsewhere: (a) this
+    `None` reset here, so DH5 cannot falsely fast-forward past a real push this round, and
+    (b) `loop_driver._run_wait_external_review` only computes `resolved_signatures` / calls
+    `mark_addressed_findings` when this action itself executed the real push branch (not the
+    DH5 shortcut) -- see that method's `pushed_this_action` gate. With both in place, a
+    renumbered "previously open" finding can only be marked addressed after a genuine new push
+    in the current (resumed) attempt was reviewed and not reraised, never merely because the
+    counters reset. `ReviewFindingsResult.open_blocking` (`pr_review_wait._open_blocking_findings`)
+    remains a further, independent layer for any path that reaches a phase check without going
+    through that gate at all (e.g. a non-`pr_review_response` phase reusing this subsystem).
+    """
+    if not isinstance(state.pr_review, dict):
+        return
+    findings = state.pr_review.get("findings")
+    has_recorded_iteration = state.pr_review.get("iteration_head_recorded_iteration") is not None
+    if not isinstance(findings, dict) and not has_recorded_iteration:
+        return
+    pr_review = copy.deepcopy(state.pr_review)
+    changed = False
+    if isinstance(findings, dict):
+        for record in pr_review["findings"].values():
+            if not isinstance(record, dict) or record.get("status") in {"addressed", "dismissed"}:
+                continue
+            if record.get("first_seen_iteration") != 0 or record.get("last_seen_iteration") != 0:
+                record["first_seen_iteration"] = 0
+                record["last_seen_iteration"] = 0
+                changed = True
+    if has_recorded_iteration:
+        pr_review["iteration_head_recorded_iteration"] = None
+        changed = True
+    if changed:
+        state.pr_review = pr_review
+
+
 def resume(
     loop_id: str,
     project_dir: str,
@@ -806,6 +870,7 @@ def resume(
             raise LockNotFoundError("new lock not found")
         for name in list(state.guards):
             state.guards[name] = GuardCounters()
+        _renumber_resumed_pr_review_findings(state)
         state.status = "running"
         state.stop_reason = None
         state.pending_action = None
@@ -1217,11 +1282,20 @@ def build_pr_iteration_findings(
     `signatures`/`new_count` (dismissed records are always excluded regardless of severity).
     Callers feeding the no-progress guard pass `severities=BLOCKING_SEVERITIES` so low/medium
     findings can never contribute to a no-progress determination (issue #213).
+
+    Excludes `status == "addressed"` in addition to `"dismissed"` (issue #424): in the normal
+    (non-resume) flow this is a no-op -- `mark_addressed_findings` only ever marks a record
+    `"addressed"` once its `last_seen_iteration` has fallen strictly behind every iteration
+    number this function will ever be queried with again, so an addressed record's frozen
+    iteration numbers never match a live `iteration` anyway. After `resume()` renumbers open
+    findings back to iteration 0 (see `_renumber_resumed_pr_review_findings`), stale
+    `"addressed"` records from *before* the resume can otherwise collide with the reused
+    iteration numbers and get miscounted as newly (re)raised.
     """
     signatures: set[str] = set()
     new_count = 0
     for signature, record in _pr_findings_map(pr_review).items():
-        if record.get("status") == "dismissed":
+        if record.get("status") in {"dismissed", "addressed"}:
             continue
         if severities is not None and record.get("severity") not in severities:
             continue
@@ -1783,6 +1857,26 @@ def _actor_for(action: str) -> str:
     return "step"
 
 
+def _has_open_blocking_pr_findings(state: LoopState) -> bool:
+    """Return True when `state.pr_review.findings` has an unresolved critical/high record.
+
+    Issue #424: `resume()` resets guards/status/stop_reason/pending_action but intentionally
+    never touches `pr_review.findings` (those are the durable record of what a reviewer
+    actually said, not per-attempt bookkeeping). A record counts as still-blocking unless its
+    `status` is explicitly `"addressed"` or `"dismissed"` -- a missing/unexpected `status`
+    value fails closed as still-open rather than silently dropping a real finding.
+    """
+    pr_review = state.pr_review if isinstance(state.pr_review, dict) else None
+    if pr_review is None:
+        return False
+    for record in _pr_findings_map(pr_review).values():
+        if record.get("status") in {"addressed", "dismissed"}:
+            continue
+        if record.get("severity") in BLOCKING_SEVERITIES:
+            return True
+    return False
+
+
 def _next_action(state: LoopState, project_dir: str) -> str:
     """Select the next action from state."""
     if state.status == "pending":
@@ -1802,6 +1896,19 @@ def _next_action(state: LoopState, project_dir: str) -> str:
         _phase_uses_external_signal(state, project_dir)
         and last_action != Action.WAIT_EXTERNAL_REVIEW.value
     ):
+        # Issue #424: `last_action == RUN_MAKER` is the normal post-fix state (push-then-wait
+        # for the next review round) and must always fall through to WAIT_EXTERNAL_REVIEW
+        # below, regardless of what's still open in `pr_review.findings` -- those findings are
+        # not expected to be reconciled (`mark_addressed_findings`) until *that* wait
+        # completes. Any other `last_action` here (e.g. `exit_failure`/`stop` via `resume()`,
+        # or `advance_phase` on first entry into this phase, where `pr_review.findings` is
+        # still empty and this check is a no-op) is the resume-after-terminal-exit gap the bug
+        # report describes: re-entering WAIT_EXTERNAL_REVIEW unconditionally would just re-poll
+        # for a *new* review round while silently ignoring already-known open findings nobody
+        # has fixed yet, producing a false pass. Route back to RUN_MAKER instead so the Maker
+        # actually addresses them before the phase waits again.
+        if last_action != Action.RUN_MAKER.value and _has_open_blocking_pr_findings(state):
+            return Action.RUN_MAKER.value
         return Action.WAIT_EXTERNAL_REVIEW.value
     if last_action == Action.RUN_MAKER.value:
         return Action.RUN_CHECKER.value

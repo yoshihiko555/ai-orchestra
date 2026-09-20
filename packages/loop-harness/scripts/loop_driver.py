@@ -1987,11 +1987,30 @@ class LoopDriver:
         pr_number = state.pr_number
         push_required = bool(params.get("push_required"))
         config = prw.load_pr_review_config(self.project_dir)
-        if (
+        already_pushed_via_dh5 = (
             push_required
             and pr_number is not None
             and self._already_pushed_this_iteration(state, proposal)
-        ):
+        )
+        # Issue #424 (adversarial review follow-up): gates the "not reraised -> addressed"
+        # inference further down (`resolved_signatures`) on *not* having taken the DH5 shortcut
+        # (`already_pushed_via_dh5`) -- that shortcut skips straight to polling/collecting
+        # against whatever `iteration_head_sha`/`iteration_head_recorded_iteration` is already
+        # on record, without this action itself confirming (via `record_iteration_head`) that
+        # it corresponds to a fresh push. `resume()` now clears `iteration_head_recorded_iteration`
+        # (`_renumber_resumed_pr_review_findings`) specifically so DH5 can never match a
+        # pre-resume push record, but this gate is a second, independent line of defense: even
+        # if DH5 legitimately fires (its intended use -- a driver crash between this same
+        # action's own `record_iteration_head` succeeding and the poll actually starting),
+        # deferring the "not reraised -> addressed" inference to the *next* round (where DH5
+        # will no longer match, since its iteration number moves on) is strictly safer than
+        # ever risking it on a shortcut path. `push_required is False` (the one-time
+        # initial-PR-creation poll, where `advance_phase` already pushed, and no
+        # `_already_pushed_this_iteration` check applies at all) is not gated here: it never
+        # goes through DH5, and `previous_iteration_findings` is always empty on that first
+        # round (no findings exist yet) regardless, so this only ever matters for later rounds.
+        pushed_this_action = not already_pushed_via_dh5
+        if already_pushed_via_dh5:
             pass
         elif push_required:
             verified_branch = params["verified_branch"]
@@ -2172,9 +2191,16 @@ class LoopDriver:
             item.signature for item in result.findings if item.needs_classification
         }
         resolved_signatures = (
-            (result.previous_iteration_findings.signatures - result.iteration_findings.signatures)
-            - demoted_still_open
-            - still_pending_classification
+            (
+                (
+                    result.previous_iteration_findings.signatures
+                    - result.iteration_findings.signatures
+                )
+                - demoted_still_open
+                - still_pending_classification
+            )
+            if pushed_this_action
+            else frozenset()
         )
         if resolved_signatures:
             commit_sha = baseline.get("iteration_head_sha")
@@ -2198,7 +2224,28 @@ class LoopDriver:
                 action_id=action_id,
             )
             self._journal_addressed_findings_outcome(addressed_result, action_id)
-        return lc.phase_check_to_dict(prw.phase_check_from_review_findings(result))
+            # Issue #424: `result.open_blocking` was computed inside `collect_review_findings`
+            # (and, if classification ran, `apply_severity_classifications`) *before*
+            # `mark_addressed_findings` above flipped `resolved_signatures` to `"addressed"` in
+            # state. Without this filter, a signature genuinely resolved by this very round
+            # would still show up in the stale `result.open_blocking` snapshot and
+            # `phase_check_from_review_findings` below would treat it as still-blocking forever
+            # (Codex-style: a permanent false-fail for exactly the findings this round just
+            # fixed).
+            result = dataclasses.replace(
+                result,
+                open_blocking=tuple(
+                    item
+                    for item in result.open_blocking
+                    if item.signature not in resolved_signatures
+                ),
+            )
+        # Issue #424: this is the one call site that opts into `include_persisted_open_blocking`
+        # -- see `phase_check_from_review_findings`'s own docstring for why only this call site
+        # (guarded by `pushed_this_action` above) may safely do so.
+        return lc.phase_check_to_dict(
+            prw.phase_check_from_review_findings(result, include_persisted_open_blocking=True)
+        )
 
     def _journal_addressed_findings_outcome(
         self, addressed_result: prw.AddressedFindingsResult, action_id: str
@@ -2352,7 +2399,18 @@ class LoopDriver:
         # blocks this iteration from proceeding. `phase_check_from_review_findings`'s `passed`
         # already encodes exactly this blocking/non-blocking distinction (see its docstring),
         # so reuse it here rather than re-deriving the severity check.
-        drained_check = prw.phase_check_from_review_findings(drained)
+        #
+        # Issue #424: `include_persisted_open_blocking` must stay at its default `False` here
+        # (spelled out explicitly rather than relying on the default, since getting this one
+        # wrong deadlocks the loop). This drain runs immediately after `run_maker`, while the
+        # findings the Maker is *currently* addressing are still `status: "open"` in
+        # `state.pr_review.findings` -- they only flip to `"addressed"` once a *later* review
+        # round confirms no reraise (`mark_addressed_findings`, below). Honoring the persisted
+        # `open_blocking` set here would make this drain "rediscover" the same still-open
+        # findings every single iteration and never let the fix be pushed, let alone reviewed.
+        drained_check = prw.phase_check_from_review_findings(
+            drained, include_persisted_open_blocking=False
+        )
         if not drained_check.passed:
             return lc.phase_check_to_dict(drained_check)
         # code H12: no drained findings and no new Maker commit means there is nothing worth
@@ -3735,20 +3793,60 @@ def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, A
     """Extract blocking `source == "pr_review"` findings from `state.last_check_result` (code L2).
 
     `state.last_check_result` is whatever the most recently *completed* action wrote via
-    `lc.complete()`; in the `pr_review_response` phase, `run_maker` is only ever proposed after
-    a `wait_external_review` action completed with `phase_check_from_review_findings()`'s
+    `lc.complete()`; in the `pr_review_response` phase, `run_maker` is normally proposed only
+    after a `wait_external_review` action completed with `phase_check_from_review_findings()`'s
     `passed: false` result (see `docs/design/loop-harness-cli.md`'s phase-guard contract), so by
     construction this is that same result -- never a stale `implementation`-phase mechanical/
-    llm_review result -- by the time `_run_maker` builds this iteration's prompt. The
-    `source == "pr_review"` filter is still applied defensively rather than trusting phase alone,
-    mirroring this module's existing "verify, don't just assume" posture (e.g. `_draft_pr`'s
-    guard calls, code L1).
+    llm_review result -- by the time `_run_maker` builds this iteration's prompt.
+
+    Issue #424 (resume-after-`exit_failure` gap): `_next_action` can also propose `run_maker`
+    directly when `resume()` reopens a loop that failed with unresolved open critical/high
+    findings, without a fresh `wait_external_review` completing *in this session* first. This is
+    still safe: `apply_action_effect()`'s `EXIT_FAILURE`/`STOP` branches never touch
+    `last_check_result`, and `resume()` itself only resets guards/status/stop_reason/
+    pending_action -- so `state.last_check_result` still holds the last `wait_external_review`'s
+    `phase_check_from_review_findings()` result (with those same open findings) exactly as if it
+    had just completed. The `source == "pr_review"` filter below is still applied defensively
+    rather than trusting phase alone, mirroring this module's existing "verify, don't just
+    assume" posture (e.g. `_draft_pr`'s guard calls, code L1).
 
     Only `severity in lc.BLOCKING_SEVERITIES` (critical/high) findings are returned (issue
     #213): the Maker fixes what actually blocks the phase from passing, never re-litigating
     medium/low findings a reviewer left as non-blocking commentary.
+
+    Issue #424 (code-reviewer follow-up): the *resume*-after-`exit_failure` gap above assumed
+    the last completed `wait_external_review` ended via `phase_check_from_review_findings()`
+    (which populates `results[].findings` with `source: "pr_review"` entries). It can instead
+    have ended via `phase_check_from_completion_outcome()` (timeout, API error, the H12
+    no-new-commit shortcut) -- none of which ever populate `results[].findings` at all, even
+    though `state.pr_review.findings` may still hold real, unresolved open blocking findings.
+    When the filter above finds nothing, fall back to those findings directly
+    (`open_blocking_findings_from_pr_review`, the same persisted-open-set `phase_check_from_
+    review_findings`'s `include_persisted_open_blocking=True` path already trusts) so the Maker
+    prompt is never silently empty while real open findings exist.
     """
     last_check = state.last_check_result
+    findings = _pr_review_findings_from_last_check_results(last_check)
+    if findings:
+        return findings
+    return [
+        {
+            "severity": item.severity,
+            "summary": item.body_excerpt,
+            "source": "pr_review",
+            "path": item.path,
+            "line": item.line,
+        }
+        for item in prw.open_blocking_findings_from_pr_review(state.pr_review)
+    ]
+
+
+def _pr_review_findings_from_last_check_results(last_check: Any) -> list[dict[str, Any]]:
+    """Extract blocking `source == "pr_review"` findings from a raw `last_check_result` dict.
+
+    Split out of `_pr_review_findings_from_last_check` (Issue #424) so its fallback to
+    `open_blocking_findings_from_pr_review` only applies when this primary source is empty.
+    """
     if not isinstance(last_check, dict):
         return []
     results = last_check.get("results")
