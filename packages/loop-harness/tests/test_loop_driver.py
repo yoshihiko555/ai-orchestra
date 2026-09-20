@@ -725,7 +725,8 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         # Codex review (PR #423, 1st round): `env -i`/`env --ignore-environment` wipes the entire
         # child environment, discarding the `GIT_CONFIG_GLOBAL=/dev/null`/
         # `GIT_CONFIG_SYSTEM=/dev/null` selectors `maker_env()` sets, so an attacker-written
-        # `~/.gitconfig` `[alias] p = push` is honored again with no denied token present.
+        # `~/.gitconfig` `[alias] p = push` is honored again with no denied token present. (Now
+        # denied by the bare-word `env` rule below, same as every other shape in this group.)
         "env -i HOME=/tmp/attacker-home PATH=/usr/bin git p origin main",
         "env --ignore-environment git status",
         # ...and the same bypass split across a `\`+newline line continuation.
@@ -736,25 +737,52 @@ def test_is_git_metadata_path(file_path: str, expected: bool) -> None:
         "env - HOME=/tmp/x git p origin main",
         "env -u FOO -i git status",
         "env --unset=FOO --ignore-environment git status",
-        # `-S`/`--split-string` re-parses its argument as MORE `env` options (its usual shebang
-        # purpose), so `env -S '-i CMD'` is equivalent to `env -i CMD` one level of indirection
-        # deep; failing closed on `-S` itself (without parsing what it re-parses into) closes
-        # this without needing to recurse.
         "env -S '-i git p origin main'",
-        # Codex review (PR #423, P2): `git --config-env=<name>=<envvar>` (and the space-separated
-        # form) injects a config value sourced from an environment variable for one invocation,
-        # with neither `-c`/`config` nor any `GIT_CONFIG_*` token present.
+        # Codex review (PR #423, 3rd round): a 2nd-round token-walking scan tried to precisely
+        # characterize every wipe-flag shape (and only those), and 8 further bypasses/
+        # false-positives were found against that approximation — the fix pivoted to denying the
+        # bare word `env` (and `exec`) outright rather than trying to keep enumerating shapes.
+        # Below: the 8 concrete bypasses that specifically broke the 2nd-round token scan.
+        #
+        # `--split-string=` attached (with `=`) rather than a separate argument.
+        "env --split-string='-i HOME=/tmp/a PATH=/usr/bin git p'",
+        # getopt_long unambiguous-prefix abbreviation of `--chdir` (`--chd`) — the 2nd round's
+        # arg-taking-flag set only recognized the full spelling.
+        "env --chd /tmp -i HOME=/tmp/a git p origin x",
+        # a shell metacharacter (`;`) quoted inside an option's OWN argument (`-u 'A;B'`) — the
+        # 2nd round's naive `[;&|\n]`-based statement split cut the scan short right there,
+        # hiding the `-i` that follows.
+        "env -u 'A;B' -i HOME=/tmp/a git p origin x",
+        # the `exec -c` bash builtin wipes the environment the same way `env -i` does, but the
+        # 2nd round only ever looked for `env` — this was not covered at all.
+        "exec -c env HOME=/tmp/a git p origin x",
+        # a redirect operator directly adjacent to `env` with no separating whitespace — the 2nd
+        # round's `env` word-anchor required a `\s`/`${IFS}` lookahead that a `>` redirect doesn't
+        # satisfy, so the anchor itself never matched.
+        "env>/dev/null -i HOME=/tmp/a git p origin x",
+        "env 2>/dev/null -i git status",
+        # Codex review (PR #423, P2/3rd round): `git --config-env=<name>=<envvar>` (and the
+        # space-separated form) injects a config value sourced from an environment variable for
+        # one invocation, with neither `-c`/`config` nor any `GIT_CONFIG_*` token present. (Now
+        # denied by the bare-literal `--config-env` rule, with no `git`/statement-scan needed.)
         "X=push git --config-env=alias.p=X p origin attack",
         "git --config-env alias.p=X status",
         # ...and the same bypass split across a line continuation.
         "git --config-\\\nenv=alias.p=X status",
-        # Codex review (PR #423, 2nd round): the rule must scan to the actual shell statement
-        # separator rather than a fixed token count — 5 padding `-C DIR` pairs (10 tokens) exceed
-        # the 1st round's `_filler(8)` bound and previously slipped through undenied.
+        # 2nd-round `_filler(8)`-bounded / unbounded-but-separator-scanned attempts: irrelevant
+        # now (no token count or statement boundary is tracked at all), but kept as regression
+        # coverage that heavy padding still doesn't evade the bare-literal rule.
         "X=push git -C /tmp/work -C . -C . -C . -C . --config-env=alias.p=X p origin attack",
-        # ...and the padding tokens can themselves be `${IFS}`-separated (SC2) without breaking
-        # the unbounded scan.
         "git${IFS}--config-env=alias.p=X${IFS}p${IFS}origin${IFS}attack",
+        # `&>`/`2>&1`-style redirects around `--config-env` — the 2nd round's separator-scan had
+        # to treat these as "still one statement" without becoming crossable; the bare-literal
+        # rule needs no such reasoning at all.
+        "X='!touch /tmp/m' git &>/dev/null --config-env=alias.p=X p",
+        # a genuine (non-continuation) newline between `--config-env` and anything else: the
+        # 2nd-round rule required reconstructing "one invocation" across it; the bare-literal
+        # rule denies the mere presence of the term regardless — an accepted, intentional
+        # fail-closed false positive (see the module docstring).
+        "git status\nprintf -- --config-env",
     ],
 )
 def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
@@ -783,19 +811,32 @@ def test_maker_bash_guard_denies_sec_med_bypasses(command: str) -> None:
         # SEC-MED (PR review): line-continuation stripping only ever *fuses* halves back together,
         # so it must not turn a benign continuation into a false-positive deny.
         "echo hel\\\nlo world",
-        # Codex review (PR #423, P2): `env FOO=bar ...` (no `-i`/`--ignore-environment`) merely
-        # sets an extra variable and does not wipe the environment, so it must not be denied.
-        "env FOO=bar git status",
-        # Codex review (PR #423, P2) regression guard: `_find_env_wipe`'s scan stops at the
-        # wrapped command's own name (`sed`), so a realistic Maker command using `sed`'s own
-        # `-i` flag is never reached by this rule and false-flagged.
-        "env FOO=bar sed -i 's/a/b/' f",
-        # Codex review (PR #423, 2nd round): `-u`/`--unset` only removes a variable and takes its
-        # own separate argument (`FOO`); it is not itself a wipe flag and must not be denied.
-        "env -u FOO git status",
-        # Codex review (PR #423, 2nd round) regression guard: the `env` word-boundary anchor
-        # must not match inside `--env-file`/`.env` (`_ENV_WORD_RE`'s negative lookbehind).
+        # Codex review (PR #423, 3rd round): fail-closed pivot. `env FOO=bar git status`,
+        # `env FOO=bar sed -i 's/a/b/' f`, and `env -u FOO git status` were allowed under the
+        # 2nd-round token-walking scan (none of them actually wipe the environment), but that
+        # scan had 8 bypasses/false-positives against it (see the deny test above) and was
+        # replaced by a bare-word `env` deny with NO exceptions for "safe-looking" `env` usage —
+        # so all three of those cases are intentionally moved to the deny list above instead.
+        #
+        # `--env-file`/`.env` (docker compose) must not trip the bare-word `env` rule: the
+        # lookbehind/lookahead require `env` to stand alone as its own word, not a substring of a
+        # longer option/filename.
         "docker compose --env-file .env up",
+        # `printenv`/`environment`-as-substring: `env` is not its own word here (no preceding
+        # non-word/`.`/`/`/`$`/`-` boundary in `printenv`'s case — `print` immediately precedes
+        # `env` with a word-character `t`).
+        "printenv PATH",
+        # a plain `NAME=VALUE` assignment (no `env` word at all) must not be denied.
+        "ENV=prod make build",
+        # `find ... -exec` must not trip the bare-word `exec` rule: `-exec` is preceded by `-`,
+        # which the lookbehind excludes (only a non-word boundary that is NOT one of
+        # `\w`/`.`/`/`/`$`/`-` counts as a real word start).
+        "find . -name '*.py' -exec cat {} +",
+        # `$env_name` (a shell variable reference): `env` is immediately followed by `_`, a word
+        # character the lookahead excludes, so this is not treated as the standalone word `env`.
+        "echo $env_name",
+        # sanity: an ordinary command with neither `env`/`exec`/`--config-env` anywhere.
+        "git status",
     ],
 )
 def test_maker_bash_guard_allows_git_config_file_selectors(command: str) -> None:
