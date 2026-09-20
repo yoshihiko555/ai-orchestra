@@ -794,35 +794,43 @@ def _renumber_resumed_pr_review_findings(state: LoopState) -> None:
        `"addressed"`/`"dismissed"` records are left untouched: per `build_pr_iteration_findings`'s
        own status filter they never feed the no-progress/addressed-resolution signature sets
        again regardless of their iteration numbers.
-    2. `pr_review["iteration_head_recorded_iteration"]` (DH5, see
-       `loop_driver._already_pushed_this_iteration`): a pre-resume value (e.g. 1) can coincide
-       with the freshly reused iteration number of the *next* post-resume round even though no
-       push has happened in that round at all. Left unfixed, DH5 would wrongly believe "this
-       iteration already pushed" and skip straight to polling/collecting against a stale,
-       pre-resume `iteration_head_sha` -- reproducing the same false-resolution risk item 1
-       fixes for findings, but for the push-tracking side. Resetting it to `None` here makes
-       DH5 unable to match until *this* resumed attempt's own `record_iteration_head` call sets
-       it fresh (never a pre-resume value). `iteration_head_sha` itself is left untouched: it
-       still correctly answers "does local HEAD already match the last thing pushed" for
-       `_drain_before_push`'s H12 no-new-commit shortcut, independent of iteration numbering.
+    2. `pr_review["iteration_head_recorded_iteration"]`/`pr_review["iteration_head_action_id"]`
+       (DH5, see `loop_driver._already_pushed_this_iteration`): a pre-resume
+       `iteration_head_recorded_iteration` value (e.g. 1) can coincide with the freshly reused
+       iteration number of the *next* post-resume round even though no push has happened in
+       that round at all. Left unfixed, DH5 would wrongly believe "this iteration already
+       pushed" and skip straight to polling/collecting against a stale, pre-resume
+       `iteration_head_sha` -- reproducing the same false-resolution risk item 1 fixes for
+       findings, but for the push-tracking side. Resetting both fields to `None` here makes
+       DH5 unable to match (and, even if it somehow still did, unable to pass
+       `loop_driver._run_wait_external_review`'s `recorded_action_id == action_id` carve-out
+       either, since a `None` action id can never equal a real one) until *this* resumed
+       attempt's own `record_iteration_head` call sets both fresh (never a pre-resume value).
+       `iteration_head_sha` itself is left untouched: it still correctly answers "does local
+       HEAD already match the last thing pushed" for `_drain_before_push`'s H12 no-new-commit
+       shortcut, independent of iteration numbering.
 
     Adversarial review (2026-09-20, Issue #424 follow-up) confirmed that renumbering findings to
     0 is only safe together with two other guarantees, both enforced elsewhere: (a) this
     `None` reset here, so DH5 cannot falsely fast-forward past a real push this round, and
     (b) `loop_driver._run_wait_external_review` only computes `resolved_signatures` / calls
-    `mark_addressed_findings` when this action itself executed the real push branch (not the
-    DH5 shortcut) -- see that method's `pushed_this_action` gate. With both in place, a
+    `mark_addressed_findings` when this action itself executed the real push branch, or DH5
+    fired for a push *this exact action* made (the `iteration_head_action_id`-based
+    `pushed_this_action` gate; a bare "never trust DH5" gate over-corrected by also blocking
+    DH5's own legitimate crash-recovery use, see that method's comment). With both in place, a
     renumbered "previously open" finding can only be marked addressed after a genuine new push
-    in the current (resumed) attempt was reviewed and not reraised, never merely because the
-    counters reset. `ReviewFindingsResult.open_blocking` (`pr_review_wait._open_blocking_findings`)
-    remains a further, independent layer for any path that reaches a phase check without going
-    through that gate at all (e.g. a non-`pr_review_response` phase reusing this subsystem).
+    -- made either in this exact action or, if resumed mid-action, confirmed to be this same
+    action's own push -- was reviewed and not reraised, never merely because the counters reset.
+    `ReviewFindingsResult.open_blocking` (`pr_review_wait._open_blocking_findings`) remains a
+    further, independent layer for any path that reaches a phase check without going through
+    that gate at all (e.g. a non-`pr_review_response` phase reusing this subsystem).
     """
     if not isinstance(state.pr_review, dict):
         return
     findings = state.pr_review.get("findings")
     has_recorded_iteration = state.pr_review.get("iteration_head_recorded_iteration") is not None
-    if not isinstance(findings, dict) and not has_recorded_iteration:
+    has_recorded_action_id = state.pr_review.get("iteration_head_action_id") is not None
+    if not isinstance(findings, dict) and not has_recorded_iteration and not has_recorded_action_id:
         return
     pr_review = copy.deepcopy(state.pr_review)
     changed = False
@@ -836,6 +844,9 @@ def _renumber_resumed_pr_review_findings(state: LoopState) -> None:
                 changed = True
     if has_recorded_iteration:
         pr_review["iteration_head_recorded_iteration"] = None
+        changed = True
+    if has_recorded_action_id:
+        pr_review["iteration_head_action_id"] = None
         changed = True
     if changed:
         state.pr_review = pr_review

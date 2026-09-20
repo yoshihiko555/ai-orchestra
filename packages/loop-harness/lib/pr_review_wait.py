@@ -562,11 +562,16 @@ def record_iteration_head(
     """Record the post-push PR head SHA for check-run fallback scoping.
 
     `iteration` (DH5), when given, is durably recorded alongside `iteration_head_sha` as
-    `iteration_head_recorded_iteration`. This lets a resumed `wait_external_review` (e.g.
-    after a driver crash between this call succeeding and its poll actually starting)
-    distinguish "this push already happened for the *current* iteration, just go poll" from
-    the unrelated, genuinely-nothing-to-push case where `iteration_head_sha` is merely stale
-    from an earlier iteration (see `loop_driver._already_pushed_this_iteration`).
+    `iteration_head_recorded_iteration`, together with this call's own `action_id` as
+    `iteration_head_action_id`. This lets a resumed `wait_external_review` (e.g. after a driver
+    crash between this call succeeding and its poll actually starting) distinguish "this push
+    already happened for the *current* iteration, just go poll" from the unrelated,
+    genuinely-nothing-to-push case where `iteration_head_sha` is merely stale from an earlier
+    iteration (see `loop_driver._already_pushed_this_iteration`). `iteration_head_action_id`
+    (Issue #424 PR #427 follow-up) further lets that same resumed action recognize that *it*
+    (not some other, possibly pre-resume, action) is the one that made this exact push, which is
+    what makes it safe to still treat a clean re-review of it as genuine "not reraised ->
+    addressed" evidence (see `loop_driver._run_wait_external_review`'s `pushed_this_action` gate).
     """
     payload = client.api(f"repos/{client.repo}/pulls/{pr_number}")
     head = payload.get("head") if isinstance(payload, dict) else None
@@ -578,6 +583,7 @@ def record_iteration_head(
     pr_review["iteration_head_sha"] = sha
     if iteration is not None:
         pr_review["iteration_head_recorded_iteration"] = iteration
+        pr_review["iteration_head_action_id"] = action_id
     state.pr_review = pr_review
     state.updated_at = lc.now_iso()
     with _fenced_pr_review_write(

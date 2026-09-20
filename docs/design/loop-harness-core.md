@@ -347,6 +347,21 @@ def resume(
     `lease_token` フィールド）で呼び出し元へ返す。`attach` と異なり、対象状態を `failed`/`stopped`
     （ループが既に終了・安全停止済みで、正当な所有者が更新し続けている前提が無い状態）に限定して
     いるため、旧 lease の生存確認（`is_lease_alive()`）は行わず無条件に新しい lease を発行する。
+
+    **`pr_review` の反復番号・push 記録も併せてリセットする（Issue #424）**: `guards` の
+    `GuardCounters.iteration` をフェーズごとに 0 へ戻す一方、`state.pr_review`（存在する場合）は
+    従来そのまま維持されていたため、resume 後に反復番号が 1 から振り直されると、resume 前の
+    `pr_review.findings[*].first_seen_iteration`/`last_seen_iteration` や
+    `pr_review.iteration_head_recorded_iteration`/`iteration_head_action_id` が新しい反復番号と
+    偶然一致し、誤った addressed 判定や push-済み判定を招きうる。これを避けるため `resume` は
+    2 点を追加で行う: (1) `status` が `"addressed"`/`"dismissed"` のいずれでもない finding
+    レコードの `first_seen_iteration`/`last_seen_iteration` を 0 に付け直す（それらの状態を
+    resume 後最初の反復の「前回」として正しく再認識させるため。`"addressed"`/`"dismissed"`
+    レコードは歴史的記録のため変更しない）。(2)
+    `pr_review.iteration_head_recorded_iteration`/`pr_review.iteration_head_action_id` を両方
+    `None` にリセットする（`pr_review.iteration_head_sha` 自体は変更しない。push 済みかどうかの
+    判定に使う独立した情報のため）。詳細な根拠は pr-review 編（`design:loop-harness-pr-review`）の
+    finding スキーマ節・`wait_external_review` 節を参照。
     """
 
 
@@ -384,7 +399,7 @@ def attach(loop_id: str, project_dir: str, owner_id: str, ttl_seconds: int) -> P
 | `complete`  | `pending_action.action_id == action_id` かつ `state.state_version == state_version`。または `last_completed_action.action_id == action_id`（冪等再送） | `pending_action = None`；`last_completed_action` 更新；`state_version += 1`；journal に `completed` 追記。合否確定時は guards/phase/status も更新 |
 | `reconcile` | `pending_action != None` かつ対応する `completed` journal イベントが存在しない                                                                         | 副作用確認できれば `completed` 相当として記録・進行再開。確認不能なら `infrastructure_failure` として記録し新しい `propose` に委ねる              |
 | `heartbeat` | `lock.json` が存在し `lease_token` が有効                                                                                                              | `lock.json.heartbeat_at` のみ更新。`state.json` は不変（`state_version` 不変）                                                                    |
-| `resume`    | `state.status in {"failed", "stopped"}` かつ `reset_counters == True`（`lease_token` は事前条件に含まない。発行側のため。P2）                          | 対象フェーズの `guards` をリセット；`status → "running"`；`stop_reason = None`；`state_version += 1`；`lock.json` に新しい `lease_token` を発行   |
+| `resume`    | `state.status in {"failed", "stopped"}` かつ `reset_counters == True`（`lease_token` は事前条件に含まない。発行側のため。P2）                          | 対象フェーズの `guards` をリセット；`status → "running"`；`stop_reason = None`；`state_version += 1`；`lock.json` に新しい `lease_token` を発行。`pr_review` が存在する場合、非 `addressed`/`dismissed` な finding の `first_seen_iteration`/`last_seen_iteration` を 0 へ付け直し、`iteration_head_recorded_iteration`/`iteration_head_action_id` を `None` にリセットする（`iteration_head_sha` は不変。Issue #424） |
 
 `state_version` が不一致な `complete` 呼び出し（stale）はすべて拒否され、例外 `StaleActionError` を
 送出する。呼び出し側（オーケストレーター）はこれを検知したら `propose` から再実行する。

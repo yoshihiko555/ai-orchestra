@@ -1993,23 +1993,31 @@ class LoopDriver:
             and self._already_pushed_this_iteration(state, proposal)
         )
         # Issue #424 (adversarial review follow-up): gates the "not reraised -> addressed"
-        # inference further down (`resolved_signatures`) on *not* having taken the DH5 shortcut
-        # (`already_pushed_via_dh5`) -- that shortcut skips straight to polling/collecting
-        # against whatever `iteration_head_sha`/`iteration_head_recorded_iteration` is already
-        # on record, without this action itself confirming (via `record_iteration_head`) that
-        # it corresponds to a fresh push. `resume()` now clears `iteration_head_recorded_iteration`
-        # (`_renumber_resumed_pr_review_findings`) specifically so DH5 can never match a
-        # pre-resume push record, but this gate is a second, independent line of defense: even
-        # if DH5 legitimately fires (its intended use -- a driver crash between this same
-        # action's own `record_iteration_head` succeeding and the poll actually starting),
-        # deferring the "not reraised -> addressed" inference to the *next* round (where DH5
-        # will no longer match, since its iteration number moves on) is strictly safer than
-        # ever risking it on a shortcut path. `push_required is False` (the one-time
-        # initial-PR-creation poll, where `advance_phase` already pushed, and no
-        # `_already_pushed_this_iteration` check applies at all) is not gated here: it never
-        # goes through DH5, and `previous_iteration_findings` is always empty on that first
-        # round (no findings exist yet) regardless, so this only ever matters for later rounds.
-        pushed_this_action = not already_pushed_via_dh5
+        # inference further down (`resolved_signatures`) on either not having taken the DH5
+        # shortcut (`already_pushed_via_dh5`) at all, or -- Issue #424 PR #427 follow-up
+        # (CodeRabbit High / Codex P1) -- DH5 having fired for a push *this exact action* made.
+        # A bare `not already_pushed_via_dh5` gate (the original round of this fix) over-corrected:
+        # it also disabled the inference for DH5's own intended, legitimate use (a driver crash
+        # between this action's `record_iteration_head` succeeding and its poll actually
+        # starting; the respawned worker re-enters this same action/iteration). Without this
+        # `recorded_action_id == action_id` carve-out, that clean-review case would never mark
+        # its findings addressed, `include_persisted_open_blocking=True` would keep failing
+        # forever, and the next Maker -- with nothing left to fix -- would hit the H12
+        # no-new-commit shortcut every round: permanent non-convergence, not just a one-round
+        # delay. `record_iteration_head` persists `iteration_head_action_id` alongside
+        # `iteration_head_sha`/`iteration_head_recorded_iteration` precisely so this action can
+        # tell "DH5 matched *my own* push" apart from "DH5 matched some other (possibly
+        # pre-resume) action's push" -- `resume()` clears all three together
+        # (`_renumber_resumed_pr_review_findings`), so a pre-resume `iteration_head_action_id`
+        # can never equal a post-resume `action_id` either. A missing/`None` recorded id (an
+        # older state predating this field, or one `resume()` just cleared) never equals a real
+        # `action_id`, so it fails closed to the original, more conservative gate. `push_required
+        # is False` (the one-time initial-PR-creation poll, where `advance_phase` already
+        # pushed) is not gated here: it never goes through DH5 at all, and
+        # `previous_iteration_findings` is always empty on that first round regardless.
+        pr_review_for_dh5 = state.pr_review if isinstance(state.pr_review, dict) else {}
+        recorded_action_id = pr_review_for_dh5.get("iteration_head_action_id")
+        pushed_this_action = not already_pushed_via_dh5 or recorded_action_id == action_id
         if already_pushed_via_dh5:
             pass
         elif push_required:
@@ -2204,7 +2212,16 @@ class LoopDriver:
         )
         if resolved_signatures:
             commit_sha = baseline.get("iteration_head_sha")
-            prw.mark_addressed_findings(
+            # Issue #424 (Codex P2, PR #427 follow-up): `mark_addressed_findings` only ever
+            # flips a candidate signature's persisted `status` when it is currently `"open"`
+            # (its own docstring) -- a record with a missing/unexpected `status` is silently
+            # skipped. `_open_blocking_findings` (Issue #424) fails *closed* on exactly that
+            # same missing/unexpected `status` by still treating it as open/blocking. Using the
+            # candidate `resolved_signatures` set below (rather than what this call actually
+            # returned) would resolve a GitHub thread for, and hide from `open_blocking`, a
+            # finding this call never actually marked addressed -- reintroducing a false pass
+            # for that one malformed-but-genuinely-still-open record.
+            actually_addressed = prw.mark_addressed_findings(
                 self.loop_id,
                 self.project_dir,
                 resolved_signatures,
@@ -2213,33 +2230,34 @@ class LoopDriver:
                 self.lease_token,
                 action_id=action_id,
             )
-            addressed_result = prw.resolve_addressed_findings(
-                self.loop_id,
-                self.project_dir,
-                pr_number,
-                repo,
-                resolved_signatures,
-                commit_sha,
-                self.lease_token,
-                action_id=action_id,
-            )
-            self._journal_addressed_findings_outcome(addressed_result, action_id)
-            # Issue #424: `result.open_blocking` was computed inside `collect_review_findings`
-            # (and, if classification ran, `apply_severity_classifications`) *before*
-            # `mark_addressed_findings` above flipped `resolved_signatures` to `"addressed"` in
-            # state. Without this filter, a signature genuinely resolved by this very round
-            # would still show up in the stale `result.open_blocking` snapshot and
-            # `phase_check_from_review_findings` below would treat it as still-blocking forever
-            # (Codex-style: a permanent false-fail for exactly the findings this round just
-            # fixed).
-            result = dataclasses.replace(
-                result,
-                open_blocking=tuple(
-                    item
-                    for item in result.open_blocking
-                    if item.signature not in resolved_signatures
-                ),
-            )
+            if actually_addressed:
+                addressed_result = prw.resolve_addressed_findings(
+                    self.loop_id,
+                    self.project_dir,
+                    pr_number,
+                    repo,
+                    actually_addressed,
+                    commit_sha,
+                    self.lease_token,
+                    action_id=action_id,
+                )
+                self._journal_addressed_findings_outcome(addressed_result, action_id)
+                # Issue #424: `result.open_blocking` was computed inside
+                # `collect_review_findings` (and, if classification ran,
+                # `apply_severity_classifications`) *before* `mark_addressed_findings` above
+                # flipped `actually_addressed` to `"addressed"` in state. Without this filter, a
+                # signature genuinely resolved by this very round would still show up in the
+                # stale `result.open_blocking` snapshot and `phase_check_from_review_findings`
+                # below would treat it as still-blocking forever (a permanent false-fail for
+                # exactly the findings this round just fixed).
+                result = dataclasses.replace(
+                    result,
+                    open_blocking=tuple(
+                        item
+                        for item in result.open_blocking
+                        if item.signature not in actually_addressed
+                    ),
+                )
         # Issue #424: this is the one call site that opts into `include_persisted_open_blocking`
         # -- see `phase_check_from_review_findings`'s own docstring for why only this call site
         # (guarded by `pushed_this_action` above) may safely do so.

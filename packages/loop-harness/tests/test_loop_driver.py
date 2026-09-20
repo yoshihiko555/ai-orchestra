@@ -6967,7 +6967,11 @@ def test_wait_external_review_marks_and_resolves_addressed_findings(
     monkeypatch.setattr(
         prw,
         "mark_addressed_findings",
-        lambda *a, **k: (mark_calls.append((a, k)), ())[1],
+        # Echo back the candidate signatures (Issue #424 PR #427 follow-up: the caller now uses
+        # this return value, not the candidate set it was called with, to decide what to
+        # resolve/exclude from `open_blocking`) -- these tests simulate every candidate
+        # genuinely being `status == "open"` and thus actually marked.
+        lambda *a, **k: (mark_calls.append((a, k)), tuple(a[2]))[1],
     )
     monkeypatch.setattr(
         prw,
@@ -7187,12 +7191,123 @@ def test_wait_external_review_dh5_shortcut_does_not_falsely_resolve_stale_findin
     assert lc.load_state(loop_id, project_dir).pr_review["findings"]["sig-a"]["status"] == "open"
 
 
+def test_wait_external_review_dh5_same_action_resolves_findings_on_clean_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CodeRabbit High / Codex P1 (Issue #424 PR #427 follow-up): DH5's own *legitimate* use --
+    a driver crash between this action's `record_iteration_head` succeeding and the poll
+    actually starting, so the respawned worker re-enters this exact `wait_external_review`
+    action/iteration -- must still be able to mark findings addressed on a genuinely clean
+    review. `iteration_head_action_id` (persisted by `record_iteration_head`) equals this
+    proposal's own `action_id`, so the `pushed_this_action` gate's `recorded_action_id ==
+    action_id` carve-out applies even though DH5 fires. `mark_addressed_findings` and
+    `resolve_addressed_findings` run for real (not mocked) so this proves the actual persisted
+    state flips to `"addressed"`, not just that the right functions were called."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    local_head = _git(["rev-parse", "HEAD"], tmp_path)
+    state.pr_number = 42
+    action_id = "act-424-dh5-same-action"
+    state.pr_review = {
+        "baseline_review_id": 0,
+        "baseline_recorded_at": lc.now_iso(),
+        "processed_comment_ids": [],
+        "iteration_head_sha": local_head,
+        "iteration_head_recorded_iteration": 1,
+        "iteration_head_action_id": action_id,
+        "findings": {
+            "sig-a": {
+                "status": "open",
+                "severity": "high",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+                "path": "app.py",
+                "line": 1,
+                "body_excerpt": "will be confirmed fixed",
+                "source_comment_ids": ["review_comment:1"],
+            }
+        },
+    }
+    state.pending_action = lc.PendingAction(
+        action_id, lc.Action.WAIT_EXTERNAL_REVIEW.value, state.phase, 1, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_current_branch", lambda _wt: "main")
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "resolve_addressed_findings",
+        lambda *a, **k: prw.AddressedFindingsResult((), (), git_workflow_unavailable=False),
+    )
+
+    # Clean review: `sig-a` was open at `iteration - 1` and does not reraise at `iteration`,
+    # and `open_blocking` reflects its true pre-mark-addressed persisted state (still "open").
+    sig_a_open_blocking = prw.NonBlockingFinding(
+        signature="sig-a", severity="high", path="app.py", line=1, body_excerpt="unresolved"
+    )
+    previous = lc.IterationFindings(frozenset({"sig-a"}), 1)
+    current = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult(
+        (), current, previous, (), (), 0, 0, open_blocking=(sig_a_open_blocking,)
+    )
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError(
+            "must not re-run the push flow once DH5 detects an already-pushed HEAD"
+        )
+
+    monkeypatch.setattr(prw, "fetch_review_items", _boom)
+    monkeypatch.setattr(prw, "record_baseline", _boom)
+    monkeypatch.setattr(d, "_push_verified_branch", _boom)
+    monkeypatch.setattr(prw, "record_iteration_head", _boom)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id=action_id,
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(
+        proposal, state, {"push_required": True, "verified_branch": "main"}
+    )
+
+    assert result["passed"] is True
+    assert result["results"][0]["findings"] == []
+    assert lc.load_state(loop_id, project_dir).pr_review["findings"]["sig-a"]["status"] == (
+        "addressed"
+    )
+
+
 def test_resume_clears_iteration_head_recorded_iteration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Issue #424: `resume()` must reset `pr_review["iteration_head_recorded_iteration"]` to
-    `None` so DH5 (`loop_driver._already_pushed_this_iteration`) can never match a pre-resume
-    push record against the freshly reset iteration numbering -- see
+    """Issue #424: `resume()` must reset `pr_review["iteration_head_recorded_iteration"]` and
+    `pr_review["iteration_head_action_id"]` to `None` so DH5 (`loop_driver.
+    _already_pushed_this_iteration`) can never match a pre-resume push record against the
+    freshly reset iteration numbering, and its `recorded_action_id == action_id` carve-out
+    (Issue #424 PR #427 follow-up) can never match a pre-resume action id either -- see
     `_renumber_resumed_pr_review_findings`'s docstring. `iteration_head_sha` itself is left
     untouched: it still correctly answers the independent "did local HEAD already match the
     last push" question `_drain_before_push`'s H12 shortcut relies on."""
@@ -7203,6 +7318,7 @@ def test_resume_clears_iteration_head_recorded_iteration(
     state.pr_review = {
         "iteration_head_sha": "cafebabecafebabe",
         "iteration_head_recorded_iteration": 1,
+        "iteration_head_action_id": "act-pre-resume",
         "findings": {},
     }
     lc._write_state(state, project_dir)
@@ -7210,6 +7326,7 @@ def test_resume_clears_iteration_head_recorded_iteration(
     resumed = lc.resume(loop_id, project_dir, True, "owner", 3600, host="local")
 
     assert resumed.state.pr_review["iteration_head_recorded_iteration"] is None
+    assert resumed.state.pr_review["iteration_head_action_id"] is None
     assert resumed.state.pr_review["iteration_head_sha"] == "cafebabecafebabe"
 
 
@@ -7296,6 +7413,102 @@ def test_wait_external_review_fails_on_persisted_open_blocking_findings_with_zer
         "unresolved from before resume",
         "also unresolved from before resume",
     }
+
+
+def test_wait_external_review_skips_resolution_for_finding_with_missing_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 (Issue #424 PR #427 follow-up): a persisted finding record with a missing/
+    unexpected `status` (never `"open"`) is fail-closed *open/blocking* by
+    `_open_blocking_findings`, but `mark_addressed_findings` only ever flips a candidate whose
+    `status` is currently exactly `"open"` (its own docstring) -- it silently skips this one.
+    Using the *candidate* `resolved_signatures` set (rather than what `mark_addressed_findings`
+    actually returned) to resolve GitHub threads / filter `open_blocking` would incorrectly
+    resolve this finding's thread and hide it from `open_blocking`, even though it was never
+    actually marked addressed and is still genuinely open. `mark_addressed_findings` runs for
+    real here (not mocked) so this proves the actual persisted record is left untouched."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    action_id = "act-424-missing-status"
+    state.pr_review = {
+        "iteration_head_sha": "cafebabecafebabe",
+        "findings": {
+            "sig-missing-status": {
+                # Deliberately no "status" key at all -- e.g. a malformed/legacy record.
+                "severity": "high",
+                "path": "a.py",
+                "line": 1,
+                "body_excerpt": "no status field",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+            }
+        },
+    }
+    state.pending_action = lc.PendingAction(
+        action_id, lc.Action.WAIT_EXTERNAL_REVIEW.value, state.phase, 1, lc.now_iso()
+    )
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    resolve_calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        prw,
+        "resolve_addressed_findings",
+        lambda *a, **k: (
+            resolve_calls.append((a, k)),
+            prw.AddressedFindingsResult((), (), git_workflow_unavailable=False),
+        )[1],
+    )
+
+    missing_status_blocking = prw.NonBlockingFinding(
+        signature="sig-missing-status",
+        severity="high",
+        path="a.py",
+        line=1,
+        body_excerpt="no status field",
+    )
+    previous = lc.IterationFindings(frozenset({"sig-missing-status"}), 1)
+    current = lc.IterationFindings(frozenset(), 0)
+    collected = prw.ReviewFindingsResult(
+        (), current, previous, (), (), 0, 0, open_blocking=(missing_status_blocking,)
+    )
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id=action_id,
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    result = d._run_wait_external_review(proposal, state, {})
+
+    assert resolve_calls == []
+    assert result["passed"] is False
+    findings = result["results"][0]["findings"]
+    assert [item["severity"] for item in findings] == ["high"]
+    persisted = lc.load_state(loop_id, project_dir).pr_review["findings"]["sig-missing-status"]
+    assert persisted.get("status") != "addressed"
 
 
 def test_wait_external_review_journals_addressed_findings_outcome(
@@ -7472,7 +7685,11 @@ def test_wait_external_review_excludes_demoted_signature_from_addressed_resoluti
     monkeypatch.setattr(
         prw,
         "mark_addressed_findings",
-        lambda *a, **k: (mark_calls.append((a, k)), ())[1],
+        # Echo back the candidate signatures (Issue #424 PR #427 follow-up: the caller now uses
+        # this return value, not the candidate set it was called with, to decide what to
+        # resolve/exclude from `open_blocking`) -- these tests simulate every candidate
+        # genuinely being `status == "open"` and thus actually marked.
+        lambda *a, **k: (mark_calls.append((a, k)), tuple(a[2]))[1],
     )
     monkeypatch.setattr(
         prw,
@@ -7567,7 +7784,11 @@ def test_wait_external_review_excludes_pending_classification_signature_from_add
     monkeypatch.setattr(
         prw,
         "mark_addressed_findings",
-        lambda *a, **k: (mark_calls.append((a, k)), ())[1],
+        # Echo back the candidate signatures (Issue #424 PR #427 follow-up: the caller now uses
+        # this return value, not the candidate set it was called with, to decide what to
+        # resolve/exclude from `open_blocking`) -- these tests simulate every candidate
+        # genuinely being `status == "open"` and thus actually marked.
+        lambda *a, **k: (mark_calls.append((a, k)), tuple(a[2]))[1],
     )
     monkeypatch.setattr(
         prw,
