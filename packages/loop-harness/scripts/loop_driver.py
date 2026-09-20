@@ -3289,13 +3289,13 @@ class LoopDriver:
         self, proposal: lc.ProposeResult, state: lc.LoopState, params: dict[str, Any]
     ) -> dict[str, Any]:
         """Success terminal action: run on_success.exec (PR un-draft etc.), notify, comment."""
-        self._run_success_exec(proposal, state, list(params.get("exec") or []))
+        self._run_success_exec(proposal, state, params.get("exec"))
         self._notify(state, "exit_success")
         self._maybe_comment(state, _exit_success_comment(state, params))
         return {}
 
     def _run_success_exec(
-        self, proposal: lc.ProposeResult, state: lc.LoopState, steps: list[str]
+        self, proposal: lc.ProposeResult, state: lc.LoopState, steps: Any
     ) -> None:
         """Execute `on_success.exec` tokens for `exit_success` (currently just `pr_mark_ready`).
 
@@ -3304,7 +3304,26 @@ class LoopDriver:
         `exit_success` (e.g. after `exit_failure -> resume -> exit_success`), leaving the PR
         stuck Draft while the Issue reports success. Best-effort like `_run_failure_exec`:
         unknown tokens are silently ignored, and `pr_mark_ready` itself never raises.
+
+        `steps` is deliberately typed `Any` and never blindly `list(...)`-coerced (Codex
+        review, PR #429 P3): `_proposal_params`'s own `_exit_success_exec_steps` already
+        normalizes a malformed `on_success.exec` (e.g. a hand-edited custom loop definition's
+        `exec: 42` or bare `exec: pr_mark_ready` string) to `[]`, but this method re-validates
+        independently as defense-in-depth for any other caller that builds `params` itself.
+        `steps is None` (no `exec` key at all, e.g. an older loop definition/state pre-#425) is
+        treated as "no steps" with no `gh` calls and no journal event -- matching prior
+        behavior exactly. Anything else that is not a list of plain strings is reported as
+        `pr_mark_ready_skipped reason=invalid_exec` and likewise runs no steps, instead of
+        `TypeError`-ing on `list(42)` or iterating a bare string's individual characters as
+        bogus tokens.
         """
+        if steps is None:
+            return
+        if not _is_valid_exec_steps(steps):
+            self._journal_pr_mark_ready(
+                proposal.action_id, "pr_mark_ready_skipped", {"reason": "invalid_exec"}
+            )
+            return
         for step in steps:
             if step == "pr_mark_ready":
                 self._mark_pr_ready(proposal.action_id, state)
@@ -3326,39 +3345,52 @@ class LoopDriver:
 
         Best-effort and idempotent, mirroring `_draft_pr`'s own `check=False` tolerance: no
         verified repo identity, no OPEN PR, or a PR that is already Ready for review all skip
-        silently with no push and no `gh` mutation. A `gh` failure at either step is logged to
-        stderr (mirroring `_docker_infrastructure_result`'s own stderr reporting style) but never
-        raises, so `exit_success` always completes even when GitHub is unreachable. Every outcome
-        is also journaled (`_journal_pr_mark_ready`) for later observability.
+        silently with no push and no `gh` mutation. Every `gh` step goes through `_run_gh_step`
+        (Codex review, PR #429 P1), which converts a raised `OSError`/`TimeoutExpired` (`gh`
+        missing from PATH, a hung network call) into a reported failure instead of letting it
+        propagate out of `_run_exit_success` and crash `LoopDriver.run()` before `lc.complete()`
+        runs, leaving `exit_success` pending forever. A `gh` failure (raised or nonzero exit) at
+        any step is logged to stderr (mirroring `_docker_infrastructure_result`'s own stderr
+        reporting style) but never raises, so `exit_success` always completes even when GitHub
+        is unreachable. Every outcome is also journaled (`_journal_pr_mark_ready`) for later
+        observability.
         """
         if not lc.is_repo_identity_verified(state):
             self._journal_pr_mark_ready(
                 action_id, "pr_mark_ready_skipped", {"reason": "repo_identity_unverified"}
             )
             return
-        pr_number = _lookup_open_pr_number(state.worktree_path, state.branch)
+        pr_number, lookup_failure = _lookup_open_pr_number_or_failure(
+            state.worktree_path, state.branch
+        )
+        if lookup_failure is not None:
+            print(
+                f"loop_driver: pr_mark_ready: could not list OPEN PRs for branch {state.branch!r}",
+                file=sys.stderr,
+            )
+            self._journal_pr_mark_ready(
+                action_id, "pr_mark_ready_failed", {"step": "pr_list", **lookup_failure}
+            )
+            return
         if pr_number is None:
             self._journal_pr_mark_ready(
                 action_id, "pr_mark_ready_skipped", {"reason": "no_open_pr"}
             )
             return
-        view = subprocess.run(
+        view, view_error_type = _run_gh_step(
             ["gh", "pr", "view", str(pr_number), "--json", "isDraft", "-q", ".isDraft"],
-            cwd=state.worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+            state.worktree_path,
         )
-        if view.returncode != 0:
+        if view is None or view.returncode != 0:
             print(
                 f"loop_driver: pr_mark_ready: could not read PR #{pr_number} draft state",
                 file=sys.stderr,
             )
+            failure = {"error_type": view_error_type} if view is None else {"rc": view.returncode}
             self._journal_pr_mark_ready(
                 action_id,
                 "pr_mark_ready_failed",
-                {"pr_number": pr_number, "step": "view", "rc": view.returncode},
+                {"pr_number": pr_number, "step": "view", **failure},
             )
             return
         if view.stdout.strip() != "true":
@@ -3368,23 +3400,21 @@ class LoopDriver:
                 {"reason": "not_draft", "pr_number": pr_number},
             )
             return
-        result = subprocess.run(
-            ["gh", "pr", "ready", str(pr_number)],
-            cwd=state.worktree_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+        result, ready_error_type = _run_gh_step(
+            ["gh", "pr", "ready", str(pr_number)], state.worktree_path
         )
-        if result.returncode != 0:
+        if result is None or result.returncode != 0:
             print(
                 f"loop_driver: pr_mark_ready: gh pr ready failed for PR #{pr_number}",
                 file=sys.stderr,
             )
+            failure = (
+                {"error_type": ready_error_type} if result is None else {"rc": result.returncode}
+            )
             self._journal_pr_mark_ready(
                 action_id,
                 "pr_mark_ready_failed",
-                {"pr_number": pr_number, "step": "ready", "rc": result.returncode},
+                {"pr_number": pr_number, "step": "ready", **failure},
             )
             return
         print(
@@ -3579,8 +3609,18 @@ def _lookup_open_pr_number(worktree_path: str, branch: str) -> int | None:
     )
     if result.returncode != 0 or not result.stdout.strip():
         return None
+    return _parse_first_open_pr_number(result.stdout)
+
+
+def _parse_first_open_pr_number(stdout: str) -> int | None:
+    """Parse `gh pr list --json number --limit 1`'s stdout into a PR number, or None.
+
+    Shared by `_lookup_open_pr_number` and `_lookup_open_pr_number_or_failure` (Codex review,
+    PR #429 P2) so the two never drift apart on what counts as "found nothing" vs. malformed
+    JSON.
+    """
     try:
-        payload = json.loads(result.stdout)
+        payload = json.loads(stdout)
     except ValueError:
         return None
     if not isinstance(payload, list) or not payload:
@@ -3590,6 +3630,83 @@ def _lookup_open_pr_number(worktree_path: str, branch: str) -> int | None:
         return None
     number = first.get("number")
     return number if isinstance(number, int) else None
+
+
+def _run_gh_step(
+    cmd: list[str], cwd: str, timeout: int = 30
+) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    """Run one `gh` subprocess call, converting a raised `OSError`/`TimeoutExpired` (e.g. `gh`
+    missing from PATH, or a hung network call) into a reported failure instead of letting it
+    propagate (Codex review, PR #429 P1) -- `_mark_pr_ready` is best-effort end-to-end and must
+    never crash `LoopDriver.run()` mid-dispatch, leaving `exit_success` pending forever with no
+    `lc.complete()`.
+
+    Returns `(result, None)` for any completed process (the caller still inspects
+    `result.returncode`), or `(None, exception class name)` when the subprocess call itself
+    raised. Only the exception's class name is reported (never `str(exc)`), so a `gh`/network
+    error message -- which could carry secrets (e.g. a token embedded in a proxy URL) -- can
+    never leak into a journal payload.
+    """
+    try:
+        return (
+            subprocess.run(
+                cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
+            ),
+            None,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, type(exc).__name__
+
+
+def _lookup_open_pr_number_or_failure(
+    worktree_path: str, branch: str
+) -> tuple[int | None, dict[str, Any] | None]:
+    """Same `gh pr list --head <branch> --state open` lookup as `_lookup_open_pr_number`, but
+    distinguishes "no OPEN PR exists" from "the lookup itself failed" (Codex review, PR #429
+    P2). `_lookup_open_pr_number`'s own `None` return conflates both -- fine for its existing
+    caller `_draft_pr` (whose fallback is "create one either way" regardless of *why* the
+    search came up empty) -- but `_mark_pr_ready` must not silently skip un-drafting a real
+    Draft PR just because a transient `gh` failure made the search look empty.
+
+    Returns `(pr_number, None)` on a successful search (`pr_number` is `None` only when the
+    search genuinely found nothing), or `(None, failure)` where `failure` is `{"rc": <int>}`
+    for a nonzero exit or `{"error_type": <exception class name>}` for a raised
+    `OSError`/`TimeoutExpired` (see `_run_gh_step`) -- both directly usable as extra
+    `pr_mark_ready_failed` journal payload fields.
+    """
+    result, error_type = _run_gh_step(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "open",
+            "--json",
+            "number",
+            "--limit",
+            "1",
+        ],
+        worktree_path,
+    )
+    if result is None:
+        return None, {"error_type": error_type}
+    if result.returncode != 0:
+        return None, {"rc": result.returncode}
+    return _parse_first_open_pr_number(result.stdout), None
+
+
+def _is_valid_exec_steps(value: Any) -> bool:
+    """Return True only for a list of plain strings (Codex review, PR #429 P3).
+
+    Mirrors `loop_common._is_valid_exec_steps`: a hand-edited/custom loop definition's
+    `on_success.exec` may not be a well-formed list of step tokens (e.g. `exec: 42` or a bare
+    `exec: pr_mark_ready` string instead of `exec: [pr_mark_ready]`). `_run_success_exec`
+    re-validates independently of `loop_common`'s own normalization as defense-in-depth for
+    any other caller that builds `params` itself.
+    """
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
 def _maker_audit_payload(action: str, result: dict[str, Any]) -> dict[str, Any]:

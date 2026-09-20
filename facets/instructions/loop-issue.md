@@ -150,7 +150,7 @@ shell の cwd に依存する git / gh / PR 操作は禁止する。
 | `wait_external_review` | 必要時だけ同 action で push し、決定論 API で待機・収集          |
 | `advance_phase`        | `params.exec` 順を保ち baseline → push/PR → head を補助記録     |
 | `stop`                 | リポジトリを変更せず安全停止通知                                |
-| `exit_success`         | 成功コメント・通知を行い正常終了                                |
+| `exit_success`         | `params.exec` の `pr_mark_ready`（Draft PR を ready へ）→ 成功コメント・通知で正常終了 |
 | `exit_failure`         | Draft PR、失敗コメント・通知を行い失敗終了                      |
 
 ## `run_maker`
@@ -585,15 +585,23 @@ Task(subagent_type="general-purpose", prompt="""
 ## `exit_success`
 
 1. 既存 PR と反復履歴・Checker 結果を確認する。新しい PR は作らない。
-2. 下記「通常終了の Issue コメント」に `PASSED` と要約を入れ、`params.issue_number` の対象 Issue へ
+2. `params.exec`（`on_success.exec` の転記。文字列リスト以外や欠落時は空として扱う）に
+   `pr_mark_ready` が含まれる場合、`params.repo_identity_verified is true` を確認したうえで
+   `params.worktree_path` を cwd に固定し、`gh pr list --head <params.branch> --state open` で
+   OPEN な PR を探す。見つかり、かつ `gh pr view <n> --json isDraft` が Draft なら
+   `gh pr ready <n>` で ready に戻す（`exit_failure` が Draft 化した PR を成功終了時に戻すため。
+   Issue #425）。PR が無い・既に ready・identity 未検証の場合は何もしない。`gh` の失敗や
+   タイムアウトは出口処理を止めず、結果ファイルに `pr_mark_ready` の失敗として記録して続行する。
+   push は伴わない。
+3. 下記「通常終了の Issue コメント」に `PASSED` と要約を入れ、`params.issue_number` の対象 Issue へ
    投稿する。critical/high はゼロだが medium/low が `open`（未 dismiss）のまま残っている場合も
    `exit_success` に到達しうる（非ブロッキング。Issue #213 B 軸）。この場合、`params` が提供する
    `non_blocking_open`（全反復累積の非 dismissed medium/low 一覧）を「残存した非ブロッキング指摘」
    セクションへ列挙する。0 件ならセクション自体を省略する。
-3. macOS 通知を発火する。
-4. 投稿・通知の直前に redaction を適用する。
-5. auto-merge は付与せず、worktree を保持する。
-6. 出口処理の結果を同じ proposal 識別子で `python3 "$LOOP_STEP" complete ...` し、終了する。
+4. macOS 通知を発火する。
+5. 投稿・通知の直前に redaction を適用する。
+6. auto-merge は付与せず、worktree を保持する。
+7. 出口処理の結果を同じ proposal 識別子で `python3 "$LOOP_STEP" complete ...` し、終了する。
 
 マージ判断は人間が行う。残存した非ブロッキング指摘がある場合は、上記コメントの一覧を参考に
 人間が任意で対応するかを判断する（ループ自体はそれを理由に失敗させない）。

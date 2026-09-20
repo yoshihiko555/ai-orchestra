@@ -2151,7 +2151,20 @@ def _exit_success_exec_steps(state: LoopState, project_dir: str) -> list[Any]:
         phase_def = _load_phase_definition(state, project_dir)
     except (InvalidStateError, loop_definition.DefinitionValidationError):
         return []
-    return _phase_nested(phase_def, ("on_success", "exec"), [])
+    steps = _phase_nested(phase_def, ("on_success", "exec"), [])
+    return steps if _is_valid_exec_steps(steps) else []
+
+
+def _is_valid_exec_steps(value: Any) -> bool:
+    """Return True only for a list of plain strings (Codex review, PR #429 P2).
+
+    A hand-edited/custom loop definition's `on_success.exec` may not be a well-formed list of
+    step tokens (e.g. `exec: 42` or a bare `exec: pr_mark_ready` string instead of `exec:
+    [pr_mark_ready]`). Iterating a non-list would raise (`int` isn't iterable) or silently
+    iterate a string's individual characters as bogus "tokens" -- both fail closed to `[]`
+    here rather than crashing `exit_success` or misinterpreting garbage as exec steps.
+    """
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
 def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[str, Any]:

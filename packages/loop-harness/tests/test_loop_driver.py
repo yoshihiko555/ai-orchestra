@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -7162,6 +7163,267 @@ def test_exit_success_without_exec_param_behaves_as_before(
     result = d._run_exit_success(proposal, state, {"pr_number": None, "non_blocking_open": []})
 
     assert result == {}
+
+
+@pytest.mark.parametrize(
+    ("exc_factory", "error_type"),
+    [
+        (lambda: OSError("gh not found"), "OSError"),
+        (lambda: subprocess.TimeoutExpired(cmd=["gh"], timeout=30), "TimeoutExpired"),
+    ],
+)
+def test_exit_success_survives_gh_pr_list_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exc_factory: Callable[[], Exception],
+    error_type: str,
+) -> None:
+    """Codex review (PR #429 P1): `gh` missing from PATH (`OSError`) or a hung network call
+    (`TimeoutExpired`) at the `gh pr list` step must not propagate out of `_run_exit_success`
+    and crash `LoopDriver.run()` before `lc.complete()` runs -- `exit_success` must still
+    complete, with the failure reported via journal instead."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    state.branch = "loop/issue-1"
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            raise exc_factory()
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    result = d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    assert result == {}
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_failed")
+    assert event is not None
+    assert event["payload"] == {"step": "pr_list", "error_type": error_type}
+
+
+@pytest.mark.parametrize(
+    ("exc_factory", "error_type"),
+    [
+        (lambda: OSError("gh not found"), "OSError"),
+        (lambda: subprocess.TimeoutExpired(cmd=["gh"], timeout=30), "TimeoutExpired"),
+    ],
+)
+def test_exit_success_survives_gh_pr_view_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exc_factory: Callable[[], Exception],
+    error_type: str,
+) -> None:
+    """Same guarantee as `test_exit_success_survives_gh_pr_list_raising`, for the `gh pr view`
+    step."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    state.branch = "loop/issue-1"
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            raise exc_factory()
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    result = d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    assert result == {}
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_failed")
+    assert event is not None
+    assert event["payload"] == {"pr_number": 42, "step": "view", "error_type": error_type}
+
+
+@pytest.mark.parametrize(
+    ("exc_factory", "error_type"),
+    [
+        (lambda: OSError("gh not found"), "OSError"),
+        (lambda: subprocess.TimeoutExpired(cmd=["gh"], timeout=30), "TimeoutExpired"),
+    ],
+)
+def test_exit_success_survives_gh_pr_ready_raising(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exc_factory: Callable[[], Exception],
+    error_type: str,
+) -> None:
+    """Same guarantee as `test_exit_success_survives_gh_pr_list_raising`, for the `gh pr ready`
+    step."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    state.branch = "loop/issue-1"
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(42), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return subprocess.CompletedProcess(cmd, 0, "true\n", "")
+        if cmd[:3] == ["gh", "pr", "ready"]:
+            raise exc_factory()
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    result = d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    assert result == {}
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_failed")
+    assert event is not None
+    assert event["payload"] == {"pr_number": 42, "step": "ready", "error_type": error_type}
+
+
+def test_exit_success_pr_list_nonzero_rc_reports_failed_not_no_open_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 P2): a `gh pr list` nonzero exit (e.g. transient API error) must
+    be distinguished from a genuinely empty search result -- it is reported as
+    `pr_mark_ready_failed step=pr_list rc=<n>`, not `pr_mark_ready_skipped reason=no_open_pr`,
+    so a real Draft PR left un-drafted by a flaky lookup stays observable as a failure."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    state.branch = "loop/issue-1"
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 1, "", "API rate limited")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    failed = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_failed")
+    assert failed is not None
+    assert failed["payload"] == {"step": "pr_list", "rc": 1}
+    skipped = lc.find_journal_event(
+        loop_id, project_dir, proposal.action_id, "pr_mark_ready_skipped"
+    )
+    assert skipped is None
+
+
+def test_exit_success_pr_list_genuinely_empty_reports_no_open_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counterpart to `test_exit_success_pr_list_nonzero_rc_reports_failed_not_no_open_pr`: a
+    clean `gh pr list` exit with an empty result is a genuine "no OPEN PR", reported as
+    `pr_mark_ready_skipped reason=no_open_pr`, not a failure."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    state.branch = "loop/issue-1"
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, _pr_list_json(), "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    d._run_exit_success(proposal, state, {"exec": ["pr_mark_ready"]})
+
+    skipped = lc.find_journal_event(
+        loop_id, project_dir, proposal.action_id, "pr_mark_ready_skipped"
+    )
+    assert skipped is not None
+    assert skipped["payload"] == {"reason": "no_open_pr"}
+    failed = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_failed")
+    assert failed is None
+
+
+@pytest.mark.parametrize(
+    "invalid_exec",
+    [
+        42,
+        "pr_mark_ready",
+        ["pr_mark_ready", 42],
+    ],
+    ids=["int", "bare-string", "list-with-non-string"],
+)
+def test_exit_success_rejects_invalid_exec_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_exec: Any
+) -> None:
+    """Codex review (PR #429 P3): a malformed `on_success.exec` (not a list of plain strings --
+    e.g. a hand-edited custom loop definition's `exec: 42`, a bare `exec: pr_mark_ready`
+    string that would otherwise iterate as individual characters, or a list containing a
+    non-string) must not crash `exit_success` or misinterpret garbage as exec steps. It is
+    reported as `pr_mark_ready_skipped reason=invalid_exec` and runs no `gh` calls."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    state.branch = "loop/issue-1"
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(lds, "notify_macos", lambda *_a, **_k: True)
+    monkeypatch.setattr(lc, "is_repo_identity_verified", lambda _state: True)
+    monkeypatch.setattr(driver.lds, "issue_number_from_loop_id", lambda _loop_id: None)
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    proposal = _exit_success_proposal(state)
+    result = d._run_exit_success(proposal, state, {"exec": invalid_exec})
+
+    assert result == {}
+    event = lc.find_journal_event(loop_id, project_dir, proposal.action_id, "pr_mark_ready_skipped")
+    assert event is not None
+    assert event["payload"] == {"reason": "invalid_exec"}
 
 
 def test_wait_external_review_marks_and_resolves_addressed_findings(

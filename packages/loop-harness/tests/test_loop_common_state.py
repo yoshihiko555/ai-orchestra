@@ -285,6 +285,34 @@ def test_exit_success_proposal_params_survives_unknown_definition_id(
     assert params == {"pr_number": 77, "non_blocking_open": [], "exec": []}
 
 
+@pytest.mark.parametrize(
+    "invalid_exec",
+    [42, "pr_mark_ready", ["pr_mark_ready", 42]],
+    ids=["int", "bare-string", "list-with-non-string"],
+)
+def test_exit_success_proposal_params_normalizes_invalid_exec_to_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_exec: object
+) -> None:
+    """Codex review (PR #429 P3): a malformed `on_success.exec` (not a list of plain strings --
+    e.g. a hand-edited custom loop definition's `exec: 42`, a bare `exec: pr_mark_ready` string
+    that would otherwise iterate as individual characters when consumed downstream, or a list
+    containing a non-string) must normalize to `[]` here at the source, rather than
+    propagating a malformed shape into `params["exec"]`."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.pr_number = 77
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"on_success": {"exec": invalid_exec}},
+    )
+
+    params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
+
+    assert params == {"pr_number": 77, "non_blocking_open": [], "exec": []}
+
+
 def test_custom_loop_complete_accepts_non_allowlisted_maker_without_persisting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
