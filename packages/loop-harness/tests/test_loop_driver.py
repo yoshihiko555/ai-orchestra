@@ -7641,6 +7641,85 @@ def test_wait_external_review_skips_addressed_resolution_when_nothing_resolved(
     assert resolve_calls == []
 
 
+def test_wait_external_review_retries_thread_resolution_for_addressed_finding_missing_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 (Issue #424, PR #427 round 2): a record already `status: "addressed"` whose
+    `thread_resolved` flag was never persisted (e.g. a driver crash between
+    `mark_addressed_findings` and `resolve_addressed_findings` on an earlier action) must be
+    retried on *every* subsequent wait completion via `addressed_findings_missing_thread_
+    resolution`, even when this round's own reraise diff finds nothing newly resolved --
+    otherwise its GitHub thread is orphaned unresolved forever."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.pr_number = 42
+    state.pr_review = {
+        "iteration_head_sha": "cafebabecafebabe",
+        "findings": {
+            "sig-stalled": {
+                "status": "addressed",
+                "severity": "high",
+                "first_seen_iteration": 0,
+                "last_seen_iteration": 0,
+                "addressed_at_commit": "deadbeefdeadbeef",
+                "addressed_at_iteration": 1,
+                "source_comment_ids": ["review_comment:9"],
+            }
+        },
+    }
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(driver, "_repo_name_with_owner", lambda _wt: "owner/repo")
+    monkeypatch.setattr(
+        prw, "load_pr_review_config", lambda _project: prw.PrReviewConfig(reviewer_allowlist=())
+    )
+    monkeypatch.setattr(prw, "record_ignored_untrusted_reviews", lambda *a, **k: None)
+    monkeypatch.setattr(
+        prw,
+        "wait_for_completion",
+        lambda *a, **k: prw.CompletionOutcome(
+            "review_submitted", completed=True, timed_out=False, infrastructure_failure=False
+        ),
+    )
+    monkeypatch.setattr(prw, "save_review_findings_snapshot", lambda *a, **k: "artifacts/x.json")
+    monkeypatch.setattr(prw, "confirm_review_findings_reported", lambda *a, **k: None)
+
+    same = lc.IterationFindings(frozenset({"sig-still-open"}), 0)
+    collected = prw.ReviewFindingsResult((), same, same, (), (), 0, 0)
+    monkeypatch.setattr(prw, "collect_review_findings", lambda *a, **k: collected)
+
+    mark_calls: list[Any] = []
+    resolve_calls: list[Any] = []
+    monkeypatch.setattr(prw, "mark_addressed_findings", lambda *a, **k: mark_calls.append((a, k)))
+    monkeypatch.setattr(
+        prw,
+        "resolve_addressed_findings",
+        lambda *a, **k: (
+            resolve_calls.append((a, k)),
+            prw.AddressedFindingsResult((), (), git_workflow_unavailable=False),
+        )[1],
+    )
+
+    proposal = lc.ProposeResult(
+        action="wait_external_review",
+        action_id="act-424-retry-001",
+        state_version=state.state_version,
+        expected_phase="implementation",
+        phase="implementation",
+        iteration=1,
+        context={},
+    )
+    d._run_wait_external_review(proposal, state, {})
+
+    assert mark_calls == []
+    assert len(resolve_calls) == 1
+    resolve_args, _resolve_kwargs = resolve_calls[0]
+    assert set(resolve_args[4]) == {"sig-stalled"}
+
+
 def test_wait_external_review_excludes_demoted_signature_from_addressed_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -9464,33 +9543,95 @@ def test_pr_review_findings_from_last_check_falls_back_to_persisted_pr_review_fi
     assert findings[0]["source"] == "pr_review"
 
 
-def test_pr_review_findings_from_last_check_prefers_last_check_over_persisted_fallback(
+def test_pr_review_findings_from_last_check_merges_last_check_and_persisted_findings(
     tmp_path: Path,
 ) -> None:
-    """The `open_blocking_findings_from_pr_review` fallback must only apply when
-    `state.last_check_result` itself has no `source: "pr_review"` findings -- when it does
-    (the normal case), those remain the sole source, never merged with the persisted set."""
+    """Codex P1 (Issue #424 PR #427 round 2): finding A was reraised/imported this very round
+    (so it's in `last_check_result`) while finding B has been open since an earlier round and
+    wasn't reimported (so it's only in `state.pr_review.findings`, at a distinct path:line --
+    `_resolve_pr_finding_signature` cannot join it to anything in `last_check_result`). The
+    scenario this must prevent: showing the Maker only A, it fixes A, the next clean review
+    doesn't reraise A *or* B (nobody ever told the Maker about B), and the "not reraised ->
+    addressed" heuristic then incorrectly marks B addressed too. Both must reach the Maker."""
     loop_id = "abcd1234-issue-1"
     project_dir, _token = _seed_running_loop(tmp_path, loop_id)
     state = lc.load_state(loop_id, project_dir)
     state.last_check_result = _pr_review_last_check_result(
-        [{"severity": "high", "summary": "from last_check_result", "source": "pr_review"}]
+        [
+            {
+                "severity": "high",
+                "summary": "finding A, reraised this round",
+                "source": "pr_review",
+                "path": "a.py",
+                "line": 1,
+            }
+        ]
     )
     state.pr_review = {
         "findings": {
-            "sig-other": {
+            "sig-a": {
+                "status": "open",
+                "severity": "high",
+                "path": "a.py",
+                "line": 1,
+                "body_excerpt": "finding A, reraised this round",
+            },
+            "sig-b": {
                 "status": "open",
                 "severity": "critical",
-                "path": "other.py",
+                "path": "b.py",
                 "line": 9,
-                "body_excerpt": "should not appear",
-            }
+                "body_excerpt": "finding B, open since an earlier round",
+            },
         }
     }
 
     findings = driver._pr_review_findings_from_last_check(state)
 
-    assert [item["summary"] for item in findings] == ["from last_check_result"]
+    assert {item["summary"] for item in findings} == {
+        "finding A, reraised this round",
+        "finding B, open since an earlier round",
+    }
+
+
+def test_pr_review_findings_from_last_check_dedupes_by_signature_preferring_last_check(
+    tmp_path: Path,
+) -> None:
+    """Codex P1 (Issue #424 PR #427 round 2): a finding present in both sources (same
+    persisted signature, resolved via the `(path, line, summary-prefix)` join) must appear
+    exactly once, using the `last_check_result` version's (freshest) `summary` text -- not
+    duplicated, and not the persisted (potentially stale/differently-truncated) excerpt."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, _token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.last_check_result = _pr_review_last_check_result(
+        [
+            {
+                "severity": "high",
+                "summary": "finding C freshest summary text",
+                "source": "pr_review",
+                "path": "c.py",
+                "line": 3,
+            }
+        ]
+    )
+    state.pr_review = {
+        "findings": {
+            "sig-c": {
+                "status": "open",
+                "severity": "high",
+                "path": "c.py",
+                "line": 3,
+                # Same finding, truncated differently in the persisted record.
+                "body_excerpt": "finding C freshest",
+            },
+        }
+    }
+
+    findings = driver._pr_review_findings_from_last_check(state)
+
+    assert len(findings) == 1
+    assert findings[0]["summary"] == "finding C freshest summary text"
 
 
 def test_maker_prompt_neutralizes_literal_untrusted_sentinel_in_pr_review_finding(

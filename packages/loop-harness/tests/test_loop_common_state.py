@@ -560,6 +560,85 @@ def test_next_action_after_run_maker_with_open_blocking_findings_still_proposes_
     assert action == lc.Action.WAIT_EXTERNAL_REVIEW.value
 
 
+def test_next_action_after_failed_run_maker_with_open_blocking_findings_proposes_run_maker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex P2 (Issue #424 follow-up): `last_action == RUN_MAKER` alone is not sufficient
+    evidence that a fix was actually committed -- a Maker that itself failed (Docker
+    infrastructure failure / timeout) can exhaust `guards.infrastructure_failure.max_retries`
+    and transition `state.status` straight to `"failed"`, without any fix ever being committed
+    and without a `wait_external_review`/`exit_failure` completion happening first
+    (`resume()`'s only precondition is `state.status in {"failed", "stopped"}`). If the human
+    resumes immediately, `last_completed_action` still points at that same *failed* `run_maker`
+    completion. `_next_action` must not mistake this for the normal "Maker just succeeded,
+    push-then-wait" case -- it must still apply the open-blocking gate and return `run_maker`."""
+    state = lc._initial_state(
+        "abcd1234-issue-1", "issue-loop", "hash", "/tmp/wt", "loop/issue-1", "pr_review_response"
+    )
+    state.status = "running"
+    state.pr_review = {"findings": {"sig-a": {"status": "open", "severity": "high"}}}
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"checker": {"external_signal": {"source": "github"}}},
+    )
+    monkeypatch.setattr(
+        lc, "_last_completed_action_name", lambda *_a, **_k: lc.Action.RUN_MAKER.value
+    )
+    monkeypatch.setattr(lc, "_last_completed_action_succeeded", lambda *_a, **_k: False)
+
+    action = lc._next_action(state, "/tmp/project")
+
+    assert action == lc.Action.RUN_MAKER.value
+
+
+def test_last_completed_action_succeeded_false_after_maker_infrastructure_failure_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_last_completed_action_succeeded()` itself, exercised through a real journal-recorded
+    `run_maker` completion: once `guards.infrastructure_failure.max_retries` (default 3) is
+    exhausted, `apply_action_effect()`'s `RUN_MAKER` branch (`_apply_maker_infrastructure_
+    failure`) transitions `state.status` straight to `"failed"` -- the completed journal payload
+    for that action still records `result.infrastructure_failure: true`, which this helper must
+    read as "did not succeed"."""
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"checker": {"external_signal": {"source": "github"}}},
+    )
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.guards["pr_review_response"] = lc.GuardCounters(infrastructure_failure_count=2)
+    state.pending_action = lc.PendingAction(
+        "act-maker-fail", lc.Action.RUN_MAKER.value, "pr_review_response", 1, lc.now_iso()
+    )
+    state.state_version = 1
+    lc._write_state(state, project_dir)
+
+    lc.complete(
+        "abcd1234-issue-1",
+        project_dir,
+        "act-maker-fail",
+        1,
+        {**_maker_result(), "infrastructure_failure": True},
+        lock.lease_token,
+    )
+
+    failed_state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert failed_state.status == "failed"
+    assert (
+        lc._last_completed_action_succeeded("abcd1234-issue-1", project_dir, failed_state) is False
+    )
+
+    resumed = lc.resume("abcd1234-issue-1", project_dir, True, "owner", 3600, host="local")
+    resumed.state.pr_review = {"findings": {"sig-a": {"status": "open", "severity": "high"}}}
+
+    action = lc._next_action(resumed.state, project_dir)
+
+    assert action == lc.Action.RUN_MAKER.value
+
+
 def test_resume_renumbers_open_pr_review_findings_to_avoid_iteration_collision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -612,6 +691,51 @@ def test_resume_renumbers_open_pr_review_findings_to_avoid_iteration_collision(
         resumed.state.pr_review, 0, severities=lc.BLOCKING_SEVERITIES
     )
     assert previous.signatures == frozenset({"sig-open"})
+
+
+def test_resume_succeeds_and_treats_non_string_status_as_open_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #424 (Codex P2 follow-up): a malformed, non-string, unhashable `status` (e.g.
+    `[]`/`{}` from a corrupt hand edit or a future schema regression gone wrong) must not raise
+    `TypeError` out of `resume()`'s `status in {"addressed", "dismissed"}` membership checks
+    (sets/frozensets require hashable members) and permanently strand every future `resume()`
+    call on this loop. `finding_status()` normalizes any non-string `status` (including a
+    hashable-but-still-wrong one like `42`) to `""`, which every caller treats as non-terminal
+    (fail-closed still-open/blocking) -- exactly like a genuinely missing `status` key."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="failed")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pr_review = {
+        "findings": {
+            "sig-list-status": {
+                "status": [],
+                "severity": "high",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+            },
+            "sig-dict-status": {
+                "status": {},
+                "severity": "critical",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+            },
+            "sig-int-status": {
+                "status": 42,
+                "severity": "high",
+                "first_seen_iteration": 1,
+                "last_seen_iteration": 1,
+            },
+        }
+    }
+    lc._write_state(state, project_dir)
+
+    resumed = lc.resume("abcd1234-issue-1", project_dir, True, "owner", 3600, host="local")
+
+    findings = resumed.state.pr_review["findings"]
+    for signature in ("sig-list-status", "sig-dict-status", "sig-int-status"):
+        assert findings[signature]["first_seen_iteration"] == 0
+        assert findings[signature]["last_seen_iteration"] == 0
+    assert lc._has_open_blocking_pr_findings(resumed.state) is True
 
 
 def test_complete_accepts_raw_passed_checker_result(

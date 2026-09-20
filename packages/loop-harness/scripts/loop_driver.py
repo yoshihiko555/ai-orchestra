@@ -2210,8 +2210,9 @@ class LoopDriver:
             if pushed_this_action
             else frozenset()
         )
+        commit_sha = baseline.get("iteration_head_sha")
+        actually_addressed: tuple[str, ...] = ()
         if resolved_signatures:
-            commit_sha = baseline.get("iteration_head_sha")
             # Issue #424 (Codex P2, PR #427 follow-up): `mark_addressed_findings` only ever
             # flips a candidate signature's persisted `status` when it is currently `"open"`
             # (its own docstring) -- a record with a missing/unexpected `status` is silently
@@ -2231,17 +2232,6 @@ class LoopDriver:
                 action_id=action_id,
             )
             if actually_addressed:
-                addressed_result = prw.resolve_addressed_findings(
-                    self.loop_id,
-                    self.project_dir,
-                    pr_number,
-                    repo,
-                    actually_addressed,
-                    commit_sha,
-                    self.lease_token,
-                    action_id=action_id,
-                )
-                self._journal_addressed_findings_outcome(addressed_result, action_id)
                 # Issue #424: `result.open_blocking` was computed inside
                 # `collect_review_findings` (and, if classification ran,
                 # `apply_severity_classifications`) *before* `mark_addressed_findings` above
@@ -2258,6 +2248,33 @@ class LoopDriver:
                         if item.signature not in actually_addressed
                     ),
                 )
+        # Issue #424 (Codex P2, PR #427 round 2): a driver crash between `mark_addressed_findings`
+        # (above, or on an earlier action entirely) and `resolve_addressed_findings` leaves a
+        # record `status: "addressed"` with its GitHub thread never resolved --
+        # `addressed_findings_missing_thread_resolution` selects exactly those records so this
+        # retries on every wait completion, not just the round that first flipped them, until the
+        # thread is actually confirmed resolved (`AddressedThreadOutcome`'s idempotent
+        # `"already_resolved"` status makes re-resolving an already-resolved thread harmless).
+        # Reload state fresh rather than reusing the possibly-stale `state.pr_review` captured
+        # earlier in this method (`_classify_pending_findings` above, or `mark_addressed_findings`
+        # just above, can each have written a newer `pr_review` snapshot since then).
+        pr_review_for_retry = lc.load_state(self.loop_id, self.project_dir).pr_review
+        pending_thread_resolution = prw.addressed_findings_missing_thread_resolution(
+            pr_review_for_retry
+        )
+        resolve_candidates = tuple(sorted(set(actually_addressed) | set(pending_thread_resolution)))
+        if resolve_candidates:
+            addressed_result = prw.resolve_addressed_findings(
+                self.loop_id,
+                self.project_dir,
+                pr_number,
+                repo,
+                resolve_candidates,
+                commit_sha,
+                self.lease_token,
+                action_id=action_id,
+            )
+            self._journal_addressed_findings_outcome(addressed_result, action_id)
         # Issue #424: this is the one call site that opts into `include_persisted_open_blocking`
         # -- see `phase_check_from_review_findings`'s own docstring for why only this call site
         # (guarded by `pushed_this_action` above) may safely do so.
@@ -3838,25 +3855,79 @@ def _pr_review_findings_from_last_check(state: lc.LoopState) -> list[dict[str, A
     have ended via `phase_check_from_completion_outcome()` (timeout, API error, the H12
     no-new-commit shortcut) -- none of which ever populate `results[].findings` at all, even
     though `state.pr_review.findings` may still hold real, unresolved open blocking findings.
-    When the filter above finds nothing, fall back to those findings directly
-    (`open_blocking_findings_from_pr_review`, the same persisted-open-set `phase_check_from_
-    review_findings`'s `include_persisted_open_blocking=True` path already trusts) so the Maker
-    prompt is never silently empty while real open findings exist.
+
+    Issue #424 (Codex P1, PR #427 round 2): this must *merge* with, not just fall back to, the
+    persisted open set (`open_blocking_findings_from_pr_review`). A one-or-the-other choice
+    silently drops findings whenever `last_check_result` has *some* but not *all* of the
+    persisted open blocking findings -- e.g. finding A was reraised/imported this very round
+    (so it's in `last_check_result`) while finding B has been open since an earlier round and
+    wasn't reimported (so it's only in `state.pr_review.findings`). Falling back only when
+    `last_check_result` is entirely empty would show the Maker only A, it fixes A, the next
+    clean review doesn't reraise A *or* B (nobody ever told the Maker about B), and B gets
+    incorrectly marked addressed by the "not reraised -> addressed" heuristic (4.4 節).
+    Deduped by signature (`_resolve_pr_finding_signature`, since `lc.Finding` -- what
+    `last_check_result` findings are serialized as -- carries no signature field): the
+    `last_check_result` version wins when a persisted record resolves to the same signature.
     """
     last_check = state.last_check_result
-    findings = _pr_review_findings_from_last_check_results(last_check)
-    if findings:
-        return findings
-    return [
-        {
-            "severity": item.severity,
-            "summary": item.body_excerpt,
-            "source": "pr_review",
-            "path": item.path,
-            "line": item.line,
-        }
-        for item in prw.open_blocking_findings_from_pr_review(state.pr_review)
-    ]
+    from_last_check = _pr_review_findings_from_last_check_results(last_check)
+    persisted_map = state.pr_review.get("findings") if isinstance(state.pr_review, dict) else None
+    persisted_map = persisted_map if isinstance(persisted_map, dict) else {}
+
+    merged: dict[str, dict[str, Any]] = {}
+    unresolved: list[dict[str, Any]] = []
+    for finding in from_last_check:
+        signature = _resolve_pr_finding_signature(finding, persisted_map)
+        if signature is None:
+            unresolved.append(finding)
+        else:
+            merged[signature] = finding
+    for item in prw.open_blocking_findings_from_pr_review(state.pr_review):
+        merged.setdefault(
+            item.signature,
+            {
+                "severity": item.severity,
+                "summary": item.body_excerpt,
+                "source": "pr_review",
+                "path": item.path,
+                "line": item.line,
+            },
+        )
+    return list(merged.values()) + unresolved
+
+
+def _resolve_pr_finding_signature(
+    finding: dict[str, Any], persisted_map: dict[str, Any]
+) -> str | None:
+    """Best-effort exact join of a `last_check_result`-derived finding dict back to its
+    persisted `pr_review.findings` signature (Issue #424 PR #427 round 2, Codex P1).
+
+    `lc.Finding` (what `phase_check_from_review_findings()` serializes both `result.findings`
+    and merged `result.open_blocking` items into, and what ends up in `last_check_result`)
+    carries no signature field. `path`/`line`/the body-excerpt-derived `summary`, though, are
+    copied verbatim from the same persisted record on the same round (`_finding_from_item()`
+    for a fresh import, `_open_blocking_findings()` for a persisted-open merge) -- an exact
+    join key, not a fuzzy one. The one wrinkle: the summary text can be truncated to either
+    `EXCERPT_LIMIT` (240, `ImportedFinding.body_excerpt`) or `NON_BLOCKING_EXCERPT_LIMIT` (200,
+    `NonBlockingFinding.body_excerpt` -- itself a further truncation of the same persisted
+    `body_excerpt`) depending on which path produced this `finding`, so only the shorter of the
+    two texts' prefixes is compared. Returns `None` (the caller keeps the finding as-is, never
+    dropping it) when no persisted record matches -- e.g. a fresh import already superseded by
+    a later state write.
+    """
+    path = finding.get("path")
+    line = finding.get("line")
+    summary = str(finding.get("summary") or "")
+    for signature, record in persisted_map.items():
+        if not isinstance(record, dict):
+            continue
+        if record.get("path") != path or record.get("line") != line:
+            continue
+        persisted_excerpt = str(record.get("body_excerpt") or "")
+        shortest = min(len(summary), len(persisted_excerpt))
+        if summary[:shortest] == persisted_excerpt[:shortest]:
+            return str(signature)
+    return None
 
 
 def _pr_review_findings_from_last_check_results(last_check: Any) -> list[dict[str, Any]]:

@@ -836,7 +836,7 @@ def _renumber_resumed_pr_review_findings(state: LoopState) -> None:
     changed = False
     if isinstance(findings, dict):
         for record in pr_review["findings"].values():
-            if not isinstance(record, dict) or record.get("status") in {"addressed", "dismissed"}:
+            if not isinstance(record, dict) or finding_status(record) in {"addressed", "dismissed"}:
                 continue
             if record.get("first_seen_iteration") != 0 or record.get("last_seen_iteration") != 0:
                 record["first_seen_iteration"] = 0
@@ -1306,7 +1306,7 @@ def build_pr_iteration_findings(
     signatures: set[str] = set()
     new_count = 0
     for signature, record in _pr_findings_map(pr_review).items():
-        if record.get("status") in {"dismissed", "addressed"}:
+        if finding_status(record) in {"dismissed", "addressed"}:
             continue
         if severities is not None and record.get("severity") not in severities:
             continue
@@ -1881,7 +1881,7 @@ def _has_open_blocking_pr_findings(state: LoopState) -> bool:
     if pr_review is None:
         return False
     for record in _pr_findings_map(pr_review).values():
-        if record.get("status") in {"addressed", "dismissed"}:
+        if finding_status(record) in {"addressed", "dismissed"}:
             continue
         if record.get("severity") in BLOCKING_SEVERITIES:
             return True
@@ -1907,18 +1907,24 @@ def _next_action(state: LoopState, project_dir: str) -> str:
         _phase_uses_external_signal(state, project_dir)
         and last_action != Action.WAIT_EXTERNAL_REVIEW.value
     ):
-        # Issue #424: `last_action == RUN_MAKER` is the normal post-fix state (push-then-wait
-        # for the next review round) and must always fall through to WAIT_EXTERNAL_REVIEW
-        # below, regardless of what's still open in `pr_review.findings` -- those findings are
-        # not expected to be reconciled (`mark_addressed_findings`) until *that* wait
-        # completes. Any other `last_action` here (e.g. `exit_failure`/`stop` via `resume()`,
-        # or `advance_phase` on first entry into this phase, where `pr_review.findings` is
-        # still empty and this check is a no-op) is the resume-after-terminal-exit gap the bug
-        # report describes: re-entering WAIT_EXTERNAL_REVIEW unconditionally would just re-poll
-        # for a *new* review round while silently ignoring already-known open findings nobody
-        # has fixed yet, producing a false pass. Route back to RUN_MAKER instead so the Maker
-        # actually addresses them before the phase waits again.
-        if last_action != Action.RUN_MAKER.value and _has_open_blocking_pr_findings(state):
+        # Issue #424: `last_action == RUN_MAKER` *and that completion actually succeeded* is the
+        # normal post-fix state (push-then-wait for the next review round) and must always fall
+        # through to WAIT_EXTERNAL_REVIEW below, regardless of what's still open in
+        # `pr_review.findings` -- those findings are not expected to be reconciled
+        # (`mark_addressed_findings`) until *that* wait completes. Any other case here (e.g.
+        # `exit_failure`/`stop` via `resume()`; `advance_phase` on first entry into this phase,
+        # where `pr_review.findings` is still empty and this check is a no-op; or -- Codex P2
+        # follow-up -- a `run_maker` that itself completed as an infrastructure failure and
+        # transitioned straight to `state.status = "failed"` without ever committing a fix, then
+        # got resumed before `exit_failure` was ever completed) is the resume-after-terminal-exit
+        # gap the bug report describes: re-entering WAIT_EXTERNAL_REVIEW unconditionally would
+        # just re-poll for a *new* review round while silently ignoring already-known open
+        # findings nobody has fixed yet, producing a false pass. Route back to RUN_MAKER instead
+        # so the Maker actually addresses them before the phase waits again.
+        run_maker_just_succeeded = last_action == Action.RUN_MAKER.value and (
+            _last_completed_action_succeeded(state.loop_id, project_dir, state)
+        )
+        if not run_maker_just_succeeded and _has_open_blocking_pr_findings(state):
             return Action.RUN_MAKER.value
         return Action.WAIT_EXTERNAL_REVIEW.value
     if last_action == Action.RUN_MAKER.value:
@@ -2030,6 +2036,39 @@ def _last_completed_action_name(loop_id: str, project_dir: str, state: LoopState
         if isinstance(payload, dict) and payload.get("action"):
             return str(payload["action"])
     return ""
+
+
+def _last_completed_action_succeeded(loop_id: str, project_dir: str, state: LoopState) -> bool:
+    """Return False when the last completed action's own result was an infrastructure failure.
+
+    Issue #424 (Codex P2 follow-up): `_next_action`'s `last_action == RUN_MAKER` exclusion (see
+    below) assumes it means "the Maker just committed a fix; push-then-wait next" -- but a
+    Maker that times out or hits a Docker infrastructure failure records its own completion with
+    `result.infrastructure_failure: true` (`apply_action_effect()`'s `RUN_MAKER` branch calls
+    `_apply_maker_infrastructure_failure`, which can itself exhaust `guards.infrastructure_
+    failure.max_retries` and set `state.status = "failed"` directly -- *without* ever going
+    through a `wait_external_review`/checker completion first). `resume()`'s only precondition is
+    `state.status in {"failed", "stopped"}`; it does not require the `exit_failure` action to
+    have been proposed, executed, or completed first. So a human resuming immediately after such
+    a failure leaves `last_completed_action` still pointing at that same failed `run_maker`
+    completion, with no fix ever committed -- exactly the resume-after-terminal-exit gap Issue
+    #424 already guards against for `exit_failure`/`stop`, just reached via a different terminal
+    completion. Reads the same `completed` journal payload `_last_completed_action_name()` reads;
+    fail-soft (`True`, i.e. assume success) when it can't find one or the result shape is
+    unexpected, matching that function's own fail-soft, journal-lookup contract.
+    """
+    if state.last_completed_action is None:
+        return True
+    event = find_journal_event(
+        loop_id, project_dir, state.last_completed_action.action_id, "completed"
+    )
+    payload = event.get("payload") if isinstance(event, dict) else {}
+    if not isinstance(payload, dict):
+        return True
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return True
+    return not bool(result.get("infrastructure_failure"))
 
 
 def _wait_external_review_had_required_push(
@@ -3108,6 +3147,26 @@ def _pr_findings_map(pr_review: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for key, value in values.items()
         if isinstance(key, str) and isinstance(value, dict)
     }
+
+
+def finding_status(record: dict[str, Any]) -> str:
+    """Return a PR review finding record's `status`, normalized to always be a `str`.
+
+    Issue #424 (Codex P2 follow-up): every call site that checks a finding's `status` against
+    `"open"`/`"addressed"`/`"dismissed"` did so via a bare `record.get("status")`. A `state.json`
+    with a non-string, unhashable `status` (e.g. a malformed `[]`/`{}` -- corrupt hand edit, or a
+    future schema change gone wrong) makes any `record.get("status") in {"addressed",
+    "dismissed"}`-style membership check raise `TypeError: unhashable type` (sets/frozensets
+    require hashable members), which propagates out of `resume()` and fails it *every* time it's
+    called -- a permanently stuck loop. A hashable-but-still-wrong non-string value (e.g. `42`)
+    would not raise, but would also never legitimately equal `"open"`/`"addressed"`/`"dismissed"`,
+    so `!=`-style checks elsewhere would silently (and correctly, if accidentally) fail closed.
+    This helper makes that fail-closed behavior explicit and crash-proof everywhere at once: a
+    non-string `status` normalizes to `""`, which every caller below treats as "not
+    open"/"not addressed"/"not dismissed" -- i.e. unresolved, still-blocking.
+    """
+    status = record.get("status")
+    return status if isinstance(status, str) else ""
 
 
 def _iteration_findings_to_dict(value: IterationFindings) -> dict[str, Any]:

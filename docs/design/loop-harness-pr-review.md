@@ -324,15 +324,18 @@ FT-13 の無進捗 guard 経路に集計される。
   相対パスを返す。
 - `load_review_findings_snapshot(loop_id, project_dir, action_id, lease_token)` は厳格検証済みの
   `ReviewFindingsResult` を返す。
-- JSON のトップレベル envelope は `schema_version: 2`、`loop_id`、`action_id` と
-  `ReviewFindingsResult` の 7 フィールド（`findings` / `iteration_findings` /
+- JSON のトップレベル envelope は `schema_version: 3`、`loop_id`、`action_id` と
+  `ReviewFindingsResult` の 8 フィールド（`findings` / `iteration_findings` /
   `previous_iteration_findings` / `processed_comment_ids` / `ignored_untrusted_comment_count` /
-  `needs_classification_count` / `open_non_blocking`）だけを持つ（`open_non_blocking` の追加に伴い
-  schema_version を 1 → 2 に更新。#213 対応）。後方互換として `schema_version: 1` の artifact は
-  `open_non_blocking` キー不在を許容し `()` をデフォルトに読み込む（アップグレード時に
-  `wait_external_review` 中の in-flight ループが resume 不能にならないため。v1 に
-  `open_non_blocking` が存在する場合や `schema_version` が 2 超の場合は従来どおり拒否する）。
-  上記以外の必須キーの欠損・未知キー・
+  `needs_classification_count` / `open_non_blocking` / `open_blocking`）だけを持つ（`open_blocking`
+  の追加に伴い schema_version を 2 → 3 に更新。Issue #424 対応）。後方互換として
+  `schema_version: 1` および `schema_version: 2` の artifact は読み込みを許容する:
+  v1 は `open_non_blocking` と `open_blocking` の両キー不在、v2 は `open_blocking` キー不在を許容し、
+  それぞれ欠けているフィールドは `()` をデフォルトに読み込む（アップグレード時に
+  `wait_external_review` 中の in-flight ループが resume 不能にならないため）。ただし各バージョンの
+  キー集合は厳密固定であり、v1 に `open_non_blocking`/`open_blocking` が存在する場合や v2 に
+  `open_blocking` が存在する場合は未知キーとして拒否する。`schema_version` が 3 超の場合も
+  同様に拒否する。上記以外の必須キーの欠損・未知キー・
   型不一致・未知 severity・負の件数・binding 不一致は `PrReviewWaitError` とし、部分復元しない。
 - save / load は active lease と state の current phase / pending action を検証し、`action_id` 一致に加えて
   action が `wait_external_review` である場合に限り許可する。stale action、別 action、pending action 不在を
@@ -732,6 +735,15 @@ medium/low は `dismissed` にしなくても合格をブロックしない（�
         "pending_classification_source_comment_ids": ["issue_comment:22334455"],
         "dismiss_reason": null,
         "source_comment_ids": ["review_comment:918273645", "issue_comment:22334455"],
+        // `status: "addressed"` になった時点で `mark_addressed_findings()` が付与（4.4 節）
+        "addressed_at_commit": "cafebabecafebabe",
+        "addressed_at_iteration": 3,
+        // `resolve_addressed_findings()` が信頼済み GitHub thread を実際に resolve できたら
+        // thread_id を追記（複数 review comment が同一 thread に属する場合は重複しない）
+        "resolved_thread_ids": ["THREAD_abc123"],
+        // 4.4 節「thread_resolved による再試行」参照。`status == "addressed"` のレコードにのみ
+        // 存在しうる。欠落は `False` 扱い（fail-open で再試行対象にする）
+        "thread_resolved": true,
         // 残存した非ブロッキング指摘の報告用（成功コメント / non_blocking_open）。
         // 再掲のたびに最新値へ更新する（#213 対応）
         "path": "packages/foo/bar.py",
@@ -884,6 +896,20 @@ resolve）を呼ぶ。呼び出し候補集合ではなく実際の戻り値を�
 有効にすると毎反復「検出」され続けて push が永久にできなくなるため）。`loop_driver.
 _run_wait_external_review` の post-poll 判定（push・poll 完了後の最終合否）だけが
 `include_persisted_open_blocking=True` を指定する。
+
+**`thread_resolved` による再試行（Issue #424 PR #427 round 2）**: `mark_addressed_findings()`
+（`status` を `"addressed"` へ更新）と `resolve_addressed_findings()`（信頼済み GitHub thread へ
+reply + resolve し `thread_resolved: true` を永続化）は別々の fenced write であるため、driver が
+その間でクラッシュすると、レコードは永久に `status: "addressed"` のまま GitHub thread だけが
+未解決で残る。一度 `"addressed"` になったレコードは `_open_blocking_findings()`/`resolved_signatures`
+の差分計算から外れるため、通常の「reraise されなかった」フローでは二度と再検出されない。これを
+救済するため `addressed_findings_missing_thread_resolution()` は `pr_review.findings` 全体から
+`status == "addressed"` かつ `thread_resolved` が `true` でないレコードのシグネチャを毎回列挙する
+（フィールド欠落は `false` 扱いの fail-open）。`loop_driver._run_wait_external_review` は poll が
+完了するたびに（今回の reraise 差分が空でも）この列挙結果と今回新たに addressed になったシグネチャ
+集合を合算してから `resolve_addressed_findings()` を 1 回呼ぶ。同じ thread を再度 resolve しようと
+しても `_resolve_addressed_signature_threads()` は `already_resolved` として無害に扱うため、この
+再試行は何度実行しても安全（冪等）である。
 
 **`pushed_this_action` ゲート（Issue #424）**: 上記の addressed 解決推論（resolved 候補の算出・
 `mark_addressed_findings()` 呼び出し）は、今回の `wait_external_review` action が実際に push

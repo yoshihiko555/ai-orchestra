@@ -1203,7 +1203,7 @@ def mark_addressed_findings(
     addressed: list[str] = []
     for signature in candidates:
         record = findings_map.get(signature)
-        if not isinstance(record, dict) or record.get("status") != "open":
+        if not isinstance(record, dict) or lc.finding_status(record) != "open":
             continue
         findings_map[signature] = {
             **record,
@@ -1297,6 +1297,7 @@ def resolve_addressed_findings(
     outcomes: list[AddressedThreadOutcome] = []
     newly_resolved_thread_ids: set[str] = set()
     updated_signatures: list[str] = []
+    newly_resolved_signatures: list[str] = []
     # PR #276 review (P2, round 2): re-check right before this GitHub write loop starts (not
     # only once at function entry) so a lease that was already stale by the time the earlier
     # fetch/state-load above finished is caught before the first reply/resolve call, not after.
@@ -1332,12 +1333,34 @@ def resolve_addressed_findings(
             for outcome in signature_outcomes
             if outcome.status == "resolved" and outcome.thread_id is not None
         }
+        # Issue #424 (Codex P2, PR #427 round 2): `thread_resolved` records whether this call
+        # believes every trusted thread accumulated for this signature is now resolved (or there
+        # was nothing to resolve at all -- `no_review_comment_source`). `reply_failed`/
+        # `resolve_failed`/`no_trusted_thread`/`lease_expired` are all retryable (a transient
+        # GitHub failure, a thread not yet indexed by `fetch_review_threads`, or a stale lease)
+        # and must leave `thread_resolved` false so a later call --
+        # `addressed_findings_missing_thread_resolution()` selects exactly these records -- keeps
+        # retrying instead of a driver crash (or a persistent failure) silently orphaning the
+        # thread forever. Writing this even when `newly_resolved_for_signature` is empty is what
+        # makes the retry itself observable: a record whose threads were already fully resolved
+        # (e.g. `already_resolved` from a previous, partially-crashed attempt) still needs
+        # `thread_resolved` flipped to `True` here so it stops being selected as a retry
+        # candidate on every subsequent wait completion.
+        thread_resolution_complete = bool(signature_outcomes) and all(
+            outcome.status in {"resolved", "already_resolved", "no_review_comment_source"}
+            for outcome in signature_outcomes
+        )
         if newly_resolved_for_signature:
+            newly_resolved_signatures.append(signature)
+        if newly_resolved_for_signature or thread_resolution_complete != bool(
+            record.get("thread_resolved")
+        ):
             newly_resolved_thread_ids |= newly_resolved_for_signature
             already_resolved = set(record.get("resolved_thread_ids") or [])
             findings_map[signature] = {
                 **record,
                 "resolved_thread_ids": sorted(already_resolved | newly_resolved_for_signature),
+                "thread_resolved": thread_resolution_complete,
             }
             updated_signatures.append(signature)
 
@@ -1360,8 +1383,14 @@ def resolve_addressed_findings(
                 },
             )
             lc._write_state(state, project_dir)
+    # `resolved_signatures` reports only signatures with a *newly* resolved thread this call --
+    # not every signature `updated_signatures` (used above for the state write/journal) touched,
+    # which also includes a signature whose only change was `thread_resolved` flipping (e.g.
+    # confirming an `already_resolved`/`no_review_comment_source` record needs no further retry).
+    # Existing callers key end-of-phase reporting off "a thread was resolved this round"; keeping
+    # that contract narrow avoids conflating "GitHub was actually touched" with "bookkeeping only".
     return AddressedFindingsResult(
-        tuple(updated_signatures), tuple(outcomes), git_workflow_unavailable=False
+        tuple(newly_resolved_signatures), tuple(outcomes), git_workflow_unavailable=False
     )
 
 
@@ -2658,7 +2687,7 @@ def _upsert_finding(
         # skipping the record on a later genuine fix (its addressed_at_commit/iteration would
         # then still point at the stale, insufficient commit). Reopening here -- and clearing
         # the stale addressed_at_* markers -- keeps all three in sync with the reraise.
-        reopened = existing.get("status") == "addressed"
+        reopened = lc.finding_status(existing) == "addressed"
         merged = {
             **existing,
             "last_seen_iteration": (
@@ -2873,7 +2902,7 @@ def _open_non_blocking_findings(
     items: list[NonBlockingFinding] = []
     for signature in sorted(findings_map):
         record = findings_map[signature]
-        if record.get("status") == "dismissed":
+        if lc.finding_status(record) == "dismissed":
             continue
         severity = record.get("severity")
         if severity not in {"medium", "low"}:
@@ -2917,7 +2946,7 @@ def _open_blocking_findings(
     items: list[NonBlockingFinding] = []
     for signature in sorted(findings_map):
         record = findings_map[signature]
-        if record.get("status") in {"dismissed", "addressed"}:
+        if lc.finding_status(record) in {"dismissed", "addressed"}:
             continue
         severity = record.get("severity")
         if severity not in lc.BLOCKING_SEVERITIES:
@@ -2950,6 +2979,39 @@ def open_blocking_findings_from_pr_review(
     instead of silently seeing none.
     """
     return _open_blocking_findings(_findings_map(pr_review if isinstance(pr_review, dict) else {}))
+
+
+def addressed_findings_missing_thread_resolution(
+    pr_review: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    """Return signatures of `addressed` findings whose GitHub thread resolution never completed.
+
+    Issue #424 (Codex P2, PR #427 round 2): `mark_addressed_findings` (persists `status:
+    "addressed"`) and `resolve_addressed_findings` (persists `thread_resolved: True` once every
+    trusted thread accumulated for that signature is confirmed resolved) are two separate fenced
+    writes. A driver crash between them leaves a record permanently `status: "addressed"` but
+    never reattempted for `resolve_addressed_findings` -- `_open_blocking_findings` (and the
+    `iteration_findings` diff `loop_driver` derives `resolved_signatures` from) already correctly
+    stop treating an `"addressed"` record as open, so it can never resurface via that normal
+    diff, orphaning its GitHub thread(s) as unresolved forever.
+
+    `loop_driver._run_wait_external_review` calls this on every wait completion (regardless of
+    whether that round's own diff found anything new) and unions the result into that round's
+    `resolve_addressed_findings` candidates, so a stalled resolution keeps getting retried until
+    it actually succeeds. A missing `thread_resolved` key (an older record predating this field,
+    or one whose only `resolve_addressed_findings` attempt crashed before writing it) is treated
+    as `False` -- fail-open toward retrying, never silently giving up. Resolving an
+    already-resolved GitHub thread again is tolerated (`_resolve_addressed_signature_threads`
+    reports it as `"already_resolved"`, a terminal success status), so retrying a record that
+    turns out to already be fully resolved on GitHub is harmless.
+    """
+    findings_map = _findings_map(pr_review if isinstance(pr_review, dict) else {})
+    return tuple(
+        signature
+        for signature in sorted(findings_map)
+        if lc.finding_status(findings_map[signature]) == "addressed"
+        and not findings_map[signature].get("thread_resolved")
+    )
 
 
 def _parse_reviewer_allowlist(value: Any) -> tuple[ReviewerAllowlistEntry, ...]:

@@ -3829,6 +3829,35 @@ def test_resolve_addressed_findings_resolves_every_accumulated_thread(
     ]
 
 
+def test_resolve_addressed_findings_persists_thread_resolved_flag_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 (Issue #424, PR #427 round 2): once every trusted thread accumulated for a
+    signature is confirmed resolved, the record must persist `thread_resolved: True` --
+    `addressed_findings_missing_thread_resolution` uses exactly this flag to decide whether a
+    driver crash between `mark_addressed_findings` and this call needs a retry."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-addressed": _open_finding_record(["review_comment:1"], status="addressed"),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule({"unresolved_threads": [_trusted_thread("THREAD-1", 1)]})
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-addressed"], "sha", lease_token
+    )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.pr_review["findings"]["sig-addressed"]["thread_resolved"] is True
+
+
 def test_resolve_addressed_findings_skips_already_resolved_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4010,6 +4039,110 @@ def test_resolve_addressed_findings_treats_is_resolved_false_as_failure(
     state = lc.load_state("abcd1234-issue-1", project_dir)
     findings = state.pr_review["findings"]
     assert "resolved_thread_ids" not in findings["sig-addressed"]
+
+
+def test_resolve_addressed_findings_leaves_thread_resolved_unset_after_retryable_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `reply_failed`/`resolve_failed` outcome is retryable, not terminal -- the record must
+    not gain `thread_resolved: True` (nor any write at all, matching the pre-existing
+    `resolved_thread_ids not in ...` assertion for this same failure shape)."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-reply-fails": _open_finding_record(["review_comment:1"], status="addressed"),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule(
+        {"unresolved_threads": [_trusted_thread("THREAD-1", 1)]}, fail_reply_for=(1,)
+    )
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-reply-fails"], "sha", lease_token
+    )
+
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert "thread_resolved" not in state.pr_review["findings"]["sig-reply-fails"]
+
+
+def test_resolve_addressed_findings_retry_completes_after_earlier_failed_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex P2 (Issue #424, PR #427 round 2): calling `resolve_addressed_findings` again for a
+    signature whose first attempt failed (retryable) must succeed and flip `thread_resolved` to
+    `True` once the underlying GitHub call stops failing -- proving the retry this issue adds is
+    actually idempotent and eventually convergent, not just re-attempted forever."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-retry": _open_finding_record(["review_comment:1"], status="addressed"),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    failing = _FakeGitWorkflowModule(
+        {"unresolved_threads": [_trusted_thread("THREAD-1", 1)]}, fail_reply_for=(1,)
+    )
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: failing)
+    first = prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-retry"], "sha", lease_token
+    )
+    assert first.resolved_signatures == ()
+    assert (
+        lc.load_state("abcd1234-issue-1", project_dir)
+        .pr_review["findings"]["sig-retry"]
+        .get("thread_resolved")
+        is not True
+    )
+
+    succeeding = _FakeGitWorkflowModule({"unresolved_threads": [_trusted_thread("THREAD-1", 1)]})
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: succeeding)
+    second = prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-retry"], "sha", lease_token
+    )
+
+    assert second.resolved_signatures == ("sig-retry",)
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    assert state.pr_review["findings"]["sig-retry"]["thread_resolved"] is True
+
+
+def test_addressed_findings_missing_thread_resolution_selects_pending_addressed_records() -> None:
+    """Pure-function contract for `addressed_findings_missing_thread_resolution`: only
+    `"addressed"` records without `thread_resolved: True` are candidates -- `"open"`/
+    `"dismissed"` records and already `thread_resolved` records are excluded."""
+    pr_review = {
+        "findings": {
+            "sig-pending": {"status": "addressed", "severity": "high"},
+            "sig-legacy-missing-flag": {"status": "addressed", "severity": "critical"},
+            "sig-done": {"status": "addressed", "severity": "high", "thread_resolved": True},
+            "sig-still-open": {"status": "open", "severity": "high"},
+            "sig-dismissed": {"status": "dismissed", "severity": "medium"},
+        }
+    }
+
+    assert set(prw.addressed_findings_missing_thread_resolution(pr_review)) == {
+        "sig-pending",
+        "sig-legacy-missing-flag",
+    }
+
+
+def test_addressed_findings_missing_thread_resolution_handles_missing_or_malformed_pr_review() -> (
+    None
+):
+    """`None`/non-dict `pr_review` (a fresh loop with no PR review state yet) must never raise --
+    matches `open_blocking_findings_from_pr_review`'s own defensive contract."""
+    assert prw.addressed_findings_missing_thread_resolution(None) == ()
+    assert prw.addressed_findings_missing_thread_resolution({}) == ()
+    assert prw.addressed_findings_missing_thread_resolution({"findings": "not-a-dict"}) == ()
 
 
 def test_resolve_addressed_findings_reports_lease_expired_without_github_calls(
