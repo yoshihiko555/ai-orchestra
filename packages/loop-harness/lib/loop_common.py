@@ -2127,6 +2127,46 @@ def _next_action_iteration(state: LoopState, action: str) -> int:
     return max(counters.iteration, 1)
 
 
+def _exit_success_exec_steps(state: LoopState, project_dir: str) -> list[Any]:
+    """Return the current phase's `on_success.exec` steps for `exit_success`, or `[]`.
+
+    Issue #425 review follow-up: `exit_success`, like `stop`, must never fail on config drift
+    -- `state.phase`/`state.definition_id` can point at a phase or loop definition that no
+    longer exists after a definition edit lands between an earlier `exit_failure` and a later
+    `resume()`, and `exit_success` is precisely the terminal action reached by that resumed
+    run. Before this helper, `_proposal_params` unconditionally called `_load_phase_definition`
+    ahead of the `EXIT_SUCCESS` branch, so that drift would raise `InvalidStateError` (unknown
+    `definition_id`, see `_load_phase_definition_by_name`) or `DefinitionValidationError`
+    (unknown phase name, see `loop_definition.phase_by_name`) and crash the driver mid-dispatch
+    with the pending action left behind instead of completing the loop. Any such lookup failure
+    degrades to `[]` (the same "no exec steps" default as the lookup's own `_phase_nested(...,
+    [])` fallback) rather than propagating.
+    """
+    lib_dir = Path(__file__).resolve().parent
+    if str(lib_dir) not in sys.path:
+        sys.path.insert(0, str(lib_dir))
+    import loop_definition
+
+    try:
+        phase_def = _load_phase_definition(state, project_dir)
+    except (InvalidStateError, loop_definition.DefinitionValidationError):
+        return []
+    steps = _phase_nested(phase_def, ("on_success", "exec"), [])
+    return steps if _is_valid_exec_steps(steps) else []
+
+
+def _is_valid_exec_steps(value: Any) -> bool:
+    """Return True only for a list of plain strings (Codex review, PR #429 P2).
+
+    A hand-edited/custom loop definition's `on_success.exec` may not be a well-formed list of
+    step tokens (e.g. `exec: 42` or a bare `exec: pr_mark_ready` string instead of `exec:
+    [pr_mark_ready]`). Iterating a non-list would raise (`int` isn't iterable) or silently
+    iterate a string's individual characters as bogus "tokens" -- both fail closed to `[]`
+    here rather than crashing `exit_success` or misinterpreting garbage as exec steps.
+    """
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
 def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[str, Any]:
     """Build action-specific proposal params from durable state and loop definition."""
     if action == Action.STOP.value:
@@ -2138,8 +2178,13 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
         return {
             "pr_number": state.pr_number,
             "non_blocking_open": _non_blocking_open_from_last_check(state),
+            "exec": copy.deepcopy(_exit_success_exec_steps(state, project_dir)),
+            "draft_marked_pr_number": (
+                state.pr_review.get("draft_marked_pr_number")
+                if isinstance(state.pr_review, dict)
+                else None
+            ),
         }
-
     phase_def = _load_phase_definition(state, project_dir)
     if action == Action.RUN_MAKER.value:
         configured_agent = _phase_nested(phase_def, ("maker", "agent"), None)

@@ -23,6 +23,11 @@ def _pr_review_response_on_failure_exec(definition: ld.LoopDefinition) -> list[s
     return list(phase.on_failure["exec"])
 
 
+def _pr_review_response_on_success_exec(definition: ld.LoopDefinition) -> list[str]:
+    phase = next(p for p in definition.phases if p.name == "pr_review_response")
+    return list(phase.on_success["exec"])
+
+
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -365,3 +370,27 @@ def test_project_override_issue_loop_also_posts_summary_comment_on_failure() -> 
     effective = ld.load_all_definitions(str(REPO_ROOT))["issue-loop"]
     assert effective.source_path == str(override_path)
     assert "post_summary_comment" in _pr_review_response_on_failure_exec(effective)
+
+
+def test_bundled_issue_loop_marks_pr_ready_on_pr_review_response_success() -> None:
+    """Issue #425: `exit_failure` drafts the PR via `on_failure.exec`'s `pr_mark_draft`, but
+    nothing previously un-drafted it on a later successful `exit_success` (e.g. after
+    `exit_failure -> resume -> exit_success`), leaving the PR stuck Draft while the Issue
+    reports success. `pr_review_response.on_success.exec` must include `pr_mark_ready`."""
+    source_path = REPO_ROOT / "packages" / "loop-harness" / "config" / "loops" / "issue-loop.yaml"
+    definition = ld.load_and_validate(source_path)
+    assert _pr_review_response_on_success_exec(definition) == ["pr_mark_ready"]
+
+
+def test_project_override_issue_loop_also_marks_pr_ready_on_success() -> None:
+    """code J2-style shadow guard for the `pr_mark_ready` fix: this repo's own checked-in
+    `.claude/config/loop-harness/loops/issue-loop.yaml` project override must not silently
+    shadow the packaged source's `pr_mark_ready` fix (see
+    `test_project_override_issue_loop_is_not_shadowing_stale_exec_order` for the analogous J2
+    guard)."""
+    override_path = REPO_ROOT / ".claude" / "config" / "loop-harness" / "loops" / "issue-loop.yaml"
+    if not override_path.exists():
+        pytest.skip("no project-local issue-loop override present in this checkout")
+    effective = ld.load_all_definitions(str(REPO_ROOT))["issue-loop"]
+    assert effective.source_path == str(override_path)
+    assert _pr_review_response_on_success_exec(effective) == ["pr_mark_ready"]

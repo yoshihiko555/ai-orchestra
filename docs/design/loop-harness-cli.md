@@ -229,7 +229,7 @@ python3 loop_step.py propose --loop-id a1b2c3d4-issue-42 --lease-token 6f1e... -
 | `wait_external_review` | `pr_number`、`poll_interval_seconds`、`timeout_seconds`（config 由来。5 節）                                                                   |
 | `advance_phase`        | `verified_branch`（5.6 節）、`next_phase`、`exec`（ループ定義の `on_success.exec` 転記）                                                       |
 | `stop`                 | `stop_reason`（**安全停止の 3 条件のいずれか**: `push_guard_violation` / `repo_identity_mismatch` / `foreign_live_lease`。2.6 節・3.4 節参照） |
-| `exit_success`         | `pr_number`                                                                                                                                    |
+| `exit_success`         | `pr_number`、`non_blocking_open`（直近 phase check の metadata 転記）、`exec`（`on_success.exec` 転記。Issue #425）                             |
 | `exit_failure`         | `stop_reason`、`draft_pr_exec`（`on_failure.exec` 転記）                                                                                       |
 
 > **`stop` と `exit_failure` の区別（spec-reviewer 指摘反映）**: `action: stop`（`state.json.status

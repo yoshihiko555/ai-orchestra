@@ -192,6 +192,7 @@ def test_exit_success_proposal_params_include_non_blocking_open_from_last_check(
     just LP-2's own Issue comment."""
     project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
     state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
     state.pr_number = 77
     state.last_check_result = {
         "passed": True,
@@ -223,6 +224,7 @@ def test_exit_success_proposal_params_include_non_blocking_open_from_last_check(
             "body_excerpt": "[P4] optional",
         }
     ]
+    assert params["exec"] == ["pr_mark_ready"]
 
 
 def test_exit_success_proposal_params_non_blocking_open_defaults_to_empty(
@@ -232,6 +234,7 @@ def test_exit_success_proposal_params_non_blocking_open_defaults_to_empty(
     not error and must report an empty list, matching prior behavior exactly."""
     project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
     state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
     state.pr_number = 77
     state.last_check_result = {
         "passed": True,
@@ -242,7 +245,134 @@ def test_exit_success_proposal_params_non_blocking_open_defaults_to_empty(
 
     params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
 
-    assert params == {"pr_number": 77, "non_blocking_open": []}
+    assert params == {
+        "pr_number": 77,
+        "non_blocking_open": [],
+        "exec": ["pr_mark_ready"],
+        "draft_marked_pr_number": None,
+    }
+
+
+def test_exit_success_proposal_params_survives_unknown_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #425 review follow-up: `exit_success`, like `stop`, must never fail on config
+    drift. A `state.phase` that no longer exists in the loop definition (e.g. a definition
+    edit landed between an earlier `exit_failure` and a later `resume()`) must not raise
+    `DefinitionValidationError` -- it degrades to `exec: []` with the rest of the params
+    intact, exactly like the lookup's own `_phase_nested(..., [])` fallback."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "no-such-phase"
+    state.pr_number = 77
+
+    params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
+
+    assert params == {
+        "pr_number": 77,
+        "non_blocking_open": [],
+        "exec": [],
+        "draft_marked_pr_number": None,
+    }
+
+
+def test_exit_success_proposal_params_survives_unknown_definition_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same fail-closed guarantee as the unknown-phase case above, for a `definition_id` that
+    no longer resolves to any loaded loop definition -- must not raise `InvalidStateError`."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.definition_id = "no-such-loop"
+    state.pr_number = 77
+
+    params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
+
+    assert params == {
+        "pr_number": 77,
+        "non_blocking_open": [],
+        "exec": [],
+        "draft_marked_pr_number": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid_exec",
+    [42, "pr_mark_ready", ["pr_mark_ready", 42]],
+    ids=["int", "bare-string", "list-with-non-string"],
+)
+def test_exit_success_proposal_params_normalizes_invalid_exec_to_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_exec: object
+) -> None:
+    """Codex review (PR #429 P3): a malformed `on_success.exec` (not a list of plain strings --
+    e.g. a hand-edited custom loop definition's `exec: 42`, a bare `exec: pr_mark_ready` string
+    that would otherwise iterate as individual characters when consumed downstream, or a list
+    containing a non-string) must normalize to `[]` here at the source, rather than
+    propagating a malformed shape into `params["exec"]`."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.pr_number = 77
+    monkeypatch.setattr(
+        lc,
+        "_load_phase_definition",
+        lambda _state, _project: {"on_success": {"exec": invalid_exec}},
+    )
+
+    params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
+
+    assert params == {
+        "pr_number": 77,
+        "non_blocking_open": [],
+        "exec": [],
+        "draft_marked_pr_number": None,
+    }
+
+
+def test_exit_success_proposal_params_exposes_draft_marked_pr_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 4): `state.pr_review["draft_marked_pr_number"]`
+    (set by `loop_driver._draft_pr`/`prw.record_draft_marked_pr` when this loop converts or
+    creates a Draft PR) is surfaced as `params["draft_marked_pr_number"]` so LP-1's
+    skill-facing CLI response can report it too, not just `loop_driver._mark_pr_ready`'s own
+    internal state read."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.phase = "pr_review_response"
+    state.pr_number = 77
+    state.pr_review = {"draft_marked_pr_number": 77}
+
+    params = lc._proposal_params(state, lc.Action.EXIT_SUCCESS.value, project_dir)
+
+    assert params == {
+        "pr_number": 77,
+        "non_blocking_open": [],
+        "exec": ["pr_mark_ready"],
+        "draft_marked_pr_number": 77,
+    }
+
+
+def test_resume_preserves_draft_marked_pr_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review (PR #429 round 3, item 4): `resume()` resets guard counters and renumbers
+    PR-review finding bookkeeping (`_renumber_resumed_pr_review_findings`), but must not touch
+    `draft_marked_pr_number` -- an `exit_failure -> resume -> exit_success` cycle is exactly
+    the scenario this marker exists for, so it must survive the `resume()` in the middle of it
+    unchanged."""
+    project_dir, _lock = _setup_loop(tmp_path, monkeypatch, status="running")
+    loop_id = "abcd1234-issue-1"
+    state = lc.load_state(loop_id, project_dir)
+    state.status = "failed"
+    state.pr_review = {"draft_marked_pr_number": 77}
+    lc._write_state(state, project_dir)
+
+    lc.resume(loop_id, project_dir, True, "owner", 3600)
+
+    resumed = lc.load_state(loop_id, project_dir)
+    assert resumed.pr_review is not None
+    assert resumed.pr_review["draft_marked_pr_number"] == 77
 
 
 def test_custom_loop_complete_accepts_non_allowlisted_maker_without_persisting(
