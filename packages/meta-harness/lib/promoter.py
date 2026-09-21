@@ -433,12 +433,6 @@ def _compute_current_frontier(
     }
 
 
-def _has_passing_holdout(events: list[dict], cand_id: str, target: str) -> bool:
-    """Return true only for the latest passing holdout evaluation batch."""
-    latest = _latest_holdout_evaluation(events, cand_id, target)
-    return latest is not None and latest.get("verdict") == "pass"
-
-
 def _latest_holdout_evaluation(
     events: list[dict], cand_id: str, target: str
 ) -> dict[str, Any] | None:

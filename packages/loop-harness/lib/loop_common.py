@@ -3214,11 +3214,6 @@ def finding_status(record: dict[str, Any]) -> str:
     return status if isinstance(status, str) else ""
 
 
-def _iteration_findings_to_dict(value: IterationFindings) -> dict[str, Any]:
-    """Serialize IterationFindings for PhaseCheckResult metadata."""
-    return {"signatures": sorted(value.signatures), "new_count": value.new_count}
-
-
 def _metadata_iteration_findings(value: Any) -> IterationFindings | None:
     """Deserialize IterationFindings from PhaseCheckResult metadata."""
     if isinstance(value, IterationFindings):

@@ -1807,11 +1807,6 @@ def extract_cost(events_path: Path) -> dict:
     }
 
 
-def _has_budget_exceeded(events_path: Path) -> bool:
-    result_event = _find_result_event(events_path)
-    return bool(result_event) and result_event.get("subtype") == "error_max_budget_usd"
-
-
 # ---------------------------------------------------------------------------
 # self-report のパース + ペナルティ（Sec3-1。skill-evolution のパーサロジックを流用）
 # ---------------------------------------------------------------------------
