@@ -469,7 +469,9 @@ def test_reap_finished_workers_restarts_abnormal_exit_when_not_terminal(
     runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
 
     respawned = _FakePopen(returncode=None)
-    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned)
+    monkeypatch.setattr(
+        scheduler, "spawn_worker", lambda lid, project, definition_id="issue-loop": respawned
+    )
 
     result = scheduler.reap_finished_workers(runtime, project_dir)
 
@@ -489,7 +491,7 @@ def test_reap_finished_workers_does_not_restart_when_passed(
     _seed_state(tmp_path, loop_id, status="passed")
     runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not restart an already-passed loop")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -535,7 +537,7 @@ def test_reap_finished_workers_does_not_immediately_respawn_foreign_lease_exit(
         workers={loop_id: _FakePopen(returncode=scheduler._EXIT_FOREIGN_LEASE)}
     )
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not respawn a foreign-lease-rejected worker immediately")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -570,7 +572,9 @@ def test_reap_finished_workers_respawns_after_foreign_lease_cooldown_elapses(
     # Still within the cooldown window: no respawn yet.
     fake_clock["now"] += 100
     respawned = _FakePopen(returncode=None)
-    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned)
+    monkeypatch.setattr(
+        scheduler, "spawn_worker", lambda lid, project, definition_id="issue-loop": respawned
+    )
     still_cooling = scheduler.reap_finished_workers(runtime, project_dir)
     assert still_cooling == []
     assert loop_id not in runtime.workers
@@ -599,7 +603,7 @@ def test_reap_finished_workers_does_not_respawn_cooldown_when_at_capacity(
     )
     monkeypatch.setattr(scheduler.time, "monotonic", lambda: 1000.0)
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not respawn past the concurrency cap")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -634,7 +638,7 @@ def test_reap_finished_workers_counts_untracked_live_loop_against_cooldown_cap(
     runtime = scheduler.SchedulerRuntime(foreign_lease_cooldown_until={cooldown_loop_id: 500.0})
     monkeypatch.setattr(scheduler.time, "monotonic", lambda: 1000.0)
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not respawn past the concurrency cap")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -668,7 +672,9 @@ def test_reap_finished_workers_respawns_cooldown_using_slot_freed_this_same_call
     monkeypatch.setattr(scheduler.time, "monotonic", lambda: 1000.0)  # cooldown already elapsed
 
     respawned_proc = _FakePopen(returncode=None)
-    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned_proc)
+    monkeypatch.setattr(
+        scheduler, "spawn_worker", lambda lid, project, definition_id="issue-loop": respawned_proc
+    )
 
     result = scheduler.reap_finished_workers(runtime, project_dir)
 
@@ -709,7 +715,7 @@ def test_reap_finished_workers_immediate_restart_respects_cap_with_untracked_liv
         }
     )
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not restart past the concurrency cap")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -736,7 +742,9 @@ def test_reap_finished_workers_immediate_restart_uses_slot_when_available(
     runtime = scheduler.SchedulerRuntime(workers={dead_loop_id: _FakePopen(returncode=1)})
 
     respawned = _FakePopen(returncode=None)
-    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned)
+    monkeypatch.setattr(
+        scheduler, "spawn_worker", lambda lid, project, definition_id="issue-loop": respawned
+    )
 
     result = scheduler.reap_finished_workers(runtime, project_dir)
 
@@ -762,7 +770,9 @@ def test_respawn_orphaned_active_loops_respawns_when_lease_absent(
     runtime = scheduler.SchedulerRuntime()
 
     respawned_proc = _FakePopen(returncode=None)
-    monkeypatch.setattr(scheduler, "spawn_worker", lambda lid, project: respawned_proc)
+    monkeypatch.setattr(
+        scheduler, "spawn_worker", lambda lid, project, definition_id="issue-loop": respawned_proc
+    )
 
     result = scheduler.respawn_orphaned_active_loops(runtime, project_dir)
 
@@ -782,7 +792,7 @@ def test_respawn_orphaned_active_loops_skips_when_lease_still_alive(
     lc.acquire_lock(loop_id, project_dir, "someone-else", 300)
     runtime = scheduler.SchedulerRuntime()
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not respawn a loop with a live foreign lease")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -810,7 +820,7 @@ def test_respawn_orphaned_active_loops_respects_concurrency_cap(
 
     spawned_ids: list[str] = []
 
-    def fake_spawn(lid: str, project: str) -> _FakePopen:
+    def fake_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> _FakePopen:
         spawned_ids.append(lid)
         return _FakePopen(returncode=None)
 
@@ -844,7 +854,7 @@ def test_respawn_orphaned_active_loops_counts_untracked_live_loop_against_cap(
     lc.acquire_lock(live_loop_id, project_dir, "previous-process", 300)  # still alive
     runtime = scheduler.SchedulerRuntime()  # fresh restart; workers empty
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not respawn past the concurrency cap")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -1472,7 +1482,7 @@ def test_respawn_orphaned_active_loops_safety_stops_instead_of_respawning_mismat
     monkeypatch.setattr(lds, "notify_macos", lambda title, message: True)
     monkeypatch.setattr(scheduler, "lds", lds)
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not respawn a repo-identity-mismatched loop")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -1503,7 +1513,7 @@ def test_respawn_expired_cooldowns_safety_stops_instead_of_respawning_mismatch(
     monkeypatch.setattr(lds, "notify_macos", lambda title, message: True)
     monkeypatch.setattr(scheduler, "lds", lds)
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not respawn a repo-identity-mismatched loop")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -1532,7 +1542,7 @@ def test_reap_finished_workers_safety_stops_instead_of_crash_restarting_mismatch
     monkeypatch.setattr(lds, "notify_macos", lambda title, message: True)
     monkeypatch.setattr(scheduler, "lds", lds)
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not respawn a repo-identity-mismatched loop")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -1559,7 +1569,7 @@ def test_reap_finished_workers_defers_crash_restart_when_mismatch_lease_alive(
     lc.acquire_lock(loop_id, project_dir, "someone-else", 300)
     runtime = scheduler.SchedulerRuntime(workers={loop_id: _FakePopen(returncode=1)})
 
-    def _fail_spawn(lid: str, project: str) -> None:
+    def _fail_spawn(lid: str, project: str, definition_id: str = "issue-loop") -> None:
         raise AssertionError("must not respawn a repo-identity-mismatched loop")
 
     monkeypatch.setattr(scheduler, "spawn_worker", _fail_spawn)
@@ -2658,3 +2668,68 @@ def test_respawn_orphaned_active_loops_still_honors_cooldown_while_lease_alive(
 
     assert scheduler.respawn_orphaned_active_loops(runtime, project_dir) == []
     assert loop_id in runtime.foreign_lease_cooldown_until
+
+
+# -- Issue #440: definition ownership --------------------------------------------------------------
+
+
+def test_respawn_orphaned_active_loops_skips_loops_of_another_definition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #440: two schedulers for different definitions in one project must not adopt
+    each other's orphaned loops (the worker would run under the wrong definition)."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    mine = wm.compute_loop_id(project_dir, 21)
+    theirs = wm.compute_loop_id(project_dir, 22)
+    _seed_state(tmp_path, mine, status="running")
+    other = _seed_state(tmp_path, theirs, status="running")
+    other.definition_id = "other-loop"
+    lc._write_state(other, project_dir)
+    for loop_id in (mine, theirs):
+        assert lc.acquire_lock(loop_id, project_dir, "operator", 0) is not None
+    monkeypatch.setattr(scheduler, "_recheck_repo_identity_before_respawn", lambda *a, **k: True)
+    spawned: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        scheduler,
+        "spawn_worker",
+        lambda lid, project, definition_id="issue-loop": (
+            spawned.append((lid, definition_id)) or _FakePopen(returncode=None)
+        ),
+    )
+    runtime = scheduler.SchedulerRuntime(definition_id="issue-loop")
+
+    assert scheduler.respawn_orphaned_active_loops(runtime, project_dir) == [mine]
+    assert spawned == [(mine, "issue-loop")]
+
+
+def test_reap_finished_workers_does_not_restart_loop_of_another_definition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = wm.compute_loop_id(project_dir, 23)
+    state = _seed_state(tmp_path, loop_id, status="running")
+    state.definition_id = "other-loop"
+    lc._write_state(state, project_dir)
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda *a, **k: pytest.fail("spawned"))
+    runtime = scheduler.SchedulerRuntime(definition_id="issue-loop")
+    runtime.workers[loop_id] = _FakePopen(returncode=1)
+
+    assert scheduler.reap_finished_workers(runtime, project_dir) == []
+    assert runtime.workers == {}
+
+
+def test_run_scheduler_binds_runtime_to_its_definition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    seen: list[str] = []
+
+    def fake_cycle(runtime: scheduler.SchedulerRuntime, project: str, definition: object) -> None:
+        seen.append(runtime.definition_id)
+
+    monkeypatch.setattr(scheduler, "run_cycle", fake_cycle)
+    monkeypatch.setattr(scheduler, "verify_repo_identity_at_startup", lambda project: [])
+    scheduler.run_scheduler(str(tmp_path), "issue-loop", max_cycles=1)
+    assert seen == ["issue-loop"]

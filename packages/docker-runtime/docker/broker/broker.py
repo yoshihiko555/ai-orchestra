@@ -34,6 +34,10 @@ ALLOWED_CLIENT_BETAS = frozenset(
         "advisor-tool-2026-03-01",
         "effort-2025-11-24",
         "structured-outputs-2025-12-15",
+        # Issue #445: Claude Code 2.1.x sends this on `/v1/messages/count_tokens` (already an
+        # allowed path); rejecting only the header left count_tokens failing with 431 on every
+        # Docker-isolated session. Read-only endpoint, no pricing-ceiling impact.
+        "token-counting-2024-11-01",
     }
 )
 TOKEN_PATH = Path("/run/secrets/oauth-token")

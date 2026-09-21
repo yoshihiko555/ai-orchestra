@@ -1740,7 +1740,21 @@ class LoopDriver:
         )
         return payload
 
-    _CLAUDE_FAILURE_ARTIFACT_MAX_BYTES = 8192
+    # Issue #444: 8 KB kept only the last few tool_use lines; the API error that ended the
+    # session was already cut off, so a `terminal_reason: api_error` exit could not be
+    # diagnosed at all after the containers were gone.
+    _CLAUDE_FAILURE_ARTIFACT_MAX_BYTES = 262144
+    _CLAUDE_FAILURE_ERROR_LINE_MAX_BYTES = 4096
+    _CLAUDE_FAILURE_ERROR_LINES_MAX = 200
+    _CLAUDE_FAILURE_ERROR_MARKERS = (
+        '"type":"error"',
+        '"type": "error"',
+        '"is_error":true',
+        '"is_error": true',
+        '"subtype":"error',
+        '"subtype": "error',
+        "api_error",
+    )
 
     def _save_claude_failure_artifacts(
         self, action_id: str, kind: str, completed: subprocess.CompletedProcess[str]
@@ -1769,11 +1783,37 @@ class LoopDriver:
             f"claude_{kind}_stderr.txt",
             stderr_tail.decode("utf-8", errors="ignore"),
         )
+        # Issue #444: error-bearing stream-json events are kept separately from the tail so
+        # they survive however much tool chatter followed them.
+        error_lines = self._claude_error_event_lines(completed.stdout)
+        errors_note = ""
+        if error_lines:
+            errors_path = lc.save_artifact(
+                self.loop_id,
+                self.project_dir,
+                action_id,
+                f"claude_{kind}_errors.jsonl",
+                "\n".join(error_lines) + "\n",
+            )
+            errors_note = f" / {errors_path}"
         print(
             f"loop_driver: {kind} claude exited {completed.returncode}; "
-            f"see {stdout_path} / {stderr_path}",
+            f"see {stdout_path} / {stderr_path}{errors_note}",
             file=sys.stderr,
         )
+
+    @classmethod
+    def _claude_error_event_lines(cls, stdout: str) -> list[str]:
+        """Return stdout lines that look like Claude Code error events (Issue #444)."""
+        lines: list[str] = []
+        for line in stdout.splitlines():
+            if not any(marker in line for marker in cls._CLAUDE_FAILURE_ERROR_MARKERS):
+                continue
+            encoded = line.encode("utf-8")[: cls._CLAUDE_FAILURE_ERROR_LINE_MAX_BYTES]
+            lines.append(encoded.decode("utf-8", errors="ignore"))
+            if len(lines) >= cls._CLAUDE_FAILURE_ERROR_LINES_MAX:
+                break
+        return lines
 
     def _invalid_reviewer_output_result(
         self,
@@ -2073,6 +2113,8 @@ class LoopDriver:
                     self.lease_token,
                     action_id=action_id,
                     iteration=proposal.iteration,
+                    # Issue #442: wait for the API to report the SHA just pushed above.
+                    expected_sha=_local_head(state.worktree_path),
                 )
                 state = lc.load_state(self.loop_id, self.project_dir)
         # code F12: a `wait_external_review` proposal's own params (built by `propose()` from
@@ -3014,6 +3056,7 @@ class LoopDriver:
                         prw.GhApiClient(repo),
                         self.lease_token,
                         action_id=action_id,
+                        expected_sha=_local_head(state.worktree_path),  # Issue #442
                     )
             elif step == "notify":
                 self._notify(state, "advance_phase")

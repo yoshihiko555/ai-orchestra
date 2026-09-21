@@ -362,3 +362,16 @@
     a failing `docker image rm` inside opportunistic cleanup is logged as a
     warning and left for a later attempt; it never fails the
     `ensure_recipe_image` call it is piggybacking on.
+
+- ev_id: EV-162
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime.py::test_validated_client_betas_accepts_claude_code_token_counting_beta
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime.py::test_validated_client_betas_accepts_claude_code_token_counting_beta
+  notes: >-
+    Claude Code's count_tokens beta (token-counting-2024-11-01) is accepted;
+    an unknown beta is still rejected (Issue #445).
