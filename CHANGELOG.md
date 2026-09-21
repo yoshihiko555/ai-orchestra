@@ -19,6 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`loop-harness`: Docker 隔離の Maker が `budget_usd` の半分弱で `run budget exhausted` になり停止する問題を修正（Issue #432）**: broker の入力トークン見積りに使う `lp2.isolation.broker.input_bytes_per_token`（既定 `3`）を追加し、broker へ渡すようになった。これまでは 1 byte = 1 token で見積もられ、セッション後半のリクエストが実際の数倍のコストと評価されて予算の半分弱で全リクエストが拒否されていた。`budget_usd` を上書き済みのプロジェクトも、この既定はそのまま適用される。
 - **`loop-harness`: `print-launchd` / `print-cron` が生成する常駐テンプレートが最小 `PATH` で起動し、`gh` / `docker` を解決できず discovery が黙って失敗する問題を修正**: テンプレートに生成時のシェルの `PATH` を埋め込むようになった（launchd は `EnvironmentVariables.PATH`、cron は行頭の `export PATH=...;`）。既に登録済みの plist / crontab は再生成して差し替える。
 - **`loop-harness`: LP-2 の Maker/Checker が現行 Claude Code CLI で起動前に失敗する問題を修正（Issue #401）**: `claude -p` の prompt 引数を `--add-dir`（可変長オプション）の直後に置くと、prompt がディレクトリ引数として飲み込まれ非ゼロ終了していた。`--add-dir` 群と prompt の間に `--` terminator を挿入して分離した。
 - **`loop-harness`: Docker 隔離の Checker 機械検証が一時リポジトリへの `git init` で失敗する問題を修正（Issue #409）**: `GIT_DIR`/`GIT_WORK_TREE` がコンテナ全体の環境変数として export されていたため、`pytest` がテスト内で作る一時 git リポジトリへの `git init` がすべて action 自身の ephemeral リポジトリへ誤って向いていた。これらは Maker/Checker の `claude -p` 実行にのみ渡すよう変更し、機械検証（`docker exec`）では一切見えなくした。またコンテナの `TMPDIR` を exec 可能な別 tmpfs に向け、一時ディレクトリに置かれる実行可能ファイルが動作するようにした。

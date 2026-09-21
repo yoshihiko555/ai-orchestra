@@ -2344,3 +2344,22 @@ def test_rewrite_claude_settings_survives_add_dir_terminator(tmp_path: Path) -> 
     assert rewritten[settings_index + 1] == bundle.settings_path
     assert rewritten[-2] == "--"
     assert rewritten[-1] == "do the thing"
+
+
+def test_broker_env_forwards_input_bytes_per_token() -> None:
+    """Issue #432: without `DR_BROKER_INPUT_BYTES_PER_TOKEN` the broker falls back to
+    1 byte = 1 token for its pre-admission cost estimate, so a late-session 400-500 KB request
+    body is priced at $8-10 and every request is rejected once about half of budget_usd is
+    spent. The validated config value must reach the broker container's environment."""
+    config = docker_config.validate_isolation_config(
+        {"lp2": {"isolation": {"broker": {"input_bytes_per_token": 4}}}}
+    )
+    settings = broker_runtime._broker_settings(config.broker)
+    env = broker_runtime._broker_env(
+        settings, run_token="run-token", port=8790, max_lifetime_seconds=60
+    )
+    assert env["DR_BROKER_INPUT_BYTES_PER_TOKEN"] == "4"
+    default_settings = broker_runtime._broker_settings(
+        docker_config.validate_isolation_config({}).broker
+    )
+    assert default_settings["input_bytes_per_token"] == 3

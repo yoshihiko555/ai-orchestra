@@ -32,6 +32,9 @@ def test_default_config_is_disabled_and_has_required_broker_limits() -> None:
     assert validated.broker.max_requests == 400
     assert validated.broker.max_total_tokens == 30000000
     assert validated.broker.max_upstream_bytes == 500000000
+    # Issue #432: must be wired (and > 1) or the broker's 1 byte = 1 token fail-safe halves the
+    # effective budget.
+    assert validated.broker.input_bytes_per_token == 3
     assert validated.broker.pricing.output == 75.0
 
 
@@ -83,6 +86,7 @@ def test_execution_backend_docker_requires_backend_docker() -> None:
         (("broker", "max_requests"), 0, "positive integer"),
         (("broker", "max_total_tokens"), True, "positive integer"),
         (("broker", "max_upstream_bytes"), -1, "positive integer"),
+        (("broker", "input_bytes_per_token"), 0, "positive integer"),
         (
             ("broker", "pricing_upper_bound_usd_per_million", "input"),
             float("nan"),

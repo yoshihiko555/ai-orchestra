@@ -76,6 +76,11 @@ lp2:
       max_requests: 400
       max_total_tokens: 30000000
       max_upstream_bytes: 500000000
+      # Bytes-per-token divisor for the broker's pre-admission input estimate (Issue #432).
+      # Without it the broker falls back to 1 byte = 1 token and a 400-500 KB request body
+      # late in a Maker session is priced at $8-10, so budget_usd is effectively halved.
+      # Same value and rationale as meta-harness (~4 bytes/token with a 25% safety margin).
+      input_bytes_per_token: 3
       pricing_upper_bound_usd_per_million:
         input: 15.0
         output: 75.0
