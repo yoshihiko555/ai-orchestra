@@ -29,11 +29,15 @@ from xml.sax.saxutils import escape as xml_escape
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _LIB_DIR = _SCRIPT_DIR.parent / "lib"
-if str(_LIB_DIR) not in sys.path:
-    sys.path.insert(0, str(_LIB_DIR))
+_DOCKER_RUNTIME_LIB = _SCRIPT_DIR.parent.parent / "docker-runtime" / "lib"
+for _path in (_LIB_DIR, _DOCKER_RUNTIME_LIB):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
+import docker_runtime_cli as runtime_cli  # noqa: E402
 import loop_common as lc  # noqa: E402
 import loop_definition as ld  # noqa: E402
+import loop_docker_config as docker_config  # noqa: E402
 import loop_driver_support as lds  # noqa: E402
 import worktree_manager as wm  # noqa: E402
 
@@ -520,6 +524,37 @@ class SchedulerRuntime:
     # code H4: loop_id -> monotonic deadline before which a foreign-lease-rejected worker must
     # not be respawned (anti restart-storm guard; in-memory/per-scheduler-process only).
     foreign_lease_cooldown_until: dict[str, float] = field(default_factory=dict)
+    # Issue #436: last observed Docker daemon availability (None until first probed). Kept only
+    # so `docker_spawn_gate` logs on transitions instead of on every poll cycle.
+    docker_daemon_available: bool | None = None
+
+
+def docker_spawn_gate(runtime: SchedulerRuntime, project_dir: str) -> bool:
+    """Return whether this cycle may spawn/respawn workers (Issue #436).
+
+    With `lp2.isolation.execution_backend: docker`, a worker spawned while the Docker daemon is
+    down (launchd `RunAtLoad` routinely starts this scheduler before OrbStack at login) burns
+    through `guards.infrastructure_failure.max_retries` in ~20 seconds and lands the loop in
+    `failed`, which then needs a human `resume`. Probing once per cycle and skipping every
+    spawn path while the daemon is unavailable keeps loop state untouched, so the next cycle
+    simply retries. Host execution (`execution_backend: none`) never probes. The driver's own
+    `DockerActionRuntime._start()` check stays as the backstop for a daemon that dies later.
+    """
+    config = ld.load_config(project_dir)
+    if not docker_config.docker_execution_enabled(config):
+        return True
+    available = runtime_cli.docker_daemon_available(runner=subprocess.run)
+    if available != runtime.docker_daemon_available:
+        if available:
+            message = "loop_scheduler: docker daemon available again; resuming worker spawn"
+        else:
+            message = (
+                "loop_scheduler: docker daemon unavailable; skipping worker spawn/respawn "
+                "until it returns"
+            )
+        print(lc.redact(message), file=sys.stderr)
+        runtime.docker_daemon_available = available
+    return available
 
 
 def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
@@ -886,8 +921,16 @@ def _cleanup_orphaned_pending_worktree(loop_id: str, project_dir: str) -> None:
         )
 
 
-def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
+def reap_finished_workers(
+    runtime: SchedulerRuntime, project_dir: str, *, allow_respawn: bool = True
+) -> list[str]:
     """Poll tracked workers; restart abnormal exits unless failed/stopped. Return respawned ids.
+
+    Issue #436: with `allow_respawn=False` (Docker daemon unavailable this cycle) dead workers
+    are still reaped and foreign-lease cooldowns still recorded, but nothing is respawned. A
+    crash-restart candidate is simply left as-is: its status stays `running`, so once the daemon
+    returns it is picked up by `respawn_orphaned_active_loops` (lease expired) or, if its
+    lease is somehow still alive, counted as a live occupant until it expires.
 
     SN6: dead workers are reaped (freeing their concurrency slots in `runtime.workers`) *before*
     `_respawn_expired_cooldowns` is checked, not after. Checking cooldowns first would compute
@@ -935,6 +978,8 @@ def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[s
             continue
         restart_candidates.append((loop_id, state))
     respawned: list[str] = []
+    if not allow_respawn:
+        return respawned
     if restart_candidates:
         available = _available_worker_slots(runtime, project_dir)
         expected_repo_identity_hash: str | None = None
@@ -994,7 +1039,13 @@ def run_cycle(runtime: SchedulerRuntime, project_dir: str, definition: ld.LoopDe
     so a slot a cooldown-elapsed loop is waiting on is never first handed to an unrelated
     recovered/orphaned-active loop instead.
     """
-    reap_finished_workers(runtime, project_dir)
+    can_spawn = docker_spawn_gate(runtime, project_dir)
+    reap_finished_workers(runtime, project_dir, allow_respawn=can_spawn)
+    if not can_spawn:
+        # Issue #436: nothing below may start a worker (or, for
+        # `recover_orphaned_pending_loops`, rename state dirs / clean worktrees) while the
+        # Docker daemon is down. Loop state is left untouched so the next cycle retries.
+        return
     # Must run before spawn_new_workers (#H3/#H11): retiring a stale `pending` state dir this
     # cycle lets discovery treat the same Issue as a fresh candidate in this same cycle,
     # instead of only on the next poll.

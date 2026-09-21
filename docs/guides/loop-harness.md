@@ -228,6 +228,7 @@ python3 packages/loop-harness/scripts/loop_status.py show --loop-id <id> [--jour
 | ガード到達で正規に `failed`／安全停止で `stopped` になった | 原因を確認・解消したうえで `/loop-issue --resume <loop_id>`（ガードカウンタをリセットして再挑戦） |
 | 完了済みループの整理 | `python3 packages/loop-harness/scripts/loop_status.py purge [--force] [--dry-run] [--yes]`。`running`/`waiting_external` は常に保護され、既定では `passed`/`failed` かつ 30 日経過分のみが対象 |
 | LP-2 Docker 実行で `ClaudeCredentialError`（`remaining=…s < required=…s`）が出てブローカーが起動しない | トークンの残り有効期間が `lp2.wall_clock_timeout_seconds + 360` 秒未満（既定 7200 秒なら 7560 秒必要）。再ログイン（`claude` → `/login`）またはトークン失効後の再発行で TTL を更新するか、`lp2.wall_clock_timeout_seconds` を local yaml（`lp2:` 配下）で一時的に短縮する（後で戻す）。詳細は本節末尾のサブセクション参照 |
+| LP-2 常駐 scheduler の stderr に `docker daemon unavailable; skipping worker spawn/respawn` が出て worker が起動しない | Docker daemon（OrbStack）を起動する。scheduler は daemon 復帰後のポーリングで自動的に spawn を再開する（loop の state は変わらない）。ログイン直後に常発するなら OrbStack の「Start at login」を有効にする |
 | LP-2 常駐 scheduler 配下の loop が `failed` / `stopped` になった | 原因を解消し、loop worktree（`.worktrees/loop-issue-<N>`）に Maker の未コミット変更が残っていれば `git checkout -- .` 等で捨ててから `python3 packages/loop-harness/scripts/loop_step.py resume --loop-id <loop_id> --reset-counters --release-for-scheduler --project <root>` を実行する。scheduler が次のポーリング（既定 2 分）で自動 attach する。`/loop-issue --resume`（LP-1）を流用すると lease の失効まで最大 1 時間 attach されない |
 
 `exit_failure` で終了した場合、Draft 化された PR と失敗理由を記載した Issue コメントがそのまま残る。内容を確認したうえで手動対応するか、原因を解消してから `resume` する。

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: LP-2 常駐 scheduler が Docker daemon 未起動のときは worker を起動せず待機するようになった（Issue #436）**: `lp2.isolation.execution_backend: docker` の環境で、ポーリングごとに daemon の疎通を確認し、利用不可の間は spawn / 再起動を見送る。これまではログイン直後など daemon 起動前に worker が起動し、20 秒で `infrastructure_failure_exhausted` になって人手の `resume` が必要だった。
 - **`loop-harness`: LP-2 常駐 scheduler 配下の `failed` / `stopped` ループを `loop_step.py resume --reset-counters --release-for-scheduler` で再開できるようになった（Issue #437）**: lease を失効状態で残して scheduler の次のポーリングで自動 attach させる。loop worktree に未コミット変更が残っている場合は拒否する。これまでは LP-1 用の `resume` しかなく、最大 1 時間 attach されないうえ、再開のたびに infrastructure_failure ガードを 1 消費していた。
 - **`quality-gates`: `code-comments` / `code-naming` スキルを追加**: コード・テスト・コミットログ・コードコメントの書き分けと、識別子（変数・関数・クラス等）の命名を、実装時やコミットメッセージ作成時に参照できるようになった（[keitakn/engineering-skills](https://github.com/keitakn/engineering-skills) より移植、MIT）。
 - **`core`: `explain-visually` スキルを追加**: 実装計画・ブランチ差分・PR・Issue・`/review` 結果を、図解付きの HTML ページ（`.claude/docs/explain-visually/` 配下）にして開けるようになった。Google Chrome が必要（描画検証を通ってから開く）（[keitakn/engineering-skills](https://github.com/keitakn/engineering-skills) より移植、MIT）。
@@ -16,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **`facet build` が生成 Markdown を prettier で整形するようになった**: `.claude/skills/**/SKILL.md`・`.claude/rules/*.md`・`.agents/skills/**/SKILL.md` と `references/*.md` が、生成時点で prettier 整形済みになる。これまでは生成物が未整形だったため、エディタの保存時整形や `lint-on-save` hook が触った瞬間にテーブル整列や frontmatter の折り返しで全文差分が発生していた。prettier が解決できない環境では警告を出して未整形のまま生成を続行する（`facet build` は失敗しない）。この変更により、導入済みプロジェクトでは次回 sync 時に生成物へ一度だけ整形差分が出る。
-- **`loop-harness`: Docker 隔離の broker 既定値（`budget_usd`/`max_requests`/`max_total_tokens`/`max_upstream_bytes`）を実測に基づき引き上げ（Issue #405）**: 従来の既定値では Claude Code の最初のリクエストの時点でコスト上限見積りを超え、Maker/Checker の LLM 層が全リクエスト拒否されて起動不能になっていた。既定値を上書き済みのプロジェクトは影響しない。
+- **`loop-harness`: Docker 隔離の broker 既定値（`budget_usd`/`max_requests`/`max_total_tokens`/`max_upstream_bytes`）を実測に基づき引き上げ（Issue #405）**: 従来の既定値では Claude Code の最初のリクエストの時点でコスト上限見積りを超え、Maker/Checker の LLM 層が全リクエスト拒否されて起動不能になっていた。既定値を上書き済みのプロジェクトは影響しない。その後の実 Issue での常駐観察で `budget_usd: 25.0` でも Maker が完走しなかったため、`budget_usd` の既定値を `50.0` に再較正した（Issue #435）。
 
 ### Fixed
 
