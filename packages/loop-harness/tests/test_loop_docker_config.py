@@ -28,7 +28,8 @@ def test_default_config_is_disabled_and_has_required_broker_limits() -> None:
     assert validated.backend == "none"
     assert validated.execution_backend == "none"
     assert validated.docker_execution_enabled is False
-    assert validated.broker.budget_usd == 25.0
+    # Issue #435: 25.0 was exhausted by every real-Issue Maker run (see EV-162 revision).
+    assert validated.broker.budget_usd == 50.0
     assert validated.broker.max_requests == 400
     assert validated.broker.max_total_tokens == 30000000
     assert validated.broker.max_upstream_bytes == 500000000

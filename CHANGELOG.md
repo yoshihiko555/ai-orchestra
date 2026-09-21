@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **`facet build` が生成 Markdown を prettier で整形するようになった**: `.claude/skills/**/SKILL.md`・`.claude/rules/*.md`・`.agents/skills/**/SKILL.md` と `references/*.md` が、生成時点で prettier 整形済みになる。これまでは生成物が未整形だったため、エディタの保存時整形や `lint-on-save` hook が触った瞬間にテーブル整列や frontmatter の折り返しで全文差分が発生していた。prettier が解決できない環境では警告を出して未整形のまま生成を続行する（`facet build` は失敗しない）。この変更により、導入済みプロジェクトでは次回 sync 時に生成物へ一度だけ整形差分が出る。
-- **`loop-harness`: Docker 隔離の broker 既定値（`budget_usd`/`max_requests`/`max_total_tokens`/`max_upstream_bytes`）を実測に基づき引き上げ（Issue #405）**: 従来の既定値では Claude Code の最初のリクエストの時点でコスト上限見積りを超え、Maker/Checker の LLM 層が全リクエスト拒否されて起動不能になっていた。既定値を上書き済みのプロジェクトは影響しない。
+- **`loop-harness`: Docker 隔離の broker 既定値（`budget_usd`/`max_requests`/`max_total_tokens`/`max_upstream_bytes`）を実測に基づき引き上げ（Issue #405）**: 従来の既定値では Claude Code の最初のリクエストの時点でコスト上限見積りを超え、Maker/Checker の LLM 層が全リクエスト拒否されて起動不能になっていた。既定値を上書き済みのプロジェクトは影響しない。その後の実 Issue での常駐観察で `budget_usd: 25.0` でも Maker が完走しなかったため、`budget_usd` の既定値を `50.0` に再較正した（Issue #435）。
 
 ### Fixed
 
