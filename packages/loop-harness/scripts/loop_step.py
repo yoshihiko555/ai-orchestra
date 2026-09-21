@@ -22,6 +22,7 @@ if str(_LIB_DIR) not in sys.path:
 
 import loop_common as lc  # noqa: E402
 import loop_definition as ld  # noqa: E402
+import loop_driver_support as lds  # noqa: E402
 import worktree_manager as wm  # noqa: E402
 
 EXIT_SUCCESS = 0
@@ -338,7 +339,13 @@ def _resume_released_for_scheduler(loop_id: str, project: str) -> dict[str, Any]
 
 
 def _reject_dirty_worktree(worktree_path: str) -> None:
-    """Fail closed unless `git status --porcelain` runs and prints nothing."""
+    """Fail closed unless `git status --porcelain` runs and prints nothing.
+
+    Runs with `hardened_git_config_args()` (PR #441 Codex P1): a Maker that stopped mid-action
+    may have left `core.fsmonitor=<command>` or a hooks path in the worktree's `.git/config`,
+    and a plain `git status` would execute that under the operator's own privileges - before
+    any of the driver's tamper checks get a chance to run.
+    """
     if not Path(worktree_path).is_dir():
         raise CliFailure(
             "worktree_unavailable",
@@ -347,7 +354,7 @@ def _reject_dirty_worktree(worktree_path: str) -> None:
         )
     try:
         completed = subprocess.run(
-            ["git", "-C", worktree_path, "status", "--porcelain"],
+            ["git", *lds.hardened_git_config_args(), "-C", worktree_path, "status", "--porcelain"],
             capture_output=True,
             text=True,
             timeout=_WORKTREE_STATUS_TIMEOUT_SECONDS,

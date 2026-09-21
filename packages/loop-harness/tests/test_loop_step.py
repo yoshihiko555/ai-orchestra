@@ -2785,3 +2785,34 @@ def test_resume_release_for_scheduler_refuses_missing_worktree(tmp_path: Path) -
 
     assert proc.returncode == loop_step.EXIT_GENERAL_ERROR
     assert payload["error"]["code"] == "worktree_unavailable"
+
+
+def test_resume_release_for_scheduler_status_check_neutralizes_worktree_git_config(
+    tmp_path: Path,
+) -> None:
+    """PR #441 Codex P1: a Maker-left `core.fsmonitor=<command>` must not run under the
+    operator's privileges when the pre-check inspects the worktree."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _exclude_loop_state_from_git(repo)
+    _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "stopped"
+    lc._write_state(state, str(repo))
+    marker = tmp_path / "fsmonitor-ran"
+    _git(["config", "core.fsmonitor", f"touch {marker}"], repo)
+
+    proc = _run_cli(
+        [
+            "resume",
+            "--loop-id",
+            "abcd1234-issue-1",
+            "--reset-counters",
+            "--release-for-scheduler",
+            "--project",
+            str(repo),
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not marker.exists()

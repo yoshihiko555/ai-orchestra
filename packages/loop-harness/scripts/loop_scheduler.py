@@ -751,16 +751,16 @@ def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -
             break
         if loop_id in runtime.workers:
             continue
-        if loop_id in runtime.stopped_loop_ids:
-            # Issue #437: `active_loop_ids` only returns running/waiting_external, so a loop
-            # this scheduler safety-stopped can be here only after a human `resume`d it. The
-            # in-memory mark would otherwise exclude it forever; drop it and let the identity
-            # recheck below decide afresh (it re-marks on a persisting mismatch).
-            runtime.stopped_loop_ids.discard(loop_id)
-        if loop_id in runtime.foreign_lease_cooldown_until:
-            continue
         if not _is_lease_expired(loop_id, project_dir):
             continue
+        # Issue #437: `active_loop_ids` only returns running/waiting_external, so a loop this
+        # scheduler safety-stopped can be here only after a human `resume`d it. The in-memory
+        # mark would otherwise exclude it forever; drop it and let the identity recheck below
+        # decide afresh (it re-marks on a persisting mismatch). Same for a foreign-lease
+        # cooldown (PR #441 Codex P2): the lease being expired means no foreign owner remains,
+        # so honoring the rest of the cooldown would only idle a handoff for up to the LP-2 TTL.
+        runtime.stopped_loop_ids.discard(loop_id)
+        runtime.foreign_lease_cooldown_until.pop(loop_id, None)
         if expected_repo_identity_hash is None:
             expected_repo_identity_hash = wm.resolve_repo_identity_hash(project_dir)
         if not _recheck_repo_identity_before_respawn(

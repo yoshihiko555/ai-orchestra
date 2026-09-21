@@ -2614,3 +2614,47 @@ def test_respawn_orphaned_active_loops_drops_stale_stopped_mark_after_human_resu
     assert scheduler.respawn_orphaned_active_loops(runtime, project_dir) == [loop_id]
     assert spawned == [loop_id]
     assert loop_id not in runtime.stopped_loop_ids
+
+
+def test_respawn_orphaned_active_loops_drops_foreign_lease_cooldown_once_lease_expired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #441 Codex P2: after a foreign-lease exit put the loop in cooldown, an operator's
+    `resume --release-for-scheduler` writes a ttl-0 lease; no foreign owner remains, so the
+    remaining cooldown must not idle the handoff for up to the LP-2 TTL."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = wm.compute_loop_id(project_dir, 12)
+    _seed_state(tmp_path, loop_id, status="running")
+    assert lc.acquire_lock(loop_id, project_dir, "operator", 0) is not None  # expired lease
+    monkeypatch.setattr(scheduler, "_recheck_repo_identity_before_respawn", lambda *a, **k: True)
+    spawned: list[str] = []
+    monkeypatch.setattr(
+        scheduler,
+        "spawn_worker",
+        lambda lid, project, definition_id="issue-loop": (
+            spawned.append(lid) or _FakePopen(returncode=None)
+        ),
+    )
+    runtime = scheduler.SchedulerRuntime()
+    runtime.foreign_lease_cooldown_until[loop_id] = time.monotonic() + 3600
+
+    assert scheduler.respawn_orphaned_active_loops(runtime, project_dir) == [loop_id]
+    assert spawned == [loop_id]
+    assert loop_id not in runtime.foreign_lease_cooldown_until
+
+
+def test_respawn_orphaned_active_loops_still_honors_cooldown_while_lease_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = wm.compute_loop_id(project_dir, 13)
+    _seed_state(tmp_path, loop_id, status="running")
+    assert lc.acquire_lock(loop_id, project_dir, "foreign", 3600) is not None  # live lease
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda *a, **k: pytest.fail("spawned"))
+    runtime = scheduler.SchedulerRuntime()
+    runtime.foreign_lease_cooldown_until[loop_id] = time.monotonic() + 3600
+
+    assert scheduler.respawn_orphaned_active_loops(runtime, project_dir) == []
+    assert loop_id in runtime.foreign_lease_cooldown_until
