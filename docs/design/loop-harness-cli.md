@@ -1073,6 +1073,19 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
   > （逆に retirement が先にロックを取得していれば `attach` 側が `lock_unavailable`/
   > `invalid_state` で正しく失敗する）。
 
+- **Docker daemon 未起動時の spawn ゲート（Issue #436）**: `lp2.isolation.execution_backend: docker`
+  の環境では、`run_cycle` の冒頭で `docker_spawn_gate` が `docker_daemon_available()` をサイクルに
+  1 回だけプローブする（`none` ではプローブしない）。利用不可のサイクルは
+  `reap_finished_workers(allow_respawn=False)`（終了 worker の回収と foreign-lease cooldown の記録
+  のみ）で終わり、crash-restart・`recover_orphaned_pending_loops`・`respawn_orphaned_active_loops`・
+  `spawn_new_workers` は実行しない。loop の state には触れないため、daemon 復帰後のサイクルで
+  自然に再試行される（crash-restart 候補は `running` のまま lease が失効し、
+  `respawn_orphaned_active_loops` が拾う）。ログは可用性の遷移時のみ出す。launchd の `RunAtLoad`
+  がログイン時に OrbStack より先に走り、spawn された worker が
+  `guards.infrastructure_failure.max_retries` を 20 秒で使い切って `failed` に落ちる事象への対策で
+  あり、プローブ後に daemon が落ちるケースは driver 側の `DockerActionRuntime._start()` チェックが
+  引き続き受け持つ。
+
 ### 3.4 起動時の repo-identity 照合（安全停止）
 
 - `loop_scheduler.py` 起動時に、実行対象ディレクトリから `repo-identity-hash`（基本設計 5.1 節）を
