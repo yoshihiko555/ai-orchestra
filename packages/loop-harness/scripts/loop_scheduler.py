@@ -714,8 +714,14 @@ def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -
     for loop_id in active_loop_ids(project_dir):
         if available <= 0:
             break
-        if loop_id in runtime.workers or loop_id in runtime.stopped_loop_ids:
+        if loop_id in runtime.workers:
             continue
+        if loop_id in runtime.stopped_loop_ids:
+            # Issue #437: `active_loop_ids` only returns running/waiting_external, so a loop
+            # this scheduler safety-stopped can be here only after a human `resume`d it. The
+            # in-memory mark would otherwise exclude it forever; drop it and let the identity
+            # recheck below decide afresh (it re-marks on a persisting mismatch).
+            runtime.stopped_loop_ids.discard(loop_id)
         if loop_id in runtime.foreign_lease_cooldown_until:
             continue
         if not _is_lease_expired(loop_id, project_dir):

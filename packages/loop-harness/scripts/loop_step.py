@@ -9,6 +9,7 @@ import os
 import re
 import socket
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,6 +117,14 @@ def build_parser() -> argparse.ArgumentParser:
     resume = subcommands.add_parser("resume", help="resume a failed/stopped loop")
     resume.add_argument("--loop-id", required=True)
     resume.add_argument("--reset-counters", action="store_true")
+    resume.add_argument(
+        "--release-for-scheduler",
+        action="store_true",
+        help=(
+            "LP-2: reset the loop to running and leave an already-expired lease in place so the "
+            "resident scheduler attaches on its next poll (no proposal is returned)"
+        ),
+    )
     _add_project(resume)
 
     run_checker = subcommands.add_parser(
@@ -279,6 +288,8 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
             EXIT_GENERAL_ERROR,
         )
     project = _project_dir(args.project)
+    if args.release_for_scheduler:
+        return _resume_released_for_scheduler(args.loop_id, project)
     resumed = lc.resume(args.loop_id, project, True, _owner_id(), _lp1_ttl(project))
     try:
         result = lc.propose(args.loop_id, project, resumed.lease_token, precedent_push_check=True)
@@ -298,6 +309,70 @@ def cmd_resume(args: argparse.Namespace) -> dict[str, Any]:
     return _proposal_response(
         args.loop_id, result_with_lease, "resumed; first action proposed", project=project
     )
+
+
+_WORKTREE_STATUS_TIMEOUT_SECONDS = 30
+
+
+def _resume_released_for_scheduler(loop_id: str, project: str) -> dict[str, Any]:
+    """Issue #437: resume for the LP-2 scheduler instead of an LP-1 caller.
+
+    Refuses (fail-closed) while the loop worktree is dirty: a Maker that stops with
+    `maker_partial_worktree` leaves uncommitted changes behind, and a resumed Maker on top of
+    them trips the same safety stop again after spending another action's budget. No
+    `propose` is issued, so the scheduler's `attach` finds no leftover pending action to
+    reconcile as an infrastructure failure.
+    """
+    state = lc.load_state(loop_id, project)
+    _reject_dirty_worktree(state.worktree_path)
+    resumed = lc.resume(loop_id, project, True, _owner_id(), 0, scheduler_handoff=True)
+    return {
+        "loop_id": loop_id,
+        "status": resumed.state.status,
+        "phase": resumed.state.phase,
+        "released_for": "scheduler",
+        "message": (
+            "resumed; lease released for the LP-2 scheduler, which attaches on its next poll"
+        ),
+    }
+
+
+def _reject_dirty_worktree(worktree_path: str) -> None:
+    """Fail closed unless `git status --porcelain` runs and prints nothing."""
+    if not Path(worktree_path).is_dir():
+        raise CliFailure(
+            "worktree_unavailable",
+            f"loop worktree does not exist: {worktree_path}",
+            EXIT_GENERAL_ERROR,
+        )
+    try:
+        completed = subprocess.run(
+            ["git", "-C", worktree_path, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=_WORKTREE_STATUS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CliFailure(
+            "worktree_unavailable",
+            f"could not inspect loop worktree {worktree_path}: {exc}",
+            EXIT_GENERAL_ERROR,
+        ) from exc
+    if completed.returncode != 0:
+        raise CliFailure(
+            "worktree_unavailable",
+            f"git status failed in {worktree_path}: {completed.stderr.strip()}",
+            EXIT_GENERAL_ERROR,
+        )
+    if completed.stdout.strip():
+        raise CliFailure(
+            "worktree_not_clean",
+            "loop worktree has uncommitted changes; discard or commit them before "
+            "--release-for-scheduler",
+            EXIT_GENERAL_ERROR,
+            {"worktree_path": worktree_path, "status": completed.stdout.strip()},
+        )
 
 
 def cmd_run_checker(args: argparse.Namespace) -> dict[str, Any]:

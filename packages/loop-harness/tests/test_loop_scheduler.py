@@ -2497,3 +2497,31 @@ def test_render_cron_entry_escapes_percent_in_path_env(tmp_path: Path) -> None:
     assert "100%/" not in entry.replace("100\\%", "")
     with pytest.raises(ValueError, match="path_env"):
         scheduler.render_cron_entry(str(tmp_path), path_env="/bin\n:/usr/bin")
+
+
+def test_respawn_orphaned_active_loops_drops_stale_stopped_mark_after_human_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #437: `stopped_loop_ids` is an in-memory mark with no removal path, so a loop
+    this scheduler safety-stopped could never be respawned by the same process after a
+    human resumed it - `active_loop_ids` returning it is proof of that resume."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = wm.compute_loop_id(project_dir, 11)
+    _seed_state(tmp_path, loop_id, status="running")
+    assert lc.acquire_lock(loop_id, project_dir, "operator", 0) is not None  # expired lease
+    monkeypatch.setattr(scheduler, "_recheck_repo_identity_before_respawn", lambda *a, **k: True)
+    spawned: list[str] = []
+    monkeypatch.setattr(
+        scheduler,
+        "spawn_worker",
+        lambda lid, project, definition_id="issue-loop": (
+            spawned.append(lid) or _FakePopen(returncode=None)
+        ),
+    )
+    runtime = scheduler.SchedulerRuntime()
+    runtime.stopped_loop_ids.add(loop_id)
+
+    assert scheduler.respawn_orphaned_active_loops(runtime, project_dir) == [loop_id]
+    assert spawned == [loop_id]
+    assert loop_id not in runtime.stopped_loop_ids
