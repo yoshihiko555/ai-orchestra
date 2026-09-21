@@ -2293,35 +2293,13 @@ class LoopDriver:
         finding matrix. This is purely observational: it never raises and never affects
         `_run_wait_external_review`'s own (already-decided, still-passing) phase check result,
         matching `resolve_addressed_findings`'s own best-effort contract.
+
+        Issue #426 (PR review): the payload-building lives in
+        `prw.journal_addressed_findings_outcome` so LP-1's SKILL and this driver share one
+        deterministic recording API rather than each hand-constructing the event.
         """
-        failed_statuses = {"reply_failed", "resolve_failed", "no_trusted_thread", "lease_expired"}
-        failures = [
-            {
-                "signature": outcome.signature,
-                "thread_id": outcome.thread_id,
-                "status": outcome.status,
-                "error": outcome.error,
-            }
-            for outcome in addressed_result.thread_outcomes
-            if outcome.status in failed_statuses
-        ]
-        succeeded_count = sum(
-            1 for outcome in addressed_result.thread_outcomes if outcome.status == "resolved"
-        )
-        lc.append_journal_event(
-            self.loop_id,
-            self.project_dir,
-            "pr_review_addressed_findings_outcome",
-            "waiter",
-            action_id,
-            {
-                "resolved_signature_count": len(addressed_result.resolved_signatures),
-                "thread_outcome_count": len(addressed_result.thread_outcomes),
-                "succeeded_count": succeeded_count,
-                "failed_count": len(failures),
-                "failures": failures,
-                "git_workflow_unavailable": addressed_result.git_workflow_unavailable,
-            },
+        prw.journal_addressed_findings_outcome(
+            self.loop_id, self.project_dir, addressed_result, action_id
         )
 
     def _already_pushed_this_iteration(

@@ -2218,6 +2218,16 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
             state, state.loop_id, project_dir
         )
         params["verified_branch"] = state.branch
+        # Issue #426 (PR review): the LP-1 orchestrator works only from proposal params
+        # (it never reads state.json directly), so the `pushed_this_action` gate that
+        # `_run_wait_external_review` computes from `state.pr_review["iteration_head_action_id"]`
+        # (DH5 follow-up) must be supplied here too. `record_iteration_head` stamps this action's
+        # id after a push, so `params.iteration_head_action_id == <current action_id>` tells the
+        # orchestrator "this exact action's push produced the review being polled" -- the
+        # precondition for auto-marking not-reraised findings addressed. Missing/`None` (older
+        # state, or one `resume()` cleared) fails closed to "not pushed this action".
+        pr_review = state.pr_review if isinstance(state.pr_review, dict) else {}
+        params["iteration_head_action_id"] = pr_review.get("iteration_head_action_id")
         return params
     if action == Action.ADVANCE_PHASE.value:
         return {

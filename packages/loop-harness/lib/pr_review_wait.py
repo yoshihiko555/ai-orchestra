@@ -3137,6 +3137,55 @@ def addressed_findings_missing_thread_resolution(
     )
 
 
+_ADDRESSED_THREAD_FAILURE_STATUSES = frozenset(
+    {"reply_failed", "resolve_failed", "no_trusted_thread", "lease_expired"}
+)
+
+
+def journal_addressed_findings_outcome(
+    loop_id: str,
+    project_dir: str,
+    addressed_result: AddressedFindingsResult,
+    action_id: str,
+) -> None:
+    """Record `resolve_addressed_findings()`'s best-effort GitHub outcome to the journal.
+
+    Issue #426 (PR review): the LP-1 orchestrator must not hand-construct the journal payload
+    (it would have to know the exact event name, actor, and failure-status vocabulary), so this
+    mirrors `loop_driver._run_wait_external_review`'s own recording as a single deterministic
+    public API both callers share. Purely observational: it never raises and never affects the
+    already-decided phase check, matching `resolve_addressed_findings`'s best-effort contract.
+    """
+    failures = [
+        {
+            "signature": outcome.signature,
+            "thread_id": outcome.thread_id,
+            "status": outcome.status,
+            "error": outcome.error,
+        }
+        for outcome in addressed_result.thread_outcomes
+        if outcome.status in _ADDRESSED_THREAD_FAILURE_STATUSES
+    ]
+    succeeded_count = sum(
+        1 for outcome in addressed_result.thread_outcomes if outcome.status == "resolved"
+    )
+    lc.append_journal_event(
+        loop_id,
+        project_dir,
+        "pr_review_addressed_findings_outcome",
+        "waiter",
+        action_id,
+        {
+            "resolved_signature_count": len(addressed_result.resolved_signatures),
+            "thread_outcome_count": len(addressed_result.thread_outcomes),
+            "succeeded_count": succeeded_count,
+            "failed_count": len(failures),
+            "failures": failures,
+            "git_workflow_unavailable": addressed_result.git_workflow_unavailable,
+        },
+    )
+
+
 def _parse_reviewer_allowlist(value: Any) -> tuple[ReviewerAllowlistEntry, ...]:
     if not isinstance(value, list) or not value:
         raise ConfigError(

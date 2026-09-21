@@ -1466,6 +1466,7 @@ def test_wait_external_review_params_include_config_defaults(
         "pr_number": 123,
         "push_required": False,
         "verified_branch": "loop/issue-1",
+        "iteration_head_action_id": None,
     }
 
 
