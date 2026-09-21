@@ -137,7 +137,9 @@ action の実行に懸念があっても別 action を先取りしない。実�
 ループ定義から生成済みなので、worktree、branch、実行順、停止理由を独自に再構成しない。
 
 すべての action の proposal は共通 context として `params.issue_number`、`params.worktree_path`、
-`params.branch`、`params.repo_identity_verified` を供給する。`run_maker` だけでなく `run_checker`、
+`params.branch`、`params.repo_identity_verified` を供給する。`wait_external_review` の proposal はさらに
+`params.pr_review`（`iteration_head_sha` / `iteration_head_action_id` / `addressed_pending_thread_resolution`。
+proposal 生成時点の fenced state の読み取り専用スナップショット）を供給し、post-poll の判定はこれを使う。`run_maker` だけでなく `run_checker`、
 `wait_external_review`、`advance_phase`、`stop`、`exit_success`、`exit_failure` もこの cwd 供給を使う。
 Task は cwd を明示し、すべての git は `git -C "<params.worktree_path>" ...` または同パスへ固定した
 subshell、すべての `gh` / `pr-create` は同パスを明示した Task または subshell で実行する。current
@@ -409,7 +411,11 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
     2 人目のレビュアーによる `CHANGES_REQUESTED`）を、次の `record_baseline` が「処理済み」として
     飲み込み永久に喪失させる前に取り込むための手順である。collect の直後、別プロセスへ移る前に
     `ReviewFindingsResult` 全体を `save_review_findings_snapshot(...)` で同じ action の
-    `artifacts/<action_id>/review_findings.json` へ保存する。戻り値に `needs_classification` の finding
+    `artifacts/<action_id>/review_findings.json` へ保存する。snapshot が永続化された直後、分類・合否判定
+    より前に `confirm_review_findings_reported(..., action_id=<現在の action_id>)` を呼び、明示 severity の
+    finding を処理済みマークする（LP-2 の `_drain_before_push()` と同順序。これを欠くと、Maker 実行中に
+    届いた blocking コメントで drain が短絡したあと、次回 drain でも同じ古いコメントを再 import して push を
+    永久に阻止する）。戻り値に `needs_classification` の finding
     が 1 件以上含まれる場合は、上記「severity 分類（Step 2）」の手順をこの場でインラインに適用し、
     `apply_severity_classifications(...)` まで完了させてから次の判定に進む（分類を次サイクルへ持ち越さない）。
   - drain の合否判定には必ず `phase_check_from_review_findings(drained, include_persisted_open_blocking=False)`
@@ -475,9 +481,12 @@ API error など）の場合も同じ API で変換する。この 2 経路で�
 で最終合否に変換する**前に**、以下の addressed 解決を行う。すべて `pr_review_wait.py` の決定論 API を
 そのまま使い、シグネチャ差分・addressed 判定・GitHub resolve を独自実装しない。
 
-1. **`pushed_this_action` の確定**: 今回の `wait_external_review` action が実際に push 分岐を実行したか、
-   または DH5 ショートカット時に記録済み `pr_review.iteration_head_action_id` が現在の `action_id` と
-   一致する場合だけ `true`。それ以外（DH5 が別アクション・resume 前の記録に一致した場合）は `false`。
+1. **`pushed_this_action` の確定**: 次のどちらかを満たす場合だけ `true`。(a) 今回の `wait_external_review`
+   action の中で、オーケストレーター自身が上記 push 分岐（push → `record_iteration_head(...)` 成功）を実行した
+   （proposal JSON を読み直す必要はない。自分が実行した事実で判定する）。(b) push 分岐を実行せず DH5
+   ショートカットに入った場合に、proposal の `params.pr_review.iteration_head_action_id`（proposal 生成時点の
+   fenced state のスナップショット）が現在の `action_id` と一致する。それ以外（DH5 が別アクション・resume 前の
+   記録に一致した場合）は `false`。state.json を直接読まない。
    `pushed_this_action is false` のときは resolved 候補の算出自体を行わず、`resolved_signatures` を空集合
    として扱う（reraise されなかった＝addressed と誤認しないための構造的防御。設計 pr-review 編 §4.4
    「`pushed_this_action` ゲート」）。
@@ -491,16 +500,21 @@ API error など）の場合も同じ API で変換する。この 2 経路で�
      まだ blocking 扱いで `iteration_findings` を更新できていないため addressed にしてはならない。
 3. **addressed への更新**: `resolved_signatures` が空でなければ
    `mark_addressed_findings(loop_id, params.worktree_path, resolved_signatures, commit_sha, iteration,
-   lease_token, action_id=<現在の action_id>)` を呼ぶ（`commit_sha` は baseline に記録済みの
+   lease_token, action_id=<現在の action_id>)` を呼ぶ（`action_id` 省略は legacy mode で `state_version` が
+   進み、最後の `complete` が stale 拒否されるため禁止）（`commit_sha` は baseline に記録済みの
    `iteration_head_sha`）。同 API は `status` が正確に `open` のレコードだけを
    `addressed` へ更新し、**実際に更新したシグネチャ集合**を返す。候補集合ではなくこの戻り値
    （`actually_addressed`）だけを以後に使う。`actually_addressed` が非空なら、その分を
    `result.open_blocking` から除外して `result` を差し替える（同round で解決済みの finding を stale な
    `open_blocking` スナップショットが blocking 扱いし続けるのを防ぐ）。
-4. **GitHub thread の best-effort resolve**: state を読み直し、`actually_addressed` と
-   `addressed_findings_missing_thread_resolution(pr_review)`（`status == "addressed"` だが未 resolve の
-   積み残し。Issue #424）の和集合を `resolve_addressed_findings(...)` へ 1 回だけ渡す。同 API は信頼済み
-   thread へ reply + resolve を試み、GitHub 側失敗でも例外を投げない。戻り値は journal へ記録するだけで
+4. **GitHub thread の best-effort resolve**: `actually_addressed` と、proposal の
+   `params.pr_review.addressed_pending_thread_resolution`（`status == "addressed"` だが未 resolve の積み残し。
+   Issue #424。state を読み直さず proposal のスナップショットを使う）の和集合を
+   `resolve_addressed_findings(..., lease_token, action_id=<現在の action_id>)` へ 1 回だけ渡す。同 API は
+   信頼済み thread へ reply + resolve を試み、GitHub 側失敗でも例外を投げない。戻り値
+   （`AddressedFindingsResult`）は `journal_addressed_findings_outcome(loop_id, project_dir, result,
+   action_id=<現在の action_id>)` で journal へ記録する（`reply_failed` / `resolve_failed` /
+   `no_trusted_thread` / `lease_expired` を含む完全な outcome を残す公開 API。payload を手書きしない）。
    合否には影響させない（再実行してもべき等）。
 5. **最終合否**: `phase_check_from_review_findings(result, include_persisted_open_blocking=True)` を呼ぶ。
    post-poll のこの 1 箇所だけが `include_persisted_open_blocking=True` を渡してよい（`pushed_this_action`
@@ -586,8 +600,9 @@ action の `action_id` / `lease_token` と `params.worktree_path` を渡して�
 `state_version` を取り直したり加算したりしない。`complete` は常に元 proposal と同じ
 `state_version` を渡す。action_id-bound API は現在の pending `action_id` と一致する場合だけ補助更新を
 許可し、旧 action の id は stale として拒否する。`action_id=None` の legacy mode は互換性のため
-`state_version` を increment するので、このスキルでは使用禁止。4 API すべてへ現在の `action_id` を
-必ず渡す。state / journal を直接編集してこの契約を模倣しない。
+`state_version` を increment するので、このスキルでは使用禁止。これら 4 API に加え、下記「poll 完了後の
+addressed 解決と最終合否」で使う `mark_addressed_findings(...)` と `resolve_addressed_findings(...)` も同じ
+action_id-bound 契約に従う（計 6 API）。すべてへ現在の `action_id` を必ず渡す。state / journal を直接編集してこの契約を模倣しない。
 
 repo identity 検証済みの `params.worktree_path` を cwd にして `GhApiClient` を構成し、current shell の
 cwd や独自の `gh` polling に依存しない。各 API の戻り値は既存の `phase_check_from_*()` と

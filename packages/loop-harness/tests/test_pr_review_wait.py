@@ -4688,3 +4688,44 @@ def test_own_retrigger_comment_is_not_escalated_as_untrusted_review() -> None:
     assert outcome.completed is False
     assert outcome.ignored_untrusted_review_count == 0
     assert outcome.ignored_untrusted_reviews == ()
+
+
+def test_journal_addressed_findings_outcome_records_failures_and_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #426: public so LP-1 writes the same event the LP-2 driver does."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    result = prw.AddressedFindingsResult(
+        resolved_signatures=("s1", "s2"),
+        thread_outcomes=(
+            prw.AddressedThreadOutcome(
+                signature="s1", thread_id="t1", comment_id=None, status="resolved", error=None
+            ),
+            prw.AddressedThreadOutcome(
+                signature="s2",
+                thread_id=None,
+                comment_id=None,
+                status="no_trusted_thread",
+                error="missing",
+            ),
+        ),
+        git_workflow_unavailable=False,
+    )
+
+    payload = prw.journal_addressed_findings_outcome(
+        "abcd1234-issue-1", project_dir, result, "act-000009"
+    )
+
+    assert payload["succeeded_count"] == 1
+    assert payload["failed_count"] == 1
+    assert payload["failures"][0]["status"] == "no_trusted_thread"
+    events = [
+        json.loads(line)
+        for line in (tmp_path / ".claude" / "loop" / "abcd1234-issue-1" / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    outcome_events = [e for e in events if e["event"] == "pr_review_addressed_findings_outcome"]
+    assert len(outcome_events) == 1
+    assert outcome_events[0]["action_id"] == "act-000009"
+    assert outcome_events[0]["payload"] == payload
