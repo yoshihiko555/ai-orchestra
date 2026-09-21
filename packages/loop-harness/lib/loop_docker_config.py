@@ -50,6 +50,7 @@ class BrokerConfig:
     max_requests: int
     max_total_tokens: int
     max_upstream_bytes: int
+    input_bytes_per_token: int
     pricing: BrokerPricing
 
 
@@ -179,6 +180,13 @@ def _validate_broker(value: Any) -> BrokerConfig:
         ),
         max_upstream_bytes=_positive_int(
             broker.get("max_upstream_bytes", 500000000), "broker.max_upstream_bytes"
+        ),
+        # Issue #432: the broker's pre-admission estimate divides the request body size by this
+        # value to bound the input tokens. Left unwired it falls back to 1 byte = 1 token, which
+        # priced a late-session 400-500 KB body at $8-10 and rejected every request once about
+        # half of budget_usd was spent. 3 mirrors meta-harness (~4 bytes/token, 25% margin).
+        input_bytes_per_token=_positive_int(
+            broker.get("input_bytes_per_token", 3), "broker.input_bytes_per_token"
         ),
         pricing=BrokerPricing(
             input=_positive_number(pricing.get("input", 15.0), "broker.pricing.input"),
