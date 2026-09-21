@@ -350,6 +350,23 @@ python3 loop_step.py resume --loop-id a1b2c3d4-issue-42 --reset-counters --proje
   進行中であれば `resume` はその完了までブロックされ、`lock.json` 自体の inode 差し替え
   （`rmtree` による削除）を経由したレースは発生しない（詳細は 4.3 節）。
 
+- **LP-2 への引き渡し（`--release-for-scheduler`、Issue #437）**: 常駐 scheduler 配下の loop を
+  人間が再開する場合は、上記の LP-1 契約（lease を発行し proposal を返す）は使わない。
+  `--release-for-scheduler` を付けると、(1) loop worktree が clean（`git status --porcelain` が
+  実行でき出力が空）であることを先に確認し、それ以外は state に触れず exit `1`
+  （`worktree_unavailable` / `worktree_not_clean`）で拒否する（`maker_partial_worktree` の残骸の
+  上で Maker を再開すると同じ安全停止を再度踏むため）。(2) `loop_common.resume(scheduler_handoff=True)`
+  が同一 critical section 内で **ttl 0 の lease** を発行し、`lock.json` を残したまま `status` を
+  `running` に戻す（`attach` → `reacquire_lease` は lock.json の存在を要し、失効済み lease は即
+  置換できる。`release_lock` で削除すると `LockNotFoundError` になる）。(3) `propose` は呼ばず、
+  応答は `{"loop_id", "status": "running", "phase", "released_for": "scheduler"}`（`lease_token` /
+  `action` を含まない）。scheduler の `respawn_orphaned_active_loops` が次ポーリングで attach する。
+  proposal を残さないのは、attach 時の `propose(recover_orphans=True)` が残存 pending action を
+  `infrastructure_failure` として reconcile し、再開のたびにガードを 1 消費するのを避けるため。
+  あわせて `respawn_orphaned_active_loops` は、`active_loop_ids` に含まれる loop が
+  `runtime.stopped_loop_ids`（3.4 節の安全停止マーク。削除経路がなかった）に残っていれば人間の
+  resume 済みとみなしてマークを外し、repo-identity 再検証に進む。
+
 ### 1.9 `lease_token` の呼び出し契約（Codex レビュー指摘反映。P1）
 
 **問題**: 当初案は変更系サブコマンドが毎回 `lock.json` を読み直して自己完結的に検証する構造

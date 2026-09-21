@@ -859,8 +859,17 @@ def resume(
     owner_id: str,
     ttl_seconds: int,
     host: str | None = None,
+    *,
+    scheduler_handoff: bool = False,
 ) -> ResumeResult:
     """Resume a failed/stopped loop and issue a new lease.
+
+    Issue #437: with `scheduler_handoff=True` the new lease is issued with ttl 0 inside this
+    same critical section, so `lock.json` exists (which `attach` -> `reacquire_lease` requires)
+    but `is_lease_alive` is already False: the LP-2 scheduler's `respawn_orphaned_active_loops`
+    attaches on its next poll instead of waiting out an LP-1 TTL. Issuing it here rather than
+    expiring a live lease afterwards leaves no window in which a crashed CLI would strand the
+    loop behind a live lease with no owner. Callers must not `propose` after a handoff resume.
 
     SN-flock: the reload-through-write section is held under `held_coord_lock` (a fixed,
     purge-independent path) so a concurrent `loop_status.py purge` of this same loop_id
@@ -875,7 +884,7 @@ def resume(
         state = load_state(loop_id, project_dir)
         if state.status not in {"failed", "stopped"}:
             raise InvalidStateError(f"cannot resume status={state.status}")
-        _replace_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
+        _replace_lock(loop_id, project_dir, owner_id, 0 if scheduler_handoff else ttl_seconds, host)
         lock = _read_lock(lock_path(loop_id, project_dir))
         if lock is None:
             raise LockNotFoundError("new lock not found")
@@ -887,7 +896,10 @@ def resume(
         state.pending_action = None
         state.state_version += 1
         state.updated_at = now_iso()
-        append_journal_event(loop_id, project_dir, "resumed", "step", None, {"phase": state.phase})
+        resumed_payload: dict[str, Any] = {"phase": state.phase}
+        if scheduler_handoff:
+            resumed_payload["released_for"] = "scheduler"
+        append_journal_event(loop_id, project_dir, "resumed", "step", None, resumed_payload)
         _write_state(state, project_dir)
     return ResumeResult(state, lock.lease_token)
 

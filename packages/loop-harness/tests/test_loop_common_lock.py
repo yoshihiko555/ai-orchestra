@@ -615,3 +615,27 @@ def test_old_lease_cannot_release_or_heartbeat_after_reacquire(
     assert lc.heartbeat_lock("abcd1234-issue-1", project_dir, old.lease_token) is False
     assert lc.release_lock("abcd1234-issue-1", project_dir, old.lease_token) is False
     assert lc.validate_lease("abcd1234-issue-1", project_dir, new.lease_token) is True
+
+
+def test_resume_scheduler_handoff_issues_expired_lease_and_keeps_lock_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #437: the LP-2 scheduler attaches via `reacquire_lease`, which needs lock.json to
+    exist but its lease to be stale. A handoff resume must produce exactly that state in one
+    critical section, with no pending action left for the scheduler to reconcile."""
+    project_dir = _write_state(tmp_path, monkeypatch, status="stopped")
+    lock_file = lc.lock_path("abcd1234-issue-1", project_dir)
+
+    result = lc.resume(
+        "abcd1234-issue-1", project_dir, True, "operator", 3600, scheduler_handoff=True
+    )
+
+    assert result.state.status == "running"
+    assert result.state.pending_action is None
+    assert lock_file.is_file()
+    lock = lc._read_lock(lock_file)
+    assert lock is not None
+    assert lock.ttl == 0
+    assert lc.is_lease_alive(lock) is False
+    reacquired = lc.reacquire_lease("abcd1234-issue-1", project_dir, "scheduler", 300)
+    assert reacquired.lease_token != result.lease_token
