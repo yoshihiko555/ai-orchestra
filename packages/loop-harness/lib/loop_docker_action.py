@@ -1090,11 +1090,6 @@ def _without_settings(command: list[str]) -> list[str]:
     return rewritten
 
 
-def _only_idle_processes(output: str) -> bool:
-    snapshot = _process_snapshot(output)
-    return snapshot is not None and _only_idle_snapshot(snapshot)
-
-
 def _process_snapshot(output: str) -> IdleProcessSnapshot | None:
     lines = [line.strip() for line in output.splitlines()[1:] if line.strip()]
     if not lines:

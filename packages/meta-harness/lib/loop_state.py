@@ -243,13 +243,6 @@ def iteration_cost(
     return proposer_cost + run_cost
 
 
-def _validate_run_targets(events: list[dict], cand_id: str, target: str) -> None:
-    for event in events:
-        validate_event(event, "run_completed")
-        if event.get("target") != target or event.get("suite_id") != target:
-            raise ValueError(f"run target mismatch for loop candidate: {cand_id}")
-
-
 def evaluation_complete(
     events: list[dict], config: dict, target: str, cand_id: str, *, holdout: bool
 ) -> bool:
