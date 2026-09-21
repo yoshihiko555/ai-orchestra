@@ -2497,3 +2497,92 @@ def test_render_cron_entry_escapes_percent_in_path_env(tmp_path: Path) -> None:
     assert "100%/" not in entry.replace("100\\%", "")
     with pytest.raises(ValueError, match="path_env"):
         scheduler.render_cron_entry(str(tmp_path), path_env="/bin\n:/usr/bin")
+
+
+# -- Issue #436: Docker daemon spawn gate --------------------------------------------------------
+
+
+def test_docker_spawn_gate_never_probes_when_docker_execution_is_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    monkeypatch.setattr(scheduler.docker_config, "docker_execution_enabled", lambda cfg: False)
+
+    def _must_not_probe(*, runner):  # noqa: ANN001
+        raise AssertionError("daemon probed with execution_backend none")
+
+    monkeypatch.setattr(scheduler.runtime_cli, "docker_daemon_available", _must_not_probe)
+    runtime = scheduler.SchedulerRuntime()
+    assert scheduler.docker_spawn_gate(runtime, str(tmp_path)) is True
+    assert runtime.docker_daemon_available is None
+
+
+def test_docker_spawn_gate_logs_only_on_availability_transitions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #436: a resident poller must not emit the same warning every 2 minutes."""
+    _init_repo(tmp_path)
+    monkeypatch.setattr(scheduler.docker_config, "docker_execution_enabled", lambda cfg: True)
+    answers = iter([False, False, True, True])
+    monkeypatch.setattr(
+        scheduler.runtime_cli, "docker_daemon_available", lambda *, runner: next(answers)
+    )
+    runtime = scheduler.SchedulerRuntime()
+    results = [scheduler.docker_spawn_gate(runtime, str(tmp_path)) for _ in range(4)]
+    assert results == [False, False, True, True]
+    err = capsys.readouterr().err
+    assert err.count("docker daemon unavailable") == 1
+    assert err.count("docker daemon available again") == 1
+
+
+def test_run_cycle_skips_every_spawn_path_while_docker_daemon_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #436: a labeled Issue and an orphaned active loop must both wait, with loop state
+    untouched, instead of spawning a worker that burns `max_retries` in 20 seconds."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    definition = ld.load_all_definitions(project_dir)["issue-loop"]
+    orphan_id = wm.compute_loop_id(project_dir, 7)
+    _seed_state(tmp_path, orphan_id, status="running")
+    fake_issues = [{"number": 42, "created_at": "2026-01-01T00:00:00Z", "labels": []}]
+    monkeypatch.setattr(scheduler, "list_labeled_issues", lambda project, label: fake_issues)
+    monkeypatch.setattr(scheduler, "docker_spawn_gate", lambda runtime, project: False)
+    spawned: list[str] = []
+    monkeypatch.setattr(
+        scheduler,
+        "spawn_worker",
+        lambda lid, project, definition_id="issue-loop": (
+            spawned.append(lid) or _FakePopen(returncode=None)
+        ),
+    )
+    runtime = scheduler.SchedulerRuntime()
+    dead = _FakePopen(returncode=1)
+    runtime.workers[orphan_id] = dead
+
+    scheduler.run_cycle(runtime, project_dir, definition)
+
+    assert spawned == []
+    assert orphan_id not in runtime.workers  # still reaped
+    assert orphan_id not in runtime.stopped_loop_ids
+    assert lc.load_state(orphan_id, project_dir).status == "running"
+
+    monkeypatch.setattr(scheduler, "docker_spawn_gate", lambda runtime, project: True)
+    scheduler.run_cycle(runtime, project_dir, definition)
+    assert wm.compute_loop_id(project_dir, 42) in spawned
+
+
+def test_reap_finished_workers_without_respawn_keeps_crash_candidate_restartable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = wm.compute_loop_id(project_dir, 9)
+    _seed_state(tmp_path, loop_id, status="running")
+    monkeypatch.setattr(scheduler, "spawn_worker", lambda *a, **k: pytest.fail("spawned"))
+    runtime = scheduler.SchedulerRuntime()
+    runtime.workers[loop_id] = _FakePopen(returncode=1)
+
+    assert scheduler.reap_finished_workers(runtime, project_dir, allow_respawn=False) == []
+    assert runtime.workers == {}
+    assert scheduler.should_restart(lc.load_state(loop_id, project_dir).status)
