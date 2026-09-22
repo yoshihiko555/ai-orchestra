@@ -2186,18 +2186,15 @@ def _addressed_pending_thread_resolution(pr_review: dict[str, Any]) -> tuple[str
     a lib-to-lib import cycle; `pr_review_wait` imports this module).
     """
     findings = pr_review.get("findings")
-    if not isinstance(findings, list):
+    if not isinstance(findings, dict):
         return ()
-    pending: list[str] = []
-    for finding in findings:
-        if not isinstance(finding, dict) or finding.get("status") != "addressed":
-            continue
-        if finding.get("thread_resolved") is True:
-            continue
-        signature = finding.get("signature")
-        if isinstance(signature, str) and signature:
-            pending.append(signature)
-    return tuple(pending)
+    return tuple(
+        signature
+        for signature in sorted(findings)
+        if isinstance(findings[signature], dict)
+        and finding_status(findings[signature]) == "addressed"
+        and not findings[signature].get("thread_resolved")
+    )
 
 
 def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[str, Any]:

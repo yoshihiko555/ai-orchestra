@@ -4729,3 +4729,45 @@ def test_journal_addressed_findings_outcome_records_failures_and_counts(
     assert len(outcome_events) == 1
     assert outcome_events[0]["action_id"] == "act-000009"
     assert outcome_events[0]["payload"] == payload
+
+
+def test_resolve_addressed_findings_skips_candidate_reopened_during_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #447 Codex (P1): a pre-poll candidate that the poll re-raised is `open` again and
+    must not get an "addressed" reply or a resolve."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-reopened": _open_finding_record(
+                    ["review_comment:1"], status="open", severity="critical"
+                ),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule({"unresolved_threads": [_trusted_thread("THREAD-1", 1)]})
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    result = prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-reopened"], "cafe", lease_token
+    )
+
+    assert result.resolved_signatures == ()
+    assert [o.status for o in result.thread_outcomes] == ["not_addressed"]
+    assert fake.reply_calls == [] and fake.resolve_calls == []
+
+
+def test_iteration_head_recorded_for_action_reads_fenced_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #447 Codex (P2): the proposal snapshot predates this action's push, so DH5 must ask
+    the fenced state whether `record_iteration_head` already ran under this action_id."""
+    project_dir = _setup_state(
+        tmp_path, monkeypatch, pr_review={"iteration_head_action_id": "act-000042"}
+    )
+    assert prw.iteration_head_recorded_for_action("abcd1234-issue-1", project_dir, "act-000042")
+    assert not prw.iteration_head_recorded_for_action("abcd1234-issue-1", project_dir, "act-000043")

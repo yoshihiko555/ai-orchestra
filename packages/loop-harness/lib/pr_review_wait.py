@@ -337,6 +337,7 @@ class AddressedThreadOutcome:
         "reply_failed",
         "resolve_failed",
         "lease_expired",
+        "not_addressed",
     ]
     error: str | None = None
 
@@ -609,8 +610,21 @@ def record_iteration_head(
 
 
 ADDRESSED_THREAD_FAILED_STATUSES = frozenset(
-    {"reply_failed", "resolve_failed", "no_trusted_thread", "lease_expired"}
+    {"reply_failed", "resolve_failed", "no_trusted_thread", "lease_expired", "not_addressed"}
 )
+
+
+def iteration_head_recorded_for_action(loop_id: str, project_dir: str, action_id: str) -> bool:
+    """Return whether `record_iteration_head` ran under `action_id` (DH5 same-action check).
+
+    PR #447 Codex (P2): the `wait_external_review` proposal snapshot is taken *before* this
+    action's own push, so it can never show the current `action_id`. An orchestrator that lost
+    the fact that it already pushed in this action (crash, then `attach` of the same pending
+    action) must ask the fenced state instead of an immutable pre-push snapshot. Read-only.
+    """
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = state.pr_review if isinstance(state.pr_review, dict) else {}
+    return pr_review.get("iteration_head_action_id") == action_id
 
 
 def journal_addressed_findings_outcome(
@@ -1476,6 +1490,12 @@ def resolve_addressed_findings(
             continue
         record = findings_map.get(signature)
         if not isinstance(record, dict):
+            continue
+        if lc.finding_status(record) != "addressed":
+            # PR #447 Codex (P1): a candidate captured before the poll may have been re-raised
+            # during it (`_upsert_finding` flips it back to `open`). Never reply "addressed"
+            # to, or resolve, a thread whose finding is open again.
+            outcomes.append(AddressedThreadOutcome(signature, None, None, "not_addressed"))
             continue
         signature_outcomes = _resolve_addressed_signature_threads(
             git_workflow,

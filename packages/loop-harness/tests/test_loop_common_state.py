@@ -2889,11 +2889,12 @@ def test_wait_external_review_proposal_snapshots_fenced_pr_review_state(
     state.pr_review = {
         "iteration_head_sha": "abc123",
         "iteration_head_action_id": "act-000007",
-        "findings": [
-            {"signature": "s-addressed-open", "status": "addressed"},
-            {"signature": "s-addressed-done", "status": "addressed", "thread_resolved": True},
-            {"signature": "s-open", "status": "open"},
-        ],
+        # Persisted shape: a dict keyed by signature (PR #447 Codex P1).
+        "findings": {
+            "s-addressed-open": {"status": "addressed"},
+            "s-addressed-done": {"status": "addressed", "thread_resolved": True},
+            "s-open": {"status": "open"},
+        },
     }
     lc._write_state(state, project_dir)
     monkeypatch.setattr(lc, "_current_branch", lambda _p: "loop/issue-1")

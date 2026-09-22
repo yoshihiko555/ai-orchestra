@@ -139,7 +139,9 @@ action の実行に懸念があっても別 action を先取りしない。実�
 すべての action の proposal は共通 context として `params.issue_number`、`params.worktree_path`、
 `params.branch`、`params.repo_identity_verified` を供給する。`wait_external_review` の proposal はさらに
 `params.pr_review`（`iteration_head_sha` / `iteration_head_action_id` / `addressed_pending_thread_resolution`。
-proposal 生成時点の fenced state の読み取り専用スナップショット）を供給し、post-poll の判定はこれを使う。`run_maker` だけでなく `run_checker`、
+proposal 生成時点 = この action の push **前**の fenced state の読み取り専用スナップショット）を供給する。
+post-poll の resolve 再試行候補はこれを使い、DH5 の同一 action 判定だけは push 後の値が要るため公開 API
+`iteration_head_recorded_for_action(...)` を使う。`run_maker` だけでなく `run_checker`、
 `wait_external_review`、`advance_phase`、`stop`、`exit_success`、`exit_failure` もこの cwd 供給を使う。
 Task は cwd を明示し、すべての git は `git -C "<params.worktree_path>" ...` または同パスへ固定した
 subshell、すべての `gh` / `pr-create` は同パスを明示した Task または subshell で実行する。current
@@ -484,9 +486,11 @@ API error など）の場合も同じ API で変換する。この 2 経路で�
 1. **`pushed_this_action` の確定**: 次のどちらかを満たす場合だけ `true`。(a) 今回の `wait_external_review`
    action の中で、オーケストレーター自身が上記 push 分岐（push → `record_iteration_head(...)` 成功）を実行した
    （proposal JSON を読み直す必要はない。自分が実行した事実で判定する）。(b) push 分岐を実行せず DH5
-   ショートカットに入った場合に、proposal の `params.pr_review.iteration_head_action_id`（proposal 生成時点の
-   fenced state のスナップショット）が現在の `action_id` と一致する。それ以外（DH5 が別アクション・resume 前の
-   記録に一致した場合）は `false`。state.json を直接読まない。
+   ショートカットに入った場合に、公開 API `iteration_head_recorded_for_action(loop_id, project_dir,
+   <現在の action_id>)` が `true` を返す（fenced state を読み取り専用で参照する。proposal の
+   `params.pr_review.iteration_head_action_id` は proposal 生成時点 = この action の push **前**の値なので、
+   この判定には使わない）。それ以外（DH5 が別アクション・resume 前の記録に一致した場合）は `false`。
+   state.json を直接読まない。
    `pushed_this_action is false` のときは resolved 候補の算出自体を行わず、`resolved_signatures` を空集合
    として扱う（reraise されなかった＝addressed と誤認しないための構造的防御。設計 pr-review 編 §4.4
    「`pushed_this_action` ゲート」）。
@@ -511,7 +515,9 @@ API error など）の場合も同じ API で変換する。この 2 経路で�
    `params.pr_review.addressed_pending_thread_resolution`（`status == "addressed"` だが未 resolve の積み残し。
    Issue #424。state を読み直さず proposal のスナップショットを使う）の和集合を
    `resolve_addressed_findings(..., lease_token, action_id=<現在の action_id>)` へ 1 回だけ渡す。同 API は
-   信頼済み thread へ reply + resolve を試み、GitHub 側失敗でも例外を投げない。戻り値
+   resolve 直前に fenced state を読み、その時点で `status` が `addressed` でない signature（poll 中に再提起され
+   `open` に戻ったもの）は `not_addressed` outcome として除外するので、事前スナップショットの候補をそのまま
+   渡してよい。信頼済み thread へ reply + resolve を試み、GitHub 側失敗でも例外を投げない。戻り値
    （`AddressedFindingsResult`）は `journal_addressed_findings_outcome(loop_id, project_dir, result,
    action_id=<現在の action_id>)` で journal へ記録する（`reply_failed` / `resolve_failed` /
    `no_trusted_thread` / `lease_expired` を含む完全な outcome を残す公開 API。payload を手書きしない）。
