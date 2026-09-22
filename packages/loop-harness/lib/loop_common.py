@@ -73,7 +73,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
 SECRET_PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
     re.compile(
-        r"\b[A-Za-z0-9_-]{0,20}(api[_-]?key|token|password|secret|credential)\b\s*[:=]\s*"
+        # PR #446 Codex (P2): `["']?` after the key lets quoted JSON keys
+        # (`"api_token": "..."`) match too, not only bare `token=` / `token:` forms.
+        r"\b[A-Za-z0-9_-]{0,20}(api[_-]?key|token|password|secret|credential)\b[\"']?\s*[:=]\s*"
         r"(\"[^\"]*\"|'[^']*'|[^,;\n]+)",
         re.IGNORECASE,
     ),

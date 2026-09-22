@@ -4690,6 +4690,77 @@ def test_own_retrigger_comment_is_not_escalated_as_untrusted_review() -> None:
     assert outcome.ignored_untrusted_reviews == ()
 
 
+def test_record_iteration_head_waits_for_pushed_sha_to_appear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #442: `pulls/{n}` can still report the pre-push head for a few seconds; recording
+    that stale SHA let the next poll treat an old review as covering this iteration."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    heads = iter(["old111", "old111", "new222"])
+
+    class _LaggingClient(FakeClient):
+        def api(self, path: str) -> Any:
+            self.calls.append(path)
+            return {"head": {"sha": next(heads)}}
+
+    client = _LaggingClient({})
+    slept: list[float] = []
+
+    sha = prw.record_iteration_head(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        client,
+        lease_token,
+        expected_sha="new222",
+        sleep=slept.append,
+    )
+
+    assert sha == "new222"
+    assert len(client.calls) == 3
+    assert slept == [prw.ITERATION_HEAD_SYNC_DELAY_SECONDS] * 2
+    assert (
+        lc.load_state("abcd1234-issue-1", project_dir).pr_review["iteration_head_sha"] == "new222"
+    )
+
+
+def test_record_iteration_head_fails_closed_when_pushed_sha_never_appears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    client = FakeClient({"repos/owner/repo/pulls/12": {"head": {"sha": "old111"}}})
+
+    with pytest.raises(prw.GitHubApiError, match="has not caught up"):
+        prw.record_iteration_head(
+            "abcd1234-issue-1",
+            project_dir,
+            12,
+            client,
+            lease_token,
+            expected_sha="new222",
+            sleep=lambda _s: None,
+        )
+    assert len(client.calls) == prw.ITERATION_HEAD_SYNC_ATTEMPTS
+    assert "iteration_head_sha" not in (
+        lc.load_state("abcd1234-issue-1", project_dir).pr_review or {}
+    )
+
+
+def test_record_iteration_head_without_expected_sha_keeps_single_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    client = FakeClient({"repos/owner/repo/pulls/12": {"head": {"sha": "abc123"}}})
+    assert (
+        prw.record_iteration_head("abcd1234-issue-1", project_dir, 12, client, lease_token)
+        == "abc123"
+    )
+    assert len(client.calls) == 1
+
+
 def test_journal_addressed_findings_outcome_records_failures_and_counts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -828,3 +828,13 @@ def test_pr_review_always_new_signature_never_stalls_but_hits_max_iterations() -
     assert state.guards["pr_review_response"].no_progress_streak == 0
     assert third.disposition == lc.Action.EXIT_FAILURE.value
     assert third.reason == "max_iterations"
+
+
+def test_redact_masks_quoted_json_keys() -> None:
+    """PR #446 Codex (P2): failure artifacts now keep up to 256 KB of stdout, which can carry
+    config/tool JSON; quoted keys must be masked, not only bare `key=value` forms."""
+    text = '{"api_token": "abc-123", "password":"hunter2", "other": "keep"}'
+    redacted = lc.redact(text)
+    assert "abc-123" not in redacted
+    assert "hunter2" not in redacted
+    assert "keep" in redacted

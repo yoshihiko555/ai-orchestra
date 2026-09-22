@@ -1160,3 +1160,27 @@ def test_request_budget_error_rejects_price_modifier_fields(
     status, message = result
     assert status == 400
     assert field in message
+
+
+def test_validated_client_betas_accepts_claude_code_token_counting_beta() -> None:
+    """Issue #445: Claude Code 2.1.x sends this beta on `/v1/messages/count_tokens` (an
+    allowed path); rejecting the header alone left count_tokens failing with 431 on every
+    Docker-isolated session."""
+    assert broker._validated_client_betas(
+        "token-counting-2024-11-01", path=broker.COUNT_TOKENS_PATH
+    ) == ["token-counting-2024-11-01"]
+    with pytest.raises(ValueError, match="unsupported anthropic-beta feature"):
+        broker._validated_client_betas("made-up-beta-2030-01-01")
+
+
+def test_token_counting_beta_is_only_allowed_on_count_tokens_path() -> None:
+    """PR #446 Codex (P2): the read-only justification for this beta holds only on
+    `/v1/messages/count_tokens`; forwarding it on billable `/v1/messages` is refused."""
+    assert broker._validated_client_betas(
+        "token-counting-2024-11-01", path=broker.COUNT_TOKENS_PATH
+    ) == ["token-counting-2024-11-01"]
+    with pytest.raises(ValueError, match="only allowed on /v1/messages/count_tokens"):
+        broker._validated_client_betas("token-counting-2024-11-01", path="/v1/messages")
+    assert broker._validated_client_betas("claude-code-20250219", path="/v1/messages") == [
+        "claude-code-20250219"
+    ]

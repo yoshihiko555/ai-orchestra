@@ -22,6 +22,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`loop-harness`: 修正 push 直後に外部レビュアーの再レビューを待たずにループが成功終了することがある問題を修正（Issue #442）**: GitHub API が push 前の head を返す数秒間に反復 head を記録してしまい、旧 head への既存レビューを今回の反復のものとみなしていた。push した SHA が API に反映されるまで待ってから記録するようになった。
+- **`loop-harness`: `claude -p` が異常終了したときの診断 artifact を拡充（Issue #444）**: stdout / stderr の保存量を 8 KB から 256 KB に引き上げ、エラーイベント行を `claude_<kind>_errors.jsonl` として別途保存する。API エラーの後にツール出力が続いても原因が artifact に残る。
+- **`loop-harness`: 同一プロジェクトで複数の loop definition の scheduler を並行稼働させたとき、他 definition の orphan ループを誤って採用する問題を修正（Issue #440）**: 各 scheduler は自分の definition のループだけを再起動・回復するようになった。単一 definition 運用では挙動は変わらない。
+- **`docker-runtime`: broker が Claude Code の `count_tokens` リクエストを常に 431 で拒否していた問題を修正（Issue #445）**: `token-counting-2024-11-01` beta を許可した。
 - **`loop-harness`: Docker 隔離の Maker が `budget_usd` の半分弱で `run budget exhausted` になり停止する問題を修正（Issue #432）**: broker の入力トークン見積りに使う `lp2.isolation.broker.input_bytes_per_token`（既定 `3`）を追加し、broker へ渡すようになった。これまでは 1 byte = 1 token で見積もられ、セッション後半のリクエストが実際の数倍のコストと評価されて予算の半分弱で全リクエストが拒否されていた。`budget_usd` を上書き済みのプロジェクトも、この既定はそのまま適用される。
 - **`loop-harness`: `print-launchd` / `print-cron` が生成する常駐テンプレートが最小 `PATH` で起動し、`gh` / `docker` を解決できず discovery が黙って失敗する問題を修正**: テンプレートに生成時のシェルの `PATH` を埋め込むようになった（launchd は `EnvironmentVariables.PATH`、cron は行頭の `export PATH=...;`）。既に登録済みの plist / crontab は再生成して差し替える。
 - **`loop-harness`: LP-2 の Maker/Checker が現行 Claude Code CLI で起動前に失敗する問題を修正（Issue #401）**: `claude -p` の prompt 引数を `--add-dir`（可変長オプション）の直後に置くと、prompt がディレクトリ引数として飲み込まれ非ゼロ終了していた。`--add-dir` 群と prompt の間に `--` terminator を挿入して分離した。
