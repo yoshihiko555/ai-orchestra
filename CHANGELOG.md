@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: `/loop-issue`（LP-1）の `wait_external_review` 手順書を現行 `loop_driver` の実装（Issue #213 / #235 / #424）に追従（Issue #426）**: pre-rebaseline drain・addressed 解決・最終合否の手順を明文化した。あわせて `wait_external_review` の proposal に `params.pr_review`（反復 head と resolve 再試行候補のスナップショット）を追加し、`journal_addressed_findings_outcome` を公開 API にしたので、オーケストレーターが state.json を直接読まずに手順を実行できる。
 - **`loop-harness`: LP-2 常駐 scheduler が Docker daemon 未起動のときは worker を起動せず待機するようになった（Issue #436）**: `lp2.isolation.execution_backend: docker` の環境で、ポーリングごとに daemon の疎通を確認し、利用不可の間は spawn / 再起動を見送る。これまではログイン直後など daemon 起動前に worker が起動し、20 秒で `infrastructure_failure_exhausted` になって人手の `resume` が必要だった。
 - **`loop-harness`: LP-2 常駐 scheduler 配下の `failed` / `stopped` ループを `loop_step.py resume --reset-counters --release-for-scheduler` で再開できるようになった（Issue #437）**: lease を失効状態で残して scheduler の次のポーリングで自動 attach させる。loop worktree に未コミット変更が残っている場合は拒否する。これまでは LP-1 用の `resume` しかなく、最大 1 時間 attach されないうえ、再開のたびに infrastructure_failure ガードを 1 消費していた。
 - **`quality-gates`: `code-comments` / `code-naming` スキルを追加**: コード・テスト・コミットログ・コードコメントの書き分けと、識別子（変数・関数・クラス等）の命名を、実装時やコミットメッセージ作成時に参照できるようになった（[keitakn/engineering-skills](https://github.com/keitakn/engineering-skills) より移植、MIT）。

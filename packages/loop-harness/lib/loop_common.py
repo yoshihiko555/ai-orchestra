@@ -2181,6 +2181,24 @@ def _is_valid_exec_steps(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
+def _addressed_pending_thread_resolution(pr_review: dict[str, Any]) -> tuple[str, ...]:
+    """Signatures whose finding is `addressed` but whose GitHub thread is not yet resolved.
+
+    Mirrors `pr_review_wait.addressed_findings_missing_thread_resolution` (kept local to avoid
+    a lib-to-lib import cycle; `pr_review_wait` imports this module).
+    """
+    findings = pr_review.get("findings")
+    if not isinstance(findings, dict):
+        return ()
+    return tuple(
+        signature
+        for signature in sorted(findings)
+        if isinstance(findings[signature], dict)
+        and finding_status(findings[signature]) == "addressed"
+        and not findings[signature].get("thread_resolved")
+    )
+
+
 def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[str, Any]:
     """Build action-specific proposal params from durable state and loop definition."""
     if action == Action.STOP.value:
@@ -2228,6 +2246,18 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
             _nested(config, ("pr_review", "timeout_seconds"), 3600),
         )
         params["pr_number"] = state.pr_number
+        # Issue #426 (PR #443 Codex): an LP-1 orchestrator may only read `loop_step` JSON, so
+        # the fenced `pr_review` values its post-poll steps need (DH5 same-action check, and
+        # the addressed-but-unresolved retry candidates from Issue #424) ride along here as a
+        # read-only snapshot taken at proposal time.
+        pr_review = state.pr_review if isinstance(state.pr_review, dict) else {}
+        params["pr_review"] = {
+            "iteration_head_sha": pr_review.get("iteration_head_sha"),
+            "iteration_head_action_id": pr_review.get("iteration_head_action_id"),
+            "addressed_pending_thread_resolution": list(
+                _addressed_pending_thread_resolution(pr_review)
+            ),
+        }
         params["push_required"] = _wait_external_review_had_required_push(
             state, state.loop_id, project_dir
         )
