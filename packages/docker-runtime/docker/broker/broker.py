@@ -36,10 +36,14 @@ ALLOWED_CLIENT_BETAS = frozenset(
         "structured-outputs-2025-12-15",
         # Issue #445: Claude Code 2.1.x sends this on `/v1/messages/count_tokens` (already an
         # allowed path); rejecting only the header left count_tokens failing with 431 on every
-        # Docker-isolated session. Read-only endpoint, no pricing-ceiling impact.
+        # Docker-isolated session. Accepted on that path only (see COUNT_TOKENS_ONLY_BETAS).
         "token-counting-2024-11-01",
     }
 )
+COUNT_TOKENS_PATH = "/v1/messages/count_tokens"
+# Betas whose "read-only, no pricing-ceiling impact" justification only holds on the
+# count_tokens endpoint; forwarding them on billable `/v1/messages` is refused (PR #446 Codex).
+COUNT_TOKENS_ONLY_BETAS = frozenset({"token-counting-2024-11-01"})
 TOKEN_PATH = Path("/run/secrets/oauth-token")
 METRICS_PATH = Path("/run/state/metrics.json")
 MAX_REQUEST_BODY_BYTES = 10_000_000
@@ -525,6 +529,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
                 self.headers,
                 self.state.oauth_token,
                 user_agent=self.state.user_agent,
+                path=self.path.partition("?")[0],
             )
         except ValueError as exc:
             # _upstream_headers emits only fixed validation categories and never
@@ -576,6 +581,7 @@ class BrokerHandler(BaseHTTPRequestHandler):
             self.headers,
             self.state.oauth_token,
             user_agent=self.state.user_agent,
+            path=self.path.partition("?")[0],
         )
         forwarded_bytes = len(body) + sum(
             len(name) + len(value) + 4 for name, value in headers.items()
@@ -634,6 +640,7 @@ def _upstream_headers(
     oauth_token: str,
     *,
     user_agent: str = DEFAULT_USER_AGENT,
+    path: str = "/v1/messages",
 ) -> dict[str, str]:
     result: dict[str, str] = {}
     client_betas: list[str] = []
@@ -646,7 +653,7 @@ def _upstream_headers(
             if beta_header_seen:
                 raise ValueError("duplicate anthropic-beta header is not allowed")
             beta_header_seen = True
-            client_betas = _validated_client_betas(value)
+            client_betas = _validated_client_betas(value, path=path)
             continue
         if len(value) > 128:
             raise ValueError("upstream header value exceeds broker limit")
@@ -662,7 +669,7 @@ def _upstream_headers(
     return result
 
 
-def _validated_client_betas(value: str) -> list[str]:
+def _validated_client_betas(value: str, *, path: str = "/v1/messages") -> list[str]:
     if len(value) > MAX_BETA_HEADER_BYTES:
         raise ValueError("anthropic-beta header exceeds broker limit")
     betas = [item.strip() for item in value.split(",")]
@@ -675,6 +682,13 @@ def _validated_client_betas(value: str) -> list[str]:
     unknown = sorted(set(betas) - ALLOWED_CLIENT_BETAS)
     if unknown:
         raise ValueError(f"unsupported anthropic-beta feature: {','.join(unknown)}")
+    if path != COUNT_TOKENS_PATH:
+        misplaced = sorted(set(betas) & COUNT_TOKENS_ONLY_BETAS)
+        if misplaced:
+            raise ValueError(
+                f"anthropic-beta feature only allowed on {COUNT_TOKENS_PATH}: "
+                + ",".join(misplaced)
+            )
     return betas
 
 

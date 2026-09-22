@@ -2733,3 +2733,22 @@ def test_run_scheduler_binds_runtime_to_its_definition(
     monkeypatch.setattr(scheduler, "verify_repo_identity_at_startup", lambda project: [])
     scheduler.run_scheduler(str(tmp_path), "issue-loop", max_cycles=1)
     assert seen == ["issue-loop"]
+
+
+def test_retire_if_still_orphaned_pending_rechecks_definition_inside_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #446 Codex (P2, Issue #440): the ownership pre-check is TOCTOU-prone like the
+    status/lease checks, so the in-lock reload must re-validate `definition_id` too."""
+    _init_repo(tmp_path)
+    project_dir = str(tmp_path)
+    loop_id = wm.compute_loop_id(project_dir, 31)
+    state = _seed_state(tmp_path, loop_id, status="pending")
+    state.definition_id = "other-loop"
+    lc._write_state(state, project_dir)
+    monkeypatch.setattr(scheduler, "_is_lease_expired", lambda *a, **k: True)
+    monkeypatch.setattr(
+        scheduler, "_retire_orphaned_pending_dir", lambda *a, **k: pytest.fail("retired")
+    )
+
+    assert scheduler._retire_if_still_orphaned_pending(loop_id, project_dir, "issue-loop") is False

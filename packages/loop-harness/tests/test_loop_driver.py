@@ -11199,3 +11199,39 @@ def test_claude_failure_artifacts_keep_error_events_beyond_the_tail(
         tail is not None
         and len(tail.encode("utf-8")) <= driver.LoopDriver._CLAUDE_FAILURE_ARTIFACT_MAX_BYTES
     )
+
+
+def test_pushed_head_or_raise_fails_closed_when_local_head_unresolvable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #446 Codex (P1): `expected_sha=None` would mean "no sync needed" and reopen the
+    Issue #442 stale-head window, so an unresolvable HEAD must raise instead."""
+    monkeypatch.setattr(driver, "_local_head", lambda _wt: None)
+    with pytest.raises(driver.PushedHeadUnavailableError, match="refusing to record"):
+        driver._pushed_head_or_raise("/tmp/wt")
+    monkeypatch.setattr(driver, "_local_head", lambda _wt: "abc123")
+    assert driver._pushed_head_or_raise("/tmp/wt") == "abc123"
+
+
+def test_claude_error_record_reduces_oversized_json_instead_of_truncating() -> None:
+    """PR #446 Codex (P2): `--output-format json` is one large object; the error members must
+    survive as a valid JSON record even when they sit past the per-line byte limit."""
+    padding = "x" * (driver.LoopDriver._CLAUDE_FAILURE_ERROR_LINE_MAX_BYTES + 100)
+    line = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "padding": padding,
+            "result": "API Error: Request rejected (429) · run budget exhausted",
+            "terminal_reason": "api_error",
+        }
+    )
+    record = json.loads(driver.LoopDriver._claude_error_record(line))
+    assert record["truncated"] is True
+    assert record["terminal_reason"] == "api_error"
+    assert "run budget exhausted" in record["result"]
+    assert "padding" not in record
+    garbage = "{" + padding
+    fallback = json.loads(driver.LoopDriver._claude_error_record(garbage))
+    assert fallback["truncated"] is True and fallback["head"].startswith("{x")

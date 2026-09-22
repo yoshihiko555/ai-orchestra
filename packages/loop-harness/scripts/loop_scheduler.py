@@ -855,12 +855,14 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
             continue
         if not _is_lease_expired(loop_id, project_dir):
             continue
-        if _retire_if_still_orphaned_pending(loop_id, project_dir):
+        if _retire_if_still_orphaned_pending(loop_id, project_dir, runtime.definition_id):
             recovered.append(loop_id)
     return recovered
 
 
-def _retire_if_still_orphaned_pending(loop_id: str, project_dir: str) -> bool:
+def _retire_if_still_orphaned_pending(
+    loop_id: str, project_dir: str, expected_definition_id: str = DEFAULT_DEFINITION_ID
+) -> bool:
     """Re-verify `loop_id` is still an orphaned `pending` loop under the coord lock, then
     retire it (SN-flock, PR #229 review, #205-race - see `recover_orphaned_pending_loops`'s
     own docstring for the race this closes).
@@ -877,6 +879,11 @@ def _retire_if_still_orphaned_pending(loop_id: str, project_dir: str) -> bool:
         entry = lc.loop_dir(loop_id, project_dir)
         state = _try_load_state(entry, project_dir)
         if state is None or state.status != "pending":
+            return False
+        if state.definition_id != expected_definition_id:
+            # PR #446 Codex (P2, Issue #440): the caller's ownership pre-check is as TOCTOU-
+            # prone as its status/lease checks; a retire/recreate between them could have
+            # swapped in another definition's `pending` state under the same deterministic id.
             return False
         if not _is_lease_expired(loop_id, project_dir):
             return False
