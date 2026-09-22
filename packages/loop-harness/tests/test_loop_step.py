@@ -2685,3 +2685,134 @@ def test_start_does_not_rollback_when_state_race_loses(
     assert exit_code == 1
     assert json.loads(captured.out)["error"]["code"] == "already_exists"
     assert removed == []
+
+
+def _exclude_loop_state_from_git(repo: Path) -> None:
+    """The test repo doubles as the loop worktree; keep `.claude/loop/` out of `git status`."""
+    (repo / ".git" / "info" / "exclude").write_text(".claude/\n", encoding="utf-8")
+
+
+def test_resume_release_for_scheduler_returns_released_marker_without_proposal(
+    tmp_path: Path,
+) -> None:
+    """Issue #437: no proposal, no lease token; lock.json kept with an already-expired lease."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _exclude_loop_state_from_git(repo)
+    _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "stopped"
+    lc._write_state(state, str(repo))
+
+    proc = _run_cli(
+        [
+            "resume",
+            "--loop-id",
+            "abcd1234-issue-1",
+            "--reset-counters",
+            "--release-for-scheduler",
+            "--project",
+            str(repo),
+        ]
+    )
+    payload = _payload(proc)
+
+    assert proc.returncode == 0, proc.stderr
+    assert payload["released_for"] == "scheduler"
+    assert payload["status"] == "running"
+    assert "lease_token" not in payload
+    assert "action" not in payload
+    resumed = lc.load_state("abcd1234-issue-1", str(repo))
+    assert resumed.status == "running"
+    assert resumed.pending_action is None
+    lock = lc._read_lock(lc.lock_path("abcd1234-issue-1", str(repo)))
+    assert lock is not None
+    assert lc.is_lease_alive(lock) is False
+
+
+def test_resume_release_for_scheduler_refuses_dirty_worktree(tmp_path: Path) -> None:
+    """Issue #437: a Maker that stopped with `maker_partial_worktree` leaves changes behind;
+    resuming on top of them would trip the same stop after spending another action's budget."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _exclude_loop_state_from_git(repo)
+    _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "stopped"
+    lc._write_state(state, str(repo))
+    (repo / "README.md").write_text("maker left this behind\n", encoding="utf-8")
+
+    proc = _run_cli(
+        [
+            "resume",
+            "--loop-id",
+            "abcd1234-issue-1",
+            "--reset-counters",
+            "--release-for-scheduler",
+            "--project",
+            str(repo),
+        ]
+    )
+    payload = _payload(proc)
+
+    assert proc.returncode == loop_step.EXIT_GENERAL_ERROR
+    assert payload["error"]["code"] == "worktree_not_clean"
+    assert lc.load_state("abcd1234-issue-1", str(repo)).status == "stopped"
+
+
+def test_resume_release_for_scheduler_refuses_missing_worktree(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _exclude_loop_state_from_git(repo)
+    _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "failed"
+    state.worktree_path = str(tmp_path / "gone")
+    lc._write_state(state, str(repo))
+
+    proc = _run_cli(
+        [
+            "resume",
+            "--loop-id",
+            "abcd1234-issue-1",
+            "--reset-counters",
+            "--release-for-scheduler",
+            "--project",
+            str(repo),
+        ]
+    )
+    payload = _payload(proc)
+
+    assert proc.returncode == loop_step.EXIT_GENERAL_ERROR
+    assert payload["error"]["code"] == "worktree_unavailable"
+
+
+def test_resume_release_for_scheduler_status_check_neutralizes_worktree_git_config(
+    tmp_path: Path,
+) -> None:
+    """PR #441 Codex P1: a Maker-left `core.fsmonitor=<command>` must not run under the
+    operator's privileges when the pre-check inspects the worktree."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _exclude_loop_state_from_git(repo)
+    _write_running_state(repo)
+    state = lc.load_state("abcd1234-issue-1", str(repo))
+    state.status = "stopped"
+    lc._write_state(state, str(repo))
+    marker = tmp_path / "fsmonitor-ran"
+    _git(["config", "core.fsmonitor", f"touch {marker}"], repo)
+
+    proc = _run_cli(
+        [
+            "resume",
+            "--loop-id",
+            "abcd1234-issue-1",
+            "--reset-counters",
+            "--release-for-scheduler",
+            "--project",
+            str(repo),
+        ]
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not marker.exists()

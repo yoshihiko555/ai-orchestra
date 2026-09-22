@@ -50,6 +50,7 @@ class BrokerConfig:
     max_requests: int
     max_total_tokens: int
     max_upstream_bytes: int
+    input_bytes_per_token: int
     pricing: BrokerPricing
 
 
@@ -172,13 +173,23 @@ def _validate_broker(value: Any) -> BrokerConfig:
         # budget, so every Maker/Checker LLM-review request was budget-rejected before a single
         # token could be spent. Recalibrated from an actual Maker run (31 requests, $6.68,
         # `total_tokens` over 2M once cache reads are counted) with headroom.
-        budget_usd=_positive_number(broker.get("budget_usd", 25.0), "broker.budget_usd"),
+        # Issue #435: 25.0 still stopped every real-Issue Maker (4/4 runs, $17-18 at upper-bound
+        # pricing) because admission always reserves the next request's bound (~$6-7), so the
+        # effective budget was ~$18. 50.0 leaves ~2x headroom over the largest observed action.
+        budget_usd=_positive_number(broker.get("budget_usd", 50.0), "broker.budget_usd"),
         max_requests=_positive_int(broker.get("max_requests", 400), "broker.max_requests"),
         max_total_tokens=_positive_int(
             broker.get("max_total_tokens", 30000000), "broker.max_total_tokens"
         ),
         max_upstream_bytes=_positive_int(
             broker.get("max_upstream_bytes", 500000000), "broker.max_upstream_bytes"
+        ),
+        # Issue #432: the broker's pre-admission estimate divides the request body size by this
+        # value to bound the input tokens. Left unwired it falls back to 1 byte = 1 token, which
+        # priced a late-session 400-500 KB body at $8-10 and rejected every request once about
+        # half of budget_usd was spent. 3 mirrors meta-harness (~4 bytes/token, 25% margin).
+        input_bytes_per_token=_positive_int(
+            broker.get("input_bytes_per_token", 3), "broker.input_bytes_per_token"
         ),
         pricing=BrokerPricing(
             input=_positive_number(pricing.get("input", 15.0), "broker.pricing.input"),

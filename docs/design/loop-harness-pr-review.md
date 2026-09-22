@@ -85,6 +85,11 @@ _PR レビュー対応ループと Codex 自動レビューの関係を示す図
   「レビューをトリガーするイベント」より**前**に記録することで、この間隙自体をなくす。
 - `iteration_head_sha` は `gh api repos/{o}/{r}/pulls/{pr} --jq .head.sha` で取得した push **完了後**の
   head commit sha（baseline とは異なり、push 後にしか値が定まらないため取得順序は逆になる）。
+  **API の反映遅延（Issue #442）**: `pulls/{pr}` は `git push` 直後の数秒間、旧 head を返すことがある。
+  `record_iteration_head` は呼び出し側から push したローカル HEAD を `expected_sha` として受け取り、
+  一致するまで再読込（8 回・2 秒間隔）し、一致しなければ `GitHubApiError` で fail-closed する。
+  旧 head を記録すると、直後のポーリングが旧 head への既存レビューを今回の反復のものと誤認し、
+  `retrigger_comment` の投稿直後に再レビュー未着のまま合格してしまう（2026-09-22 実測）。
   check-run はコミット sha にスコープされる GitHub API 仕様のため、この sha を使う限り「前回反復の
   check-run」を誤って今回の完了シグナルとして拾うことは起きない（sha が変われば check-run の集合も
   別物になる）。したがって check-run 側には reviews のような baseline id 管理は不要で、

@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`loop-harness`: `/loop-issue`（LP-1）の `wait_external_review` 手順書を現行 `loop_driver` の実装（Issue #213 / #235 / #424）に追従（Issue #426）**: pre-rebaseline drain・addressed 解決・最終合否の手順を明文化した。あわせて `wait_external_review` の proposal に `params.pr_review`（反復 head と resolve 再試行候補のスナップショット）を追加し、`journal_addressed_findings_outcome` を公開 API にしたので、オーケストレーターが state.json を直接読まずに手順を実行できる。
+- **`loop-harness`: LP-2 常駐 scheduler が Docker daemon 未起動のときは worker を起動せず待機するようになった（Issue #436）**: `lp2.isolation.execution_backend: docker` の環境で、ポーリングごとに daemon の疎通を確認し、利用不可の間は spawn / 再起動を見送る。これまではログイン直後など daemon 起動前に worker が起動し、20 秒で `infrastructure_failure_exhausted` になって人手の `resume` が必要だった。
+- **`loop-harness`: LP-2 常駐 scheduler 配下の `failed` / `stopped` ループを `loop_step.py resume --reset-counters --release-for-scheduler` で再開できるようになった（Issue #437）**: lease を失効状態で残して scheduler の次のポーリングで自動 attach させる。loop worktree に未コミット変更が残っている場合は拒否する。これまでは LP-1 用の `resume` しかなく、最大 1 時間 attach されないうえ、再開のたびに infrastructure_failure ガードを 1 消費していた。
 - **`quality-gates`: `code-comments` / `code-naming` スキルを追加**: コード・テスト・コミットログ・コードコメントの書き分けと、識別子（変数・関数・クラス等）の命名を、実装時やコミットメッセージ作成時に参照できるようになった（[keitakn/engineering-skills](https://github.com/keitakn/engineering-skills) より移植、MIT）。
 - **`core`: `explain-visually` スキルを追加**: 実装計画・ブランチ差分・PR・Issue・`/review` 結果を、図解付きの HTML ページ（`.claude/docs/explain-visually/` 配下）にして開けるようになった。Google Chrome が必要（描画検証を通ってから開く）（[keitakn/engineering-skills](https://github.com/keitakn/engineering-skills) より移植、MIT）。
 - **`loop-harness`: push 後に外部レビュアーへ再レビューを要求するコメントを自動投稿できるようになった（`pr_review.retrigger_comment`、Issue #274）**: GitHub Codex 連携のように push だけでは自動的に再レビューしない外部レビュアーを使う場合に設定すると、Maker の修正 push 直後にそのコメント（例: `"@codex review"`）を自動投稿する。既定は無効（未設定）で、既存プロジェクトの挙動は変わらない。
@@ -15,10 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **`facet build` が生成 Markdown を prettier で整形するようになった**: `.claude/skills/**/SKILL.md`・`.claude/rules/*.md`・`.agents/skills/**/SKILL.md` と `references/*.md` が、生成時点で prettier 整形済みになる。これまでは生成物が未整形だったため、エディタの保存時整形や `lint-on-save` hook が触った瞬間にテーブル整列や frontmatter の折り返しで全文差分が発生していた。prettier が解決できない環境では警告を出して未整形のまま生成を続行する（`facet build` は失敗しない）。この変更により、導入済みプロジェクトでは次回 sync 時に生成物へ一度だけ整形差分が出る。
-- **`loop-harness`: Docker 隔離の broker 既定値（`budget_usd`/`max_requests`/`max_total_tokens`/`max_upstream_bytes`）を実測に基づき引き上げ（Issue #405）**: 従来の既定値では Claude Code の最初のリクエストの時点でコスト上限見積りを超え、Maker/Checker の LLM 層が全リクエスト拒否されて起動不能になっていた。既定値を上書き済みのプロジェクトは影響しない。
+- **`loop-harness`: Docker 隔離の broker 既定値（`budget_usd`/`max_requests`/`max_total_tokens`/`max_upstream_bytes`）を実測に基づき引き上げ（Issue #405）**: 従来の既定値では Claude Code の最初のリクエストの時点でコスト上限見積りを超え、Maker/Checker の LLM 層が全リクエスト拒否されて起動不能になっていた。既定値を上書き済みのプロジェクトは影響しない。その後の実 Issue での常駐観察で `budget_usd: 25.0` でも Maker が完走しなかったため、`budget_usd` の既定値を `50.0` に再較正した（Issue #435）。
 
 ### Fixed
 
+- **`loop-harness`: 修正 push 直後に外部レビュアーの再レビューを待たずにループが成功終了することがある問題を修正（Issue #442）**: GitHub API が push 前の head を返す数秒間に反復 head を記録してしまい、旧 head への既存レビューを今回の反復のものとみなしていた。push した SHA が API に反映されるまで待ってから記録するようになった。
+- **`loop-harness`: `claude -p` が異常終了したときの診断 artifact を拡充（Issue #444）**: stdout / stderr の保存量を 8 KB から 256 KB に引き上げ、エラーイベント行を `claude_<kind>_errors.jsonl` として別途保存する。API エラーの後にツール出力が続いても原因が artifact に残る。
+- **`loop-harness`: 同一プロジェクトで複数の loop definition の scheduler を並行稼働させたとき、他 definition の orphan ループを誤って採用する問題を修正（Issue #440）**: 各 scheduler は自分の definition のループだけを再起動・回復するようになった。単一 definition 運用では挙動は変わらない。
+- **`docker-runtime`: broker が Claude Code の `count_tokens` リクエストを常に 431 で拒否していた問題を修正（Issue #445）**: `token-counting-2024-11-01` beta を許可した。
+- **`loop-harness`: Docker 隔離の Maker が `budget_usd` の半分弱で `run budget exhausted` になり停止する問題を修正（Issue #432）**: broker の入力トークン見積りに使う `lp2.isolation.broker.input_bytes_per_token`（既定 `3`）を追加し、broker へ渡すようになった。これまでは 1 byte = 1 token で見積もられ、セッション後半のリクエストが実際の数倍のコストと評価されて予算の半分弱で全リクエストが拒否されていた。`budget_usd` を上書き済みのプロジェクトも、この既定はそのまま適用される。
 - **`loop-harness`: `print-launchd` / `print-cron` が生成する常駐テンプレートが最小 `PATH` で起動し、`gh` / `docker` を解決できず discovery が黙って失敗する問題を修正**: テンプレートに生成時のシェルの `PATH` を埋め込むようになった（launchd は `EnvironmentVariables.PATH`、cron は行頭の `export PATH=...;`）。既に登録済みの plist / crontab は再生成して差し替える。
 - **`loop-harness`: LP-2 の Maker/Checker が現行 Claude Code CLI で起動前に失敗する問題を修正（Issue #401）**: `claude -p` の prompt 引数を `--add-dir`（可変長オプション）の直後に置くと、prompt がディレクトリ引数として飲み込まれ非ゼロ終了していた。`--add-dir` 群と prompt の間に `--` terminator を挿入して分離した。
 - **`loop-harness`: Docker 隔離の Checker 機械検証が一時リポジトリへの `git init` で失敗する問題を修正（Issue #409）**: `GIT_DIR`/`GIT_WORK_TREE` がコンテナ全体の環境変数として export されていたため、`pytest` がテスト内で作る一時 git リポジトリへの `git init` がすべて action 自身の ephemeral リポジトリへ誤って向いていた。これらは Maker/Checker の `claude -p` 実行にのみ渡すよう変更し、機械検証（`docker exec`）では一切見えなくした。またコンテナの `TMPDIR` を exec 可能な別 tmpfs に向け、一時ディレクトリに置かれる実行可能ファイルが動作するようにした。

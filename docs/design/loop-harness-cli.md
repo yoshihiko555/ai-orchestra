@@ -350,6 +350,23 @@ python3 loop_step.py resume --loop-id a1b2c3d4-issue-42 --reset-counters --proje
   進行中であれば `resume` はその完了までブロックされ、`lock.json` 自体の inode 差し替え
   （`rmtree` による削除）を経由したレースは発生しない（詳細は 4.3 節）。
 
+- **LP-2 への引き渡し（`--release-for-scheduler`、Issue #437）**: 常駐 scheduler 配下の loop を
+  人間が再開する場合は、上記の LP-1 契約（lease を発行し proposal を返す）は使わない。
+  `--release-for-scheduler` を付けると、(1) loop worktree が clean（`git status --porcelain` が
+  実行でき出力が空）であることを先に確認し、それ以外は state に触れず exit `1`
+  （`worktree_unavailable` / `worktree_not_clean`）で拒否する（`maker_partial_worktree` の残骸の
+  上で Maker を再開すると同じ安全停止を再度踏むため）。(2) `loop_common.resume(scheduler_handoff=True)`
+  が同一 critical section 内で **ttl 0 の lease** を発行し、`lock.json` を残したまま `status` を
+  `running` に戻す（`attach` → `reacquire_lease` は lock.json の存在を要し、失効済み lease は即
+  置換できる。`release_lock` で削除すると `LockNotFoundError` になる）。(3) `propose` は呼ばず、
+  応答は `{"loop_id", "status": "running", "phase", "released_for": "scheduler"}`（`lease_token` /
+  `action` を含まない）。scheduler の `respawn_orphaned_active_loops` が次ポーリングで attach する。
+  proposal を残さないのは、attach 時の `propose(recover_orphans=True)` が残存 pending action を
+  `infrastructure_failure` として reconcile し、再開のたびにガードを 1 消費するのを避けるため。
+  あわせて `respawn_orphaned_active_loops` は、`active_loop_ids` に含まれる loop が
+  `runtime.stopped_loop_ids`（3.4 節の安全停止マーク。削除経路がなかった）に残っていれば人間の
+  resume 済みとみなしてマークを外し、repo-identity 再検証に進む。
+
 ### 1.9 `lease_token` の呼び出し契約（Codex レビュー指摘反映。P1）
 
 **問題**: 当初案は変更系サブコマンドが毎回 `lock.json` を読み直して自己完結的に検証する構造
@@ -1072,6 +1089,25 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
   > retirement に先行して lease を再取得していた場合はロック内の再検証で正しく no-op する
   > （逆に retirement が先にロックを取得していれば `attach` 側が `lock_unavailable`/
   > `invalid_state` で正しく失敗する）。
+
+- **definition の所有（Issue #440）**: `run_scheduler` は `SchedulerRuntime.definition_id` を起動時の
+  definition で束縛し、crash-restart・cooldown 後の respawn・`respawn_orphaned_active_loops`・
+  `recover_orphaned_pending_loops` はいずれも `state.definition_id` が一致する loop だけを対象にする。
+  respawn 時の `spawn_worker` にもその definition id を渡す。同一プロジェクトで異なる `--definition` の
+  scheduler を並行稼働させる運用（3.5 節の pidfile 分離が許容する構成）で、他 definition の orphan を
+  採用して既定 definition で走らせてしまうのを防ぐ。
+- **Docker daemon 未起動時の spawn ゲート（Issue #436）**: `lp2.isolation.execution_backend: docker`
+  の環境では、`run_cycle` の冒頭で `docker_spawn_gate` が `docker_daemon_available()` をサイクルに
+  1 回だけプローブする（`none` ではプローブしない）。利用不可のサイクルは
+  `reap_finished_workers(allow_respawn=False)`（終了 worker の回収と foreign-lease cooldown の記録
+  のみ）で終わり、crash-restart・`recover_orphaned_pending_loops`・`respawn_orphaned_active_loops`・
+  `spawn_new_workers` は実行しない。loop の state には触れないため、daemon 復帰後のサイクルで
+  自然に再試行される（crash-restart 候補は `running` のまま lease が失効し、
+  `respawn_orphaned_active_loops` が拾う）。ログは可用性の遷移時のみ出す。launchd の `RunAtLoad`
+  がログイン時に OrbStack より先に走り、spawn された worker が
+  `guards.infrastructure_failure.max_retries` を 20 秒で使い切って `failed` に落ちる事象への対策で
+  あり、プローブ後に daemon が落ちるケースは driver 側の `DockerActionRuntime._start()` チェックが
+  引き続き受け持つ。
 
 ### 3.4 起動時の repo-identity 照合（安全停止）
 

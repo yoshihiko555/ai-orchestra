@@ -29,11 +29,15 @@ from xml.sax.saxutils import escape as xml_escape
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _LIB_DIR = _SCRIPT_DIR.parent / "lib"
-if str(_LIB_DIR) not in sys.path:
-    sys.path.insert(0, str(_LIB_DIR))
+_DOCKER_RUNTIME_LIB = _SCRIPT_DIR.parent.parent / "docker-runtime" / "lib"
+for _path in (_LIB_DIR, _DOCKER_RUNTIME_LIB):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
+import docker_runtime_cli as runtime_cli  # noqa: E402
 import loop_common as lc  # noqa: E402
 import loop_definition as ld  # noqa: E402
+import loop_docker_config as docker_config  # noqa: E402
 import loop_driver_support as lds  # noqa: E402
 import worktree_manager as wm  # noqa: E402
 
@@ -520,6 +524,46 @@ class SchedulerRuntime:
     # code H4: loop_id -> monotonic deadline before which a foreign-lease-rejected worker must
     # not be respawned (anti restart-storm guard; in-memory/per-scheduler-process only).
     foreign_lease_cooldown_until: dict[str, float] = field(default_factory=dict)
+    # Issue #436: last observed Docker daemon availability (None until first probed). Kept only
+    # so `docker_spawn_gate` logs on transitions instead of on every poll cycle.
+    docker_daemon_available: bool | None = None
+    # Issue #440: the loop definition this scheduler owns. Every respawn/recovery path filters
+    # on `state.definition_id` so two schedulers for different definitions in one project never
+    # adopt (and re-run under the wrong definition) each other's orphaned loops.
+    definition_id: str = DEFAULT_DEFINITION_ID
+
+
+def _owned_by(runtime: SchedulerRuntime, state: lc.LoopState | None) -> bool:
+    """Return whether `state` belongs to the definition this scheduler owns (Issue #440)."""
+    return state is not None and state.definition_id == runtime.definition_id
+
+
+def docker_spawn_gate(runtime: SchedulerRuntime, project_dir: str) -> bool:
+    """Return whether this cycle may spawn/respawn workers (Issue #436).
+
+    With `lp2.isolation.execution_backend: docker`, a worker spawned while the Docker daemon is
+    down (launchd `RunAtLoad` routinely starts this scheduler before OrbStack at login) burns
+    through `guards.infrastructure_failure.max_retries` in ~20 seconds and lands the loop in
+    `failed`, which then needs a human `resume`. Probing once per cycle and skipping every
+    spawn path while the daemon is unavailable keeps loop state untouched, so the next cycle
+    simply retries. Host execution (`execution_backend: none`) never probes. The driver's own
+    `DockerActionRuntime._start()` check stays as the backstop for a daemon that dies later.
+    """
+    config = ld.load_config(project_dir)
+    if not docker_config.docker_execution_enabled(config):
+        return True
+    available = runtime_cli.docker_daemon_available(runner=subprocess.run)
+    if available != runtime.docker_daemon_available:
+        if available:
+            message = "loop_scheduler: docker daemon available again; resuming worker spawn"
+        else:
+            message = (
+                "loop_scheduler: docker daemon unavailable; skipping worker spawn/respawn "
+                "until it returns"
+            )
+        print(lc.redact(message), file=sys.stderr)
+        runtime.docker_daemon_available = available
+    return available
 
 
 def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
@@ -557,7 +601,7 @@ def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> l
             del runtime.foreign_lease_cooldown_until[loop_id]
             continue
         state = _try_load_state(lc.loop_dir(loop_id, project_dir), project_dir)
-        if state is None or not should_restart(state.status):
+        if state is None or not should_restart(state.status) or not _owned_by(runtime, state):
             del runtime.foreign_lease_cooldown_until[loop_id]
             continue
         if available <= 0:
@@ -570,7 +614,7 @@ def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> l
             del runtime.foreign_lease_cooldown_until[loop_id]
             continue
         del runtime.foreign_lease_cooldown_until[loop_id]
-        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
+        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir, runtime.definition_id)
         respawned.append(loop_id)
         available -= 1
     return respawned
@@ -714,19 +758,28 @@ def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -
     for loop_id in active_loop_ids(project_dir):
         if available <= 0:
             break
-        if loop_id in runtime.workers or loop_id in runtime.stopped_loop_ids:
-            continue
-        if loop_id in runtime.foreign_lease_cooldown_until:
+        if loop_id in runtime.workers:
             continue
         if not _is_lease_expired(loop_id, project_dir):
             continue
+        # Issue #437: `active_loop_ids` only returns running/waiting_external, so a loop this
+        # scheduler safety-stopped can be here only after a human `resume`d it. The in-memory
+        # mark would otherwise exclude it forever; drop it and let the identity recheck below
+        # decide afresh (it re-marks on a persisting mismatch). Same for a foreign-lease
+        # cooldown (PR #441 Codex P2): the lease being expired means no foreign owner remains,
+        # so honoring the rest of the cooldown would only idle a handoff for up to the LP-2 TTL.
+        state = _try_load_state(lc.loop_dir(loop_id, project_dir), project_dir)
+        if not _owned_by(runtime, state):
+            continue
+        runtime.stopped_loop_ids.discard(loop_id)
+        runtime.foreign_lease_cooldown_until.pop(loop_id, None)
         if expected_repo_identity_hash is None:
             expected_repo_identity_hash = wm.resolve_repo_identity_hash(project_dir)
         if not _recheck_repo_identity_before_respawn(
-            loop_id, project_dir, expected_repo_identity_hash, runtime
+            loop_id, project_dir, expected_repo_identity_hash, runtime, state=state
         ):
             continue
-        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
+        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir, runtime.definition_id)
         respawned.append(loop_id)
         available -= 1
     return respawned
@@ -798,16 +851,18 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
         if loop_id in runtime.workers:
             continue
         state = _try_load_state(entry, project_dir)
-        if state is None or state.status != "pending":
+        if state is None or state.status != "pending" or not _owned_by(runtime, state):
             continue
         if not _is_lease_expired(loop_id, project_dir):
             continue
-        if _retire_if_still_orphaned_pending(loop_id, project_dir):
+        if _retire_if_still_orphaned_pending(loop_id, project_dir, runtime.definition_id):
             recovered.append(loop_id)
     return recovered
 
 
-def _retire_if_still_orphaned_pending(loop_id: str, project_dir: str) -> bool:
+def _retire_if_still_orphaned_pending(
+    loop_id: str, project_dir: str, expected_definition_id: str = DEFAULT_DEFINITION_ID
+) -> bool:
     """Re-verify `loop_id` is still an orphaned `pending` loop under the coord lock, then
     retire it (SN-flock, PR #229 review, #205-race - see `recover_orphaned_pending_loops`'s
     own docstring for the race this closes).
@@ -824,6 +879,11 @@ def _retire_if_still_orphaned_pending(loop_id: str, project_dir: str) -> bool:
         entry = lc.loop_dir(loop_id, project_dir)
         state = _try_load_state(entry, project_dir)
         if state is None or state.status != "pending":
+            return False
+        if state.definition_id != expected_definition_id:
+            # PR #446 Codex (P2, Issue #440): the caller's ownership pre-check is as TOCTOU-
+            # prone as its status/lease checks; a retire/recreate between them could have
+            # swapped in another definition's `pending` state under the same deterministic id.
             return False
         if not _is_lease_expired(loop_id, project_dir):
             return False
@@ -880,8 +940,16 @@ def _cleanup_orphaned_pending_worktree(loop_id: str, project_dir: str) -> None:
         )
 
 
-def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[str]:
+def reap_finished_workers(
+    runtime: SchedulerRuntime, project_dir: str, *, allow_respawn: bool = True
+) -> list[str]:
     """Poll tracked workers; restart abnormal exits unless failed/stopped. Return respawned ids.
+
+    Issue #436: with `allow_respawn=False` (Docker daemon unavailable this cycle) dead workers
+    are still reaped and foreign-lease cooldowns still recorded, but nothing is respawned. A
+    crash-restart candidate is simply left as-is: its status stays `running`, so once the daemon
+    returns it is picked up by `respawn_orphaned_active_loops` (lease expired) or, if its
+    lease is somehow still alive, counted as a live occupant until it expires.
 
     SN6: dead workers are reaped (freeing their concurrency slots in `runtime.workers`) *before*
     `_respawn_expired_cooldowns` is checked, not after. Checking cooldowns first would compute
@@ -925,10 +993,12 @@ def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[s
             )
             continue
         state = _try_load_state(lc.loop_dir(loop_id, project_dir), project_dir)
-        if state is None or not should_restart(state.status):
+        if state is None or not should_restart(state.status) or not _owned_by(runtime, state):
             continue
         restart_candidates.append((loop_id, state))
     respawned: list[str] = []
+    if not allow_respawn:
+        return respawned
     if restart_candidates:
         available = _available_worker_slots(runtime, project_dir)
         expected_repo_identity_hash: str | None = None
@@ -941,7 +1011,7 @@ def reap_finished_workers(runtime: SchedulerRuntime, project_dir: str) -> list[s
                 loop_id, project_dir, expected_repo_identity_hash, runtime, state=state
             ):
                 continue
-            runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
+            runtime.workers[loop_id] = spawn_worker(loop_id, project_dir, runtime.definition_id)
             respawned.append(loop_id)
             available -= 1
     respawned.extend(_respawn_expired_cooldowns(runtime, project_dir))
@@ -988,7 +1058,13 @@ def run_cycle(runtime: SchedulerRuntime, project_dir: str, definition: ld.LoopDe
     so a slot a cooldown-elapsed loop is waiting on is never first handed to an unrelated
     recovered/orphaned-active loop instead.
     """
-    reap_finished_workers(runtime, project_dir)
+    can_spawn = docker_spawn_gate(runtime, project_dir)
+    reap_finished_workers(runtime, project_dir, allow_respawn=can_spawn)
+    if not can_spawn:
+        # Issue #436: nothing below may start a worker (or, for
+        # `recover_orphaned_pending_loops`, rename state dirs / clean worktrees) while the
+        # Docker daemon is down. Loop state is left untouched so the next cycle retries.
+        return
     # Must run before spawn_new_workers (#H3/#H11): retiring a stale `pending` state dir this
     # cycle lets discovery treat the same Issue as a fresh candidate in this same cycle,
     # instead of only on the next poll.
@@ -1324,7 +1400,7 @@ def run_scheduler(
         definition = ld.load_all_definitions(project_dir).get(definition_id)
         if definition is None:
             raise ld.DefinitionValidationError(f"loop definition not found: {definition_id}")
-        runtime = SchedulerRuntime()
+        runtime = SchedulerRuntime(definition_id=definition.id)
         runtime.stopped_loop_ids.update(verify_repo_identity_at_startup(project_dir))
         poll_interval = resolve_poll_interval(definition)
         cycles = 0

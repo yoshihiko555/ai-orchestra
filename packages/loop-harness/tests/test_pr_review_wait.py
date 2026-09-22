@@ -4688,3 +4688,157 @@ def test_own_retrigger_comment_is_not_escalated_as_untrusted_review() -> None:
     assert outcome.completed is False
     assert outcome.ignored_untrusted_review_count == 0
     assert outcome.ignored_untrusted_reviews == ()
+
+
+def test_record_iteration_head_waits_for_pushed_sha_to_appear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #442: `pulls/{n}` can still report the pre-push head for a few seconds; recording
+    that stale SHA let the next poll treat an old review as covering this iteration."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    heads = iter(["old111", "old111", "new222"])
+
+    class _LaggingClient(FakeClient):
+        def api(self, path: str) -> Any:
+            self.calls.append(path)
+            return {"head": {"sha": next(heads)}}
+
+    client = _LaggingClient({})
+    slept: list[float] = []
+
+    sha = prw.record_iteration_head(
+        "abcd1234-issue-1",
+        project_dir,
+        12,
+        client,
+        lease_token,
+        expected_sha="new222",
+        sleep=slept.append,
+    )
+
+    assert sha == "new222"
+    assert len(client.calls) == 3
+    assert slept == [prw.ITERATION_HEAD_SYNC_DELAY_SECONDS] * 2
+    assert (
+        lc.load_state("abcd1234-issue-1", project_dir).pr_review["iteration_head_sha"] == "new222"
+    )
+
+
+def test_record_iteration_head_fails_closed_when_pushed_sha_never_appears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    client = FakeClient({"repos/owner/repo/pulls/12": {"head": {"sha": "old111"}}})
+
+    with pytest.raises(prw.GitHubApiError, match="has not caught up"):
+        prw.record_iteration_head(
+            "abcd1234-issue-1",
+            project_dir,
+            12,
+            client,
+            lease_token,
+            expected_sha="new222",
+            sleep=lambda _s: None,
+        )
+    assert len(client.calls) == prw.ITERATION_HEAD_SYNC_ATTEMPTS
+    assert "iteration_head_sha" not in (
+        lc.load_state("abcd1234-issue-1", project_dir).pr_review or {}
+    )
+
+
+def test_record_iteration_head_without_expected_sha_keeps_single_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    lease_token = _lease(project_dir)
+    client = FakeClient({"repos/owner/repo/pulls/12": {"head": {"sha": "abc123"}}})
+    assert (
+        prw.record_iteration_head("abcd1234-issue-1", project_dir, 12, client, lease_token)
+        == "abc123"
+    )
+    assert len(client.calls) == 1
+
+
+def test_journal_addressed_findings_outcome_records_failures_and_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #426: public so LP-1 writes the same event the LP-2 driver does."""
+    project_dir = _setup_state(tmp_path, monkeypatch)
+    result = prw.AddressedFindingsResult(
+        resolved_signatures=("s1", "s2"),
+        thread_outcomes=(
+            prw.AddressedThreadOutcome(
+                signature="s1", thread_id="t1", comment_id=None, status="resolved", error=None
+            ),
+            prw.AddressedThreadOutcome(
+                signature="s2",
+                thread_id=None,
+                comment_id=None,
+                status="no_trusted_thread",
+                error="missing",
+            ),
+        ),
+        git_workflow_unavailable=False,
+    )
+
+    payload = prw.journal_addressed_findings_outcome(
+        "abcd1234-issue-1", project_dir, result, "act-000009"
+    )
+
+    assert payload["succeeded_count"] == 1
+    assert payload["failed_count"] == 1
+    assert payload["failures"][0]["status"] == "no_trusted_thread"
+    events = [
+        json.loads(line)
+        for line in (tmp_path / ".claude" / "loop" / "abcd1234-issue-1" / "journal.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    outcome_events = [e for e in events if e["event"] == "pr_review_addressed_findings_outcome"]
+    assert len(outcome_events) == 1
+    assert outcome_events[0]["action_id"] == "act-000009"
+    assert outcome_events[0]["payload"] == payload
+
+
+def test_resolve_addressed_findings_skips_candidate_reopened_during_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #447 Codex (P1): a pre-poll candidate that the poll re-raised is `open` again and
+    must not get an "addressed" reply or a resolve."""
+    project_dir = _setup_state(
+        tmp_path,
+        monkeypatch,
+        pr_review={
+            "processed_comment_ids": [],
+            "findings": {
+                "sig-reopened": _open_finding_record(
+                    ["review_comment:1"], status="open", severity="critical"
+                ),
+            },
+        },
+    )
+    lease_token = _lease(project_dir)
+    fake = _FakeGitWorkflowModule({"unresolved_threads": [_trusted_thread("THREAD-1", 1)]})
+    monkeypatch.setattr(prw, "_load_git_workflow_module", lambda: fake)
+
+    result = prw.resolve_addressed_findings(
+        "abcd1234-issue-1", project_dir, 12, "owner/repo", ["sig-reopened"], "cafe", lease_token
+    )
+
+    assert result.resolved_signatures == ()
+    assert [o.status for o in result.thread_outcomes] == ["not_addressed"]
+    assert fake.reply_calls == [] and fake.resolve_calls == []
+
+
+def test_iteration_head_recorded_for_action_reads_fenced_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #447 Codex (P2): the proposal snapshot predates this action's push, so DH5 must ask
+    the fenced state whether `record_iteration_head` already ran under this action_id."""
+    project_dir = _setup_state(
+        tmp_path, monkeypatch, pr_review={"iteration_head_action_id": "act-000042"}
+    )
+    assert prw.iteration_head_recorded_for_action("abcd1234-issue-1", project_dir, "act-000042")
+    assert not prw.iteration_head_recorded_for_action("abcd1234-issue-1", project_dir, "act-000043")

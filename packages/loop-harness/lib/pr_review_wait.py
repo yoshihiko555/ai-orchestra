@@ -337,6 +337,7 @@ class AddressedThreadOutcome:
         "reply_failed",
         "resolve_failed",
         "lease_expired",
+        "not_addressed",
     ]
     error: str | None = None
 
@@ -556,6 +557,12 @@ def record_baseline(
     )
 
 
+# Issue #442: how long `record_iteration_head` waits for the GitHub API to report the SHA the
+# driver just pushed. The `pulls/{n}` endpoint can lag `git push` by a few seconds.
+ITERATION_HEAD_SYNC_ATTEMPTS = 8
+ITERATION_HEAD_SYNC_DELAY_SECONDS = 2.0
+
+
 def record_iteration_head(
     loop_id: str,
     project_dir: str,
@@ -565,8 +572,17 @@ def record_iteration_head(
     *,
     action_id: str | None = None,
     iteration: int | None = None,
+    expected_sha: str | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> str:
     """Record the post-push PR head SHA for check-run fallback scoping.
+
+    Issue #442: when `expected_sha` (the SHA the driver just pushed) is given, the API's
+    `head.sha` is re-read until it matches, up to `ITERATION_HEAD_SYNC_ATTEMPTS`; a persistent
+    mismatch raises `GitHubApiError` (fail-closed, retried like any other failure here). Without
+    this, a stale `head.sha` read right after `git push` made the following poll treat a review
+    of the *previous* head as covering this iteration's fix and exit success 12 seconds after
+    posting the retrigger comment, before the reviewer had re-reviewed at all.
 
     `iteration` (DH5), when given, is durably recorded alongside `iteration_head_sha` as
     `iteration_head_recorded_iteration`, together with this call's own `action_id` as
@@ -580,11 +596,17 @@ def record_iteration_head(
     what makes it safe to still treat a clean re-review of it as genuine "not reraised ->
     addressed" evidence (see `loop_driver._run_wait_external_review`'s `pushed_this_action` gate).
     """
-    payload = client.api(f"repos/{client.repo}/pulls/{pr_number}")
-    head = payload.get("head") if isinstance(payload, dict) else None
-    sha = head.get("sha") if isinstance(head, dict) else None
-    if not isinstance(sha, str) or not sha:
-        raise GitHubApiError("pull request head.sha is missing")
+    sha = _pull_request_head_sha(client, pr_number)
+    attempts = 1
+    while expected_sha is not None and sha != expected_sha:
+        if attempts >= ITERATION_HEAD_SYNC_ATTEMPTS:
+            raise GitHubApiError(
+                f"pull request head {sha} has not caught up with pushed {expected_sha} after "
+                f"{attempts} attempts"
+            )
+        sleep(ITERATION_HEAD_SYNC_DELAY_SECONDS)
+        sha = _pull_request_head_sha(client, pr_number)
+        attempts += 1
     state = lc.load_state(loop_id, project_dir)
     pr_review = _ensure_pr_review_state(state.pr_review)
     pr_review["iteration_head_sha"] = sha
@@ -606,6 +628,73 @@ def record_iteration_head(
         )
         lc._write_state(state, project_dir)
     return sha
+
+
+def _pull_request_head_sha(client: GhApiClient, pr_number: int) -> str:
+    payload = client.api(f"repos/{client.repo}/pulls/{pr_number}")
+    head = payload.get("head") if isinstance(payload, dict) else None
+    sha = head.get("sha") if isinstance(head, dict) else None
+    if not isinstance(sha, str) or not sha:
+        raise GitHubApiError("pull request head.sha is missing")
+    return sha
+
+
+ADDRESSED_THREAD_FAILED_STATUSES = frozenset(
+    {"reply_failed", "resolve_failed", "no_trusted_thread", "lease_expired", "not_addressed"}
+)
+
+
+def iteration_head_recorded_for_action(loop_id: str, project_dir: str, action_id: str) -> bool:
+    """Return whether `record_iteration_head` ran under `action_id` (DH5 same-action check).
+
+    PR #447 Codex (P2): the `wait_external_review` proposal snapshot is taken *before* this
+    action's own push, so it can never show the current `action_id`. An orchestrator that lost
+    the fact that it already pushed in this action (crash, then `attach` of the same pending
+    action) must ask the fenced state instead of an immutable pre-push snapshot. Read-only.
+    """
+    state = lc.load_state(loop_id, project_dir)
+    pr_review = state.pr_review if isinstance(state.pr_review, dict) else {}
+    return pr_review.get("iteration_head_action_id") == action_id
+
+
+def journal_addressed_findings_outcome(
+    loop_id: str,
+    project_dir: str,
+    addressed_result: AddressedFindingsResult,
+    action_id: str,
+) -> dict[str, Any]:
+    """Record `resolve_addressed_findings()`'s best-effort GitHub outcome to the journal.
+
+    Purely observational: never raises and never affects the phase check result, matching
+    `resolve_addressed_findings`'s own best-effort contract. Public (Issue #426, PR #443 Codex)
+    so an LP-1 orchestrator records the same `pr_review_addressed_findings_outcome` event the
+    LP-2 driver does, instead of hand-writing the payload. Returns the journaled payload.
+    """
+    failures = [
+        {
+            "signature": outcome.signature,
+            "thread_id": outcome.thread_id,
+            "status": outcome.status,
+            "error": outcome.error,
+        }
+        for outcome in addressed_result.thread_outcomes
+        if outcome.status in ADDRESSED_THREAD_FAILED_STATUSES
+    ]
+    succeeded_count = sum(
+        1 for outcome in addressed_result.thread_outcomes if outcome.status == "resolved"
+    )
+    payload = {
+        "resolved_signature_count": len(addressed_result.resolved_signatures),
+        "thread_outcome_count": len(addressed_result.thread_outcomes),
+        "succeeded_count": succeeded_count,
+        "failed_count": len(failures),
+        "failures": failures,
+        "git_workflow_unavailable": addressed_result.git_workflow_unavailable,
+    }
+    lc.append_journal_event(
+        loop_id, project_dir, "pr_review_addressed_findings_outcome", "waiter", action_id, payload
+    )
+    return payload
 
 
 def post_retrigger_comment(
@@ -1431,6 +1520,12 @@ def resolve_addressed_findings(
             continue
         record = findings_map.get(signature)
         if not isinstance(record, dict):
+            continue
+        if lc.finding_status(record) != "addressed":
+            # PR #447 Codex (P1): a candidate captured before the poll may have been re-raised
+            # during it (`_upsert_finding` flips it back to `open`). Never reply "addressed"
+            # to, or resolve, a thread whose finding is open again.
+            outcomes.append(AddressedThreadOutcome(signature, None, None, "not_addressed"))
             continue
         signature_outcomes = _resolve_addressed_signature_threads(
             git_workflow,

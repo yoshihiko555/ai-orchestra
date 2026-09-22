@@ -294,6 +294,7 @@ def _broker_settings(broker: docker_config.BrokerConfig) -> dict[str, Any]:
         "max_requests": broker.max_requests,
         "max_total_tokens": broker.max_total_tokens,
         "max_upstream_bytes": broker.max_upstream_bytes,
+        "input_bytes_per_token": broker.input_bytes_per_token,
         "pricing_upper_bound_usd_per_million": {
             "input": broker.pricing.input,
             "output": broker.pricing.output,
@@ -322,6 +323,7 @@ def _broker_env(
         "DR_BROKER_MAX_REQUESTS": str(broker["max_requests"]),
         "DR_BROKER_MAX_TOTAL_TOKENS": str(broker["max_total_tokens"]),
         "DR_BROKER_MAX_UPSTREAM_BYTES": str(broker["max_upstream_bytes"]),
+        "DR_BROKER_INPUT_BYTES_PER_TOKEN": str(broker["input_bytes_per_token"]),
         "DR_PRICE_INPUT": str(pricing["input"]),
         "DR_PRICE_OUTPUT": str(pricing["output"]),
         "DR_PRICE_CACHE_CREATION": str(pricing["cache_creation"]),

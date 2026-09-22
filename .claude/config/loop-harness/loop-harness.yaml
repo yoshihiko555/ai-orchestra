@@ -72,10 +72,19 @@ lp2:
       # Per-action ceilings. Recalibrated from a real measurement (Issue #405): a Maker run took
       # 31 requests / $6.68, with `total_tokens` over 2M once cache reads are counted, so the
       # previous defaults rejected Claude Code's very first request outright.
-      budget_usd: 25.0
+      # Issue #435: real-Issue Maker actions reach $17-18 at upper-bound pricing and the
+      # admission check always reserves the last request's bound (~$6-7 at 3 bytes/token),
+      # so the effective budget is roughly budget_usd - 7. 50 gives ~2x headroom over the
+      # largest observed action. Structural fix (accurate input estimate) remains #278.
+      budget_usd: 50.0
       max_requests: 400
       max_total_tokens: 30000000
       max_upstream_bytes: 500000000
+      # Bytes-per-token divisor for the broker's pre-admission input estimate (Issue #432).
+      # Without it the broker falls back to 1 byte = 1 token and a 400-500 KB request body
+      # late in a Maker session is priced at $8-10, so budget_usd is effectively halved.
+      # Same value and rationale as meta-harness (~4 bytes/token with a 25% safety margin).
+      input_bytes_per_token: 3
       pricing_upper_bound_usd_per_million:
         input: 15.0
         output: 75.0

@@ -393,7 +393,11 @@ action の実行に懸念があっても別 action を先取りしない。実�
 ループ定義から生成済みなので、worktree、branch、実行順、停止理由を独自に再構成しない。
 
 すべての action の proposal は共通 context として `params.issue_number`、`params.worktree_path`、
-`params.branch`、`params.repo_identity_verified` を供給する。`run_maker` だけでなく `run_checker`、
+`params.branch`、`params.repo_identity_verified` を供給する。`wait_external_review` の proposal はさらに
+`params.pr_review`（`iteration_head_sha` / `iteration_head_action_id` / `addressed_pending_thread_resolution`。
+proposal 生成時点 = この action の push **前**の fenced state の読み取り専用スナップショット）を供給する。
+post-poll の resolve 再試行候補はこれを使い、DH5 の同一 action 判定だけは push 後の値が要るため公開 API
+`iteration_head_recorded_for_action(...)` を使う。`run_maker` だけでなく `run_checker`、
 `wait_external_review`、`advance_phase`、`stop`、`exit_success`、`exit_failure` もこの cwd 供給を使う。
 Task は cwd を明示し、すべての git は `git -C "<params.worktree_path>" ...` または同パスへ固定した
 subshell、すべての `gh` / `pr-create` は同パスを明示した Task または subshell で実行する。current
@@ -624,13 +628,25 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
 - `wait_for_completion(...)`
 - `record_ignored_untrusted_reviews(...)`
 - `collect_review_findings(...)`
+- `confirm_review_findings_reported(...)`（明示 severity の finding を「報告済み」として処理済みマーク。
+  snapshot 保存後にだけ呼び、クラッシュ時の finding 取りこぼしを防ぐ）
 - `save_review_findings_snapshot(...)`（active lease / action に束縛し、構造化 redaction 後の collect
   結果全体を action-scoped artifact へ 0600 で保存）
 - `load_review_findings_snapshot(...)`（lease / action / envelope / ファイル境界を検証して厳格に復元）
 - `classify_severity(...)`（Step 2 分類応答の決定論パース。下記「severity 分類」参照）
 - `apply_severity_classifications(...)`（分類結果の state 永続化と finding 除外を一括適用）
+- `mark_addressed_findings(...)`（前反復で `open` だった blocking が今反復で reraise されなかった
+  シグネチャを `addressed` へ更新。`status` が正確に `open` のレコードだけを対象とする fail-closed。
+  Issue #235）
+- `resolve_addressed_findings(...)`（`mark_addressed_findings()` が実際に addressed へ更新した
+  シグネチャの、信頼済み GitHub review thread へ best-effort で reply + resolve。GitHub 側失敗では
+  例外を投げず合否を落とさない。Issue #235）
+- `addressed_findings_missing_thread_resolution(...)`（`status == "addressed"` だが `thread_resolved`
+  が未確定のレコードを毎 poll 完了で再列挙し、resolve をべき等に再試行させる。Issue #424）
 - `phase_check_from_completion_outcome(...)`
-- `phase_check_from_review_findings(...)`
+- `phase_check_from_review_findings(..., include_persisted_open_blocking=<bool>)`（既定 `False` の
+  **opt-in** 引数。pre-rebaseline drain は必ず `False`、post-poll の最終合否だけ `True` を渡す。
+  下記「pre-rebaseline drain」「poll 完了後の addressed 解決と最終合否」参照。Issue #424）
 
 `wait_external_review` proposal の `params.push_required` は、この pending action 内で review 待機前の
 追加 push が必要かを示す bool である。値を独自に推測せず、次の 2 経路だけを実行する。
@@ -653,16 +669,29 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
     2 人目のレビュアーによる `CHANGES_REQUESTED`）を、次の `record_baseline` が「処理済み」として
     飲み込み永久に喪失させる前に取り込むための手順である。collect の直後、別プロセスへ移る前に
     `ReviewFindingsResult` 全体を `save_review_findings_snapshot(...)` で同じ action の
-    `artifacts/<action_id>/review_findings.json` へ保存する。戻り値に `needs_classification` の finding
+    `artifacts/<action_id>/review_findings.json` へ保存する。snapshot が永続化された直後、分類・合否判定
+    より前に `confirm_review_findings_reported(..., action_id=<現在の action_id>)` を呼び、明示 severity の
+    finding を処理済みマークする（LP-2 の `_drain_before_push()` と同順序。これを欠くと、Maker 実行中に
+    届いた blocking コメントで drain が短絡したあと、次回 drain でも同じ古いコメントを再 import して push を
+    永久に阻止する）。戻り値に `needs_classification` の finding
     が 1 件以上含まれる場合は、上記「severity 分類（Step 2）」の手順をこの場でインラインに適用し、
     `apply_severity_classifications(...)` まで完了させてから次の判定に進む（分類を次サイクルへ持ち越さない）。
+  - drain の合否判定には必ず `phase_check_from_review_findings(drained, include_persisted_open_blocking=False)`
+    を使う（既定値に頼らず `False` を明示する。Issue #424）。この drain は `run_maker` の直後・push 前に
+    走るため、Maker が今まさに対応中の finding は `state.pr_review.findings` でまだ `status: "open"`
+    のままなのが正常である。ここで `include_persisted_open_blocking=True` を渡すと、その永続化された
+    open blocking を毎反復「再検出」し続け、push もレビューもできないデッドロックに陥る（LP-2 の
+    `test_drain_before_push_ignores_persisted_open_blocking_findings_from_earlier_rounds` で実証）。
+    したがって drain では今回 import した finding だけで合否を判定し、永続 open blocking は post-poll の
+    最終合否に委ねる。
   - drain（severity 分類後）に **critical/high** の finding が **1 件以上** 残る場合、`record_baseline`、push、
-    `record_iteration_head`、wait / poll をこの action では一切実行しない。代わりに
-    `phase_check_from_review_findings(...)` の戻り値（`passed: false` になるはず）をそのまま
-    `lc.phase_check_to_dict()` で ready-to-complete JSON に変換し、0600 の result file として保存して、
-    元 proposal と同じ `state_version` で `complete` する。`detect_pr_review_push_delta()` はこの分岐では
-    呼ばない。この complete の結果は次の guard 評価で修正反復（Maker）へ差し戻される。medium/low のみが
-    残っている場合はこの分岐に該当しない（下記へ進む。B 軸: medium/low は非ブロッキング）。
+    `record_iteration_head`、wait / poll をこの action では一切実行しない。代わりに上記
+    `phase_check_from_review_findings(drained, include_persisted_open_blocking=False)` の戻り値
+    （`passed: false` になるはず）をそのまま `lc.phase_check_to_dict()` で ready-to-complete JSON に変換し、
+    0600 の result file として保存して、元 proposal と同じ `state_version` で `complete` する。
+    `detect_pr_review_push_delta()` はこの分岐では呼ばない。この complete の結果は次の guard 評価で修正反復
+    （Maker）へ差し戻される。medium/low のみが残っている場合はこの分岐に該当しない（下記へ進む。B 軸:
+    medium/low は非ブロッキング）。
   - drain の結果 **critical/high の finding が 0 件**（medium/low のみ残存、または finding 自体が
     0 件）の場合に限り、`detect_pr_review_push_delta(loop_id,
 params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status` で以下のとおり分岐する。
@@ -697,13 +726,67 @@ params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status
 `wait_for_completion()` の heartbeat callback から保持中 token を使って
 `python3 "$LOOP_STEP" heartbeat` を呼ぶ。完了シグナルが得られたら `collect_review_findings()` で許可済み
 発信元だけを取り込み、直後に `save_review_findings_snapshot(...)` で同じ action の snapshot を保存する。
-下記「severity 分類（Step 2）」を適用してから
-`phase_check_from_review_findings()` で `PhaseCheckResult` に変換する。ただし
+snapshot が永続化された後にだけ `confirm_review_findings_reported(...)` で明示 severity の finding を
+処理済みマークし、続けて下記「severity 分類（Step 2）」を適用する。ただし
 `outcome.signal == "reviewer_unavailable"` の場合はレビュー取り込みへ進まず、その outcome を
-`phase_check_from_completion_outcome()` へそのまま渡す。timeout / API error も同じ API で変換する。
+`phase_check_from_completion_outcome()` へそのまま渡す。`outcome.completed` が false（timeout /
+API error など）の場合も同じ API で変換する。この 2 経路では下記「addressed 解決」も
+`phase_check_from_review_findings()` も呼ばない。
+
+### poll 完了後の addressed 解決と最終合否（Issue #235・#213・#424）
+
+レビュー取り込み（collect → snapshot → confirm → severity 分類）まで済んだら、`phase_check_from_review_findings()`
+で最終合否に変換する**前に**、以下の addressed 解決を行う。すべて `pr_review_wait.py` の決定論 API を
+そのまま使い、シグネチャ差分・addressed 判定・GitHub resolve を独自実装しない。
+
+1. **`pushed_this_action` の確定**: 次のどちらかを満たす場合だけ `true`。(a) 今回の `wait_external_review`
+   action の中で、オーケストレーター自身が上記 push 分岐（push → `record_iteration_head(...)` 成功）を実行した
+   （proposal JSON を読み直す必要はない。自分が実行した事実で判定する）。(b) push 分岐を実行せず DH5
+   ショートカットに入った場合に、公開 API `iteration_head_recorded_for_action(loop_id, project_dir,
+<現在の action_id>)` が `true` を返す（fenced state を読み取り専用で参照する。proposal の
+   `params.pr_review.iteration_head_action_id` は proposal 生成時点 = この action の push **前**の値なので、
+   この判定には使わない）。それ以外（DH5 が別アクション・resume 前の記録に一致した場合）は `false`。
+   state.json を直接読まない。
+   `pushed_this_action is false` のときは resolved 候補の算出自体を行わず、`resolved_signatures` を空集合
+   として扱う（reraise されなかった＝addressed と誤認しないための構造的防御。設計 pr-review 編 §4.4
+   「`pushed_this_action` ゲート」）。
+2. **resolved 候補の算出（`pushed_this_action` が true の場合のみ）**: 前反復で `open` だった blocking が
+   今反復で reraise されなかったシグネチャ集合
+   `result.previous_iteration_findings.signatures - result.iteration_findings.signatures` から、次の 2 集合を
+   差し引いたものを `resolved_signatures` とする。
+   - severity が medium/low に demoted されて今も open な finding（`result.open_non_blocking` のシグネチャ）。
+     `iteration_findings`（blocking のみ）から落ちても実際にはまだ open なので addressed にしてはならない。
+   - `needs_classification` のまま残っている finding（`result.findings` のうち `needs_classification is true`）。
+     まだ blocking 扱いで `iteration_findings` を更新できていないため addressed にしてはならない。
+3. **addressed への更新**: `resolved_signatures` が空でなければ
+   `mark_addressed_findings(loop_id, params.worktree_path, resolved_signatures, commit_sha, iteration,
+lease_token, action_id=<現在の action_id>)` を呼ぶ（`action_id` 省略は legacy mode で `state_version` が
+   進み、最後の `complete` が stale 拒否されるため禁止）（`commit_sha` は baseline に記録済みの
+   `iteration_head_sha`）。同 API は `status` が正確に `open` のレコードだけを
+   `addressed` へ更新し、**実際に更新したシグネチャ集合**を返す。候補集合ではなくこの戻り値
+   （`actually_addressed`）だけを以後に使う。`actually_addressed` が非空なら、その分を
+   `result.open_blocking` から除外して `result` を差し替える（同round で解決済みの finding を stale な
+   `open_blocking` スナップショットが blocking 扱いし続けるのを防ぐ）。
+4. **GitHub thread の best-effort resolve**: `actually_addressed` と、proposal の
+   `params.pr_review.addressed_pending_thread_resolution`（`status == "addressed"` だが未 resolve の積み残し。
+   Issue #424。state を読み直さず proposal のスナップショットを使う）の和集合を
+   `resolve_addressed_findings(..., lease_token, action_id=<現在の action_id>)` へ 1 回だけ渡す。同 API は
+   resolve 直前に fenced state を読み、その時点で `status` が `addressed` でない signature（poll 中に再提起され
+   `open` に戻ったもの）は `not_addressed` outcome として除外するので、事前スナップショットの候補をそのまま
+   渡してよい。信頼済み thread へ reply + resolve を試み、GitHub 側失敗でも例外を投げない。戻り値
+   （`AddressedFindingsResult`）は `journal_addressed_findings_outcome(loop_id, project_dir, result,
+action_id=<現在の action_id>)` で journal へ記録する（`reply_failed` / `resolve_failed` /
+   `no_trusted_thread` / `lease_expired` を含む完全な outcome を残す公開 API。payload を手書きしない）。
+   合否には影響させない（再実行してもべき等）。
+5. **最終合否**: `phase_check_from_review_findings(result, include_persisted_open_blocking=True)` を呼ぶ。
+   post-poll のこの 1 箇所だけが `include_persisted_open_blocking=True` を渡してよい（`pushed_this_action`
+   ゲートが「この result は今回このアクションが行った push のレビューを反映する」ことを保証しているため）。
+   drain（`include_persisted_open_blocking=False`）と混同しない。
+
 変換後は `lc.phase_check_to_dict()` の ready-to-complete JSON を 0600 の result file に保存し、元 proposal
-と同じ `state_version` で complete する。専用 outcome や stop reason を手書きせず、独自の `gh` polling
-も実装しない。
+と同じ `state_version` で complete する。critical/high はゼロでも medium/low が open のまま残っている場合は
+非ブロッキングとして `passed: true` になりうる（Issue #213 B 軸）。専用 outcome や stop reason を
+手書きせず、独自の `gh` polling も実装しない。
 
 CodeRabbit のレート制限応答を検知しても、Codex 等の別 reviewer allowlist entry または
 `checkrun_allowlist` が構成されている場合、`wait_for_completion()` は既存 timeout まで正常シグナルを
@@ -779,8 +862,9 @@ action の `action_id` / `lease_token` と `params.worktree_path` を渡して�
 `state_version` を取り直したり加算したりしない。`complete` は常に元 proposal と同じ
 `state_version` を渡す。action_id-bound API は現在の pending `action_id` と一致する場合だけ補助更新を
 許可し、旧 action の id は stale として拒否する。`action_id=None` の legacy mode は互換性のため
-`state_version` を increment するので、このスキルでは使用禁止。4 API すべてへ現在の `action_id` を
-必ず渡す。state / journal を直接編集してこの契約を模倣しない。
+`state_version` を increment するので、このスキルでは使用禁止。これら 4 API に加え、下記「poll 完了後の
+addressed 解決と最終合否」で使う `mark_addressed_findings(...)` と `resolve_addressed_findings(...)` も同じ
+action_id-bound 契約に従う（計 6 API）。すべてへ現在の `action_id` を必ず渡す。state / journal を直接編集してこの契約を模倣しない。
 
 repo identity 検証済みの `params.worktree_path` を cwd にして `GhApiClient` を構成し、current shell の
 cwd や独自の `gh` polling に依存しない。各 API の戻り値は既存の `phase_check_from_*()` と

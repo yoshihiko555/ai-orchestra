@@ -393,16 +393,6 @@ def lint_injected_markup(html: str) -> list[str]:
     return warnings
 
 
-def _extract_csp_content(html: str) -> str | None:
-    """Extract the CSP meta content attribute from HTML."""
-    return _scan_markup(html).csp_content
-
-
-def _extract_script_elements(html: str) -> list[ScriptElement]:
-    """Extract script attributes and raw bodies in document order."""
-    return _scan_markup(html).script_elements
-
-
 def lint_template_integrity(html: str, template: str) -> list[str]:
     """Flag generated CSP or script elements that differ from the template."""
     generated = _scan_markup(html)

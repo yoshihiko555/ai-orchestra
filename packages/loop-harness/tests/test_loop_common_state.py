@@ -1466,6 +1466,12 @@ def test_wait_external_review_params_include_config_defaults(
         "pr_number": 123,
         "push_required": False,
         "verified_branch": "loop/issue-1",
+        # Issue #426: read-only snapshot of fenced pr_review state for LP-1 post-poll steps.
+        "pr_review": {
+            "iteration_head_sha": None,
+            "iteration_head_action_id": None,
+            "addressed_pending_thread_resolution": [],
+        },
     }
 
 
@@ -2870,3 +2876,33 @@ def test_is_repo_identity_verified_rejects_when_git_config_scan_is_unavailable(
     )
 
     assert lc.is_repo_identity_verified(state) is False
+
+
+def test_wait_external_review_proposal_snapshots_fenced_pr_review_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #426 (PR #443 Codex): an LP-1 orchestrator only reads `loop_step` JSON, so the
+    DH5 same-action check and the Issue #424 retry candidates must ride along in the proposal."""
+    project_dir, lock = _setup_loop(tmp_path, monkeypatch, status="waiting_external")
+    state = lc.load_state("abcd1234-issue-1", project_dir)
+    state.pr_number = 123
+    state.pr_review = {
+        "iteration_head_sha": "abc123",
+        "iteration_head_action_id": "act-000007",
+        # Persisted shape: a dict keyed by signature (PR #447 Codex P1).
+        "findings": {
+            "s-addressed-open": {"status": "addressed"},
+            "s-addressed-done": {"status": "addressed", "thread_resolved": True},
+            "s-open": {"status": "open"},
+        },
+    }
+    lc._write_state(state, project_dir)
+    monkeypatch.setattr(lc, "_current_branch", lambda _p: "loop/issue-1")
+
+    params = lc._proposal_params(state, lc.Action.WAIT_EXTERNAL_REVIEW.value, project_dir)
+
+    assert params["pr_review"] == {
+        "iteration_head_sha": "abc123",
+        "iteration_head_action_id": "act-000007",
+        "addressed_pending_thread_resolution": ["s-addressed-open"],
+    }

@@ -73,7 +73,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
 SECRET_PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
     re.compile(
-        r"\b[A-Za-z0-9_-]{0,20}(api[_-]?key|token|password|secret|credential)\b\s*[:=]\s*"
+        # PR #446 Codex (P2): `["']?` after the key lets quoted JSON keys
+        # (`"api_token": "..."`) match too, not only bare `token=` / `token:` forms.
+        r"\b[A-Za-z0-9_-]{0,20}(api[_-]?key|token|password|secret|credential)\b[\"']?\s*[:=]\s*"
         r"(\"[^\"]*\"|'[^']*'|[^,;\n]+)",
         re.IGNORECASE,
     ),
@@ -169,19 +171,6 @@ class GuardCounters:
     no_progress_streak: int = 0
     last_signature: str | None = None
     infrastructure_failure_count: int = 0
-    # Issue #395: secondary progress axis for the implementation phase. The combined phase
-    # signature only reflects the *failing* layer (mechanical if it fails, otherwise LLM
-    # review), so a mechanical check pinned by an environmental factor freezes the signature
-    # even while the Maker steadily clears LLM review blocking findings. Tracking the previous
-    # blocking (critical+high) LLM finding count lets a strict decrease count as progress.
-    # `None` on state.json predating this field, and whenever no llm_review layer is present.
-    last_blocking_count: int | None = None
-    # Issue #395 (PR review P2): the reviewer manifest that produced `last_blocking_count`.
-    # LP-2 reselects each iteration's additional reviewer from the paths the Maker changed, so
-    # the manifest can differ between iterations; a blocking-count delta is only comparable when
-    # both iterations were judged by the same reviewers. Persisted as a sorted list for stable
-    # serialization; `None` predates this field or when the manifest is unknown.
-    last_blocking_reviewers: list[str] | None = None
 
 
 @dataclass
@@ -539,7 +528,7 @@ def start(
     # `_drop_none_remote_head_baseline()`: keep the journal payload byte-for-byte identical to
     # the pre-Issue #196 shape for non-opted-in callers (bot review, PR #277, Codex P2) -- see
     # its docstring for the full contract.
-    journal_payload = _drop_optional_guard_fields(_drop_none_remote_head_baseline(asdict(state)))
+    journal_payload = _drop_none_remote_head_baseline(asdict(state))
     append_journal_event(loop_id, project_dir, "loop_created", "step", None, journal_payload)
     _write_state(state, project_dir)
     result = propose(
@@ -872,8 +861,17 @@ def resume(
     owner_id: str,
     ttl_seconds: int,
     host: str | None = None,
+    *,
+    scheduler_handoff: bool = False,
 ) -> ResumeResult:
     """Resume a failed/stopped loop and issue a new lease.
+
+    Issue #437: with `scheduler_handoff=True` the new lease is issued with ttl 0 inside this
+    same critical section, so `lock.json` exists (which `attach` -> `reacquire_lease` requires)
+    but `is_lease_alive` is already False: the LP-2 scheduler's `respawn_orphaned_active_loops`
+    attaches on its next poll instead of waiting out an LP-1 TTL. Issuing it here rather than
+    expiring a live lease afterwards leaves no window in which a crashed CLI would strand the
+    loop behind a live lease with no owner. Callers must not `propose` after a handoff resume.
 
     SN-flock: the reload-through-write section is held under `held_coord_lock` (a fixed,
     purge-independent path) so a concurrent `loop_status.py purge` of this same loop_id
@@ -888,7 +886,7 @@ def resume(
         state = load_state(loop_id, project_dir)
         if state.status not in {"failed", "stopped"}:
             raise InvalidStateError(f"cannot resume status={state.status}")
-        _replace_lock(loop_id, project_dir, owner_id, ttl_seconds, host)
+        _replace_lock(loop_id, project_dir, owner_id, 0 if scheduler_handoff else ttl_seconds, host)
         lock = _read_lock(lock_path(loop_id, project_dir))
         if lock is None:
             raise LockNotFoundError("new lock not found")
@@ -900,7 +898,10 @@ def resume(
         state.pending_action = None
         state.state_version += 1
         state.updated_at = now_iso()
-        append_journal_event(loop_id, project_dir, "resumed", "step", None, {"phase": state.phase})
+        resumed_payload: dict[str, Any] = {"phase": state.phase}
+        if scheduler_handoff:
+            resumed_payload["released_for"] = "scheduler"
+        append_journal_event(loop_id, project_dir, "resumed", "step", None, resumed_payload)
         _write_state(state, project_dir)
     return ResumeResult(state, lock.lease_token)
 
@@ -1079,8 +1080,17 @@ def evaluate_guards(
     phase_check: PhaseCheckResult,
     phase_def: Any | None,
     config: dict[str, Any] | None,
+    *,
+    previous_check: dict[str, Any] | None = None,
 ) -> GuardDecision:
-    """Evaluate infra failure, pass, no-progress, then iteration limit."""
+    """Evaluate infra failure, pass, no-progress, then iteration limit.
+
+    `previous_check` (Issue #395) is the serialized `last_check_result` of the previous
+    iteration, captured by the caller *before* it overwrote `state.last_check_result` with
+    `phase_check`. The implementation phase's secondary progress axis (blocking LLM finding
+    count) is derived from it on the fly, so nothing new is persisted in `GuardCounters` and
+    a state.json written by this harness stays readable by an older one (PR #431 Codex P1).
+    """
     if (
         phase_check.signature == "external_reviewer_unavailable"
         and phase_check.metadata.get("reviewer_unavailable_reason") == "rate_limited"
@@ -1099,11 +1109,9 @@ def evaluate_guards(
     if phase_check.passed:
         counters.no_progress_streak = 0
         counters.last_signature = None
-        counters.last_blocking_count = None
-        counters.last_blocking_reviewers = None
         counters.infrastructure_failure_count = 0
         return GuardDecision(_success_disposition(phase_def), next_phase=_success_next(phase_def))
-    _update_phase_no_progress(counters, phase_check, phase_def)
+    _update_phase_no_progress(counters, phase_check, phase_def, previous_check)
     if counters.no_progress_streak >= _phase_no_progress_repeat(phase_def, cfg):
         return GuardDecision(_failure_disposition(phase_def), "no_progress")
     counters.iteration += 1
@@ -2182,6 +2190,24 @@ def _is_valid_exec_steps(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
+def _addressed_pending_thread_resolution(pr_review: dict[str, Any]) -> tuple[str, ...]:
+    """Signatures whose finding is `addressed` but whose GitHub thread is not yet resolved.
+
+    Mirrors `pr_review_wait.addressed_findings_missing_thread_resolution` (kept local to avoid
+    a lib-to-lib import cycle; `pr_review_wait` imports this module).
+    """
+    findings = pr_review.get("findings")
+    if not isinstance(findings, dict):
+        return ()
+    return tuple(
+        signature
+        for signature in sorted(findings)
+        if isinstance(findings[signature], dict)
+        and finding_status(findings[signature]) == "addressed"
+        and not findings[signature].get("thread_resolved")
+    )
+
+
 def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[str, Any]:
     """Build action-specific proposal params from durable state and loop definition."""
     if action == Action.STOP.value:
@@ -2229,6 +2255,18 @@ def _proposal_params(state: LoopState, action: str, project_dir: str) -> dict[st
             _nested(config, ("pr_review", "timeout_seconds"), 3600),
         )
         params["pr_number"] = state.pr_number
+        # Issue #426 (PR #443 Codex): an LP-1 orchestrator may only read `loop_step` JSON, so
+        # the fenced `pr_review` values its post-poll steps need (DH5 same-action check, and
+        # the addressed-but-unresolved retry candidates from Issue #424) ride along here as a
+        # read-only snapshot taken at proposal time.
+        pr_review = state.pr_review if isinstance(state.pr_review, dict) else {}
+        params["pr_review"] = {
+            "iteration_head_sha": pr_review.get("iteration_head_sha"),
+            "iteration_head_action_id": pr_review.get("iteration_head_action_id"),
+            "addressed_pending_thread_resolution": list(
+                _addressed_pending_thread_resolution(pr_review)
+            ),
+        }
         params["push_required"] = _wait_external_review_had_required_push(
             state, state.loop_id, project_dir
         )
@@ -2723,8 +2761,8 @@ def _apply_checker_result(
 ) -> None:
     """Apply checker result and guard decision."""
     phase_check = _phase_check_from_result(result)
-    # Issue #395: capture the prior check before it is overwritten so a loop upgraded mid-flight
-    # can recover its previous blocking-finding count for the secondary progress axis.
+    # Issue #395: capture the prior check before it is overwritten; the implementation phase's
+    # secondary progress axis is derived from it inside `evaluate_guards`.
     previous_check = state.last_check_result
     state.last_check_result = phase_check_to_dict(phase_check)
     phase_def = result.get("phase_def")
@@ -2732,10 +2770,7 @@ def _apply_checker_result(
     if project_dir:
         phase_def = _load_phase_definition(state, project_dir)
         config = _load_loop_config(project_dir)
-    _seed_blocking_signal_on_upgrade(
-        state.guards.setdefault(state.phase, GuardCounters()), previous_check
-    )
-    decision = evaluate_guards(state, phase_check, phase_def, config)
+    decision = evaluate_guards(state, phase_check, phase_def, config, previous_check=previous_check)
     if decision.disposition == "continue" or decision.disposition == "retry":
         state.status = "running"
         return
@@ -2956,16 +2991,13 @@ def _mark_unresolved_pending(
     the `None` guard since `project_dir` is required here (`reconcile()`'s own signature).
     """
     phase_check = PhaseCheckResult(False, [], "pending_action_unresolved_after_crash", True)
-    # Issue #395: preserve the prior blocking signal across a crash-recovery that overwrites
-    # last_check_result, so an upgraded loop keeps its secondary progress axis on the next check.
+    # Issue #395: capture the prior check before this crash-recovery overwrites it; the
+    # secondary progress axis is derived from it inside `evaluate_guards`.
     previous_check = state.last_check_result
     state.last_check_result = phase_check_to_dict(phase_check)
     phase_def = _load_phase_definition(state, project_dir)
     config = _load_loop_config(project_dir)
-    _seed_blocking_signal_on_upgrade(
-        state.guards.setdefault(state.phase, GuardCounters()), previous_check
-    )
-    decision = evaluate_guards(state, phase_check, phase_def, config)
+    decision = evaluate_guards(state, phase_check, phase_def, config, previous_check=previous_check)
     if decision.disposition == Action.EXIT_FAILURE.value:
         state.status = "failed"
         state.stop_reason = decision.reason
@@ -2989,7 +3021,10 @@ def _mark_unresolved_pending(
 
 
 def _update_phase_no_progress(
-    counters: GuardCounters, phase_check: PhaseCheckResult, phase_def: Any | None
+    counters: GuardCounters,
+    phase_check: PhaseCheckResult,
+    phase_def: Any | None,
+    previous_check: dict[str, Any] | None = None,
 ) -> None:
     """Update no-progress counters using phase-specific signature semantics."""
     if _phase_no_progress_signature_kind(phase_def) == "pr_review" or _has_pr_review_metadata(
@@ -2997,7 +3032,7 @@ def _update_phase_no_progress(
     ):
         _update_pr_review_no_progress(counters, phase_check)
         return
-    _update_implementation_no_progress(counters, phase_check)
+    _update_implementation_no_progress(counters, phase_check, previous_check)
 
 
 def _update_no_progress(counters: GuardCounters, signature: str) -> None:
@@ -3010,7 +3045,9 @@ def _update_no_progress(counters: GuardCounters, signature: str) -> None:
 
 
 def _update_implementation_no_progress(
-    counters: GuardCounters, phase_check: PhaseCheckResult
+    counters: GuardCounters,
+    phase_check: PhaseCheckResult,
+    previous_check: dict[str, Any] | None,
 ) -> None:
     """Update no-progress counters using a multi-axis progress signal (issue #395).
 
@@ -3018,27 +3055,43 @@ def _update_implementation_no_progress(
     pinned by an environmental factor (e.g. a baseline-failing test unrelated to the branch)
     freezes the signature even while the Maker steadily clears LLM review blocking findings.
     Treat a strict decrease in the blocking (critical+high) LLM finding count as progress on a
-    second axis so the guard does not stop a loop that is demonstrably improving. When no
-    llm_review layer is present the blocking count is `None` and behavior falls back to the
-    pure exact-signature comparison.
+    second axis so the guard does not stop a loop that is demonstrably improving.
+
+    The previous iteration's count and reviewer manifest are derived from `previous_check`
+    (the prior `last_check_result`, already durable) rather than persisted in `GuardCounters`
+    (PR #431 Codex P1: new counter fields would break `GuardCounters(**value)` on an older
+    harness after a rollback). With no `previous_check`, or no llm_review layer on either
+    side, behavior falls back to the pure exact-signature comparison.
 
     The blocking-count axis is only consulted when the reviewer manifest is unchanged: LP-2
     reselects each iteration's additional reviewer from the paths the Maker changed, so a count
-    drop caused by a reviewer leaving the manifest is not progress. When the manifest differs
-    the guard falls back to the pure signature comparison for that transition.
+    drop caused by a reviewer leaving the manifest is not progress.
     """
-    blocking = _llm_blocking_finding_count(phase_check)
-    reviewers = _llm_reviewer_manifest(phase_check)
     signature_moved = phase_check.signature != counters.last_signature
-    blocking_decreased = _blocking_count_decreased(counters.last_blocking_count, blocking)
-    reviewers_comparable = _blocking_axis_comparable(counters.last_blocking_reviewers, reviewers)
-    if signature_moved or (blocking_decreased and reviewers_comparable):
+    previous = _previous_phase_check(previous_check)
+    blocking_decreased = previous is not None and (
+        _blocking_count_decreased(
+            _llm_blocking_finding_count(previous), _llm_blocking_finding_count(phase_check)
+        )
+        and _blocking_axis_comparable(
+            _llm_reviewer_manifest(previous), _llm_reviewer_manifest(phase_check)
+        )
+    )
+    if signature_moved or blocking_decreased:
         counters.no_progress_streak = 1
     else:
         counters.no_progress_streak += 1
     counters.last_signature = phase_check.signature
-    counters.last_blocking_count = blocking
-    counters.last_blocking_reviewers = _manifest_to_list(reviewers)
+
+
+def _previous_phase_check(previous_check: dict[str, Any] | None) -> PhaseCheckResult | None:
+    """Deserialize the prior `last_check_result`, treating anything unreadable as unknown."""
+    if not isinstance(previous_check, dict):
+        return None
+    try:
+        return phase_check_from_dict(previous_check)
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _llm_blocking_finding_count(phase_check: PhaseCheckResult) -> int | None:
@@ -3067,43 +3120,16 @@ def _llm_reviewer_manifest(phase_check: PhaseCheckResult) -> frozenset[str] | No
     return None
 
 
-def _manifest_to_list(manifest: frozenset[str] | None) -> list[str] | None:
-    """Serialize a reviewer manifest to a sorted list (stable JSON), preserving `None`."""
-    return sorted(manifest) if manifest is not None else None
-
-
-def _blocking_axis_comparable(previous: list[str] | None, current: frozenset[str] | None) -> bool:
+def _blocking_axis_comparable(
+    previous: frozenset[str] | None, current: frozenset[str] | None
+) -> bool:
     """Return True when a blocking-count delta is comparable across the two iterations.
 
     Comparable only when both iterations were judged by the same reviewer manifest. Two unknown
     manifests compare equal, preserving the pre-LP-2 pure-count behavior for synthetic/legacy
     checks; a known manifest never matches an unknown one.
     """
-    previous_set = frozenset(previous) if previous is not None else None
-    return previous_set == current
-
-
-def _seed_blocking_signal_on_upgrade(
-    counters: GuardCounters, previous_check: dict[str, Any] | None
-) -> None:
-    """Recover the previous blocking count/manifest for a loop upgraded mid-flight (issue #395).
-
-    A loop already running before `last_blocking_count` existed loads it as `None`, so the first
-    post-upgrade iteration could not detect a blocking-count decrease even though the prior LLM
-    findings survive in the previous `last_check_result`. Reconstruct the previous signal from
-    that record so the secondary axis works from the first upgraded iteration. No-op once the
-    field is populated, or when the previous check carried no llm_review layer.
-    """
-    if counters.last_blocking_count is not None:
-        return
-    if not isinstance(previous_check, dict):
-        return
-    previous = phase_check_from_dict(previous_check)
-    count = _llm_blocking_finding_count(previous)
-    if count is None:
-        return
-    counters.last_blocking_count = count
-    counters.last_blocking_reviewers = _manifest_to_list(_llm_reviewer_manifest(previous))
+    return previous == current
 
 
 def _update_pr_review_no_progress(counters: GuardCounters, phase_check: PhaseCheckResult) -> None:
@@ -3338,11 +3364,6 @@ def finding_status(record: dict[str, Any]) -> str:
     return status if isinstance(status, str) else ""
 
 
-def _iteration_findings_to_dict(value: IterationFindings) -> dict[str, Any]:
-    """Serialize IterationFindings for PhaseCheckResult metadata."""
-    return {"signatures": sorted(value.signatures), "new_count": value.new_count}
-
-
 def _metadata_iteration_findings(value: Any) -> IterationFindings | None:
     """Deserialize IterationFindings from PhaseCheckResult metadata."""
     if isinstance(value, IterationFindings):
@@ -3463,44 +3484,8 @@ def _state_to_dict(state: LoopState) -> dict[str, Any]:
         current_iteration = state.pending_action.iteration
     data = asdict(state)
     data["iteration"] = current_iteration
-    data["guards"] = {
-        name: _guard_counters_to_dict(counter) for name, counter in state.guards.items()
-    }
+    data["guards"] = {name: asdict(counter) for name, counter in state.guards.items()}
     return _drop_none_remote_head_baseline(data)
-
-
-# Issue #395 fields default to `None` and are dropped from serialized guard counters while unset,
-# so a loop that never used the secondary progress axis stays byte-identical to a pre-#395
-# state.json -- and an older harness deserializing it via `GuardCounters(**value)` does not raise
-# on unknown kwargs. Mirrors `_drop_none_remote_head_baseline`.
-_OPTIONAL_GUARD_FIELDS = ("last_blocking_count", "last_blocking_reviewers")
-
-
-def _guard_counters_to_dict(counter: GuardCounters) -> dict[str, Any]:
-    """Serialize GuardCounters, dropping issue-#395 fields while they are `None`."""
-    data = asdict(counter)
-    for key in _OPTIONAL_GUARD_FIELDS:
-        if data.get(key) is None:
-            data.pop(key, None)
-    return data
-
-
-def _drop_optional_guard_fields(data: dict[str, Any]) -> dict[str, Any]:
-    """Drop unset issue-#395 guard fields from an already-serialized (`asdict`) state dict.
-
-    Applied to serialization paths that go through `asdict(state)` wholesale (e.g. the
-    `loop_created` journal payload) rather than `_guard_counters_to_dict` per counter, so those
-    payloads stay byte-identical to the pre-#395 shape and readable by a pre-#395 harness.
-    """
-    guards = data.get("guards")
-    if isinstance(guards, dict):
-        for counter in guards.values():
-            if not isinstance(counter, dict):
-                continue
-            for key in _OPTIONAL_GUARD_FIELDS:
-                if counter.get(key) is None:
-                    counter.pop(key, None)
-    return data
 
 
 def _drop_none_remote_head_baseline(data: dict[str, Any]) -> dict[str, Any]:
