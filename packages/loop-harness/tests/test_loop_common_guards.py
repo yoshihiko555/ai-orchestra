@@ -1027,3 +1027,49 @@ def test_redact_masks_quoted_json_keys() -> None:
     assert "abc-123" not in redacted
     assert "hunter2" not in redacted
     assert "keep" in redacted
+
+
+def test_infrastructure_retry_does_not_erase_progress_baseline() -> None:
+    """PR #431 Codex round 3: pinned/High 4 -> checker infra retry -> pinned/High 2 must still
+    count as progress; the infra record never becomes the comparison baseline."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    first = _impl_phase_check("pinned", 4)
+    infra = lc.PhaseCheckResult(False, [], "maker_infrastructure_failure", True)
+    third = _impl_phase_check("pinned", 2)
+
+    def complete_like(check: object) -> object:
+        previous = lc._progress_baseline_check(state)
+        state.last_check_result = lc.phase_check_to_dict(check)
+        lc._record_progress_baseline(state, check)
+        return lc.evaluate_guards(state, check, None, config, previous_check=previous)
+
+    assert complete_like(first).disposition == "continue"
+    assert complete_like(infra).reason == "infrastructure_failure_retry"
+    assert state.last_progress_check_result == lc.phase_check_to_dict(first)
+    decision = complete_like(third)
+    assert decision.disposition == "continue"
+    assert state.guards["implementation"].no_progress_streak == 1
+
+
+def test_progress_baseline_falls_back_for_pre_field_state() -> None:
+    state = _state()
+    state.last_progress_check_result = None
+    state.last_check_result = lc.phase_check_to_dict(_impl_phase_check("pinned", 3))
+    assert lc._progress_baseline_check(state) == state.last_check_result
+    state.last_check_result = lc.phase_check_to_dict(
+        lc.PhaseCheckResult(False, [], "maker_infrastructure_failure", True)
+    )
+    assert lc._progress_baseline_check(state) is None
+
+
+def test_unreadable_previous_check_falls_back_instead_of_raising() -> None:
+    """PR #431 Codex round 3: `{"results": [null]}` raises AttributeError inside
+    `phase_check_from_dict`; the guard must degrade to the pure-signature comparison."""
+    assert lc._previous_phase_check({"results": [None]}) is None
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    decision = lc.evaluate_guards(
+        state, _impl_phase_check("pinned", 2), None, config, previous_check={"results": [None]}
+    )
+    assert decision.disposition == "continue"

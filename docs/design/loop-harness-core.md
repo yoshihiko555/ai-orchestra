@@ -596,9 +596,17 @@ def evaluate_guards(
     phase_check: "PhaseCheckResult",
     phase_def: "PhaseDefinition",
     config: dict,
+    *,
+    previous_check: dict | None = None,  # Issue #395: 呼び出し側（complete）が渡す前反復の check
 ) -> "GuardDecision":
     """安全停止（stop）の 3 条件はここでは検査しない（3.2 節）。ここで扱うのは合格/無進捗/
     反復上限/infrastructure_failure の 4 種のみであり、いずれも遷移先は passed/failed。
+
+    previous_check は `complete` が `state.last_check_result` を上書きする前に
+    `_progress_baseline_check(state)` で取り出した「直近の infrastructure_failure でない
+    implementation check」（`state.last_progress_check_result`。同フィールド追加前の loop は
+    `last_check_result` が infra 失敗でなければそれ）。infra 失敗の check は baseline を更新しない
+    ため、checker のインフラ再試行を挟んでも比較対象は失われない。
     """
     counters = state.guards.setdefault(state.phase, GuardCounters())
     infra_cfg = config["guards"]["infrastructure_failure"]["max_retries"]
@@ -636,7 +644,7 @@ def evaluate_guards(
     #   件数減は reviewer manifest（metadata["reviewers"]）が前反復と一致する場合だけ進捗と
     #   みなす（LP-2 は変更パスから追加 reviewer を反復ごとに再選定するため、reviewer 離脱に
     #   よる件数減を進捗と誤認しない。manifest 不明同士は一致扱い、既知と不明は不一致）。
-    previous = phase_check_from_dict(previous_check) if previous_check else None
+    previous = _previous_phase_check(previous_check)  # 読めなければ None（AttributeError 含む）
     signature_moved = phase_check.signature != counters.last_signature
     blocking_decreased = previous is not None and (
         _llm_blocking_finding_count(previous) is not None

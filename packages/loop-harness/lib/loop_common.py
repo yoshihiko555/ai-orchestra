@@ -221,6 +221,11 @@ class LoopState:
     state_version: int
     maker_agent: str | None = None
     remote_head_baseline: str | None = None
+    # Issue #395 (PR #431 Codex round 3): the most recent *non-infrastructure* implementation
+    # check, kept separately from `last_check_result` so a transient checker infrastructure
+    # failure in between does not erase the baseline the secondary progress axis compares
+    # against. Loaded via `data.get`, so an older harness simply ignores the key.
+    last_progress_check_result: dict[str, Any] | None = None
     # Issue #208 (SEC-H2) hardening: both captured once from the *root* project_dir / the
     # freshly created worktree at loop-creation time (the earliest trustworthy moment, before
     # any Maker child has ever run) and never re-derived afterward. `None` on state.json
@@ -2761,10 +2766,11 @@ def _apply_checker_result(
 ) -> None:
     """Apply checker result and guard decision."""
     phase_check = _phase_check_from_result(result)
-    # Issue #395: capture the prior check before it is overwritten; the implementation phase's
-    # secondary progress axis is derived from it inside `evaluate_guards`.
-    previous_check = state.last_check_result
+    # Issue #395: the secondary progress axis compares against the most recent
+    # non-infrastructure check, captured before `last_check_result` is overwritten.
+    previous_check = _progress_baseline_check(state)
     state.last_check_result = phase_check_to_dict(phase_check)
+    _record_progress_baseline(state, phase_check)
     phase_def = result.get("phase_def")
     config = result.get("config")
     if project_dir:
@@ -2991,10 +2997,11 @@ def _mark_unresolved_pending(
     the `None` guard since `project_dir` is required here (`reconcile()`'s own signature).
     """
     phase_check = PhaseCheckResult(False, [], "pending_action_unresolved_after_crash", True)
-    # Issue #395: capture the prior check before this crash-recovery overwrites it; the
-    # secondary progress axis is derived from it inside `evaluate_guards`.
-    previous_check = state.last_check_result
+    # Issue #395: this crash-recovery record is an infrastructure failure, so it never becomes
+    # the progress baseline; the previous real check is kept for the next comparison.
+    previous_check = _progress_baseline_check(state)
     state.last_check_result = phase_check_to_dict(phase_check)
+    _record_progress_baseline(state, phase_check)
     phase_def = _load_phase_definition(state, project_dir)
     config = _load_loop_config(project_dir)
     decision = evaluate_guards(state, phase_check, phase_def, config, previous_check=previous_check)
@@ -3085,13 +3092,40 @@ def _update_implementation_no_progress(
 
 
 def _previous_phase_check(previous_check: dict[str, Any] | None) -> PhaseCheckResult | None:
-    """Deserialize the prior `last_check_result`, treating anything unreadable as unknown."""
+    """Deserialize the prior check, treating anything unreadable as unknown.
+
+    `AttributeError` is included (PR #431 Codex round 3): a persisted `{"results": [null]}`
+    makes `check_result_from_dict(None)` raise it, and the contract is to fall back to the
+    pure-signature comparison, never to crash the next checker completion.
+    """
     if not isinstance(previous_check, dict):
         return None
     try:
         return phase_check_from_dict(previous_check)
-    except (KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError):
         return None
+
+
+def _progress_baseline_check(state: LoopState) -> dict[str, Any] | None:
+    """Return the check the implementation progress axis should compare against.
+
+    Prefers `last_progress_check_result` (never an infrastructure failure). A loop created
+    before that field existed falls back to `last_check_result` unless that record is itself
+    an infrastructure failure, in which case the baseline is unknown.
+    """
+    if isinstance(state.last_progress_check_result, dict):
+        return state.last_progress_check_result
+    last = state.last_check_result
+    if isinstance(last, dict) and not last.get("infrastructure_failure"):
+        return last
+    return None
+
+
+def _record_progress_baseline(state: LoopState, phase_check: PhaseCheckResult) -> None:
+    """Advance the progress baseline unless this check was an infrastructure failure."""
+    if phase_check.infrastructure_failure:
+        return
+    state.last_progress_check_result = copy.deepcopy(state.last_check_result)
 
 
 def _llm_blocking_finding_count(phase_check: PhaseCheckResult) -> int | None:
@@ -3522,6 +3556,7 @@ def _state_from_dict(data: dict[str, Any]) -> LoopState:
         pr_number=data.get("pr_number"),
         guards=guards,
         last_check_result=data.get("last_check_result"),
+        last_progress_check_result=data.get("last_progress_check_result"),
         pending_action=PendingAction(**pending) if isinstance(pending, dict) else None,
         last_completed_action=LastCompletedAction(**completed)
         if isinstance(completed, dict)
