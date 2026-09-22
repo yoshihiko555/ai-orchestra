@@ -596,9 +596,17 @@ def evaluate_guards(
     phase_check: "PhaseCheckResult",
     phase_def: "PhaseDefinition",
     config: dict,
+    *,
+    previous_check: dict | None = None,  # Issue #395: 呼び出し側（complete）が渡す前反復の check
 ) -> "GuardDecision":
     """安全停止（stop）の 3 条件はここでは検査しない（3.2 節）。ここで扱うのは合格/無進捗/
     反復上限/infrastructure_failure の 4 種のみであり、いずれも遷移先は passed/failed。
+
+    previous_check は `complete` が `state.last_check_result` を上書きする前に
+    `_progress_baseline_check(state)` で取り出した「直近の infrastructure_failure でない
+    implementation check」（`state.last_progress_check_result`。同フィールド追加前の loop は
+    `last_check_result` が infra 失敗でなければそれ）。infra 失敗の check は baseline を更新しない
+    ため、checker のインフラ再試行を挟んでも比較対象は失われない。
     """
     counters = state.guards.setdefault(state.phase, GuardCounters())
     infra_cfg = config["guards"]["infrastructure_failure"]["max_retries"]
@@ -624,12 +632,31 @@ def evaluate_guards(
             next_phase=phase_def.on_success.next,
         )
 
-    # ② 無進捗判定
-    if phase_check.signature == counters.last_signature:
-        counters.no_progress_streak += 1
-    else:
+    # ② 無進捗判定（多軸。Issue #395）
+    #   フェーズシグネチャは失敗層のみを反映するため、mechanical が環境要因でピン留めされると
+    #   凍結する。llm_review の blocking（critical+high）件数を第2軸とし、シグネチャが不変でも
+    #   件数が前反復から厳密に減少していれば進捗として streak をリセットする。
+    #   前反復の件数と reviewer manifest は GuardCounters に永続化せず、`complete` が
+    #   `state.last_check_result` を上書きする前に退避した `previous_check` から都度導出する
+    #   （新フィールドを追加すると旧版ハーネスの `GuardCounters(**value)` がロールバック後に
+    #   失敗するため。PR #431 Codex P1）。llm_review 層が無く件数不明（None）、または
+    #   previous_check が無い/読めない場合は従来どおり厳密シグネチャ一致のみで判定する。
+    #   件数減は reviewer manifest（metadata["reviewers"]）が前反復と一致する場合だけ進捗と
+    #   みなす（LP-2 は変更パスから追加 reviewer を反復ごとに再選定するため、reviewer 離脱に
+    #   よる件数減を進捗と誤認しない。manifest 不明同士は一致扱い、既知と不明は不一致）。
+    previous = _previous_phase_check(previous_check)  # 読めなければ None（AttributeError 含む）
+    signature_moved = phase_check.signature != counters.last_signature
+    blocking_decreased = previous is not None and (
+        _llm_blocking_finding_count(previous) is not None
+        and _llm_blocking_finding_count(phase_check) is not None
+        and _llm_blocking_finding_count(phase_check) < _llm_blocking_finding_count(previous)
+        and _llm_reviewer_manifest(previous) == _llm_reviewer_manifest(phase_check)
+    )
+    if signature_moved or blocking_decreased:
         counters.no_progress_streak = 1
-        counters.last_signature = phase_check.signature
+    else:
+        counters.no_progress_streak += 1
+    counters.last_signature = phase_check.signature
     if counters.no_progress_streak >= phase_def.guards.no_progress.repeat:
         return GuardDecision(disposition=phase_def.on_failure.disposition, reason="no_progress")
 

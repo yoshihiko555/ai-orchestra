@@ -581,6 +581,13 @@ Checker 結果
 
 - 比較キーの詳細な正規化アルゴリズム（失敗テスト名集合のハッシュ化方式、指摘シグネチャの
   類似度判定等）は詳細設計フェーズで確定する（申し送り。12 節）。
+- **implementation の第 2 軸（Issue #395）**: 上記シグネチャは失敗層のみを反映するため、`mechanical`
+  が環境要因でピン留めされると Maker が `llm_review` の指摘を解消していてもシグネチャが凍結する。
+  そこでシグネチャが同一でも、`llm_review` の blocking（critical/high）指摘件数が直近の
+  infrastructure_failure でない検査から厳密に減少し、かつ reviewer 構成（manifest）が同一であれば
+  進捗とみなし、無進捗の連続回数に数えない。比較元は `state.last_progress_check_result`（infra
+  失敗では更新しない）から都度導出し、`GuardCounters` に新しい永続フィールドは追加しない
+  （core 編 3.3 節）。
 
 ### 6.3 `infrastructure_failure`（別カテゴリ）
 

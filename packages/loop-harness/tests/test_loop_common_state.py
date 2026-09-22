@@ -2906,3 +2906,20 @@ def test_wait_external_review_proposal_snapshots_fenced_pr_review_state(
         "iteration_head_action_id": "act-000007",
         "addressed_pending_thread_resolution": ["s-addressed-open"],
     }
+
+
+def test_state_round_trips_progress_baseline_and_tolerates_its_absence() -> None:
+    """PR #431 Codex round 3: `last_progress_check_result` is read with `data.get`, so a
+    state.json without it (older harness, or pre-#395 loop) loads with `None`."""
+    state = lc._initial_state(
+        "abcd1234-issue-1", "issue-loop", "hash", "/wt", "main", "implementation"
+    )
+    assert state.last_progress_check_result is None
+    data = lc.asdict(state)
+    data.pop("last_progress_check_result")
+    assert lc._state_from_dict(data).last_progress_check_result is None
+    data["last_progress_check_result"] = {"passed": False, "signature": "x"}
+    assert lc._state_from_dict(data).last_progress_check_result == {
+        "passed": False,
+        "signature": "x",
+    }

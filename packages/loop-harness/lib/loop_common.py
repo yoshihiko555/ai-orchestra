@@ -221,6 +221,11 @@ class LoopState:
     state_version: int
     maker_agent: str | None = None
     remote_head_baseline: str | None = None
+    # Issue #395 (PR #431 Codex round 3): the most recent *non-infrastructure* implementation
+    # check, kept separately from `last_check_result` so a transient checker infrastructure
+    # failure in between does not erase the baseline the secondary progress axis compares
+    # against. Loaded via `data.get`, so an older harness simply ignores the key.
+    last_progress_check_result: dict[str, Any] | None = None
     # Issue #208 (SEC-H2) hardening: both captured once from the *root* project_dir / the
     # freshly created worktree at loop-creation time (the earliest trustworthy moment, before
     # any Maker child has ever run) and never re-derived afterward. `None` on state.json
@@ -1080,8 +1085,17 @@ def evaluate_guards(
     phase_check: PhaseCheckResult,
     phase_def: Any | None,
     config: dict[str, Any] | None,
+    *,
+    previous_check: dict[str, Any] | None = None,
 ) -> GuardDecision:
-    """Evaluate infra failure, pass, no-progress, then iteration limit."""
+    """Evaluate infra failure, pass, no-progress, then iteration limit.
+
+    `previous_check` (Issue #395) is the serialized `last_check_result` of the previous
+    iteration, captured by the caller *before* it overwrote `state.last_check_result` with
+    `phase_check`. The implementation phase's secondary progress axis (blocking LLM finding
+    count) is derived from it on the fly, so nothing new is persisted in `GuardCounters` and
+    a state.json written by this harness stays readable by an older one (PR #431 Codex P1).
+    """
     if (
         phase_check.signature == "external_reviewer_unavailable"
         and phase_check.metadata.get("reviewer_unavailable_reason") == "rate_limited"
@@ -1102,7 +1116,7 @@ def evaluate_guards(
         counters.last_signature = None
         counters.infrastructure_failure_count = 0
         return GuardDecision(_success_disposition(phase_def), next_phase=_success_next(phase_def))
-    _update_phase_no_progress(counters, phase_check, phase_def)
+    _update_phase_no_progress(counters, phase_check, phase_def, previous_check)
     if counters.no_progress_streak >= _phase_no_progress_repeat(phase_def, cfg):
         return GuardDecision(_failure_disposition(phase_def), "no_progress")
     counters.iteration += 1
@@ -2752,13 +2766,17 @@ def _apply_checker_result(
 ) -> None:
     """Apply checker result and guard decision."""
     phase_check = _phase_check_from_result(result)
+    # Issue #395: the secondary progress axis compares against the most recent
+    # non-infrastructure check, captured before `last_check_result` is overwritten.
+    previous_check = _progress_baseline_check(state)
     state.last_check_result = phase_check_to_dict(phase_check)
+    _record_progress_baseline(state, phase_check)
     phase_def = result.get("phase_def")
     config = result.get("config")
     if project_dir:
         phase_def = _load_phase_definition(state, project_dir)
         config = _load_loop_config(project_dir)
-    decision = evaluate_guards(state, phase_check, phase_def, config)
+    decision = evaluate_guards(state, phase_check, phase_def, config, previous_check=previous_check)
     if decision.disposition == "continue" or decision.disposition == "retry":
         state.status = "running"
         return
@@ -2979,10 +2997,14 @@ def _mark_unresolved_pending(
     the `None` guard since `project_dir` is required here (`reconcile()`'s own signature).
     """
     phase_check = PhaseCheckResult(False, [], "pending_action_unresolved_after_crash", True)
+    # Issue #395: this crash-recovery record is an infrastructure failure, so it never becomes
+    # the progress baseline; the previous real check is kept for the next comparison.
+    previous_check = _progress_baseline_check(state)
     state.last_check_result = phase_check_to_dict(phase_check)
+    _record_progress_baseline(state, phase_check)
     phase_def = _load_phase_definition(state, project_dir)
     config = _load_loop_config(project_dir)
-    decision = evaluate_guards(state, phase_check, phase_def, config)
+    decision = evaluate_guards(state, phase_check, phase_def, config, previous_check=previous_check)
     if decision.disposition == Action.EXIT_FAILURE.value:
         state.status = "failed"
         state.stop_reason = decision.reason
@@ -3006,7 +3028,10 @@ def _mark_unresolved_pending(
 
 
 def _update_phase_no_progress(
-    counters: GuardCounters, phase_check: PhaseCheckResult, phase_def: Any | None
+    counters: GuardCounters,
+    phase_check: PhaseCheckResult,
+    phase_def: Any | None,
+    previous_check: dict[str, Any] | None = None,
 ) -> None:
     """Update no-progress counters using phase-specific signature semantics."""
     if _phase_no_progress_signature_kind(phase_def) == "pr_review" or _has_pr_review_metadata(
@@ -3014,7 +3039,7 @@ def _update_phase_no_progress(
     ):
         _update_pr_review_no_progress(counters, phase_check)
         return
-    _update_no_progress(counters, phase_check.signature)
+    _update_implementation_no_progress(counters, phase_check, previous_check)
 
 
 def _update_no_progress(counters: GuardCounters, signature: str) -> None:
@@ -3024,6 +3049,121 @@ def _update_no_progress(counters: GuardCounters, signature: str) -> None:
         return
     counters.no_progress_streak = 1
     counters.last_signature = signature
+
+
+def _update_implementation_no_progress(
+    counters: GuardCounters,
+    phase_check: PhaseCheckResult,
+    previous_check: dict[str, Any] | None,
+) -> None:
+    """Update no-progress counters using a multi-axis progress signal (issue #395).
+
+    The combined phase signature reflects only the failing layer, so a mechanical check
+    pinned by an environmental factor (e.g. a baseline-failing test unrelated to the branch)
+    freezes the signature even while the Maker steadily clears LLM review blocking findings.
+    Treat a strict decrease in the blocking (critical+high) LLM finding count as progress on a
+    second axis so the guard does not stop a loop that is demonstrably improving.
+
+    The previous iteration's count and reviewer manifest are derived from `previous_check`
+    (the prior `last_check_result`, already durable) rather than persisted in `GuardCounters`
+    (PR #431 Codex P1: new counter fields would break `GuardCounters(**value)` on an older
+    harness after a rollback). With no `previous_check`, or no llm_review layer on either
+    side, behavior falls back to the pure exact-signature comparison.
+
+    The blocking-count axis is only consulted when the reviewer manifest is unchanged: LP-2
+    reselects each iteration's additional reviewer from the paths the Maker changed, so a count
+    drop caused by a reviewer leaving the manifest is not progress.
+    """
+    signature_moved = phase_check.signature != counters.last_signature
+    previous = _previous_phase_check(previous_check)
+    blocking_decreased = previous is not None and (
+        _blocking_count_decreased(
+            _llm_blocking_finding_count(previous), _llm_blocking_finding_count(phase_check)
+        )
+        and _blocking_axis_comparable(
+            _llm_reviewer_manifest(previous), _llm_reviewer_manifest(phase_check)
+        )
+    )
+    if signature_moved or blocking_decreased:
+        counters.no_progress_streak = 1
+    else:
+        counters.no_progress_streak += 1
+    counters.last_signature = phase_check.signature
+
+
+def _previous_phase_check(previous_check: dict[str, Any] | None) -> PhaseCheckResult | None:
+    """Deserialize the prior check, treating anything unreadable as unknown.
+
+    `AttributeError` is included (PR #431 Codex round 3): a persisted `{"results": [null]}`
+    makes `check_result_from_dict(None)` raise it, and the contract is to fall back to the
+    pure-signature comparison, never to crash the next checker completion.
+    """
+    if not isinstance(previous_check, dict):
+        return None
+    try:
+        return phase_check_from_dict(previous_check)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _progress_baseline_check(state: LoopState) -> dict[str, Any] | None:
+    """Return the check the implementation progress axis should compare against.
+
+    Prefers `last_progress_check_result` (never an infrastructure failure). A loop created
+    before that field existed falls back to `last_check_result` unless that record is itself
+    an infrastructure failure, in which case the baseline is unknown.
+    """
+    if isinstance(state.last_progress_check_result, dict):
+        return state.last_progress_check_result
+    last = state.last_check_result
+    if isinstance(last, dict) and not last.get("infrastructure_failure"):
+        return last
+    return None
+
+
+def _record_progress_baseline(state: LoopState, phase_check: PhaseCheckResult) -> None:
+    """Advance the progress baseline unless this check was an infrastructure failure."""
+    if phase_check.infrastructure_failure:
+        return
+    state.last_progress_check_result = copy.deepcopy(state.last_check_result)
+
+
+def _llm_blocking_finding_count(phase_check: PhaseCheckResult) -> int | None:
+    """Return the count of blocking (critical/high) LLM review findings, or None if absent."""
+    for result in phase_check.results:
+        if result.layer == "llm_review":
+            return sum(1 for f in result.findings if f.severity in BLOCKING_SEVERITIES)
+    return None
+
+
+def _blocking_count_decreased(previous: int | None, current: int | None) -> bool:
+    """Return True only when both counts are known and the blocking count strictly decreased."""
+    return previous is not None and current is not None and current < previous
+
+
+def _llm_reviewer_manifest(phase_check: PhaseCheckResult) -> frozenset[str] | None:
+    """Return the reviewer manifest for an implementation phase check, or None if unknown.
+
+    Sealed implementation checks carry `metadata["reviewers"]` (see `_strict_reviewer_manifest`).
+    Synthetic/legacy checks without that list yield `None`, which the caller treats as an unknown
+    (rather than empty) manifest.
+    """
+    reviewers = phase_check.metadata.get("reviewers")
+    if isinstance(reviewers, list) and reviewers and all(isinstance(r, str) for r in reviewers):
+        return frozenset(reviewers)
+    return None
+
+
+def _blocking_axis_comparable(
+    previous: frozenset[str] | None, current: frozenset[str] | None
+) -> bool:
+    """Return True when a blocking-count delta is comparable across the two iterations.
+
+    Comparable only when both iterations were judged by the same reviewer manifest. Two unknown
+    manifests compare equal, preserving the pre-LP-2 pure-count behavior for synthetic/legacy
+    checks; a known manifest never matches an unknown one.
+    """
+    return previous == current
 
 
 def _update_pr_review_no_progress(counters: GuardCounters, phase_check: PhaseCheckResult) -> None:
@@ -3416,6 +3556,7 @@ def _state_from_dict(data: dict[str, Any]) -> LoopState:
         pr_number=data.get("pr_number"),
         guards=guards,
         last_check_result=data.get("last_check_result"),
+        last_progress_check_result=data.get("last_progress_check_result"),
         pending_action=PendingAction(**pending) if isinstance(pending, dict) else None,
         last_completed_action=LastCompletedAction(**completed)
         if isinstance(completed, dict)

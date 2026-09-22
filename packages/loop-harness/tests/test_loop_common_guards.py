@@ -140,6 +140,195 @@ def test_evaluate_guards_no_progress_precedes_iteration_limit() -> None:
     assert decision.reason == "no_progress"
 
 
+def _impl_phase_check(mech_signature: str, high_count: int) -> object:
+    """Build an implementation phase check: mechanical failing (pinned signature) plus an
+    llm_review layer carrying `high_count` blocking findings."""
+    mech = lc.CheckResult(False, "mechanical", mech_signature, [], "mech.log")
+    findings = [
+        lc.Finding("high", f"Blocking finding {i}", "code-reviewer", "mod.py", 10 + i * 5)
+        for i in range(high_count)
+    ]
+    llm = lc.CheckResult(False, "llm_review", None, findings, "review.json")
+    return lc.combine_check_results(
+        [mech, llm], {"critical": 0, "high": 0}, frozenset({"mechanical", "llm_review"})
+    )
+
+
+def _impl_phase_check_with_reviewers(
+    mech_signature: str, high_count: int, reviewers: list[str]
+) -> object:
+    """Like `_impl_phase_check` but carries a reviewer manifest in phase metadata.
+
+    Findings are attributed to `code-reviewer` (always in the manifest); the manifest itself
+    varies via `reviewers` to exercise the cross-set comparability gate.
+    """
+    mech = lc.CheckResult(False, "mechanical", mech_signature, [], "mech.log")
+    findings = [
+        lc.Finding("high", f"Blocking finding {i}", "code-reviewer", "mod.py", 10 + i * 5)
+        for i in range(high_count)
+    ]
+    llm = lc.CheckResult(
+        False, "llm_review", lc.compute_llm_review_signature(findings), findings, "review.json"
+    )
+    # Mechanical fails, so the combined signature is the (pinned) mechanical signature.
+    return lc.PhaseCheckResult(
+        passed=False,
+        results=[mech, llm],
+        signature=mech_signature,
+        infrastructure_failure=False,
+        metadata={"reviewers": list(reviewers)},
+    )
+
+
+def _evaluate_sequence(state: lc.LoopState, checks: list[object], config: dict) -> list:
+    """Run `evaluate_guards` the way `complete` does: each call sees the *previous* check as
+    `previous_check` (the prior `last_check_result`, captured before it is overwritten)."""
+    decisions = []
+    previous: dict | None = None
+    for check in checks:
+        decisions.append(lc.evaluate_guards(state, check, None, config, previous_check=previous))
+        previous = lc.phase_check_to_dict(check)
+    return decisions
+
+
+def test_blocking_decrease_across_different_reviewer_sets_is_not_progress() -> None:
+    """PR review P2 (issue #395): LP-2 reselects each iteration's additional reviewer from the
+    changed paths, so a blocking-count drop caused by a reviewer leaving the manifest is not
+    progress. When the manifest differs, only the (pinned) signature axis is consulted."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    # Count drops 4 -> 1 but the manifest changed (security-reviewer left): not comparable.
+    first, second = _evaluate_sequence(
+        state,
+        [
+            _impl_phase_check_with_reviewers("pinned", 4, ["code-reviewer", "security-reviewer"]),
+            _impl_phase_check_with_reviewers("pinned", 1, ["code-reviewer"]),
+        ],
+        config,
+    )
+    assert first.disposition == "continue"
+    assert second.reason == "no_progress"
+
+
+def test_blocking_decrease_with_stable_reviewer_set_is_progress() -> None:
+    """PR review P2 (issue #395): when the reviewer manifest is unchanged, a strict blocking-count
+    decrease is comparable and resets the no-progress streak."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    manifest = ["code-reviewer", "security-reviewer"]
+    first, second = _evaluate_sequence(
+        state,
+        [
+            _impl_phase_check_with_reviewers("pinned", 4, manifest),
+            _impl_phase_check_with_reviewers("pinned", 2, manifest),
+        ],
+        config,
+    )
+    assert first.disposition == "continue"
+    assert second.disposition == "continue"
+    assert state.guards["implementation"].no_progress_streak == 1
+
+
+def test_guard_counters_keep_pre_395_shape_and_previous_signal_comes_from_last_check() -> None:
+    """PR #431 Codex (P1): the secondary axis must not add persisted `GuardCounters` fields --
+    an older harness deserializes `GuardCounters(**value)` and would fail on unknown keys after
+    a rollback. The previous blocking count/manifest is derived from `last_check_result`."""
+    assert set(lc.asdict(lc.GuardCounters())) == {
+        "iteration",
+        "no_progress_streak",
+        "last_signature",
+        "infrastructure_failure_count",
+    }
+    state = _state()
+    counters = state.guards["implementation"]
+    counters.last_signature = "pinned"
+    prev_check = lc.phase_check_to_dict(
+        _impl_phase_check_with_reviewers("pinned", 4, ["code-reviewer"])
+    )
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    decision = lc.evaluate_guards(
+        state,
+        _impl_phase_check_with_reviewers("pinned", 2, ["code-reviewer"]),
+        None,
+        config,
+        previous_check=prev_check,
+    )
+    assert decision.disposition == "continue"
+    assert counters.no_progress_streak == 1
+    # An unreadable previous record degrades to the pure-signature comparison, never raises.
+    stalled = lc.evaluate_guards(
+        state,
+        _impl_phase_check_with_reviewers("pinned", 1, ["code-reviewer"]),
+        None,
+        config,
+        previous_check={"garbage": True},
+    )
+    assert stalled.reason == "no_progress"
+
+
+def test_no_progress_ignored_when_llm_blocking_count_decreases_under_pinned_mechanical() -> None:
+    """issue #395: a mechanical failure pinned by an environmental factor freezes the combined
+    signature, but a strictly decreasing LLM blocking (critical+high) finding count is real
+    progress and must reset the no-progress streak instead of stopping the loop."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    # Mechanical signature is identical across iterations; only the LLM High count moves (4 -> 2 -> 1).
+    first, second, third = _evaluate_sequence(
+        state,
+        [
+            _impl_phase_check("pinned", 4),
+            _impl_phase_check("pinned", 2),
+            _impl_phase_check("pinned", 1),
+        ],
+        config,
+    )
+    assert first.disposition == "continue"
+    assert second.disposition == "continue"
+    assert third.disposition == "continue"
+    assert state.guards["implementation"].no_progress_streak == 1
+
+
+def test_no_progress_fires_when_llm_blocking_count_stalls_under_pinned_mechanical() -> None:
+    """issue #395: once neither the mechanical signature nor the LLM blocking count moves, the
+    loop is genuinely stuck and the no-progress guard must still fire after `repeat` stalls."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    first, second = _evaluate_sequence(
+        state, [_impl_phase_check("pinned", 3), _impl_phase_check("pinned", 3)], config
+    )
+    assert first.disposition == "continue"
+    assert second.reason == "no_progress"
+
+
+def test_no_progress_fires_after_llm_blocking_progress_then_stalls() -> None:
+    """issue #395: the secondary axis only rescues real movement -- after the blocking count
+    plateaus, the guard resumes counting stalls and eventually stops the loop."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    _first, _second, third = _evaluate_sequence(
+        state,
+        [
+            _impl_phase_check("pinned", 4),
+            _impl_phase_check("pinned", 1),
+            _impl_phase_check("pinned", 1),
+        ],
+        config,
+    )
+    assert third.reason == "no_progress"
+
+
+def test_no_progress_pure_signature_when_no_llm_layer_is_unchanged() -> None:
+    """issue #395: with no llm_review layer the blocking count is unknown, so behavior falls
+    back to the pure exact-signature comparison (unchanged from before)."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    first, second = _evaluate_sequence(
+        state, [_phase_check(signature="same"), _phase_check(signature="same")], config
+    )
+    assert first.disposition == "continue"
+    assert second.reason == "no_progress"
+
+
 def test_evaluate_guards_iteration_limit_uses_defaults() -> None:
     state = _state()
     lc.evaluate_guards(state, _phase_check(signature="a"), None, {})
@@ -838,3 +1027,49 @@ def test_redact_masks_quoted_json_keys() -> None:
     assert "abc-123" not in redacted
     assert "hunter2" not in redacted
     assert "keep" in redacted
+
+
+def test_infrastructure_retry_does_not_erase_progress_baseline() -> None:
+    """PR #431 Codex round 3: pinned/High 4 -> checker infra retry -> pinned/High 2 must still
+    count as progress; the infra record never becomes the comparison baseline."""
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    first = _impl_phase_check("pinned", 4)
+    infra = lc.PhaseCheckResult(False, [], "maker_infrastructure_failure", True)
+    third = _impl_phase_check("pinned", 2)
+
+    def complete_like(check: object) -> object:
+        previous = lc._progress_baseline_check(state)
+        state.last_check_result = lc.phase_check_to_dict(check)
+        lc._record_progress_baseline(state, check)
+        return lc.evaluate_guards(state, check, None, config, previous_check=previous)
+
+    assert complete_like(first).disposition == "continue"
+    assert complete_like(infra).reason == "infrastructure_failure_retry"
+    assert state.last_progress_check_result == lc.phase_check_to_dict(first)
+    decision = complete_like(third)
+    assert decision.disposition == "continue"
+    assert state.guards["implementation"].no_progress_streak == 1
+
+
+def test_progress_baseline_falls_back_for_pre_field_state() -> None:
+    state = _state()
+    state.last_progress_check_result = None
+    state.last_check_result = lc.phase_check_to_dict(_impl_phase_check("pinned", 3))
+    assert lc._progress_baseline_check(state) == state.last_check_result
+    state.last_check_result = lc.phase_check_to_dict(
+        lc.PhaseCheckResult(False, [], "maker_infrastructure_failure", True)
+    )
+    assert lc._progress_baseline_check(state) is None
+
+
+def test_unreadable_previous_check_falls_back_instead_of_raising() -> None:
+    """PR #431 Codex round 3: `{"results": [null]}` raises AttributeError inside
+    `phase_check_from_dict`; the guard must degrade to the pure-signature comparison."""
+    assert lc._previous_phase_check({"results": [None]}) is None
+    state = _state()
+    config = {"guards": {"max_iterations": 10, "no_progress": {"repeat": 2}}}
+    decision = lc.evaluate_guards(
+        state, _impl_phase_check("pinned", 2), None, config, previous_check={"results": [None]}
+    )
+    assert decision.disposition == "continue"
