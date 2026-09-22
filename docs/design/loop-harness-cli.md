@@ -1090,6 +1090,12 @@ def spawn_worker(loop_id: str, project_root: Path) -> subprocess.Popen[bytes]:
   > （逆に retirement が先にロックを取得していれば `attach` 側が `lock_unavailable`/
   > `invalid_state` で正しく失敗する）。
 
+- **definition の所有（Issue #440）**: `run_scheduler` は `SchedulerRuntime.definition_id` を起動時の
+  definition で束縛し、crash-restart・cooldown 後の respawn・`respawn_orphaned_active_loops`・
+  `recover_orphaned_pending_loops` はいずれも `state.definition_id` が一致する loop だけを対象にする。
+  respawn 時の `spawn_worker` にもその definition id を渡す。同一プロジェクトで異なる `--definition` の
+  scheduler を並行稼働させる運用（3.5 節の pidfile 分離が許容する構成）で、他 definition の orphan を
+  採用して既定 definition で走らせてしまうのを防ぐ。
 - **Docker daemon 未起動時の spawn ゲート（Issue #436）**: `lp2.isolation.execution_backend: docker`
   の環境では、`run_cycle` の冒頭で `docker_spawn_gate` が `docker_daemon_available()` をサイクルに
   1 回だけプローブする（`none` ではプローブしない）。利用不可のサイクルは

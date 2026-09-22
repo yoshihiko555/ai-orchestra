@@ -11174,3 +11174,64 @@ def test_maker_env_omits_git_identity_when_repo_config_unset(
 
     assert "GIT_AUTHOR_NAME" not in env
     assert "GIT_AUTHOR_EMAIL" not in env
+
+
+def test_claude_failure_artifacts_keep_error_events_beyond_the_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #444: the API error that ends a session is followed by tool chatter; it must be
+    kept in its own artifact instead of being cut off by the stdout tail."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    error_line = json.dumps({"type": "error", "error": {"type": "api_error", "message": "boom"}})
+    filler = "\n".join(
+        json.dumps({"type": "tool_use", "n": i, "pad": "x" * 200}) for i in range(3000)
+    )
+    completed = subprocess.CompletedProcess([], 1, error_line + "\n" + filler + "\n", "")
+
+    d._save_claude_failure_artifacts("act-000099", "maker", completed)
+
+    errors = lc.load_artifact(loop_id, project_dir, "act-000099", "claude_maker_errors.jsonl")
+    tail = lc.load_artifact(loop_id, project_dir, "act-000099", "claude_maker_stdout.tail.txt")
+    assert errors is not None and error_line in errors
+    assert (
+        tail is not None
+        and len(tail.encode("utf-8")) <= driver.LoopDriver._CLAUDE_FAILURE_ARTIFACT_MAX_BYTES
+    )
+
+
+def test_pushed_head_or_raise_fails_closed_when_local_head_unresolvable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR #446 Codex (P1): `expected_sha=None` would mean "no sync needed" and reopen the
+    Issue #442 stale-head window, so an unresolvable HEAD must raise instead."""
+    monkeypatch.setattr(driver, "_local_head", lambda _wt: None)
+    with pytest.raises(driver.PushedHeadUnavailableError, match="refusing to record"):
+        driver._pushed_head_or_raise("/tmp/wt")
+    monkeypatch.setattr(driver, "_local_head", lambda _wt: "abc123")
+    assert driver._pushed_head_or_raise("/tmp/wt") == "abc123"
+
+
+def test_claude_error_record_reduces_oversized_json_instead_of_truncating() -> None:
+    """PR #446 Codex (P2): `--output-format json` is one large object; the error members must
+    survive as a valid JSON record even when they sit past the per-line byte limit."""
+    padding = "x" * (driver.LoopDriver._CLAUDE_FAILURE_ERROR_LINE_MAX_BYTES + 100)
+    line = json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "padding": padding,
+            "result": "API Error: Request rejected (429) · run budget exhausted",
+            "terminal_reason": "api_error",
+        }
+    )
+    record = json.loads(driver.LoopDriver._claude_error_record(line))
+    assert record["truncated"] is True
+    assert record["terminal_reason"] == "api_error"
+    assert "run budget exhausted" in record["result"]
+    assert "padding" not in record
+    garbage = "{" + padding
+    fallback = json.loads(driver.LoopDriver._claude_error_record(garbage))
+    assert fallback["truncated"] is True and fallback["head"].startswith("{x")

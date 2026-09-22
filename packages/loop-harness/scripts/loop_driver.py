@@ -1740,7 +1740,35 @@ class LoopDriver:
         )
         return payload
 
-    _CLAUDE_FAILURE_ARTIFACT_MAX_BYTES = 8192
+    # Issue #444: 8 KB kept only the last few tool_use lines; the API error that ended the
+    # session was already cut off, so a `terminal_reason: api_error` exit could not be
+    # diagnosed at all after the containers were gone.
+    _CLAUDE_FAILURE_ARTIFACT_MAX_BYTES = 262144
+    _CLAUDE_FAILURE_ERROR_LINE_MAX_BYTES = 16384
+    _CLAUDE_FAILURE_ERROR_VALUE_MAX_CHARS = 4096
+    # `claude -p --output-format json` emits one large top-level JSON object; these are the
+    # members that explain a failure (PR #446 Codex P2).
+    _CLAUDE_FAILURE_ERROR_KEYS = (
+        "type",
+        "subtype",
+        "is_error",
+        "terminal_reason",
+        "error",
+        "errors",
+        "result",
+        "stop_reason",
+        "num_turns",
+    )
+    _CLAUDE_FAILURE_ERROR_LINES_MAX = 200
+    _CLAUDE_FAILURE_ERROR_MARKERS = (
+        '"type":"error"',
+        '"type": "error"',
+        '"is_error":true',
+        '"is_error": true',
+        '"subtype":"error',
+        '"subtype": "error',
+        "api_error",
+    )
 
     def _save_claude_failure_artifacts(
         self, action_id: str, kind: str, completed: subprocess.CompletedProcess[str]
@@ -1769,11 +1797,73 @@ class LoopDriver:
             f"claude_{kind}_stderr.txt",
             stderr_tail.decode("utf-8", errors="ignore"),
         )
+        # Issue #444: error-bearing stream-json events are kept separately from the tail so
+        # they survive however much tool chatter followed them.
+        error_lines = self._claude_error_event_lines(completed.stdout)
+        errors_note = ""
+        if error_lines:
+            errors_path = lc.save_artifact(
+                self.loop_id,
+                self.project_dir,
+                action_id,
+                f"claude_{kind}_errors.jsonl",
+                "\n".join(error_lines) + "\n",
+            )
+            errors_note = f" / {errors_path}"
         print(
             f"loop_driver: {kind} claude exited {completed.returncode}; "
-            f"see {stdout_path} / {stderr_path}",
+            f"see {stdout_path} / {stderr_path}{errors_note}",
             file=sys.stderr,
         )
+
+    @classmethod
+    def _claude_error_event_lines(cls, stdout: str) -> list[str]:
+        """Return stdout lines that look like Claude Code error events (Issue #444)."""
+        lines: list[str] = []
+        for line in stdout.splitlines():
+            if not any(marker in line for marker in cls._CLAUDE_FAILURE_ERROR_MARKERS):
+                continue
+            lines.append(cls._claude_error_record(line))
+            if len(lines) >= cls._CLAUDE_FAILURE_ERROR_LINES_MAX:
+                break
+        return lines
+
+    @classmethod
+    def _claude_error_record(cls, line: str) -> str:
+        """Return one valid JSON record for an error-bearing stdout line.
+
+        A line within the size limit is kept verbatim. An oversized one (typically the single
+        `--output-format json` object) is parsed and reduced to its failure-relevant members
+        with long string values clipped, so the record stays valid JSON and the error body is
+        never cut off mid-way; if it does not parse, a `{"truncated": true, "head": ...}`
+        record is written instead of an invalid fragment.
+        """
+        if len(line.encode("utf-8")) <= cls._CLAUDE_FAILURE_ERROR_LINE_MAX_BYTES:
+            return line
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            parsed = None
+        if not isinstance(parsed, dict):
+            head = line.encode("utf-8")[: cls._CLAUDE_FAILURE_ERROR_LINE_MAX_BYTES]
+            return json.dumps(
+                {"truncated": True, "head": head.decode("utf-8", errors="ignore")},
+                ensure_ascii=False,
+            )
+        reduced = {key: parsed[key] for key in cls._CLAUDE_FAILURE_ERROR_KEYS if key in parsed}
+        reduced["truncated"] = True
+        return json.dumps(cls._clip_strings(reduced), ensure_ascii=False)
+
+    @classmethod
+    def _clip_strings(cls, value: Any) -> Any:
+        limit = cls._CLAUDE_FAILURE_ERROR_VALUE_MAX_CHARS
+        if isinstance(value, str):
+            return value if len(value) <= limit else value[:limit] + "…[clipped]"
+        if isinstance(value, list):
+            return [cls._clip_strings(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): cls._clip_strings(item) for key, item in value.items()}
+        return value
 
     def _invalid_reviewer_output_result(
         self,
@@ -2073,6 +2163,8 @@ class LoopDriver:
                     self.lease_token,
                     action_id=action_id,
                     iteration=proposal.iteration,
+                    # Issue #442: wait for the API to report the SHA just pushed above.
+                    expected_sha=_pushed_head_or_raise(state.worktree_path),
                 )
                 state = lc.load_state(self.loop_id, self.project_dir)
         # code F12: a `wait_external_review` proposal's own params (built by `propose()` from
@@ -3014,6 +3106,7 @@ class LoopDriver:
                         prw.GhApiClient(repo),
                         self.lease_token,
                         action_id=action_id,
+                        expected_sha=_pushed_head_or_raise(state.worktree_path),  # #442
                     )
             elif step == "notify":
                 self._notify(state, "advance_phase")
@@ -3687,6 +3780,25 @@ def _current_branch(worktree_path: str) -> str:
         check=False,
     )
     return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+class PushedHeadUnavailableError(RuntimeError):
+    """`git rev-parse HEAD` failed right after a push (PR #446 Codex P1).
+
+    Raised instead of falling back to `expected_sha=None`, which `record_iteration_head`
+    treats as "no sync needed" and which would reopen the Issue #442 stale-head window. The
+    caller's retry-on-resume path handles it like any other failure in that branch.
+    """
+
+
+def _pushed_head_or_raise(worktree_path: str) -> str:
+    sha = _local_head(worktree_path)
+    if sha is None:
+        raise PushedHeadUnavailableError(
+            f"could not resolve local HEAD in {worktree_path} after push; refusing to record "
+            "the iteration head from the API alone"
+        )
+    return sha
 
 
 def _local_head(worktree_path: str) -> str | None:

@@ -527,6 +527,15 @@ class SchedulerRuntime:
     # Issue #436: last observed Docker daemon availability (None until first probed). Kept only
     # so `docker_spawn_gate` logs on transitions instead of on every poll cycle.
     docker_daemon_available: bool | None = None
+    # Issue #440: the loop definition this scheduler owns. Every respawn/recovery path filters
+    # on `state.definition_id` so two schedulers for different definitions in one project never
+    # adopt (and re-run under the wrong definition) each other's orphaned loops.
+    definition_id: str = DEFAULT_DEFINITION_ID
+
+
+def _owned_by(runtime: SchedulerRuntime, state: lc.LoopState | None) -> bool:
+    """Return whether `state` belongs to the definition this scheduler owns (Issue #440)."""
+    return state is not None and state.definition_id == runtime.definition_id
 
 
 def docker_spawn_gate(runtime: SchedulerRuntime, project_dir: str) -> bool:
@@ -592,7 +601,7 @@ def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> l
             del runtime.foreign_lease_cooldown_until[loop_id]
             continue
         state = _try_load_state(lc.loop_dir(loop_id, project_dir), project_dir)
-        if state is None or not should_restart(state.status):
+        if state is None or not should_restart(state.status) or not _owned_by(runtime, state):
             del runtime.foreign_lease_cooldown_until[loop_id]
             continue
         if available <= 0:
@@ -605,7 +614,7 @@ def _respawn_expired_cooldowns(runtime: SchedulerRuntime, project_dir: str) -> l
             del runtime.foreign_lease_cooldown_until[loop_id]
             continue
         del runtime.foreign_lease_cooldown_until[loop_id]
-        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
+        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir, runtime.definition_id)
         respawned.append(loop_id)
         available -= 1
     return respawned
@@ -759,15 +768,18 @@ def respawn_orphaned_active_loops(runtime: SchedulerRuntime, project_dir: str) -
         # decide afresh (it re-marks on a persisting mismatch). Same for a foreign-lease
         # cooldown (PR #441 Codex P2): the lease being expired means no foreign owner remains,
         # so honoring the rest of the cooldown would only idle a handoff for up to the LP-2 TTL.
+        state = _try_load_state(lc.loop_dir(loop_id, project_dir), project_dir)
+        if not _owned_by(runtime, state):
+            continue
         runtime.stopped_loop_ids.discard(loop_id)
         runtime.foreign_lease_cooldown_until.pop(loop_id, None)
         if expected_repo_identity_hash is None:
             expected_repo_identity_hash = wm.resolve_repo_identity_hash(project_dir)
         if not _recheck_repo_identity_before_respawn(
-            loop_id, project_dir, expected_repo_identity_hash, runtime
+            loop_id, project_dir, expected_repo_identity_hash, runtime, state=state
         ):
             continue
-        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
+        runtime.workers[loop_id] = spawn_worker(loop_id, project_dir, runtime.definition_id)
         respawned.append(loop_id)
         available -= 1
     return respawned
@@ -839,16 +851,18 @@ def recover_orphaned_pending_loops(runtime: SchedulerRuntime, project_dir: str) 
         if loop_id in runtime.workers:
             continue
         state = _try_load_state(entry, project_dir)
-        if state is None or state.status != "pending":
+        if state is None or state.status != "pending" or not _owned_by(runtime, state):
             continue
         if not _is_lease_expired(loop_id, project_dir):
             continue
-        if _retire_if_still_orphaned_pending(loop_id, project_dir):
+        if _retire_if_still_orphaned_pending(loop_id, project_dir, runtime.definition_id):
             recovered.append(loop_id)
     return recovered
 
 
-def _retire_if_still_orphaned_pending(loop_id: str, project_dir: str) -> bool:
+def _retire_if_still_orphaned_pending(
+    loop_id: str, project_dir: str, expected_definition_id: str = DEFAULT_DEFINITION_ID
+) -> bool:
     """Re-verify `loop_id` is still an orphaned `pending` loop under the coord lock, then
     retire it (SN-flock, PR #229 review, #205-race - see `recover_orphaned_pending_loops`'s
     own docstring for the race this closes).
@@ -865,6 +879,11 @@ def _retire_if_still_orphaned_pending(loop_id: str, project_dir: str) -> bool:
         entry = lc.loop_dir(loop_id, project_dir)
         state = _try_load_state(entry, project_dir)
         if state is None or state.status != "pending":
+            return False
+        if state.definition_id != expected_definition_id:
+            # PR #446 Codex (P2, Issue #440): the caller's ownership pre-check is as TOCTOU-
+            # prone as its status/lease checks; a retire/recreate between them could have
+            # swapped in another definition's `pending` state under the same deterministic id.
             return False
         if not _is_lease_expired(loop_id, project_dir):
             return False
@@ -974,7 +993,7 @@ def reap_finished_workers(
             )
             continue
         state = _try_load_state(lc.loop_dir(loop_id, project_dir), project_dir)
-        if state is None or not should_restart(state.status):
+        if state is None or not should_restart(state.status) or not _owned_by(runtime, state):
             continue
         restart_candidates.append((loop_id, state))
     respawned: list[str] = []
@@ -992,7 +1011,7 @@ def reap_finished_workers(
                 loop_id, project_dir, expected_repo_identity_hash, runtime, state=state
             ):
                 continue
-            runtime.workers[loop_id] = spawn_worker(loop_id, project_dir)
+            runtime.workers[loop_id] = spawn_worker(loop_id, project_dir, runtime.definition_id)
             respawned.append(loop_id)
             available -= 1
     respawned.extend(_respawn_expired_cooldowns(runtime, project_dir))
@@ -1381,7 +1400,7 @@ def run_scheduler(
         definition = ld.load_all_definitions(project_dir).get(definition_id)
         if definition is None:
             raise ld.DefinitionValidationError(f"loop definition not found: {definition_id}")
-        runtime = SchedulerRuntime()
+        runtime = SchedulerRuntime(definition_id=definition.id)
         runtime.stopped_loop_ids.update(verify_repo_identity_at_startup(project_dir))
         poll_interval = resolve_poll_interval(definition)
         cycles = 0
