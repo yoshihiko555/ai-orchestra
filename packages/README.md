@@ -18,7 +18,6 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 | [codex-harness](#codex-harness)                     | Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run・review）                   | ハーネス     |
 | [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案                                                    | 提案         |
 | [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                                                 | ワークフロー |
-| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視（opt-in、`setup all` 対象外）                      | 監視         |
 
 ---
 
@@ -249,23 +248,3 @@ GitHub Issue の登録・開発フロー・PR 作成を含む Git/GitHub ワー�
   - `issue-fix` — 計画→実装→テスト→レビューの開発フロー実行
   - `pr-create` — Pull Request の作成
 - config: `sandbox-requirements.json`
-
----
-
-### tmux-monitor
-
-tmux ペインでサブエージェントの起動・停止をリアルタイム表示する。マルチエージェント並列実行の可視化に使用する。
-
-> **opt-in パッケージ**: `orchex setup all` には含まれないため、`orchex install tmux-monitor` で明示的にインストールする。
-
-- **バージョン**: 0.2.0
-- **依存**: core
-
-**提供するもの:**
-
-- hooks:
-  - `tmux-session-start.py` / `tmux-session-end.py` — セッション開始・終了時の tmux セットアップ
-  - `tmux-pre-task.py` — Task 実行前の準備
-  - `tmux-subagent-start.py` / `tmux-subagent-stop.py` — サブエージェント起動・停止の表示
-  - `tmux-format-output.py` — 出力フォーマット
-  - `tmux_common.py` — 共通ユーティリティ

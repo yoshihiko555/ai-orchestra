@@ -1436,7 +1436,7 @@ COMMAND_REGISTRY: dict[str, CommandEntry] = {
         "name": "uninstall",
         "group": "package_management",
         "summary": "パッケージをアンインストール",
-        "examples": ("orchex uninstall tmux-monitor --project .",),
+        "examples": ("orchex uninstall image-generation --project .",),
         "build_parser": build_uninstall_parser,
     },
     "enable": {

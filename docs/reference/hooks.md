@@ -102,16 +102,6 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 | --------------------------------- | ---------- | ------------------ | ---------------------------------------------------------------- |
 | `suggest-antigravity-research.py` | PreToolUse | WebSearch/WebFetch | `[Antigravity Suggestion]` を出力して Antigravity リサーチを促す |
 
-### tmux-monitor
-
-| フック                   | イベント      | 対象       | 説明                        |
-| ------------------------ | ------------- | ---------- | --------------------------- |
-| `tmux-session-start.py`  | SessionStart  | —          | tmux ペインのセットアップ   |
-| `tmux-session-end.py`    | SessionEnd    | —          | tmux ペインのクリーンアップ |
-| `tmux-pre-task.py`       | PreToolUse    | Agent/Task | タスク実行前の準備表示      |
-| `tmux-subagent-start.py` | SubagentStart | —          | サブエージェント起動表示    |
-| `tmux-subagent-stop.py`  | SubagentStop  | —          | サブエージェント停止表示    |
-
 ### codd
 
 | フック                       | イベント    | 対象       | 説明                                                                                                                      |
@@ -270,12 +260,10 @@ if __name__ == "__main__":
 - `sync-orchestra.py`（同期スクリプト）
 - `load-task-state.py`（core）
 - `audit-bootstrap.py`（audit）
-- `tmux-session-start.py`（tmux-monitor）
 
 ### SessionEnd
 
 - `audit-session-end.py`（audit）
-- `tmux-session-end.py`（tmux-monitor）
 
 ### UserPromptSubmit
 
@@ -285,7 +273,7 @@ if __name__ == "__main__":
 
 ### PreToolUse
 
-- `Agent/Task`: `check-plan-gate.py`, `inject-shared-context.py`, `tmux-pre-task.py`
+- `Agent/Task`: `check-plan-gate.py`, `inject-shared-context.py`
 - `Edit/Write`: `check-codex-before-write.py`
 - `Read/Grep/Bash`: `check-context-optimization.py`
 - `WebSearch/WebFetch`: `suggest-antigravity-research.py`

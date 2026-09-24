@@ -52,10 +52,10 @@ RENAMED_PACKAGES = {
     "gemini-suggestions": "antigravity-suggestions",
 }
 
-# 配布を終了したパッケージ（ADR-20260924-054）
+# 配布を終了したパッケージ（cocoindex: ADR-20260924-054）
 # 横展開先の orchestra.json に残っていても installed_packages から自動除去する。
 # パッケージ実体が無いため `orchex uninstall` では外せず、ここで外さないと名前が残り続ける
-REMOVED_PACKAGES = frozenset({"cocoindex"})
+REMOVED_PACKAGES = frozenset({"cocoindex", "tmux-monitor"})
 
 
 def migrate_installed_packages(packages: list[str]) -> tuple[list[str], bool]:

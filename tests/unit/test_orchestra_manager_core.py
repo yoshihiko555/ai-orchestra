@@ -38,17 +38,17 @@ def _write_manifest(
 
 
 class TestLoadPresets:
-    def test_all_preset_excludes_tmux_monitor(self, tmp_path: Path) -> None:
+    def test_all_preset_excludes_listed_package(self, tmp_path: Path) -> None:
         # Arrange
         manager = _make_manager(tmp_path)
         _write_manifest(tmp_path / "packages", "core")
-        _write_manifest(tmp_path / "packages", "tmux-monitor")
+        _write_manifest(tmp_path / "packages", "optional-pkg")
         _write_manifest(tmp_path / "packages", "audit")
         presets = {
             "all": {
                 "description": "all packages",
                 "packages": "__all__",
-                "exclude": ["tmux-monitor"],
+                "exclude": ["optional-pkg"],
             }
         }
         (tmp_path / "presets.json").write_text(json.dumps(presets), encoding="utf-8")
@@ -58,7 +58,7 @@ class TestLoadPresets:
 
         # Assert
         packages = result["all"]["packages"]
-        assert "tmux-monitor" not in packages
+        assert "optional-pkg" not in packages
         assert "core" in packages
 
     def test_exclude_applies_to_explicit_package_list(self, tmp_path: Path) -> None:
@@ -67,8 +67,8 @@ class TestLoadPresets:
         presets = {
             "custom": {
                 "description": "custom packages",
-                "packages": ["core", "tmux-monitor", "audit"],
-                "exclude": ["tmux-monitor"],
+                "packages": ["core", "optional-pkg", "audit"],
+                "exclude": ["optional-pkg"],
             }
         }
         (tmp_path / "presets.json").write_text(json.dumps(presets), encoding="utf-8")

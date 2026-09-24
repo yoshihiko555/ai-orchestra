@@ -2,7 +2,6 @@
 """統一イベントログの共通ライブラリ。
 
 全フックが events.jsonl に統一フォーマットで書き込むための関数群。
-既存の tmux_common.py (tmux 関連) とは責務を分離。
 """
 
 from __future__ import annotations

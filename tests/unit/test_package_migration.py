@@ -49,9 +49,10 @@ class TestMigrateInstalledPackages:
         assert migrated == []
         assert changed is False
 
-    def test_removes_discontinued_package(self) -> None:
-        """配布を終了した cocoindex は installed_packages から除去される。"""
-        migrated, changed = migrate_installed_packages(["core", "cocoindex", "audit"])
+    @pytest.mark.parametrize("discontinued", ["cocoindex", "tmux-monitor"])
+    def test_removes_discontinued_package(self, discontinued: str) -> None:
+        """配布を終了したパッケージは installed_packages から除去される。"""
+        migrated, changed = migrate_installed_packages(["core", discontinued, "audit"])
         assert migrated == ["core", "audit"]
         assert changed is True
 
@@ -224,3 +225,70 @@ class TestMainWithOnlyDiscontinuedPackage:
         assert orch["installed_packages"] == []
         assert self.CONFIG_KEY not in orch["synced_files"]
         assert self.CONFIG_KEY in capsys.readouterr().out
+
+
+class TestMainWithDiscontinuedHookPackage:
+    """hook だけを配布していた配布終了パッケージ（tmux-monitor）の SessionStart 同期。
+
+    PreToolUse(Agent|Task) の hook が残ると、スクリプト不在で exit 2 になり
+    Agent / Task 呼び出しがブロックされるため、matcher 付きの登録と旧インタプリタ表記の
+    登録も含めて外れなければならない。
+    """
+
+    def test_hooks_detached_and_package_dropped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """導入一覧から外れ、matcher 付き・旧表記を含む全 hook 登録が外れる。"""
+        orchestra_dir = tmp_path / "orchestra"
+        (orchestra_dir / "packages").mkdir(parents=True)
+        claude_dir = tmp_path / "project" / ".claude"
+        claude_dir.mkdir(parents=True)
+        orch_path = claude_dir / "orchestra.json"
+        orch_path.write_text(
+            json.dumps({"installed_packages": ["core", "tmux-monitor"]}), encoding="utf-8"
+        )
+        pre_task_command = hook_utils.get_hook_command("tmux-monitor", "tmux-pre-task.py")
+        legacy_start_command = hook_utils.LEGACY_HOOK_INTERPRETER + (
+            ' "$AI_ORCHESTRA_DIR/packages/tmux-monitor/hooks/tmux-session-start.py"'
+        )
+        settings_path = claude_dir / "settings.local.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {
+                                "hooks": [
+                                    {"type": "command", "command": hook_utils.SYNC_HOOK_COMMAND},
+                                    {"type": "command", "command": legacy_start_command},
+                                ]
+                            }
+                        ],
+                        "PreToolUse": [
+                            {
+                                "matcher": "Agent|Task",
+                                "hooks": [{"type": "command", "command": pre_task_command}],
+                            }
+                        ],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+        monkeypatch.setattr(
+            sync_orchestra, "read_hook_input", lambda: {"cwd": str(claude_dir.parent)}
+        )
+
+        sync_orchestra.main()
+
+        orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        assert orch["installed_packages"] == ["core"]
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        registered = [
+            hook["command"]
+            for entries in settings["hooks"].values()
+            for entry in entries
+            for hook in entry["hooks"]
+        ]
+        assert registered == [hook_utils.SYNC_HOOK_COMMAND]

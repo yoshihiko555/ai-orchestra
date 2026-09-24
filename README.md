@@ -63,8 +63,7 @@ Claude Code (Orchestrator)
     │   ├── codd/              # ドキュメント整合性レイヤー（scan/validate）
     │   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
     │   ├── skill-evolution/   # スキル自己改善ループ（二軸テレメトリ + オフライン反復）
-    │   ├── git-workflow/     # Git/GitHub ワークフロー
-    │   └── tmux-monitor/       # tmux リアルタイム監視（opt-in）
+    │   └── git-workflow/     # Git/GitHub ワークフロー
     │
     └── 30 Specialized Agents
         ├── Planning: planner, researcher, requirements
@@ -219,7 +218,7 @@ orchex setup essential --project /path/to/project --dry-run
 プリセットは `presets.json` で定義されています:
 
 - **essential** — core, agent-routing, audit, quality-gates, codd
-- **all** — 全パッケージ（tmux-monitor を除く）
+- **all** — 全パッケージ
 
 > **テンプレートのプレースホルダーについて**: 配布される `CLAUDE.md` / `AGENTS.md` には `<YOUR_PROJECT_NAME>` などの `<YOUR_...>` 形式のプレースホルダーが含まれています。セットアップ後にプロジェクト固有の内容に書き換えてください。
 > `AGENTS.md` は `codex-suggestions` パッケージがインストール済みの場合のみ配布されます（Codex CLI と Antigravity CLI が共用。`antigravity.md` セクションを合成）。
@@ -229,10 +228,7 @@ orchex setup essential --project /path/to/project --dry-run
 ```bash
 # 個別にパッケージをインストールする場合
 orchex install core --project /path/to/project
-orchex install tmux-monitor --project /path/to/project
 ```
-
-> **tmux-monitor はオプションパッケージ**（tmux でサブエージェントを監視したい人向け）。`setup all` には含まれないため、必要な場合は上記のように明示的にインストールする。
 
 orchex が内部で以下を実行:
 
@@ -469,8 +465,7 @@ ai-orchestra/
 │   ├── quality-gates/     # 品質ゲート hooks
 │   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
 │   ├── skill-evolution/  # スキル自己改善ループ（テレメトリ hooks + オフライン CLI）
-│   ├── git-workflow/    # Git/GitHub ワークフロー（Issue・PR・開発フロー）
-│   └── tmux-monitor/      # tmux サブエージェント監視（opt-in）
+│   └── git-workflow/    # Git/GitHub ワークフロー（Issue・PR・開発フロー）
 ├── scripts/          # 管理CLI（エントリポイント + lib/ 共有ライブラリ）
 ├── templates/        # テンプレート（エージェント・スキル・プロジェクト）
 ├── tests/            # Python 単体テスト
