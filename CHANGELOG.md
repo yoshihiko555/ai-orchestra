@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`quality-gates`: `lint-on-save` が `package.json` の無いリポジトリで `✗ prettier: ERR_PNPM_RECURSIVE_EXEC_NO_PACKAGE` を出し続け、整形されない問題を修正**: ランチャー（pnpm / npm / yarn / npx）が「ツールが無い」ことを示して失敗した場合は次の候補へ進むようになり、PATH 上に導入した prettier 等で整形される。あわせて `npm exec` / `npx` が未導入のツールを暗黙に最新版取得したり、オフライン時に registry への再試行で待たされたりしないようにした（これまでは `biome` で Biome とは無関係な同名パッケージが取得されることがあった）。
 - **`loop-harness`: 修正 push 直後に外部レビュアーの再レビューを待たずにループが成功終了することがある問題を修正（Issue #442）**: GitHub API が push 前の head を返す数秒間に反復 head を記録してしまい、旧 head への既存レビューを今回の反復のものとみなしていた。push した SHA が API に反映されるまで待ってから記録するようになった。
 - **`loop-harness`: `claude -p` が異常終了したときの診断 artifact を拡充（Issue #444）**: stdout / stderr の保存量を 8 KB から 256 KB に引き上げ、エラーイベント行を `claude_<kind>_errors.jsonl` として別途保存する。API エラーの後にツール出力が続いても原因が artifact に残る。
 - **`loop-harness`: 同一プロジェクトで複数の loop definition の scheduler を並行稼働させたとき、他 definition の orphan ループを誤って採用する問題を修正（Issue #440）**: 各 scheduler は自分の definition のループだけを再起動・回復するようになった。単一 definition 運用では挙動は変わらない。

@@ -48,7 +48,20 @@ MISSING_TOOL_PATTERNS = (
     "executable file not found",
     "couldn't find a package.json file",
     "package.json not found",
+    # pnpm exec: package.json の無いディレクトリ。文言より安定したエラーコードで判定する
+    "err_pnpm_recursive_exec_no_package",
+    # npm exec --no / npx --no-install: ツールが導入されていない
+    "npx canceled due to missing packages",
+    # --offline 指定時に registry 情報のキャッシュも無い（未導入と同じ扱い）
+    "code enotcached",
+    # yarn berry: 依存にもスクリプトにも無い
+    "couldn't find a script named",
 )
+
+# npm は同じ状況で理由を付けず `canceled` だけを出すことがある（npm 7〜9 は
+# `npm ERR!`、10 以降は `npm error` 接頭辞）。単語だけでは広すぎるため、
+# この 1 行と完全一致する場合に限る。
+MISSING_TOOL_LINES = ("npm err! canceled", "npm error canceled")
 
 
 def is_shell_script(file_path: str) -> bool:
@@ -88,12 +101,21 @@ def get_file_kind(file_path: str) -> str | None:
 
 
 def node_tool_commands(tool: str, *args: str) -> list[list[str]]:
-    """Node 系ツールの実行コマンド候補を組み立てる。"""
+    """Node 系ツールの実行コマンド候補を組み立てる。
+
+    `npm exec` に `--no` を付けるのは、hook の stdin は TTY ではないため
+    npm が `--yes` とみなし、未導入のツールを名前だけで最新版を取得してしまうため
+    （`biome` は Biome ではない同名の別パッケージが入る）。
+
+    `--offline` を付けるのは、npm が未導入と判断する前に registry へ問い合わせるため。
+    オフラインでは再試行で hook の timeout（5 秒）を超え、後続候補へ届かない。
+    ローカルに導入済みのツールは `--offline` でもそのまま実行される。
+    """
     return [
         ["pnpm", "exec", tool, *args],
-        ["npm", "exec", "--", tool, *args],
+        ["npm", "exec", "--no", "--offline", "--", tool, *args],
         ["yarn", tool, *args],
-        ["npx", "--no-install", tool, *args],
+        ["npx", "--no-install", "--offline", tool, *args],
         [tool, *args],
     ]
 
@@ -173,6 +195,8 @@ def is_missing_tool_output(output: str) -> bool:
     lowered = output.lower()
     if 'command "' in lowered and '" not found' in lowered:
         return True
+    if any(line.strip() in MISSING_TOOL_LINES for line in lowered.splitlines()):
+        return True
     return any(pattern in lowered for pattern in MISSING_TOOL_PATTERNS)
 
 
@@ -197,12 +221,18 @@ def run_step(step: dict, file_dir: str) -> dict | None:
                 "success": True,
                 "output": output,
             }
-        if is_missing_tool_output(output):
+        # yarn は案内を stdout、失敗の理由を stderr に出すため両方を見る。
+        # 結合して判定すると別々のストリームの断片が組み合わさって誤判定しうるため、
+        # 判定はストリームごとに行う
+        if any(is_missing_tool_output(part or "") for part in (result.stdout, result.stderr)):
             continue
+        combined_output = "\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part and part.strip()
+        )
         return {
             "name": step["name"],
             "success": False,
-            "output": output,
+            "output": combined_output,
         }
     return None
 
