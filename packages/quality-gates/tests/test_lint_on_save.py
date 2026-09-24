@@ -87,6 +87,116 @@ def test_run_step_skips_missing_tool_errors(monkeypatch) -> None:
     assert len(calls) == 2
 
 
+class _Result:
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        # pnpm exec: package.json の無いリポジトリ
+        _Result(1, stdout="ERR_PNPM_RECURSIVE_EXEC_NO_PACKAGE  No package found in this workspace"),
+        # npm exec --no / npx --no-install: ツール未導入
+        _Result(
+            1,
+            stderr='npm error npx canceled due to missing packages and no YES option: ["prettier"]',
+        ),
+        # --offline で registry 情報のキャッシュも無い
+        _Result(
+            1,
+            stderr="npm error code ENOTCACHED\nnpm error request to https://registry.npmjs.org/"
+            "prettier failed: cache mode is 'only-if-cached'",
+        ),
+        # npm 7〜9 は理由を付けず canceled だけを出す
+        _Result(1, stderr="npm ERR! canceled\n\nnpm ERR! A complete log of this run can be found"),
+        # yarn: stdout に案内、stderr に未導入の理由
+        _Result(
+            1,
+            stdout="yarn run v1.22.22\ninfo Visit https://yarnpkg.com/en/docs/cli/run",
+            stderr='error Couldn\'t find a package.json file in "/repo/docs"',
+        ),
+    ],
+    ids=[
+        "pnpm-no-package",
+        "npm-no-install",
+        "npm-offline-not-cached",
+        "npm9-canceled",
+        "yarn-reason-on-stderr",
+    ],
+)
+def test_run_step_falls_back_to_next_launcher_when_tool_missing(
+    monkeypatch, missing: _Result
+) -> None:
+    # 先頭候補の「未導入」を失敗として報告すると、後ろにある導入済みの
+    # prettier（PATH 上のグローバル版など）に届かず毎回エラーになる。
+    responses = iter([missing, _Result(0, stdout="formatted")])
+    monkeypatch.setattr(lint_on_save.subprocess, "run", lambda cmd, **kwargs: next(responses))
+
+    result = lint_on_save.run_step(
+        {"name": "prettier", "commands": [["pnpm", "exec", "prettier"], ["prettier"]]},
+        ".",
+    )
+
+    assert result == {"name": "prettier", "success": True, "output": "formatted"}
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        _Result(2, stderr="[error] doc.md: SyntaxError: Unexpected token"),
+        # canceled を含むだけの行は未導入扱いしない（npm 7〜9 の 1 行と完全一致のみ）
+        _Result(2, stderr="[error] doc.md: request canceled by plugin"),
+        # 別々のストリームの断片を組み合わせて「command "x" not found」とみなさない
+        _Result(2, stdout='Running command "lint"', stderr='[error] rule "semi" not found'),
+    ],
+    ids=["syntax-error", "partial-canceled", "fragments-across-streams"],
+)
+def test_run_step_reports_real_tool_failure(monkeypatch, failure: _Result) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _Result:
+        calls.append(cmd)
+        return failure
+
+    monkeypatch.setattr(lint_on_save.subprocess, "run", fake_run)
+
+    result = lint_on_save.run_step(
+        {"name": "prettier", "commands": [["pnpm", "exec", "prettier"], ["prettier"]]},
+        ".",
+    )
+
+    assert result is not None
+    assert result["success"] is False
+    assert failure.stderr.strip() in result["output"]
+    assert len(calls) == 1
+
+
+def test_run_step_reports_stderr_even_when_stdout_has_banner(monkeypatch) -> None:
+    # yarn は stdout に案内を出すため、stdout だけを表示すると失敗理由が隠れる。
+    failure = _Result(1, stdout="yarn run v1.22.22", stderr="error doc.md: invalid config")
+    monkeypatch.setattr(lint_on_save.subprocess, "run", lambda cmd, **kwargs: failure)
+
+    result = lint_on_save.run_step({"name": "prettier", "commands": [["yarn", "prettier"]]}, ".")
+
+    assert result is not None
+    assert "error doc.md: invalid config" in result["output"]
+
+
+def test_node_tool_commands_never_install_implicitly() -> None:
+    # hook の stdin は TTY ではないため、npm exec は --no が無いと --yes とみなし
+    # 未導入のツールを名前だけで最新版取得する（`biome` は同名の別パッケージ）。
+    # --offline は、未導入の判断前に registry へ問い合わせてオフラインで
+    # hook の timeout を超えるのを防ぐ。
+    commands = lint_on_save.node_tool_commands("prettier", "--write", "doc.md")
+
+    assert ["npm", "exec", "--no", "--offline", "--", "prettier", "--write", "doc.md"] in commands
+    assert ["npx", "--no-install", "--offline", "prettier", "--write", "doc.md"] in commands
+    assert all(cmd[:2] != ["npm", "exec"] or "--no" in cmd for cmd in commands)
+
+
 def test_run_step_falls_back_on_timeout(monkeypatch) -> None:
     """EV-14: 15秒タイムアウト（subprocess.TimeoutExpired）でも次候補にフォールバックする。"""
     calls: list[list[str]] = []
@@ -154,6 +264,31 @@ def test_main_reports_lint_result(monkeypatch, capsys: pytest.CaptureFixture[str
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "[Lint OK]" in context
     assert "ruff format: 1 file reformatted" in context
+
+
+def test_main_stays_silent_when_no_launcher_has_the_tool(
+    monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 整形ツールが無い環境で編集のたびにエラーを出さない（EV-14）。
+    payload = {"tool_name": "Edit", "tool_input": {"file_path": "docs/guide.md"}}
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+    def fake_run(cmd: list[str], **kwargs: object) -> _Result:
+        if cmd[0] == "pnpm":
+            return _Result(1, stdout="ERR_PNPM_RECURSIVE_EXEC_NO_PACKAGE  No package found here")
+        if cmd[0] in ("npm", "npx"):
+            return _Result(1, stderr="npm error npx canceled due to missing packages")
+        if cmd[0] == "yarn":
+            return _Result(1, stdout="yarn run v1.22.22", stderr="error Command not found")
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(lint_on_save.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit) as exc_info:
+        lint_on_save.main()
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
