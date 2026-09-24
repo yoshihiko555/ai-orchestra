@@ -4,22 +4,21 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 ## パッケージ概要
 
-| パッケージ                                          | 概要                                                                           | カテゴリ     |
-| --------------------------------------------------- | ------------------------------------------------------------------------------ | ------------ |
-| [core](#core)                                       | 全パッケージ共通の基盤ライブラリ                                               | 基盤         |
-| [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案                              | 基盤         |
-| [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint の品質ゲート                             | 品質         |
-| [loop-harness](#loop-harness)                       | Issue 起点の Maker / Checker 反復と PR レビュー対応を安全に駆動                | ハーネス     |
-| [docker-runtime](#docker-runtime)                   | ハーネス共通の Docker / broker ライフサイクル基盤                              | 基盤         |
+| パッケージ                                          | 概要                                                                                             | カテゴリ     |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------ |
+| [core](#core)                                       | 全パッケージ共通の基盤ライブラリ                                                                 | 基盤         |
+| [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案                                                | 基盤         |
+| [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint の品質ゲート                                               | 品質         |
+| [loop-harness](#loop-harness)                       | Issue 起点の Maker / Checker 反復と PR レビュー対応を安全に駆動                                  | ハーネス     |
+| [docker-runtime](#docker-runtime)                   | ハーネス共通の Docker / broker ライフサイクル基盤                                                | 基盤         |
 | [meta-harness](#meta-harness)                       | 候補ハーネス・スキル・ルーティング設定の評価・進化基盤（Docker 隔離実行 + propose/promote/loop） | ハーネス     |
-| [codd](#codd)                                       | ドキュメント依存グラフの scan / validate（整合性レイヤー）                     | 整合性       |
-| [audit](#audit)                                     | 統一イベントログによるオーケストレーション監査基盤                             | 監査         |
-| [codex-suggestions](#codex-suggestions)             | ファイル編集・プラン完了時の Codex 相談提案                                    | 提案         |
-| [codex-harness](#codex-harness)                     | Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run・review） | ハーネス     |
-| [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案                                  | 提案         |
-| [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                               | ワークフロー |
-| [cocoindex](#cocoindex)                             | cocoindex MCP サーバーの自動プロビジョニング                                   | MCP          |
-| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視（opt-in、`setup all` 対象外）    | 監視         |
+| [codd](#codd)                                       | ドキュメント依存グラフの scan / validate（整合性レイヤー）                                       | 整合性       |
+| [audit](#audit)                                     | 統一イベントログによるオーケストレーション監査基盤                                               | 監査         |
+| [codex-suggestions](#codex-suggestions)             | ファイル編集・プラン完了時の Codex 相談提案                                                      | 提案         |
+| [codex-harness](#codex-harness)                     | Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run・review）                   | ハーネス     |
+| [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案                                                    | 提案         |
+| [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                                                 | ワークフロー |
+| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視（opt-in、`setup all` 対象外）                      | 監視         |
 
 ---
 
@@ -250,24 +249,6 @@ GitHub Issue の登録・開発フロー・PR 作成を含む Git/GitHub ワー�
   - `issue-fix` — 計画→実装→テスト→レビューの開発フロー実行
   - `pr-create` — Pull Request の作成
 - config: `sandbox-requirements.json`
-
----
-
-### cocoindex
-
-cocoindex-code MCP サーバーを Claude Code / Codex CLI / Antigravity CLI に自動プロビジョニングする。v1（stdio）と v2（proxy）の2モードに対応。
-
-- **バージョン**: 0.2.0
-- **依存**: core
-
-**提供するもの:**
-
-- hooks:
-  - `provision-mcp-servers.py` — SessionStart 時に各 CLI の MCP 設定を生成
-  - `stop-mcp-proxy.py` — SessionEnd 時に proxy を停止（v2 モード時）
-  - `proxy_manager.py` — proxy 管理ユーティリティ
-- rules (facet build): `cocoindex-usage`
-- config: `cocoindex.yaml`
 
 ---
 

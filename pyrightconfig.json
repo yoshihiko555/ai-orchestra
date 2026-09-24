@@ -15,8 +15,7 @@
   "extraPaths": [
     "packages/core/hooks",
     "packages/agent-routing/hooks",
-    "packages/cli-logging/hooks",
-    "packages/cocoindex/hooks"
+    "packages/cli-logging/hooks"
   ],
   "pythonVersion": "3.12",
   "typeCheckingMode": "basic"

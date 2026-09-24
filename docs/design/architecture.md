@@ -54,14 +54,13 @@ ai-orchestra/
 │       ├── orchestra_hooks.py  # Hook 管理 Mixin
 │       └── orchestra_context.py # Context テンプレート Mixin
 │
-├── packages/                  # 配布パッケージ群（9パッケージ）
+├── packages/                  # 配布パッケージ群（8パッケージ）
 │   ├── core/                  # 共通基盤
 │   ├── agent-routing/         # エージェント定義・ルーティング
 │   ├── quality-gates/         # 自動lint・テストゲート
 │   ├── audit/                 # 統一イベントログ監査・CLI 記録
 │   ├── codex-suggestions/     # Codex 相談提案
 │   ├── antigravity-suggestions/    # Antigravity リサーチ提案
-│   ├── cocoindex/             # MCP サーバー自動プロビジョニング
 │   ├── tmux-monitor/          # tmux サブエージェント監視
 │   └── git-workflow/        # GitHub Issue 開発フロー
 │
@@ -117,7 +116,6 @@ ai-orchestra/
 | `orchex facet build`                     | Facet 合成 → SKILL.md/rule.md 生成              |
 | `orchex facet extract`                   | 生成ファイルからソースへ逆抽出                  |
 | `orchex setup <preset>`                  | プリセット一括セットアップ                      |
-| `orchex proxy stop/status`               | MCP proxy 管理                                  |
 
 **インストールフロー**:
 
@@ -154,7 +152,7 @@ SessionStart hook として毎セッション自動実行。エントリポイ�
 | `hook_utils.py`        | Hook コマンド生成・検索・追加・削除の共通関数                  |
 | `settings_io.py`       | `settings.local.json` / `orchestra.json` の読み書き            |
 | `sync_engine.py`       | パッケージ同期・hook 同期・facet ビルドのコアロジック          |
-| `scaffold.py`          | プロジェクト scaffold 管理                                      |
+| `scaffold.py`          | プロジェクト scaffold 管理                                     |
 | `agent_model_patch.py` | エージェント `.md` の frontmatter model パッチ                 |
 | `facet_builder.py`     | Facet composition → SKILL.md / rule.md のビルダー              |
 | `gitignore_sync.py`    | `.gitignore` の AI Orchestra ブロック管理                      |
@@ -189,7 +187,6 @@ core (v0.4.0)                   ← 依存なし（共通基盤）
 ├── quality-gates (v0.1.0)      ← core, audit
 ├── codex-suggestions (v0.1.0)  ← core
 ├── antigravity-suggestions (v0.1.0) ← core
-├── cocoindex (v0.2.0)          ← core
 └── tmux-monitor (v0.2.0)       ← core
 
 git-workflow (v0.1.0)         ← 依存なし（独立）
@@ -215,16 +212,16 @@ git-workflow (v0.1.0)         ← 依存なし（独立）
 
 **30 エージェント定義**（日英バイリンガルトリガー付き）:
 
-| カテゴリ       | エージェント                                                                                              |
-| -------------- | --------------------------------------------------------------------------------------------------------- |
-| Planning       | planner, researcher, requirements                                                                         |
-| Design         | architect, api-designer, data-modeler, auth-designer, spec-writer                                         |
-| Implementation | frontend-dev, backend-python-dev, backend-go-dev                                                          |
-| AI/ML          | ai-architect, ai-dev, prompt-engineer, rag-engineer                                                       |
-| Test/Debug     | debugger, tester                                                                                          |
+| カテゴリ       | エージェント                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Planning       | planner, researcher, requirements                                                                                                                 |
+| Design         | architect, api-designer, data-modeler, auth-designer, spec-writer                                                                                 |
+| Implementation | frontend-dev, backend-python-dev, backend-go-dev                                                                                                  |
+| AI/ML          | ai-architect, ai-dev, prompt-engineer, rag-engineer                                                                                               |
+| Test/Debug     | debugger, tester                                                                                                                                  |
 | Review         | code-reviewer, security-reviewer, performance-reviewer, adversarial-reviewer, finding-verifier, spec-reviewer, architecture-reviewer, ux-reviewer |
-| Docs           | docs-writer                                                                                               |
-| Utility        | general-purpose, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker    |
+| Docs           | docs-writer                                                                                                                                       |
+| Utility        | general-purpose, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker                                            |
 
 **ルーティング解決**:
 
@@ -247,14 +244,12 @@ SessionStart:
   - sync-orchestra.py (外部)             パッケージ差分同期 + facet build
   - load-task-state.py (core)            Plans.md 読み込み・自動アーカイブ・タスクサマリー表示
   - orchestration-bootstrap.py (audit)   state/logs ディレクトリ初期化
-  - provision-mcp-servers.py (cocoindex) MCP 設定 reconcile + proxy warmup
   - tmux-session-start.py (tmux)         tmux セットアップ
 
 UserPromptSubmit:
   - clear-plan-gate.py (core)            プランゲートクリア
   - orchestration-expected-route.py      期待ルート予測
   - agent-router.py (routing)            プロンプト解析 → [Agent Routing] 提案
-  - notify-proxy-reconnect.py (cocoindex) proxy ready 後に 1 回だけ reconnect 案内
 
 PreToolUse(Edit|Write):
   - check-codex-before-write.py (codex)  設計判断を伴う変更で [Codex Suggestion] 出力
@@ -280,7 +275,6 @@ PostToolUse(Agent|Task):
 
 SessionEnd:
   - cleanup-session-context.py (core)    session/ ディレクトリ削除
-  - stop-mcp-proxy.py (cocoindex)        session state cleanup
   - tmux-session-end.py (tmux)           tmux クリーンアップ
 ```
 
@@ -357,10 +351,10 @@ templates/project/CLAUDE.md  (生成物・直接編集禁止)
 <project>/CLAUDE.md          (配布先)
 ```
 
-| 正本                | 生成先テンプレート            | プロジェクト配置先  |
-| ------------------- | ----------------------------- | ------------------- |
-| `context/claude.md` | `templates/project/CLAUDE.md` | `CLAUDE.md`         |
-| `context/codex.md` + `context/antigravity.md` | `templates/codex/AGENTS.md` | `AGENTS.md` |
+| 正本                                          | 生成先テンプレート            | プロジェクト配置先 |
+| --------------------------------------------- | ----------------------------- | ------------------ |
+| `context/claude.md`                           | `templates/project/CLAUDE.md` | `CLAUDE.md`        |
+| `context/codex.md` + `context/antigravity.md` | `templates/codex/AGENTS.md`   | `AGENTS.md`        |
 
 ---
 
@@ -376,13 +370,12 @@ templates/project/CLAUDE.md  (生成物・直接編集禁止)
 
 ### 8.2 主要設定ファイル
 
-| ファイル                   | パッケージ    | 内容                                                                    |
-| -------------------------- | ------------- | ----------------------------------------------------------------------- |
-| `cli-tools.yaml`           | agent-routing | Codex/Antigravity モデル名、sandbox 設定、30 エージェントの tool 割り当て    |
-| `cocoindex.yaml`           | cocoindex     | MCP サーバー設定、proxy 設定                                            |
-| `task-memory.yaml`         | core          | Plans.md パス、タスクマーカー定義                                       |
-| `audit-flags.json`         | audit         | 機能フラグ（route_audit, quality_gate, kpi_scorecard, context_optimization） |
-| `delegation-policy.json`   | audit         | ルーティングポリシー（将来用）                                              |
+| ファイル                 | パッケージ    | 内容                                                                         |
+| ------------------------ | ------------- | ---------------------------------------------------------------------------- |
+| `cli-tools.yaml`         | agent-routing | Codex/Antigravity モデル名、sandbox 設定、30 エージェントの tool 割り当て    |
+| `task-memory.yaml`       | core          | Plans.md パス、タスクマーカー定義                                            |
+| `audit-flags.json`       | audit         | 機能フラグ（route_audit, quality_gate, kpi_scorecard, context_optimization） |
+| `delegation-policy.json` | audit         | ルーティングポリシー（将来用）                                               |
 
 ### 8.3 cli-tools.yaml の構造
 
@@ -444,7 +437,6 @@ agents:
 <project>/
 ├── CLAUDE.md                       # テンプレートから同期
 ├── AGENTS.md                       # テンプレートから同期
-├── .mcp.json                       # MCP サーバー設定（cocoindex 利用時）
 ├── .claude/
 │   ├── orchestra.json              # インストール済みパッケージ・同期状態
 │   ├── settings.local.json         # hook 登録（自動管理）
@@ -468,15 +460,15 @@ agents:
 
 **計 46 テストファイル**（tests/ 27 + packages/\*/tests/ 19）
 
-| 領域       | テスト内容                                                       |
-| ---------- | ---------------------------------------------------------------- |
-| 設定管理   | base + local override の読み込み優先順位、YAML/JSON パース       |
-| 一貫性     | manifest ↔ 実ファイル、config ↔ 生成物の整合性検証               |
-| Hook       | コンテキスト注入・キャプチャ・クリーンアップ                     |
-| CLI 検出   | `codex exec` / `agy -p` の正規表現マッチング                  |
-| Facet      | composition 解決、policy 注入、エラーハンドリング                |
-| 同期       | agents/config の差分同期、agent model パッチ                    |
-| タスク状態 | Plans.md パース、マーカー更新、アーカイブ                        |
+| 領域       | テスト内容                                                 |
+| ---------- | ---------------------------------------------------------- |
+| 設定管理   | base + local override の読み込み優先順位、YAML/JSON パース |
+| 一貫性     | manifest ↔ 実ファイル、config ↔ 生成物の整合性検証         |
+| Hook       | コンテキスト注入・キャプチャ・クリーンアップ               |
+| CLI 検出   | `codex exec` / `agy -p` の正規表現マッチング               |
+| Facet      | composition 解決、policy 注入、エラーハンドリング          |
+| 同期       | agents/config の差分同期、agent model パッチ               |
+| タスク状態 | Plans.md パース、マーカー更新、アーカイブ                  |
 
 **テストパターン**: `module_loader.py` による動的モジュールロード、`tmp_path` フィクスチャ、`monkeypatch`、`@pytest.mark.parametrize`
 

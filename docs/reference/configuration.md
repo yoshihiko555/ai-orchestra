@@ -157,11 +157,11 @@ review:
   verify_findings: true
 ```
 
-| キー              | 型     | デフォルト      | 説明                                                                       |
-| ----------------- | ------ | --------------- | --------------------------------------------------------------------------- |
-| `max_loops`       | int    | `3`             | 自動修正ループの上限回数                                                  |
-| `pass_threshold`  | string | `critical_zero` | `/review` の通過基準                                                       |
-| `auto_fix`        | bool   | `true`          | Critical 指摘の自動修正ループを有効化                                     |
+| キー              | 型     | デフォルト      | 説明                                                                                   |
+| ----------------- | ------ | --------------- | -------------------------------------------------------------------------------------- |
+| `max_loops`       | int    | `3`             | 自動修正ループの上限回数                                                               |
+| `pass_threshold`  | string | `critical_zero` | `/review` の通過基準                                                                   |
+| `auto_fix`        | bool   | `true`          | Critical 指摘の自動修正ループを有効化                                                  |
 | `verify_findings` | bool   | `true`          | `finding-verifier` による指摘検証（Phase 3.5）を有効化。`false` で従来動作（検証なし） |
 
 ### agents セクション
@@ -176,21 +176,21 @@ agents:
     model: null # エージェント固有のモデル上書き（任意）
 ```
 
-| `tool` 値       | 動作                            |
-| --------------- | ------------------------------- |
-| `codex`         | Codex CLI を使用                |
+| `tool` 値       | 動作                                                     |
+| --------------- | -------------------------------------------------------- |
+| `codex`         | Codex CLI を使用                                         |
 | `antigravity`   | Antigravity CLI（agy）を使用（旧値 `gemini` は読み替え） |
-| `claude-direct` | 外部 CLI を呼ばず Claude で処理 |
-| `auto`          | タスク種別に応じて自動選択      |
+| `claude-direct` | 外部 CLI を呼ばず Claude で処理                          |
+| `auto`          | タスク種別に応じて自動選択                               |
 
 #### デフォルトのルーティング
 
-| tool 値         | エージェント                                                                                                                                                                                                                                                                                                |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| tool 値         | エージェント                                                                                                                                                                                                                                                                                                                                        |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `claude-direct` | architect, api-designer, code-reviewer, finding-verifier, security-reviewer, performance-reviewer, adversarial-reviewer, ux-reviewer, spec-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker |
-| `codex`         | ai-dev, backend-go-dev, backend-python-dev, debugger, frontend-dev, rag-engineer, spec-writer, tester                                                                                                                                                                                                       |
-| `antigravity`   | researcher                                                                                                                                                                                                                                                                                                  |
-| `auto`          | ai-architect, general-purpose                                                                                                                                                                                                                                                                               |
+| `codex`         | ai-dev, backend-go-dev, backend-python-dev, debugger, frontend-dev, rag-engineer, spec-writer, tester                                                                                                                                                                                                                                               |
+| `antigravity`   | researcher                                                                                                                                                                                                                                                                                                                                          |
+| `auto`          | ai-architect, general-purpose                                                                                                                                                                                                                                                                                                                       |
 
 ---
 
@@ -330,62 +330,6 @@ markers:
 
 ---
 
-## cocoindex.yaml
-
-**パス:** `.claude/config/cocoindex/cocoindex.yaml`
-**パッケージ:** cocoindex
-
-cocoindex MCP サーバーのプロビジョニング設定。
-
-```yaml
-# MCP サーバーの有効/無効
-enabled: true
-server_name: "cocoindex-code"
-command: "uvx"
-args:
-  - "--prerelease=explicit"
-  - "--with"
-  - "cocoindex>=1.0.0a16"
-  - "cocoindex-code@latest"
-
-# CLI ごとの有効/無効
-targets:
-  claude:
-    enabled: true
-    type: "stdio"
-    force_stdio: false
-  codex:
-    enabled: true
-    force_stdio: false
-  antigravity: # agy（.gemini/settings.json を継続利用。旧キー gemini の enabled: false は読み替え）
-    enabled: true
-    force_stdio: false
-
-# mcp-proxy モード（v2）
-proxy:
-  enabled: false # .local.yaml で true にしてオプトイン
-  port: 8792
-  port_range: 100 # project_dir ハッシュで自動割り当て
-  host: "127.0.0.1"
-  pid_file: ".claude/.mcp-proxy.pid"
-  startup_timeout: 10
-  idle_timeout: 300 # active client が 0 の状態が続いたら supervisor が自動停止する秒数
-```
-
-補足:
-
-- `proxy.enabled: true` は proxy-only を意味する。proxy 未 ready でも stdio fallback は行わない
-- URL は `host + derived port + fixed path` で決定される
-  - Claude Code / Antigravity CLI: `/sse`
-  - Codex CLI: `/mcp`
-- 外側の固定ポートは supervisor が listen し、inner `mcp-proxy` は一時ポートで起動する
-- `idle_timeout` は `active_clients == 0` が続いたときの supervisor 自動停止秒数。`0` で無効化できる
-- runtime state は設定ファイルに書かず、`.claude/state/cocoindex-proxy.json` と `.claude/state/cocoindex-sessions/<session_id>.json` に保存する
-- `proxy_state` は `starting` / `ready` / `idle` / `stopping` / `stopped` / `failed`
-- 初回 session では proxy warmup 完了後に `/mcp` reconnect が必要になる場合がある
-
----
-
 ## sandbox-requirements.json
 
 **パス:** `.claude/config/git-workflow/sandbox-requirements.json`
@@ -436,37 +380,14 @@ agents:
     tool: claude-direct
 ```
 
-### cocoindex の特定 CLI を無効化
-
-```yaml
-# .claude/config/cocoindex/cocoindex.local.yaml
-targets:
-  codex:
-    enabled: false
-```
-
-### cocoindex バージョン固定
-
-```yaml
-# .claude/config/cocoindex/cocoindex.local.yaml
-args:
-  - "--prerelease=explicit"
-  - "--with"
-  - "cocoindex==1.0.0a16"
-  - "cocoindex-code==0.2.0"
-```
-
 ---
 
 ## 設定の反映タイミング
 
-| 変更対象             | 反映タイミング                                        |
-| -------------------- | ----------------------------------------------------- |
-| cli-tools.yaml       | 次回のエージェント呼び出し時（即時）                  |
-| cli-tools.local.yaml | 次回のエージェント呼び出し時（即時）                  |
-| audit-flags.json     | 次回の hook 発火時（即時）                            |
-| cocoindex.yaml       | 次回セッション開始時の reconcile（SessionStart hook） |
-| task-memory.yaml     | 次回セッション開始時（SessionStart hook）             |
-| ベースファイル全般   | SessionStart 時に `sync-orchestra.py` で自動同期      |
-
-`cocoindex` の proxy runtime state は即時反映で更新されるが、これは設定反映ではなく `.claude/state/` 配下の内部状態として扱う。
+| 変更対象             | 反映タイミング                                   |
+| -------------------- | ------------------------------------------------ |
+| cli-tools.yaml       | 次回のエージェント呼び出し時（即時）             |
+| cli-tools.local.yaml | 次回のエージェント呼び出し時（即時）             |
+| audit-flags.json     | 次回の hook 発火時（即時）                       |
+| task-memory.yaml     | 次回セッション開始時（SessionStart hook）        |
+| ベースファイル全般   | SessionStart 時に `sync-orchestra.py` で自動同期 |

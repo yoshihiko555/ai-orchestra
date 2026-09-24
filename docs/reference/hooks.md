@@ -22,18 +22,18 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 
 ### フックイベント一覧
 
-| イベント | 発火タイミング |
-|---------|--------------|
-| `SessionStart` | Claude Code セッション開始時 |
-| `SessionEnd` | Claude Code セッション終了時 |
-| `UserPromptSubmit` | ユーザーがプロンプトを送信した直後 |
-| `InstructionsLoaded` | 指示書ファイルの読み込み完了時 |
-| `PreToolUse` | ツール実行前 |
-| `PostToolUse` | ツール実行後 |
-| `Stop` | Claude Code が応答を返す直前 |
-| `ExitPlanMode` | プランモード終了時 |
-| `SubagentStart` | サブエージェント起動時 |
-| `SubagentStop` | サブエージェント停止時 |
+| イベント             | 発火タイミング                     |
+| -------------------- | ---------------------------------- |
+| `SessionStart`       | Claude Code セッション開始時       |
+| `SessionEnd`         | Claude Code セッション終了時       |
+| `UserPromptSubmit`   | ユーザーがプロンプトを送信した直後 |
+| `InstructionsLoaded` | 指示書ファイルの読み込み完了時     |
+| `PreToolUse`         | ツール実行前                       |
+| `PostToolUse`        | ツール実行後                       |
+| `Stop`               | Claude Code が応答を返す直前       |
+| `ExitPlanMode`       | プランモード終了時                 |
+| `SubagentStart`      | サブエージェント起動時             |
+| `SubagentStop`       | サブエージェント停止時             |
 
 ### フックの入出力
 
@@ -47,85 +47,77 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 
 ### core
 
-| フック | イベント | 対象 | 説明 |
-|-------|---------|------|------|
-| `load-task-state.py` | SessionStart | — | Plans.md からタスク状態を読み込みサマリーを出力 |
-| `set-plan-gate.py` | PostToolUse | Agent/Task | プラン完了後にプランゲートを設定 |
-| `check-plan-gate.py` | PreToolUse | Agent/Task | プランゲート確認（実装エージェントをブロック） |
-| `clear-plan-gate.py` | UserPromptSubmit | — | ユーザー入力時にプランゲートをクリア |
-| `inject-shared-context.py` | PreToolUse | Agent/Task | サブエージェントに共有コンテキストを注入 |
-| `capture-task-result.py` | PostToolUse | Agent/Task | サブエージェント結果を `.claude/context/session/entries/` に記録 |
-| `update-working-context.py` | PostToolUse | Edit/Write | 変更ファイルを `working-context.json` に追記 |
-| `cleanup-session-context.py` | SessionEnd | — | `.claude/context/session/` をクリーンアップ |
+| フック                       | イベント         | 対象       | 説明                                                             |
+| ---------------------------- | ---------------- | ---------- | ---------------------------------------------------------------- |
+| `load-task-state.py`         | SessionStart     | —          | Plans.md からタスク状態を読み込みサマリーを出力                  |
+| `set-plan-gate.py`           | PostToolUse      | Agent/Task | プラン完了後にプランゲートを設定                                 |
+| `check-plan-gate.py`         | PreToolUse       | Agent/Task | プランゲート確認（実装エージェントをブロック）                   |
+| `clear-plan-gate.py`         | UserPromptSubmit | —          | ユーザー入力時にプランゲートをクリア                             |
+| `inject-shared-context.py`   | PreToolUse       | Agent/Task | サブエージェントに共有コンテキストを注入                         |
+| `capture-task-result.py`     | PostToolUse      | Agent/Task | サブエージェント結果を `.claude/context/session/entries/` に記録 |
+| `update-working-context.py`  | PostToolUse      | Edit/Write | 変更ファイルを `working-context.json` に追記                     |
+| `cleanup-session-context.py` | SessionEnd       | —          | `.claude/context/session/` をクリーンアップ                      |
 
 ### agent-routing
 
-| フック | イベント | 対象 | 説明 |
-|-------|---------|------|------|
-| `agent-router.py` | UserPromptSubmit | — | プロンプトからエージェントを検出し `[Agent Routing]` を出力 |
+| フック            | イベント         | 対象 | 説明                                                        |
+| ----------------- | ---------------- | ---- | ----------------------------------------------------------- |
+| `agent-router.py` | UserPromptSubmit | —    | プロンプトからエージェントを検出し `[Agent Routing]` を出力 |
 
 ### quality-gates
 
-| フック | イベント | 対象 | 説明 |
-|-------|---------|------|------|
-| `check-context-optimization.py` | PreToolUse | Read/Grep/Bash | 大きすぎる読み込みや `cat` 利用を抑制 |
-| `post-implementation-review.py` | PostToolUse | Edit/Write | 一定量の変更後にレビューを提案 |
-| `post-test-analysis.py` | PostToolUse | Bash | テスト実行結果を分析し `quality_gate` を記録 |
-| `lint-on-save.py` | PostToolUse | Edit/Write | ファイル種別ごとの自動 lint / format 実行 |
-| `test-tampering-detector.py` | PostToolUse | Edit/Write/Bash | skip/disable 追加やテスト削除を警告 |
-| `test-gate-checker.py` | PostToolUse | Edit/Write | テスト品質ゲートチェック |
-| `turn-end-summary.py` | Stop | — | 次ターン向け `systemMessage` を生成 |
+| フック                          | イベント    | 対象            | 説明                                         |
+| ------------------------------- | ----------- | --------------- | -------------------------------------------- |
+| `check-context-optimization.py` | PreToolUse  | Read/Grep/Bash  | 大きすぎる読み込みや `cat` 利用を抑制        |
+| `post-implementation-review.py` | PostToolUse | Edit/Write      | 一定量の変更後にレビューを提案               |
+| `post-test-analysis.py`         | PostToolUse | Bash            | テスト実行結果を分析し `quality_gate` を記録 |
+| `lint-on-save.py`               | PostToolUse | Edit/Write      | ファイル種別ごとの自動 lint / format 実行    |
+| `test-tampering-detector.py`    | PostToolUse | Edit/Write/Bash | skip/disable 追加やテスト削除を警告          |
+| `test-gate-checker.py`          | PostToolUse | Edit/Write      | テスト品質ゲートチェック                     |
+| `turn-end-summary.py`           | Stop        | —               | 次ターン向け `systemMessage` を生成          |
 
 ### audit
 
-| フック | イベント | 対象 | 説明 |
-|-------|---------|------|------|
-| `audit-bootstrap.py` | SessionStart | — | セッションログ初期化 + `session_start` 記録 |
-| `audit-session-end.py` | SessionEnd | — | セッション集計 + `session_end` 記録 |
-| `audit-prompt.py` | UserPromptSubmit | — | 期待ルートを予測し `prompt` を記録 |
-| `audit-route.py` | PostToolUse | 全 PostToolUse | 実ルート照合 + `route_decision` 記録 |
-| `audit-cli.py` | PostToolUse | Bash | Codex/Antigravity CLI 呼び出しを `cli_call` として記録 |
-| `audit-subagent-start.py` | SubagentStart | — | サブエージェント開始を記録 |
-| `audit-subagent-end.py` | SubagentStop | — | サブエージェント終了を記録 |
-| `audit-instructions-loaded.py` | InstructionsLoaded | — | 読み込まれた指示書を記録 |
+| フック                         | イベント           | 対象           | 説明                                                   |
+| ------------------------------ | ------------------ | -------------- | ------------------------------------------------------ |
+| `audit-bootstrap.py`           | SessionStart       | —              | セッションログ初期化 + `session_start` 記録            |
+| `audit-session-end.py`         | SessionEnd         | —              | セッション集計 + `session_end` 記録                    |
+| `audit-prompt.py`              | UserPromptSubmit   | —              | 期待ルートを予測し `prompt` を記録                     |
+| `audit-route.py`               | PostToolUse        | 全 PostToolUse | 実ルート照合 + `route_decision` 記録                   |
+| `audit-cli.py`                 | PostToolUse        | Bash           | Codex/Antigravity CLI 呼び出しを `cli_call` として記録 |
+| `audit-subagent-start.py`      | SubagentStart      | —              | サブエージェント開始を記録                             |
+| `audit-subagent-end.py`        | SubagentStop       | —              | サブエージェント終了を記録                             |
+| `audit-instructions-loaded.py` | InstructionsLoaded | —              | 読み込まれた指示書を記録                               |
 
 ### codex-suggestions
 
-| フック | イベント | 対象 | 説明 |
-|-------|---------|------|------|
-| `check-codex-before-write.py` | PreToolUse | Edit/Write | `[Codex Suggestion]` を出力して Codex 相談を促す |
-| `check-codex-after-plan.py` | PostToolUse | Agent/Task | プラン完了後に Codex レビューを提案 |
+| フック                        | イベント    | 対象       | 説明                                             |
+| ----------------------------- | ----------- | ---------- | ------------------------------------------------ |
+| `check-codex-before-write.py` | PreToolUse  | Edit/Write | `[Codex Suggestion]` を出力して Codex 相談を促す |
+| `check-codex-after-plan.py`   | PostToolUse | Agent/Task | プラン完了後に Codex レビューを提案              |
 
 ### antigravity-suggestions
 
-| フック | イベント | 対象 | 説明 |
-|-------|---------|------|------|
+| フック                            | イベント   | 対象               | 説明                                                             |
+| --------------------------------- | ---------- | ------------------ | ---------------------------------------------------------------- |
 | `suggest-antigravity-research.py` | PreToolUse | WebSearch/WebFetch | `[Antigravity Suggestion]` を出力して Antigravity リサーチを促す |
-
-### cocoindex
-
-| フック | イベント | 対象 | 説明 |
-|-------|---------|------|------|
-| `provision-mcp-servers.py` | SessionStart | — | 各 CLI の MCP サーバー設定を reconcile し、必要なら proxy warmup を開始 |
-| `notify-proxy-reconnect.py` | UserPromptSubmit | — | proxy ready/idle 後に 1 回だけ reconnect を促す |
-| `stop-mcp-proxy.py` | SessionEnd | — | session state を削除する |
 
 ### tmux-monitor
 
-| フック | イベント | 対象 | 説明 |
-|-------|---------|------|------|
-| `tmux-session-start.py` | SessionStart | — | tmux ペインのセットアップ |
-| `tmux-session-end.py` | SessionEnd | — | tmux ペインのクリーンアップ |
-| `tmux-pre-task.py` | PreToolUse | Agent/Task | タスク実行前の準備表示 |
-| `tmux-subagent-start.py` | SubagentStart | — | サブエージェント起動表示 |
-| `tmux-subagent-stop.py` | SubagentStop | — | サブエージェント停止表示 |
+| フック                   | イベント      | 対象       | 説明                        |
+| ------------------------ | ------------- | ---------- | --------------------------- |
+| `tmux-session-start.py`  | SessionStart  | —          | tmux ペインのセットアップ   |
+| `tmux-session-end.py`    | SessionEnd    | —          | tmux ペインのクリーンアップ |
+| `tmux-pre-task.py`       | PreToolUse    | Agent/Task | タスク実行前の準備表示      |
+| `tmux-subagent-start.py` | SubagentStart | —          | サブエージェント起動表示    |
+| `tmux-subagent-stop.py`  | SubagentStop  | —          | サブエージェント停止表示    |
 
 ### codd
 
-| フック | イベント | 対象 | 説明 |
-|-------|---------|------|------|
-| `codd-scan-postedit.py` | PostToolUse | Edit/Write | scope 内ファイル編集時に `codd scan` を実行し graph を再構築（常に非ブロック、`hooks.scan_on_edit` opt-in・既定 `false`） |
-| `codd-validate-precommit.py` | PreToolUse | Bash | `git commit` 検出時に `codd validate` を実行し warn/block（`hooks.validate_on_commit` opt-in・既定 `warn`） |
+| フック                       | イベント    | 対象       | 説明                                                                                                                      |
+| ---------------------------- | ----------- | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `codd-scan-postedit.py`      | PostToolUse | Edit/Write | scope 内ファイル編集時に `codd scan` を実行し graph を再構築（常に非ブロック、`hooks.scan_on_edit` opt-in・既定 `false`） |
+| `codd-validate-precommit.py` | PreToolUse  | Bash       | `git commit` 検出時に `codd validate` を実行し warn/block（`hooks.validate_on_commit` opt-in・既定 `warn`）               |
 
 ---
 
@@ -230,21 +222,21 @@ Edit/Write 後に、編集したファイル種別に応じて formatter / linte
 
 ### 主要関数
 
-| 関数 | 説明 |
-|------|------|
-| `read_hook_input()` | stdin から JSON を読み取り dict を返す |
-| `get_field(data, key)` | dict からフィールドを安全に取得 |
-| `load_package_config(pkg, file, project_dir)` | パッケージ config を読み込み `.local` があればマージ |
-| `find_package_config(pkg, file, project_dir)` | パッケージ config パスを解決 |
-| `deep_merge(base, override)` | dict を再帰的にマージ |
-| `read_json_safe(path)` | JSON ファイルを安全に読み込み |
-| `write_json(path, data)` | dict を JSON ファイルに書き出し |
-| `append_jsonl(path, record)` | dict を JSONL ファイルに追記 |
-| `find_first_text(node, keys)` | ネスト構造から最初の非空文字列を検索 |
-| `find_first_int(node, keys)` | ネスト構造から最初の整数値を検索 |
-| `ensure_package_path(pkg, subdir)` | `$AI_ORCHESTRA_DIR/packages/{pkg}/{subdir}` を sys.path に追加 |
-| `safe_hook_execution(func)` | Hook の main() を安全にラップ（例外時は stderr にログ出力して exit(0)） |
-| `try_append_event(...)` | 統一イベントログへの追記（失敗しても例外を上げない） |
+| 関数                                          | 説明                                                                    |
+| --------------------------------------------- | ----------------------------------------------------------------------- |
+| `read_hook_input()`                           | stdin から JSON を読み取り dict を返す                                  |
+| `get_field(data, key)`                        | dict からフィールドを安全に取得                                         |
+| `load_package_config(pkg, file, project_dir)` | パッケージ config を読み込み `.local` があればマージ                    |
+| `find_package_config(pkg, file, project_dir)` | パッケージ config パスを解決                                            |
+| `deep_merge(base, override)`                  | dict を再帰的にマージ                                                   |
+| `read_json_safe(path)`                        | JSON ファイルを安全に読み込み                                           |
+| `write_json(path, data)`                      | dict を JSON ファイルに書き出し                                         |
+| `append_jsonl(path, record)`                  | dict を JSONL ファイルに追記                                            |
+| `find_first_text(node, keys)`                 | ネスト構造から最初の非空文字列を検索                                    |
+| `find_first_int(node, keys)`                  | ネスト構造から最初の整数値を検索                                        |
+| `ensure_package_path(pkg, subdir)`            | `$AI_ORCHESTRA_DIR/packages/{pkg}/{subdir}` を sys.path に追加          |
+| `safe_hook_execution(func)`                   | Hook の main() を安全にラップ（例外時は stderr にログ出力して exit(0)） |
+| `try_append_event(...)`                       | 統一イベントログへの追記（失敗しても例外を上げない）                    |
 
 ### 使用例
 
@@ -278,7 +270,6 @@ if __name__ == "__main__":
 - `sync-orchestra.py`（同期スクリプト）
 - `load-task-state.py`（core）
 - `audit-bootstrap.py`（audit）
-- `provision-mcp-servers.py`（cocoindex）
 - `tmux-session-start.py`（tmux-monitor）
 
 ### SessionEnd
@@ -340,7 +331,7 @@ orchex enable codex-suggestions --project .
 ```yaml
 # .claude/config/agent-routing/cli-tools.local.yaml
 codex:
-  enabled: false    # check-codex-before-write.py の [Codex Suggestion] が抑制される
+  enabled: false # check-codex-before-write.py の [Codex Suggestion] が抑制される
 antigravity:
-  enabled: false    # suggest-antigravity-research.py の [Antigravity Suggestion] が抑制される
+  enabled: false # suggest-antigravity-research.py の [Antigravity Suggestion] が抑制される
 ```

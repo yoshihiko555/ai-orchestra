@@ -20,6 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`facet build` が生成 Markdown を prettier で整形するようになった**: `.claude/skills/**/SKILL.md`・`.claude/rules/*.md`・`.agents/skills/**/SKILL.md` と `references/*.md` が、生成時点で prettier 整形済みになる。これまでは生成物が未整形だったため、エディタの保存時整形や `lint-on-save` hook が触った瞬間にテーブル整列や frontmatter の折り返しで全文差分が発生していた。prettier が解決できない環境では警告を出して未整形のまま生成を続行する（`facet build` は失敗しない）。この変更により、導入済みプロジェクトでは次回 sync 時に生成物へ一度だけ整形差分が出る。
 - **`loop-harness`: Docker 隔離の broker 既定値（`budget_usd`/`max_requests`/`max_total_tokens`/`max_upstream_bytes`）を実測に基づき引き上げ（Issue #405）**: 従来の既定値では Claude Code の最初のリクエストの時点でコスト上限見積りを超え、Maker/Checker の LLM 層が全リクエスト拒否されて起動不能になっていた。既定値を上書き済みのプロジェクトは影響しない。その後の実 Issue での常駐観察で `budget_usd: 25.0` でも Maker が完走しなかったため、`budget_usd` の既定値を `50.0` に再較正した（Issue #435）。
 
+### Removed
+
+- **BREAKING** **`cocoindex` パッケージと `orchex proxy stop` / `orchex proxy status` を削除（ADR-20260924-054）**: 意味検索 MCP サーバー cocoindex-code の自動プロビジョニングと mcp-proxy 管理を廃止した。実測（Opus / Haiku で計 80 回の A/B）で、Grep 中心の探索と比べて正解率の向上がなく、コストだけが増えたため。
+  - 移行: 導入済みプロジェクトでは、次回の SessionStart 同期が `installed_packages` から `cocoindex` を外し、登録済みの cocoindex hook と同期済みの `cocoindex.yaml` も削除する（配布後に編集していた場合は残し、その旨を表示する）。更新時点で起動中のセッションは一度再起動する。
+  - 移行: `.mcp.json` / `.codex/config.toml` / `.gemini/settings.json` の `cocoindex-code` エントリと、`.cocoindex_code/` の索引は自動では消えないので手で削除する。proxy モードで mcp-proxy を起動していた場合、`proxy.idle_timeout` が有効なら接続が無くなった時点で自動停止するが、0 以下で無効にしていた場合はプロセスを手で停止する（`orchex proxy stop` は使えなくなる）。
+
 ### Fixed
 
 - **`quality-gates`: `lint-on-save` が `package.json` の無いリポジトリで `✗ prettier: ERR_PNPM_RECURSIVE_EXEC_NO_PACKAGE` を出し続け、整形されない問題を修正**: ランチャー（pnpm / npm / yarn / npx）が「ツールが無い」ことを示して失敗した場合は次の候補へ進むようになり、PATH 上に導入した prettier 等で整形される。あわせて `npm exec` / `npx` が未導入のツールを暗黙に最新版取得したり、オフライン時に registry への再試行で待たされたりしないようにした（これまでは `biome` で Biome とは無関係な同名パッケージが取得されることがあった）。

@@ -18,33 +18,32 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 ## 概要
 
-| パッケージ                                | 概要                                              | カテゴリ     |
-| ----------------------------------------- | ------------------------------------------------- | ------------ |
-| [core](#core)                             | 全パッケージ共通の基盤ライブラリ                  | 基盤         |
-| [agent-routing](#agent-routing)           | cli-tools.yaml 駆動のエージェントルーティング提案 | 基盤         |
-| [quality-gates](#quality-gates)           | 実装後レビュー・テスト分析・自動 lint             | 品質         |
-| [audit](#audit)                           | 統一イベントログによる監査・CLI 記録              | 監査         |
-| [codex-suggestions](#codex-suggestions)   | ファイル編集時の Codex 相談提案                   | 提案         |
-| [antigravity-suggestions](#antigravity-suggestions) | Web 検索時の Antigravity リサーチ提案                  | 提案         |
-| [git-workflow](#git-workflow)             | Git/GitHub ワークフロー（Issue・PR・開発フロー）  | ワークフロー |
-| [cocoindex](#cocoindex)                   | cocoindex MCP サーバーの自動プロビジョニング      | MCP          |
-| [tmux-monitor](#tmux-monitor)             | tmux でサブエージェント出力をリアルタイム監視（opt-in、`setup all` 対象外） | 監視         |
-| [loop-harness](#loop-harness)             | Issue 起点の Maker/Checker 反復と PR レビュー対応を安全駆動 | ハーネス     |
-| [codd](#codd)                             | ドキュメント依存グラフの scan/validate/impact（整合性レイヤー） | 整合性       |
-| [codex-harness](#codex-harness)           | Codex CLI 向け repo-local ハーネス（hooks + 非対話 run/review） | ハーネス     |
-| [fail-logs](#fail-logs)                   | AI の失敗イベント記録基盤（学習ループの入力）     | 学習         |
-| [image-generation](#image-generation)     | Codex 組み込み image_gen による画像生成           | 生成         |
-| [docker-runtime](#docker-runtime)         | ハーネス共通の Docker/broker ライフサイクル基盤   | 基盤         |
-| [meta-harness](#meta-harness)             | 候補ハーネス・スキル・ルーティング設定の評価・進化基盤（Docker 隔離実行 + propose/promote/loop） | ハーネス     |
-| [reverse](#reverse)                       | 既存コードベースの 5 フェーズ対話型リバースエンジニアリング | 解析         |
-| [skill-evolution](#skill-evolution)       | スキル自己改善ループ（二軸テレメトリ＋オフライン反復改善） | 学習         |
+| パッケージ                                          | 概要                                                                                             | カテゴリ     |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------ |
+| [core](#core)                                       | 全パッケージ共通の基盤ライブラリ                                                                 | 基盤         |
+| [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案                                                | 基盤         |
+| [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint                                                            | 品質         |
+| [audit](#audit)                                     | 統一イベントログによる監査・CLI 記録                                                             | 監査         |
+| [codex-suggestions](#codex-suggestions)             | ファイル編集時の Codex 相談提案                                                                  | 提案         |
+| [antigravity-suggestions](#antigravity-suggestions) | Web 検索時の Antigravity リサーチ提案                                                            | 提案         |
+| [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                                                 | ワークフロー |
+| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視（opt-in、`setup all` 対象外）                      | 監視         |
+| [loop-harness](#loop-harness)                       | Issue 起点の Maker/Checker 反復と PR レビュー対応を安全駆動                                      | ハーネス     |
+| [codd](#codd)                                       | ドキュメント依存グラフの scan/validate/impact（整合性レイヤー）                                  | 整合性       |
+| [codex-harness](#codex-harness)                     | Codex CLI 向け repo-local ハーネス（hooks + 非対話 run/review）                                  | ハーネス     |
+| [fail-logs](#fail-logs)                             | AI の失敗イベント記録基盤（学習ループの入力）                                                    | 学習         |
+| [image-generation](#image-generation)               | Codex 組み込み image_gen による画像生成                                                          | 生成         |
+| [docker-runtime](#docker-runtime)                   | ハーネス共通の Docker/broker ライフサイクル基盤                                                  | 基盤         |
+| [meta-harness](#meta-harness)                       | 候補ハーネス・スキル・ルーティング設定の評価・進化基盤（Docker 隔離実行 + propose/promote/loop） | ハーネス     |
+| [reverse](#reverse)                                 | 既存コードベースの 5 フェーズ対話型リバースエンジニアリング                                      | 解析         |
+| [skill-evolution](#skill-evolution)                 | スキル自己改善ループ（二軸テレメトリ＋オフライン反復改善）                                       | 学習         |
 
 ### プリセット
 
-| プリセット  | 含まれるパッケージ                 |
-| ----------- | ---------------------------------- |
+| プリセット  | 含まれるパッケージ                              |
+| ----------- | ----------------------------------------------- |
 | `essential` | core, agent-routing, audit, quality-gates, codd |
-| `all`       | 全パッケージ（tmux-monitor を除く） |
+| `all`       | 全パッケージ（tmux-monitor を除く）             |
 
 ---
 
@@ -74,7 +73,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | skill  | `startproject`               | マルチエージェント協調で新規開発を開始                           |
 | skill  | `task-state`                 | Plans.md の作成・更新                                            |
 | skill  | `design`                     | 要件定義・設計ドキュメント作成                                   |
-| skill  | `explain-visually`           | 計画・差分・PR/Issue を図解 HTML にして説明                     |
+| skill  | `explain-visually`           | 計画・差分・PR/Issue を図解 HTML にして説明                      |
 | rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                               |
 | rule   | `coding-principles`          | コード品質の共通ルール                                           |
 | rule   | `task-memory-usage`          | Plans.md によるタスク管理ルール                                  |
@@ -103,16 +102,16 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 ### エージェント一覧
 
-| カテゴリ       | エージェント                                                                                              |
-| -------------- | --------------------------------------------------------------------------------------------------------- |
-| Planning       | planner, researcher, requirements                                                                         |
-| Design         | architect, api-designer, data-modeler, auth-designer, spec-writer                                         |
-| Implementation | frontend-dev, backend-python-dev, backend-go-dev                                                          |
-| AI/ML          | ai-architect, ai-dev, prompt-engineer, rag-engineer                                                       |
-| Test/Debug     | debugger, tester                                                                                          |
+| カテゴリ       | エージェント                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Planning       | planner, researcher, requirements                                                                                                                 |
+| Design         | architect, api-designer, data-modeler, auth-designer, spec-writer                                                                                 |
+| Implementation | frontend-dev, backend-python-dev, backend-go-dev                                                                                                  |
+| AI/ML          | ai-architect, ai-dev, prompt-engineer, rag-engineer                                                                                               |
+| Test/Debug     | debugger, tester                                                                                                                                  |
 | Review         | code-reviewer, security-reviewer, performance-reviewer, spec-reviewer, architecture-reviewer, ux-reviewer, adversarial-reviewer, finding-verifier |
-| Docs           | docs-writer                                                                                               |
-| Utility        | general-purpose, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker    |
+| Docs           | docs-writer                                                                                                                                       |
+| Utility        | general-purpose, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker                                            |
 
 ---
 
@@ -127,9 +126,9 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 | 種別  | 名前                            | 説明                                                                     |
 | ----- | ------------------------------- | ------------------------------------------------------------------------ |
-| hook  | `check-context-optimization.py` | PreToolUse(Read/Grep/Bash): 大きすぎる読み込みや `cat` 利用を抑制         |
+| hook  | `check-context-optimization.py` | PreToolUse(Read/Grep/Bash): 大きすぎる読み込みや `cat` 利用を抑制        |
 | hook  | `post-implementation-review.py` | PostToolUse(Edit/Write): 一定量の変更後にレビューを提案                  |
-| hook  | `post-test-analysis.py`         | PostToolUse(Bash): テスト実行後に結果を分析し `quality_gate` を記録       |
+| hook  | `post-test-analysis.py`         | PostToolUse(Bash): テスト実行後に結果を分析し `quality_gate` を記録      |
 | hook  | `lint-on-save.py`               | PostToolUse(Edit/Write): ファイル種別ごとの自動 lint / format 実行       |
 | hook  | `test-tampering-detector.py`    | PostToolUse(Edit/Write/Bash): skip 追加やテスト削除を検知                |
 | hook  | `test-gate-checker.py`          | PostToolUse(Edit/Write): テスト品質ゲートチェック                        |
@@ -153,24 +152,24 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 ### コンポーネント
 
-| 種別   | 名前                            | 説明                                                                  |
-| ------ | ------------------------------- | --------------------------------------------------------------------- |
-| hook   | `audit-bootstrap.py`           | SessionStart: セッションログ初期化 + `session_start` 記録             |
-| hook   | `audit-session-end.py`         | SessionEnd: セッション集計 + `session_end` 記録                       |
-| hook   | `audit-prompt.py`              | UserPromptSubmit: 期待ルート予測 + `prompt` 記録                      |
-| hook   | `audit-route.py`               | PostToolUse: 実ルート照合 + `route_decision` 記録                    |
-| hook   | `audit-cli.py`                 | PostToolUse(Bash): Codex/Antigravity CLI 呼び出しを `cli_call` として記録  |
-| hook   | `audit-subagent-start.py`      | SubagentStart: サブエージェント開始を記録                             |
-| hook   | `audit-subagent-end.py`        | SubagentStop: サブエージェント終了を記録                              |
-| hook   | `audit-instructions-loaded.py` | InstructionsLoaded: 読み込まれた指示書を記録                          |
-| script | `dashboard.py`                 | 監査ダッシュボード（テキスト）                                        |
-| script | `dashboard-html.py`            | 監査ダッシュボード（HTML）                                            |
-| script | `log-viewer.py`                | 統一イベントログのフィルタ / 閲覧                                     |
-| script | `kpi-report.py`                | KPI スコアカードの生成                                                |
-| script | `analyze-cli-usage.py`         | CLI 利用パターン分析                                                  |
-| module | `event_logger.py`              | 統一イベントログ書き込み / トレース state 管理                        |
-| config | `delegation-policy.json`       | ルーティングポリシー                                                  |
-| config | `audit-flags.json`             | 監査・品質ゲート系の機能フラグ                                        |
+| 種別   | 名前                           | 説明                                                                      |
+| ------ | ------------------------------ | ------------------------------------------------------------------------- |
+| hook   | `audit-bootstrap.py`           | SessionStart: セッションログ初期化 + `session_start` 記録                 |
+| hook   | `audit-session-end.py`         | SessionEnd: セッション集計 + `session_end` 記録                           |
+| hook   | `audit-prompt.py`              | UserPromptSubmit: 期待ルート予測 + `prompt` 記録                          |
+| hook   | `audit-route.py`               | PostToolUse: 実ルート照合 + `route_decision` 記録                         |
+| hook   | `audit-cli.py`                 | PostToolUse(Bash): Codex/Antigravity CLI 呼び出しを `cli_call` として記録 |
+| hook   | `audit-subagent-start.py`      | SubagentStart: サブエージェント開始を記録                                 |
+| hook   | `audit-subagent-end.py`        | SubagentStop: サブエージェント終了を記録                                  |
+| hook   | `audit-instructions-loaded.py` | InstructionsLoaded: 読み込まれた指示書を記録                              |
+| script | `dashboard.py`                 | 監査ダッシュボード（テキスト）                                            |
+| script | `dashboard-html.py`            | 監査ダッシュボード（HTML）                                                |
+| script | `log-viewer.py`                | 統一イベントログのフィルタ / 閲覧                                         |
+| script | `kpi-report.py`                | KPI スコアカードの生成                                                    |
+| script | `analyze-cli-usage.py`         | CLI 利用パターン分析                                                      |
+| module | `event_logger.py`              | 統一イベントログ書き込み / トレース state 管理                            |
+| config | `delegation-policy.json`       | ルーティングポリシー                                                      |
+| config | `audit-flags.json`             | 監査・品質ゲート系の機能フラグ                                            |
 
 ### スクリプト実行
 
@@ -220,8 +219,8 @@ WebSearch/WebFetch の前に Antigravity CLI でのリサーチを提案する�
 
 ### コンポーネント
 
-| 種別  | 名前                           | 説明                                                         |
-| ----- | ------------------------------ | ------------------------------------------------------------ |
+| 種別  | 名前                                | 説明                                                              |
+| ----- | ----------------------------------- | ----------------------------------------------------------------- |
 | hook  | `suggest-antigravity-research.py`   | PreToolUse(WebSearch/WebFetch): `[Antigravity Suggestion]` を出力 |
 | skill | `antigravity-system`                | Antigravity CLI 利用ガイド                                        |
 | rule  | `antigravity-delegation`            | Antigravity CLI 委譲ルール                                        |
@@ -238,43 +237,14 @@ GitHub Issue の登録・開発フロー・PR 作成を含む Git/GitHub ワー�
 
 ### コンポーネント
 
-| 種別   | 名前                        | 説明                                  |
-| ------ | --------------------------- | ------------------------------------- |
-| skill  | `issue-create`              | GitHub Issue の作成と計画策定         |
-| skill  | `issue-fix`                 | 計画→実装→テスト→レビューの開発フロー |
-| skill  | `pr-create`                 | Pull Request の作成                   |
-| skill  | `review-respond`            | PR の bot レビュー指摘への自動対応（検出→修正→返信→resolve） |
+| 種別   | 名前                        | 説明                                                                                 |
+| ------ | --------------------------- | ------------------------------------------------------------------------------------ |
+| skill  | `issue-create`              | GitHub Issue の作成と計画策定                                                        |
+| skill  | `issue-fix`                 | 計画→実装→テスト→レビューの開発フロー                                                |
+| skill  | `pr-create`                 | Pull Request の作成                                                                  |
+| skill  | `review-respond`            | PR の bot レビュー指摘への自動対応（検出→修正→返信→resolve）                         |
 | script | `pr_review_threads.py`      | PR の unresolved bot レビュー指摘の検出・取得・返信・resolve（`/review-respond` 用） |
-| config | `sandbox-requirements.json` | sandbox 設定（`gh` コマンドの除外）   |
-
----
-
-## cocoindex
-
-cocoindex-code MCP サーバーを Claude Code / Codex CLI / Antigravity CLI に自動プロビジョニングする。
-
-- **バージョン**: 0.2.0
-- **依存**: core
-
-### コンポーネント
-
-| 種別   | 名前                       | 説明                                    |
-| ------ | -------------------------- | --------------------------------------- |
-| hook   | `provision-mcp-servers.py` | SessionStart: 各 CLI の MCP 設定を reconcile し、必要なら proxy warmup を開始 |
-| hook   | `notify-proxy-reconnect.py` | UserPromptSubmit: proxy ready/idle 後に 1 回だけ reconnect を促す |
-| hook   | `stop-mcp-proxy.py`        | SessionEnd: session state を削除する |
-| util   | `start-mcp-proxy.py`       | バックグラウンド warmup helper          |
-| util   | `proxy_manager.py`         | proxy 管理ユーティリティ                |
-| util   | `proxy_supervisor.py`      | 外側固定ポートで待ち受け、inner `mcp-proxy` へ転送し idle auto-stop を管理 |
-| rule   | `cocoindex-usage.md`       | cocoindex MCP サーバーの利用ルール      |
-| config | `cocoindex.yaml`           | MCP サーバー設定（stdio/proxy モード）  |
-
-### 動作モード
-
-| モード      | 説明                                                                 |
-| ----------- | -------------------------------------------------------------------- |
-| v1（stdio） | 各 CLI が個別に MCP サーバーを起動（デフォルト）                     |
-| v2（proxy） | supervisor 配下の mcp-proxy で単一プロセス化。`proxy.enabled: true` は proxy-only で、初回は reconnect が必要になりうる |
+| config | `sandbox-requirements.json` | sandbox 設定（`gh` コマンドの除外）                                                  |
 
 ---
 
@@ -312,15 +282,15 @@ Issue 起点の反復ループを、永続 state / journal、lease fencing、two
 
 ### コンポーネント
 
-| 種別   | 名前                  | 説明                                                                              |
-| ------ | --------------------- | --------------------------------------------------------------------------------- |
-| lib    | `loop_common.py`      | 状態機械・lease・ガード・artifact 管理                                            |
-| lib    | `loop_definition.py`  | ループ設定解決                                                                     |
-| lib    | `worktree_manager.py` | Issue 単位の worktree 管理                                                         |
-| lib    | `pr_review_wait.py`   | 外部 PR レビュー待機・指摘取り込み                                                 |
-| script | `loop_step.py`        | JSON CLI。start / attach / resume、propose / complete、reconcile / heartbeat 等   |
-| skill  | `loop-issue`          | Issue 消化ループのオーケストレーター                                               |
-| config | `loop-harness.yaml`, `loops/issue-loop.yaml` | ループ動作・reviewer allowlist・severity 設定                      |
+| 種別   | 名前                                         | 説明                                                                            |
+| ------ | -------------------------------------------- | ------------------------------------------------------------------------------- |
+| lib    | `loop_common.py`                             | 状態機械・lease・ガード・artifact 管理                                          |
+| lib    | `loop_definition.py`                         | ループ設定解決                                                                  |
+| lib    | `worktree_manager.py`                        | Issue 単位の worktree 管理                                                      |
+| lib    | `pr_review_wait.py`                          | 外部 PR レビュー待機・指摘取り込み                                              |
+| script | `loop_step.py`                               | JSON CLI。start / attach / resume、propose / complete、reconcile / heartbeat 等 |
+| skill  | `loop-issue`                                 | Issue 消化ループのオーケストレーター                                            |
+| config | `loop-harness.yaml`, `loops/issue-loop.yaml` | ループ動作・reviewer allowlist・severity 設定                                   |
 
 ---
 
@@ -333,25 +303,25 @@ Issue 起点の反復ループを、永続 state / journal、lease fencing、two
 
 ### コンポーネント
 
-| 種別  | 名前                  | 説明                                                              |
-| ----- | --------------------- | ------------------------------------------------------------------ |
-| hook  | `codd-scan-postedit.py` | PostToolUse(Edit/Write): scope 内編集時に `scan` を実行し graph を再構築（opt-in、`hooks.scan_on_edit` 既定 `false`）。timeout 90 秒 |
-| hook  | `codd-validate-precommit.py` | PreToolUse(Bash): `git commit` 検出時に `validate` を実行し warn/block（opt-in、`hooks.validate_on_commit` 既定 `warn`）。timeout 90 秒 |
-| lib   | `codd_common.py`      | フロントマター parser・グラフモデル・config ローダー               |
-| lib   | `codd_code.py`        | `code_scope` のコード注釈（1行形式 `codd:<key> <value>`）から code/test ノードを抽出 |
-| script | `codd.py`             | `scan` / `validate` / `graph`（可視化）/ `impact`（変更影響分類）  |
-| skill | `codd-scan`, `codd-validate`, `codd-impact` | scan / validate / impact のスキル化                |
-| rule  | `codd-frontmatter-policy` | `codd:` フロントマター記法ポリシー                              |
-| config | `codd.yaml`           | scope / `code_scope` glob・`inline_confidence`（コード注釈由来リンクの既定信頼度）・kind/relation 語彙・検査レベル（`malformed_annotation` 含む）・グラフ保存先・`hooks.scan_on_edit` / `hooks.validate_on_commit`（下記） |
+| 種別   | 名前                                        | 説明                                                                                                                                                                                                                       |
+| ------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| hook   | `codd-scan-postedit.py`                     | PostToolUse(Edit/Write): scope 内編集時に `scan` を実行し graph を再構築（opt-in、`hooks.scan_on_edit` 既定 `false`）。timeout 90 秒                                                                                       |
+| hook   | `codd-validate-precommit.py`                | PreToolUse(Bash): `git commit` 検出時に `validate` を実行し warn/block（opt-in、`hooks.validate_on_commit` 既定 `warn`）。timeout 90 秒                                                                                    |
+| lib    | `codd_common.py`                            | フロントマター parser・グラフモデル・config ローダー                                                                                                                                                                       |
+| lib    | `codd_code.py`                              | `code_scope` のコード注釈（1行形式 `codd:<key> <value>`）から code/test ノードを抽出                                                                                                                                       |
+| script | `codd.py`                                   | `scan` / `validate` / `graph`（可視化）/ `impact`（変更影響分類）                                                                                                                                                          |
+| skill  | `codd-scan`, `codd-validate`, `codd-impact` | scan / validate / impact のスキル化                                                                                                                                                                                        |
+| rule   | `codd-frontmatter-policy`                   | `codd:` フロントマター記法ポリシー                                                                                                                                                                                         |
+| config | `codd.yaml`                                 | scope / `code_scope` glob・`inline_confidence`（コード注釈由来リンクの既定信頼度）・kind/relation 語彙・検査レベル（`malformed_annotation` 含む）・グラフ保存先・`hooks.scan_on_edit` / `hooks.validate_on_commit`（下記） |
 
 ### hook の実動作（opt-in）
 
 hook の**登録**は essential プリセットで自動展開されるが、**実動作**は `codd.yaml`（または
 `.local.yaml`）の以下のキーで制御する。
 
-| キー                       | 型                     | 既定値  | 説明                                                                 |
-| -------------------------- | ---------------------- | ------- | ---------------------------------------------------------------------- |
-| `hooks.scan_on_edit`       | bool                   | `false` | `true` で scope 内ファイル編集時に `scan` を自動実行（常に非ブロック） |
+| キー                       | 型                       | 既定値  | 説明                                                                                                         |
+| -------------------------- | ------------------------ | ------- | ------------------------------------------------------------------------------------------------------------ |
+| `hooks.scan_on_edit`       | bool                     | `false` | `true` で scope 内ファイル編集時に `scan` を自動実行（常に非ブロック）                                       |
 | `hooks.validate_on_commit` | `off` / `warn` / `block` | `warn`  | `git commit` 検出時の `validate` 動作。`off` で無効化、`block` は error 検出時に commit をブロック（exit 2） |
 
 hook 自体の登録解除は `orchex disable codd --project .` で行う。実動作のみを止めたい場合は
@@ -368,13 +338,13 @@ Codex CLI を主たる利用面とする repo-local ハーネス。hooks（secre
 
 ### コンポーネント
 
-| 種別   | 名前                 | 説明                                                                    |
-| ------ | -------------------- | ------------------------------------------------------------------------ |
-| script | `codex_run.py`       | 非対話タスクモードで `codex exec --json` を実行し run artifact 一式を保存 |
-| script | `codex_review.py`    | read-only レビューモードで base ブランチとの diff を渡し構造化 findings を保存 |
-| codex_files | `.codex/hooks.json`, `.codex/hooks/*.py` | secret scan・pre-tool-use policy・stop 検証 hooks（hash 保護配布） |
-| codex_files | `.codex/schemas/*.schema.json` | task_result / review_result の JSON スキーマ                     |
-| codex_files | `.codex/rules/codex-harness.rules`, `.codex/validation.json` | ハーネスルールと検証設定             |
+| 種別        | 名前                                                         | 説明                                                                           |
+| ----------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| script      | `codex_run.py`                                               | 非対話タスクモードで `codex exec --json` を実行し run artifact 一式を保存      |
+| script      | `codex_review.py`                                            | read-only レビューモードで base ブランチとの diff を渡し構造化 findings を保存 |
+| codex_files | `.codex/hooks.json`, `.codex/hooks/*.py`                     | secret scan・pre-tool-use policy・stop 検証 hooks（hash 保護配布）             |
+| codex_files | `.codex/schemas/*.schema.json`                               | task_result / review_result の JSON スキーマ                                   |
+| codex_files | `.codex/rules/codex-harness.rules`, `.codex/validation.json` | ハーネスルールと検証設定                                                       |
 
 ---
 
@@ -387,11 +357,11 @@ AI（Claude Code 等）の失敗イベントを記録する基盤。蓄積した
 
 ### コンポーネント
 
-| 種別 | 名前                          | 説明                                                                 |
-| ---- | ----------------------------- | ---------------------------------------------------------------------- |
-| hook | `capture-failures.py`         | PostToolUse: `tool_error` / `test_failure` / `lint_failure` / `cli_failure` を検知し記録 |
-| hook | `inject-failure-summary.py`   | SessionStart: 再発している失敗シグネチャをコンテキストへ注入（ADR-20260630-027） |
-| config | `fail-logs.yaml`             | 失敗種別ごとのトグル・抜粋文字数・ログ保存先                          |
+| 種別   | 名前                        | 説明                                                                                     |
+| ------ | --------------------------- | ---------------------------------------------------------------------------------------- |
+| hook   | `capture-failures.py`       | PostToolUse: `tool_error` / `test_failure` / `lint_failure` / `cli_failure` を検知し記録 |
+| hook   | `inject-failure-summary.py` | SessionStart: 再発している失敗シグネチャをコンテキストへ注入（ADR-20260630-027）         |
+| config | `fail-logs.yaml`            | 失敗種別ごとのトグル・抜粋文字数・ログ保存先                                             |
 
 ---
 
@@ -404,11 +374,11 @@ Codex CLI の組み込み `image_gen` スキル（OpenAI gpt-image、ChatGPT 認
 
 ### コンポーネント
 
-| 種別  | 名前                       | 説明                                             |
-| ----- | -------------------------- | ------------------------------------------------ |
-| skill | `image-gen`                | `/image-gen <プロンプト>` によるプロンプト→画像ワークフロー |
-| agent | `image-generator.md`       | Codex `image_gen` 呼び出し + 鮮度ガード付き検証   |
-| config | `image-generation.yaml`   | `image_model`（既定 `gpt-5.5`）                   |
+| 種別   | 名前                    | 説明                                                        |
+| ------ | ----------------------- | ----------------------------------------------------------- |
+| skill  | `image-gen`             | `/image-gen <プロンプト>` によるプロンプト→画像ワークフロー |
+| agent  | `image-generator.md`    | Codex `image_gen` 呼び出し + 鮮度ガード付き検証             |
+| config | `image-generation.yaml` | `image_model`（既定 `gpt-5.5`）                             |
 
 ---
 
@@ -431,31 +401,31 @@ meta-harness と loop-harness が共有する Docker CLI、hardened security pro
 
 ### コンポーネント
 
-| 種別   | 名前                | 説明                                                                          |
-| ------ | ------------------- | ------------------------------------------------------------------------------ |
-| script | `meta_harness.py`   | CLI: 全 9 サブコマンド（下表）                                                |
-| config | `meta-harness.yaml` | store・シナリオ・`config_patch.allowlist` 等の評価・進化設定                  |
+| 種別   | 名前                | 説明                                                         |
+| ------ | ------------------- | ------------------------------------------------------------ |
+| script | `meta_harness.py`   | CLI: 全 9 サブコマンド（下表）                               |
+| config | `meta-harness.yaml` | store・シナリオ・`config_patch.allowlist` 等の評価・進化設定 |
 
 ### サブコマンド
 
-| フェーズ | サブコマンド | 説明                                                |
-| -------- | ------------ | --------------------------------------------------- |
-| 1a       | `init`       | store ディレクトリ一式を初期化                       |
-| 1a       | `register`   | 候補（overlay + メタデータ）を登録                   |
-| 1a       | `frontier`   | Pareto frontier を算出                               |
-| 1a       | `status`     | 候補群の状態表示                                     |
-| 1a       | `purge`      | 古い世代・retired 候補を削除                         |
-| 1b       | `evaluate`   | 候補をシナリオ評価する（Docker コンテナ隔離実行）    |
-| 2        | `propose`    | filtered view から候補 overlay を提案・登録する      |
-| 2        | `promote`    | frontier 候補を PR ベースで昇格する                  |
-| 3        | `loop`       | propose/evaluate の自動探索ループを実行・再開する    |
+| フェーズ | サブコマンド | 説明                                              |
+| -------- | ------------ | ------------------------------------------------- |
+| 1a       | `init`       | store ディレクトリ一式を初期化                    |
+| 1a       | `register`   | 候補（overlay + メタデータ）を登録                |
+| 1a       | `frontier`   | Pareto frontier を算出                            |
+| 1a       | `status`     | 候補群の状態表示                                  |
+| 1a       | `purge`      | 古い世代・retired 候補を削除                      |
+| 1b       | `evaluate`   | 候補をシナリオ評価する（Docker コンテナ隔離実行） |
+| 2        | `propose`    | filtered view から候補 overlay を提案・登録する   |
+| 2        | `promote`    | frontier 候補を PR ベースで昇格する               |
+| 3        | `loop`       | propose/evaluate の自動探索ループを実行・再開する |
 
 ### target 種別
 
-| target          | 意味                                                                                             |
-| --------------- | -------------------------------------------------------------------------------------------------- |
-| `claude-harness` | 既定値。meta-harness 自身（own）向けオーバーレイ候補                                               |
-| `skill:<name>`   | 個別スキル向け候補（skill-evolution 連携）                                                         |
+| target           | 意味                                                                                                |
+| ---------------- | --------------------------------------------------------------------------------------------------- |
+| `claude-harness` | 既定値。meta-harness 自身（own）向けオーバーレイ候補                                                |
+| `skill:<name>`   | 個別スキル向け候補（skill-evolution 連携）                                                          |
 | `routing-config` | `cli-tools.yaml` の `agents.*.tool` / `codex.model` / `antigravity.model` へのパッチ候補（Phase A） |
 
 ### 隔離実行
@@ -473,20 +443,20 @@ Phase 1b 以降の `evaluate` は Docker コンテナで OS レベル隔離さ�
 
 ### コンポーネント
 
-| 種別  | 名前                        | 説明                                                          |
-| ----- | --------------------------- | --------------------------------------------------------------- |
-| skill | `reverse`                   | Scan → Graph → Extract → Document → Debt Report の 5 フェーズ |
-| agent | `reverse-coordinator.md`    | フェーズオーケストレーションと受け入れ確認                     |
+| 種別  | 名前                     | 説明                                                          |
+| ----- | ------------------------ | ------------------------------------------------------------- |
+| skill | `reverse`                | Scan → Graph → Extract → Document → Debt Report の 5 フェーズ |
+| agent | `reverse-coordinator.md` | フェーズオーケストレーションと受け入れ確認                    |
 
 ### フェーズ構成
 
-| Phase | 名前                | 成果物             |
-| ----- | ------------------- | ------------------- |
-| 1     | 走査 (Scan)          | `scope.md`          |
-| 2     | 依存グラフ (Graph)   | `dependency.md` / `.mmd` |
-| 3     | 機能抽出 (Extract)   | `features.md`       |
-| 4     | ドキュメント化 (Document) | `design.md`      |
-| 5     | 負債/脆弱性レポート (Debt Report) | `debt-report.md` |
+| Phase | 名前                              | 成果物                   |
+| ----- | --------------------------------- | ------------------------ |
+| 1     | 走査 (Scan)                       | `scope.md`               |
+| 2     | 依存グラフ (Graph)                | `dependency.md` / `.mmd` |
+| 3     | 機能抽出 (Extract)                | `features.md`            |
+| 4     | ドキュメント化 (Document)         | `design.md`              |
+| 5     | 負債/脆弱性レポート (Debt Report) | `debt-report.md`         |
 
 ---
 
@@ -499,14 +469,14 @@ Phase 1b 以降の `evaluate` は Docker コンテナで OS レベル隔離さ�
 
 ### コンポーネント
 
-| 種別   | 名前                          | 説明                                                       |
-| ------ | ----------------------------- | ------------------------------------------------------------ |
-| hook   | `inject-lessons.py`           | PreToolUse(Skill): 過去の学びをスキル実行前に注入            |
-| hook   | `capture-skill-telemetry.py`  | PostToolUse(Skill): スキル実行のテレメトリを記録              |
-| hook   | `capture-subagent-skill.py`   | SubagentStop: サブエージェント経由のスキル実行を記録          |
-| hook   | `capture-skill-stop.py`       | Stop: セッション終了時にスキル実行結果を確定                  |
-| script | `skill_evolution.py`          | CLI: status / check-trigger / evaluate / provenance / lock  |
-| config | `skill-evolution.yaml`        | 二軸評価・停止条件・反映先の設定                              |
+| 種別   | 名前                         | 説明                                                       |
+| ------ | ---------------------------- | ---------------------------------------------------------- |
+| hook   | `inject-lessons.py`          | PreToolUse(Skill): 過去の学びをスキル実行前に注入          |
+| hook   | `capture-skill-telemetry.py` | PostToolUse(Skill): スキル実行のテレメトリを記録           |
+| hook   | `capture-subagent-skill.py`  | SubagentStop: サブエージェント経由のスキル実行を記録       |
+| hook   | `capture-skill-stop.py`      | Stop: セッション終了時にスキル実行結果を確定               |
+| script | `skill_evolution.py`         | CLI: status / check-trigger / evaluate / provenance / lock |
+| config | `skill-evolution.yaml`       | 二軸評価・停止条件・反映先の設定                           |
 
 ---
 

@@ -2,9 +2,6 @@
 
 正規表現ベースの行走査で対象範囲だけを書き換え、コメントや既存の行順序を
 できる限り保持する（全体再シリアライズはしない）。
-packages/cocoindex/hooks/provision-mcp-servers.py の `_find_toml_section()` と
-同じ走査方式を、特定パッケージに依存しない汎用ユーティリティとして独立させたもの
-（cocoindex 側の実装はそのまま、こちらは新規の共通ヘルパー）。
 
 マージ結果は書き込み前に必ず tomllib.loads() で妥当性検証する（fail-closed）。
 """
