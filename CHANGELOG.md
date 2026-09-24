@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-25
+
 ### Added
 
 - **`loop-harness`: `/loop-issue`（LP-1）の `wait_external_review` 手順書を現行 `loop_driver` の実装（Issue #213 / #235 / #424）に追従（Issue #426）**: pre-rebaseline drain・addressed 解決・最終合否の手順を明文化した。あわせて `wait_external_review` の proposal に `params.pr_review`（反復 head と resolve 再試行候補のスナップショット）を追加し、`journal_addressed_findings_outcome` を公開 API にしたので、オーケストレーターが state.json を直接読まずに手順を実行できる。
