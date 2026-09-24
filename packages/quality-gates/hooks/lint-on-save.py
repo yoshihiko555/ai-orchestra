@@ -54,6 +54,8 @@ MISSING_TOOL_PATTERNS = (
     "npx canceled due to missing packages",
     # --offline 指定時に registry 情報のキャッシュも無い（未導入と同じ扱い）
     "code enotcached",
+    # yarn berry: 依存にもスクリプトにも無い
+    "couldn't find a script named",
 )
 
 # npm は同じ状況で理由を付けず `canceled` だけを出すことがある（npm 7〜9 は

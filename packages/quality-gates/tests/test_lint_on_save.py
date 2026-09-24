@@ -118,6 +118,8 @@ class _Result:
             stdout="yarn run v1.22.22\ninfo Visit https://yarnpkg.com/en/docs/cli/run",
             stderr='error Couldn\'t find a package.json file in "/repo/docs"',
         ),
+        # yarn berry: 依存にもスクリプトにも無い
+        _Result(1, stdout='\x1b[31mUsage Error\x1b[39m: Couldn\'t find a script named "prettier".'),
     ],
     ids=[
         "pnpm-no-package",
@@ -125,6 +127,7 @@ class _Result:
         "npm-offline-not-cached",
         "npm9-canceled",
         "yarn-reason-on-stderr",
+        "yarn-berry-no-script",
     ],
 )
 def test_run_step_falls_back_to_next_launcher_when_tool_missing(
