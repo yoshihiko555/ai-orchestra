@@ -23,7 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Removed
 
 - **BREAKING** **`cocoindex` パッケージと `orchex proxy stop` / `orchex proxy status` を削除（ADR-20260924-054）**: 意味検索 MCP サーバー cocoindex-code の自動プロビジョニングと mcp-proxy 管理を廃止した。実測（Opus / Haiku で計 80 回の A/B）で、Grep 中心の探索と比べて正解率の向上がなく、コストだけが増えたため。
-  - 移行: 導入済みプロジェクトでは、次回の SessionStart 同期が `installed_packages` から `cocoindex` を外し、登録済みの cocoindex hook と同期済みの `cocoindex.yaml` も削除する。更新時点で起動中のセッションは一度再起動する。
+  - 移行: 導入済みプロジェクトでは、次回の SessionStart 同期が `installed_packages` から `cocoindex` を外し、登録済みの cocoindex hook と同期済みの `cocoindex.yaml` も削除する（配布後に編集していた場合は残し、その旨を表示する）。更新時点で起動中のセッションは一度再起動する。
   - 移行: `.mcp.json` / `.codex/config.toml` / `.gemini/settings.json` の `cocoindex-code` エントリと、`.cocoindex_code/` の索引は自動では消えないので手で削除する。proxy モードで mcp-proxy を起動していた場合、`proxy.idle_timeout` が有効なら接続が無くなった時点で自動停止するが、0 以下で無効にしていた場合はプロセスを手で停止する（`orchex proxy stop` は使えなくなる）。
 
 ### Fixed

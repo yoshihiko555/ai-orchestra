@@ -83,28 +83,79 @@ class TestDropRemovedPackageHashes:
         assert orch == {"installed_packages": ["core"]}
 
 
+class TestKeepChangedRemovedPackageFiles:
+    """keep_changed_removed_package_files のテスト（uninstall と同じ保護方針）。"""
+
+    CONFIG_KEY = "config/cocoindex/cocoindex.yaml"
+
+    def _write_config(self, claude_dir: Path, content: str) -> Path:
+        target = claude_dir / self.CONFIG_KEY
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return target
+
+    def test_unchanged_file_is_left_for_stale_removal(self, tmp_path: Path) -> None:
+        """配布時ハッシュと一致するファイルは synced_files に残し、stale 削除に任せる。"""
+        target = self._write_config(tmp_path, "enabled: true\n")
+        orch = {
+            "synced_files": [self.CONFIG_KEY],
+            "file_hashes": {
+                "cocoindex": {self.CONFIG_KEY: sync_orchestra.compute_file_hash(target)}
+            },
+        }
+        assert sync_orchestra.keep_changed_removed_package_files(tmp_path, orch) == []
+        assert orch["synced_files"] == [self.CONFIG_KEY]
+
+    def test_modified_file_is_kept(self, tmp_path: Path) -> None:
+        """配布後に編集されたファイルは synced_files から外し、削除させない。"""
+        self._write_config(tmp_path, "enabled: false  # edited\n")
+        orch = {
+            "synced_files": ["agents/planner.md", self.CONFIG_KEY],
+            "file_hashes": {"cocoindex": {self.CONFIG_KEY: "hash-at-distribution"}},
+        }
+        kept = sync_orchestra.keep_changed_removed_package_files(tmp_path, orch)
+        assert kept == [self.CONFIG_KEY]
+        assert orch["synced_files"] == ["agents/planner.md"]
+
+    def test_file_without_recorded_hash_is_kept(self, tmp_path: Path) -> None:
+        """ハッシュ未記録のファイルは変更有無を判定できないため残す。"""
+        self._write_config(tmp_path, "enabled: true\n")
+        orch = {"synced_files": [self.CONFIG_KEY], "file_hashes": {}}
+        assert sync_orchestra.keep_changed_removed_package_files(tmp_path, orch) == [
+            self.CONFIG_KEY
+        ]
+
+
 class TestMainWithOnlyDiscontinuedPackage:
-    """配布終了パッケージしか導入されていないプロジェクトの SessionStart 同期。"""
+    """配布終了パッケージしか導入されていないプロジェクトの SessionStart 同期。
 
-    def test_removal_is_saved_and_hooks_are_detached(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """installed_packages が空になっても、除去の保存と hook の取り外しは行われる。
+    `orchex install cocoindex` は依存先の core が無くても続行するため、この状態は実在しうる。
+    除去後に導入一覧が空になっても、保存・hook の取り外し・stale 配布物の掃除が行われなければ
+    ならない。
+    """
 
-        除去後に導入パッケージが空になる経路は早期 return するため、ここで保存と
-        hook の取り外しをしないと cocoindex の名前と hook が残り続ける。
-        """
+    CONFIG_KEY = "config/cocoindex/cocoindex.yaml"
+
+    def _setup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, edit_config: bool
+    ) -> tuple[Path, Path, Path]:
         orchestra_dir = tmp_path / "orchestra"
         (orchestra_dir / "packages").mkdir(parents=True)
         project_dir = tmp_path / "project"
         claude_dir = project_dir / ".claude"
-        claude_dir.mkdir(parents=True)
+        config_path = claude_dir / self.CONFIG_KEY
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("enabled: true\n", encoding="utf-8")
+        recorded_hash = sync_orchestra.compute_file_hash(config_path)
+        if edit_config:
+            config_path.write_text("enabled: false  # edited\n", encoding="utf-8")
         orch_path = claude_dir / "orchestra.json"
         orch_path.write_text(
             json.dumps(
                 {
                     "installed_packages": ["cocoindex"],
-                    "file_hashes": {"cocoindex": {"config/cocoindex/cocoindex.yaml": "abc"}},
+                    "synced_files": [self.CONFIG_KEY],
+                    "file_hashes": {"cocoindex": {self.CONFIG_KEY: recorded_hash}},
                 }
             ),
             encoding="utf-8",
@@ -132,12 +183,23 @@ class TestMainWithOnlyDiscontinuedPackage:
         )
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
         monkeypatch.setattr(sync_orchestra, "read_hook_input", lambda: {"cwd": str(project_dir)})
+        return orch_path, settings_path, config_path
+
+    def test_removal_is_saved_hooks_detached_and_stale_config_deleted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """未変更の同期済み config は削除され、導入一覧・台帳・hook からも外れる。"""
+        orch_path, settings_path, config_path = self._setup(
+            tmp_path, monkeypatch, edit_config=False
+        )
 
         sync_orchestra.main()
 
         orch = json.loads(orch_path.read_text(encoding="utf-8"))
         assert orch["installed_packages"] == []
         assert "cocoindex" not in orch["file_hashes"]
+        assert orch["synced_files"] == []
+        assert not config_path.exists()
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         registered = [
             hook["command"]
@@ -146,3 +208,19 @@ class TestMainWithOnlyDiscontinuedPackage:
             for hook in entry["hooks"]
         ]
         assert registered == [hook_utils.SYNC_HOOK_COMMAND]
+
+    def test_edited_config_is_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """配布後に編集された config は削除せず残し、その旨を出力する。"""
+        orch_path, _settings_path, config_path = self._setup(
+            tmp_path, monkeypatch, edit_config=True
+        )
+
+        sync_orchestra.main()
+
+        assert config_path.read_text(encoding="utf-8") == "enabled: false  # edited\n"
+        orch = json.loads(orch_path.read_text(encoding="utf-8"))
+        assert orch["installed_packages"] == []
+        assert self.CONFIG_KEY not in orch["synced_files"]
+        assert self.CONFIG_KEY in capsys.readouterr().out
