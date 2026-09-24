@@ -25,7 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BREAKING** **`cocoindex` パッケージと `orchex proxy stop` / `orchex proxy status` を削除（ADR-20260924-054）**: 意味検索 MCP サーバー cocoindex-code の自動プロビジョニングと mcp-proxy 管理を廃止した。実測（Opus / Haiku で計 80 回の A/B）で、Grep 中心の探索と比べて正解率の向上がなく、コストだけが増えたため。
   - 移行: 導入済みプロジェクトでは、次回の SessionStart 同期が `installed_packages` から `cocoindex` を外し、登録済みの cocoindex hook と同期済みの `cocoindex.yaml` も削除する（配布後に編集していた場合は残し、その旨を表示する）。更新時点で起動中のセッションは一度再起動する。
   - 移行: `.mcp.json` / `.codex/config.toml` / `.gemini/settings.json` の `cocoindex-code` エントリと、`.cocoindex_code/` の索引は自動では消えないので手で削除する。proxy モードで mcp-proxy を起動していた場合、`proxy.idle_timeout` が有効なら接続が無くなった時点で自動停止するが、0 以下で無効にしていた場合はプロセスを手で停止する（`orchex proxy stop` は使えなくなる）。
-- **BREAKING** **`tmux-monitor` パッケージを削除**: `orchex install tmux-monitor` は使えなくなる。導入済みのプロジェクトは、orchex を更新する前に `orchex uninstall tmux-monitor --project <path>` を実行しておく。未実行のまま更新した場合、残った hook 登録は次回 SessionStart の同期で自動除去される（それまでのセッションでは旧 hook がスクリプト不在のエラーを出しうる）。`orchestra.json` の `installed_packages` に残る `tmux-monitor` は無害なので、不要なら手動で削除する。
+- **BREAKING** **`tmux-monitor` パッケージを削除**: tmux でサブエージェントを監視する opt-in パッケージの配布を終了した。`orchex install tmux-monitor` は使えなくなる。
+  - 移行: 導入済みプロジェクトでは、次回の SessionStart 同期が `installed_packages` から `tmux-monitor` を外し、登録済みの tmux-monitor hook も削除する。同期前に読み込まれた旧 hook はスクリプト不在で失敗し `Agent` / `Task` の呼び出しをブロックしうるため、更新時点で起動中のセッションと更新後の最初のセッションは一度再起動する。
 
 ### Fixed
 
