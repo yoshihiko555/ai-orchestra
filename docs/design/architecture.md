@@ -61,7 +61,6 @@ ai-orchestra/
 │   ├── audit/                 # 統一イベントログ監査・CLI 記録
 │   ├── codex-suggestions/     # Codex 相談提案
 │   ├── antigravity-suggestions/    # Antigravity リサーチ提案
-│   ├── tmux-monitor/          # tmux サブエージェント監視
 │   └── git-workflow/        # GitHub Issue 開発フロー
 │
 ├── facets/                    # Facet 合成システム
@@ -186,8 +185,7 @@ core (v0.4.0)                   ← 依存なし（共通基盤）
 │   └── audit (v1.0.0)          ← core, agent-routing
 ├── quality-gates (v0.1.0)      ← core, audit
 ├── codex-suggestions (v0.1.0)  ← core
-├── antigravity-suggestions (v0.1.0) ← core
-└── tmux-monitor (v0.2.0)       ← core
+└── antigravity-suggestions (v0.1.0) ← core
 
 git-workflow (v0.1.0)         ← 依存なし（独立）
 ```
@@ -244,7 +242,6 @@ SessionStart:
   - sync-orchestra.py (外部)             パッケージ差分同期 + facet build
   - load-task-state.py (core)            Plans.md 読み込み・自動アーカイブ・タスクサマリー表示
   - orchestration-bootstrap.py (audit)   state/logs ディレクトリ初期化
-  - tmux-session-start.py (tmux)         tmux セットアップ
 
 UserPromptSubmit:
   - clear-plan-gate.py (core)            プランゲートクリア
@@ -257,7 +254,6 @@ PreToolUse(Edit|Write):
 PreToolUse(Agent|Task):
   - check-plan-gate.py (core)            実装エージェントのブロック判定
   - inject-shared-context.py (core)      前回サブエージェント結果 + 作業コンテキスト注入
-  - tmux-pre-task.py (tmux)              タスク実行前の準備
 
 PreToolUse(WebSearch|WebFetch):
   - suggest-antigravity-research.py (antigravity)  リサーチ向きクエリで [Antigravity Suggestion] 出力
@@ -275,7 +271,6 @@ PostToolUse(Agent|Task):
 
 SessionEnd:
   - cleanup-session-context.py (core)    session/ ディレクトリ削除
-  - tmux-session-end.py (tmux)           tmux クリーンアップ
 ```
 
 ### 5.2 Hook 設計原則

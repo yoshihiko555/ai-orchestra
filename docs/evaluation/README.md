@@ -102,7 +102,7 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 
 | 類型         | 主な構成物                                     | 該当パッケージ例                                                                                           |
 | ------------ | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| hook 型      | SessionStart / PreToolUse 等の hook スクリプト | core, quality-gates, audit, codex-suggestions, antigravity-suggestions, tmux-monitor, fail-logs |
+| hook 型      | SessionStart / PreToolUse 等の hook スクリプト | core, quality-gates, audit, codex-suggestions, antigravity-suggestions, fail-logs |
 | CLI ツール型 | lib + scripts で提供されるコマンド             | codd, skill-evolution, audit（scripts）                                                                    |
 | スキル型     | スキル指示書 + エージェント定義                | image-generation, reverse, git-workflow                                                                    |
 

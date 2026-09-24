@@ -27,7 +27,6 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [codex-suggestions](#codex-suggestions)             | ファイル編集時の Codex 相談提案                                                                  | 提案         |
 | [antigravity-suggestions](#antigravity-suggestions) | Web 検索時の Antigravity リサーチ提案                                                            | 提案         |
 | [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                                                 | ワークフロー |
-| [tmux-monitor](#tmux-monitor)                       | tmux でサブエージェント出力をリアルタイム監視（opt-in、`setup all` 対象外）                      | 監視         |
 | [loop-harness](#loop-harness)                       | Issue 起点の Maker/Checker 反復と PR レビュー対応を安全駆動                                      | ハーネス     |
 | [codd](#codd)                                       | ドキュメント依存グラフの scan/validate/impact（整合性レイヤー）                                  | 整合性       |
 | [codex-harness](#codex-harness)                     | Codex CLI 向け repo-local ハーネス（hooks + 非対話 run/review）                                  | ハーネス     |
@@ -43,7 +42,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | プリセット  | 含まれるパッケージ                              |
 | ----------- | ----------------------------------------------- |
 | `essential` | core, agent-routing, audit, quality-gates, codd |
-| `all`       | 全パッケージ（tmux-monitor を除く）             |
+| `all`       | 全パッケージ                                    |
 
 ---
 
@@ -245,31 +244,6 @@ GitHub Issue の登録・開発フロー・PR 作成を含む Git/GitHub ワー�
 | skill  | `review-respond`            | PR の bot レビュー指摘への自動対応（検出→修正→返信→resolve）                         |
 | script | `pr_review_threads.py`      | PR の unresolved bot レビュー指摘の検出・取得・返信・resolve（`/review-respond` 用） |
 | config | `sandbox-requirements.json` | sandbox 設定（`gh` コマンドの除外）                                                  |
-
----
-
-## tmux-monitor
-
-tmux ペインでサブエージェントの起動・停止をリアルタイム表示する。
-
-- **バージョン**: 0.2.0
-- **依存**: core
-
-### コンポーネント
-
-| 種別 | 名前                     | 説明                                       |
-| ---- | ------------------------ | ------------------------------------------ |
-| hook | `tmux-session-start.py`  | SessionStart: tmux セットアップ            |
-| hook | `tmux-session-end.py`    | SessionEnd: tmux クリーンアップ            |
-| hook | `tmux-pre-task.py`       | PreToolUse(Agent/Task): タスク実行前の準備 |
-| hook | `tmux-subagent-start.py` | SubagentStart: サブエージェント起動表示    |
-| hook | `tmux-subagent-stop.py`  | SubagentStop: サブエージェント停止表示     |
-| util | `tmux-format-output.py`  | 出力フォーマット整形ユーティリティ         |
-| util | `tmux_common.py`         | tmux 操作の共通ユーティリティ              |
-
-### 有効化
-
-専用の設定ファイルはなく、インストールされている場合、`tmux` バイナリが見つかる環境で自動的に有効になる。`tmux` が未インストールの場合、各 hook は no-op として終了する。`orchex setup all` には含まれないため、`orchex install tmux-monitor` で明示的にインストールする。
 
 ---
 
