@@ -541,6 +541,46 @@ class TestSyncHooks:
         assert hook["timeout"] == 90
         assert hook["command"] == command
 
+    def test_hook_of_removed_package_is_pruned(self, tmp_path):
+        """パッケージ実体ごと削除されたパッケージの登録済み hook は同期で外れる。
+
+        配布を終了したパッケージ（manifest が存在しない）の hook が settings.local.json に
+        残ると、存在しないスクリプトを起動し続けるため、同期で除去されなければならない。
+        """
+        orchestra_path = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        self._write_manifest(
+            orchestra_path,
+            "core",
+            {"SessionStart": [{"file": "check-plan-gate.py"}]},
+        )
+        core_command = hook_utils.get_hook_command("core", "check-plan-gate.py")
+        removed_command = hook_utils.get_hook_command("cocoindex", "notify-proxy-reconnect.py")
+        settings_path = self._write_settings(
+            project_dir,
+            {
+                "SessionStart": [
+                    {"hooks": [{"type": "command", "command": core_command, "timeout": 5}]}
+                ],
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": removed_command, "timeout": 5}]}
+                ],
+            },
+        )
+
+        changes = sync_engine.sync_hooks(project_dir, orchestra_path, ["core"])
+
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        registered = [
+            hook["command"]
+            for entries in settings["hooks"].values()
+            for entry in entries
+            for hook in entry["hooks"]
+        ]
+        assert changes == 1
+        assert removed_command not in registered
+        assert core_command in registered
+
     def test_existing_hook_with_matching_timeout_is_noop(self, tmp_path):
         """既に manifest と同じ timeout で登録済みの場合は変更なしとして扱う。"""
         orchestra_path = tmp_path / "orchestra"

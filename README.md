@@ -64,7 +64,6 @@ Claude Code (Orchestrator)
     │   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
     │   ├── skill-evolution/   # スキル自己改善ループ（二軸テレメトリ + オフライン反復）
     │   ├── git-workflow/     # Git/GitHub ワークフロー
-    │   ├── cocoindex/          # MCP サーバー自動プロビジョニング
     │   └── tmux-monitor/       # tmux リアルタイム監視（opt-in）
     │
     └── 30 Specialized Agents
@@ -471,7 +470,6 @@ ai-orchestra/
 │   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
 │   ├── skill-evolution/  # スキル自己改善ループ（テレメトリ hooks + オフライン CLI）
 │   ├── git-workflow/    # Git/GitHub ワークフロー（Issue・PR・開発フロー）
-│   ├── cocoindex/         # cocoindex MCP サーバーの自動プロビジョニング
 │   └── tmux-monitor/      # tmux サブエージェント監視（opt-in）
 ├── scripts/          # 管理CLI（エントリポイント + lib/ 共有ライブラリ）
 ├── templates/        # テンプレート（エージェント・スキル・プロジェクト）

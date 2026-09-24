@@ -72,12 +72,6 @@ from lib.sync_engine import (  # noqa: E402
 from lib.toml_merge import TomlMergeError  # noqa: E402
 
 
-def _fmt_inner_proxy(inner_port: object) -> str:
-    if isinstance(inner_port, int) and inner_port > 0:
-        return f"127.0.0.1:{inner_port}"
-    return "-"
-
-
 class OrchestraManager(ContextMixin, HooksMixin):
     """パッケージ管理マネージャー"""
 
@@ -1100,85 +1094,6 @@ class OrchestraManager(ContextMixin, HooksMixin):
         else:
             print(f"インストール済み: {all_names} ({len(ordered)} パッケージ)")
 
-    # ------------------------------------------------------------------
-    # proxy 管理
-    # ------------------------------------------------------------------
-
-    def _require_cocoindex_installed(self, project_dir: Path) -> None:
-        """cocoindex が `.claude/orchestra.json` の installed_packages に無ければエラー終了する。
-
-        config ファイルの発見可否だけに頼ると、AI_ORCHESTRA_DIR が ai-orchestra
-        リポジトリ自体を指す通常構成ではベース設定が常に発見されてしまい、
-        未導入プロジェクトでもエラー分岐が実質的に発火しない（Issue #236）。
-        """
-        orch = self.load_orchestra_json(project_dir)
-        installed_packages = set(orch.get("installed_packages", []))
-        if "cocoindex" not in installed_packages:
-            print("エラー: cocoindex パッケージがインストールされていません", file=sys.stderr)
-            sys.exit(1)
-
-    def _load_proxy_modules(self) -> tuple:
-        """proxy_manager と hook_common をインポートして返す。"""
-        core_hooks = str(self.orchestra_dir / "packages" / "core" / "hooks")
-        cocoindex_hooks = str(self.orchestra_dir / "packages" / "cocoindex" / "hooks")
-        for p in [core_hooks, cocoindex_hooks]:
-            if p not in sys.path:
-                sys.path.insert(0, p)
-
-        import hook_common
-        import proxy_manager
-
-        return hook_common, proxy_manager
-
-    def proxy_stop(self, project: str | None) -> None:
-        """mcp-proxy を停止する"""
-        hook_common, proxy_manager = self._load_proxy_modules()
-        project_dir = self.get_project_dir(project)
-
-        self._require_cocoindex_installed(project_dir)
-
-        config = hook_common.load_package_config("cocoindex", "cocoindex.yaml", str(project_dir))
-        if not config:
-            print("エラー: cocoindex パッケージがインストールされていません", file=sys.stderr)
-            sys.exit(1)
-
-        if not proxy_manager.is_proxy_running(config, str(project_dir)):
-            print("mcp-proxy は停止しています")
-            return
-
-        if proxy_manager.stop_proxy(config, str(project_dir)):
-            print("✓ mcp-proxy を停止しました")
-        else:
-            print("エラー: mcp-proxy の停止に失敗しました", file=sys.stderr)
-            sys.exit(1)
-
-    def proxy_status(self, project: str | None) -> None:
-        """mcp-proxy の状態を表示する"""
-        hook_common, proxy_manager = self._load_proxy_modules()
-        project_dir = self.get_project_dir(project)
-
-        self._require_cocoindex_installed(project_dir)
-
-        config = hook_common.load_package_config("cocoindex", "cocoindex.yaml", str(project_dir))
-        if not config:
-            print("エラー: cocoindex パッケージがインストールされていません", file=sys.stderr)
-            sys.exit(1)
-
-        proxy_cfg = proxy_manager.get_proxy_config(config, str(project_dir))
-        state = proxy_manager.get_proxy_state(config, str(project_dir))
-        pid_path = proxy_manager.resolve_pid_path(config, str(project_dir))
-        running = state.get("proxy_state") in {"ready", "idle"}
-        pid = state.get("pid") or proxy_manager._read_pid(pid_path)
-        child_pid = state.get("child_pid")
-        inner_port = state.get("inner_port")
-
-        print(f"状態:   {'稼働中' if running else '停止'} ({state.get('proxy_state', 'unknown')})")
-        print(f"PID:    {pid or '-'}")
-        print(f"Child:  {child_pid or '-'}")
-        print(f"ポート: {proxy_cfg['host']}:{proxy_cfg['port']}")
-        print(f"内部:   {_fmt_inner_proxy(inner_port)}")
-        print(f"PIDファイル: {pid_path}")
-
 
 def _first_positional_command(argv: list[str]) -> str | None:
     """argv の先頭にある既知のトップレベルオプション（`--orchestra-dir`）をスキップし、
@@ -1479,21 +1394,6 @@ def build_meta_parser(subparsers: Any) -> argparse.ArgumentParser:
     return parser
 
 
-def build_proxy_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser = _add_command_parser(
-        subparsers,
-        "proxy",
-        description="cocoindex mcp-proxy の状態確認・停止を行う"
-        "（cocoindex 未導入時はエラーで非ゼロ終了する）。",
-    )
-    proxy_sub = parser.add_subparsers(dest="proxy_command", help="proxy サブコマンド")
-    stop_parser = proxy_sub.add_parser("stop", help="mcp-proxy を停止")
-    stop_parser.add_argument("--project", help="プロジェクトパス")
-    status_parser = proxy_sub.add_parser("status", help="mcp-proxy の状態を表示")
-    status_parser.add_argument("--project", help="プロジェクトパス")
-    return parser
-
-
 COMMAND_REGISTRY: dict[str, CommandEntry] = {
     "init": {
         "name": "init",
@@ -1608,16 +1508,6 @@ COMMAND_REGISTRY: dict[str, CommandEntry] = {
         ),
         "build_parser": build_meta_parser,
     },
-    "proxy": {
-        "name": "proxy",
-        "group": "run_delegate",
-        "summary": "mcp-proxy の管理",
-        "examples": (
-            "orchex proxy status --project .",
-            "orchex proxy stop --project .",
-        ),
-        "build_parser": build_proxy_parser,
-    },
 }
 
 
@@ -1705,7 +1595,6 @@ def main() -> None:
     """メインエントリポイント"""
     parser, subparsers = create_parser()
     context_parser = subparsers.choices["context"]
-    proxy_parser = subparsers.choices["proxy"]
     facet_parser = subparsers.choices["facet"]
 
     argv, script_args = _split_run_passthrough(sys.argv[1:])
@@ -1759,14 +1648,6 @@ def main() -> None:
             manager.context_sync(args.project, args.dry_run, args.force)
         else:
             context_parser.print_help()
-            sys.exit(1)
-    elif args.command == "proxy":
-        if args.proxy_command == "stop":
-            manager.proxy_stop(args.project)
-        elif args.proxy_command == "status":
-            manager.proxy_status(args.project)
-        else:
-            proxy_parser.print_help()
             sys.exit(1)
     elif args.command == "facet":
         project_dir = manager.get_project_dir(args.project)

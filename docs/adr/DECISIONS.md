@@ -18,8 +18,8 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260223-003 | Codex CLI 実装委譲のデッドロック解消と Implementation Method 強制                       | accepted   | 2026-02-23 |
 | ADR-20260223-004 | task-memory サマリー表示仕様の明確化と marker 設定の堅牢化                              | accepted   | 2026-02-23 |
 | ADR-20260223-005 | Codex/Gemini 運用記述の config-driven 統一                                              | accepted   | 2026-02-23 |
-| ADR-20260302-006 | cocoindex v2: mcp-proxy による MCP 共有化とポート自動導出                               | accepted   | 2026-03-02 |
-| ADR-20260307-007 | cocoindex proxy モードのデフォルト設定維持（stdio）                                     | accepted   | 2026-03-07 |
+| ADR-20260302-006 | cocoindex v2: mcp-proxy による MCP 共有化とポート自動導出                               | superseded | 2026-03-02 |
+| ADR-20260307-007 | cocoindex proxy モードのデフォルト設定維持（stdio）                                     | superseded | 2026-03-07 |
 | ADR-20260308-008 | サブエージェント model の config-driven 自動パッチ                                      | accepted   | 2026-03-08 |
 | ADR-20260313-009 | CLI 間コンテキスト共有のファイルベース設計                                              | accepted   | 2026-03-13 |
 | ADR-20260315-010 | Faceted Prompting によるスキル・ルールのファセット分解と自動生成                        | accepted   | 2026-03-15 |
@@ -29,8 +29,8 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260412-014 | quality-gates に独立したテスト改ざん検出 Hook を追加                                    | accepted   | 2026-04-12 |
 | ADR-20260414-015 | agent-routing の未分類リサーチ入力は researcher 基点で解決する                          | accepted   | 2026-04-14 |
 | ADR-20260419-016 | quality gate の判定は quality-gates が担い、audit は記録と集計に限定する                | accepted   | 2026-04-19 |
-| ADR-20260421-017 | cocoindex proxy 起動は proxy-only とし、state file と reconnect 通知で扱う              | accepted   | 2026-04-21 |
-| ADR-20260423-018 | cocoindex proxy 停止は supervisor の idle shutdown で扱う                               | accepted   | 2026-04-23 |
+| ADR-20260421-017 | cocoindex proxy 起動は proxy-only とし、state file と reconnect 通知で扱う              | superseded | 2026-04-21 |
+| ADR-20260423-018 | cocoindex proxy 停止は supervisor の idle shutdown で扱う                               | superseded | 2026-04-23 |
 | ADR-20260513-019 | スキル/ルールは必ずパッケージに登録する（孤立 composition の禁止）                      | accepted   | 2026-05-13 |
 | ADR-20260513-020 | stage → main リリースフローを squash merge + 並列 PR 方式に確定する                     | superseded | 2026-05-13 |
 | ADR-20260513-021 | stage → main リリースフローを直列方式に変更する（ADR-020 supersede）                    | superseded | 2026-05-13 |
@@ -66,3 +66,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260817-051 | frontier コスト軸をキャッシュ中立コスト（cache_neutral_cost_usd）へ切替え、5 分 TTL ephemeral cache の偽 dominance 勾配を除去する | accepted   | 2026-08-17 |
 | ADR-20260817-052 | claude-harness suite を測定軸ベースで拡充し、ハーネス全体の自己改善を実測可能にする    | accepted   | 2026-08-17 |
 | ADR-20260906-053 | LP-2 Docker Checker の実行環境と観測性を実運用値に合わせる                              | accepted   | 2026-09-06 |
+| ADR-20260924-054 | cocoindex パッケージの配布を終了し、実測で効果が確認できない意味検索は導入しない       | accepted   | 2026-09-24 |

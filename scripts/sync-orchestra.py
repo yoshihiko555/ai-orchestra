@@ -50,9 +50,14 @@ RENAMED_PACKAGES = {
     "gemini-suggestions": "antigravity-suggestions",
 }
 
+# 配布を終了したパッケージ（ADR-20260924-054）
+# 横展開先の orchestra.json に残っていても installed_packages から自動除去する。
+# パッケージ実体が無いため `orchex uninstall` では外せず、ここで外さないと名前が残り続ける
+REMOVED_PACKAGES = frozenset({"cocoindex"})
+
 
 def migrate_installed_packages(packages: list[str]) -> tuple[list[str], bool]:
-    """installed_packages の旧パッケージ名を新名に読み替える。
+    """installed_packages の旧パッケージ名を新名に読み替え、配布終了パッケージを除去する。
 
     Args:
         packages: orchestra.json の installed_packages。
@@ -63,6 +68,9 @@ def migrate_installed_packages(packages: list[str]) -> tuple[list[str], bool]:
     migrated: list[str] = []
     changed = False
     for name in packages:
+        if name in REMOVED_PACKAGES:
+            changed = True
+            continue
         new_name = RENAMED_PACKAGES.get(name, name)
         if new_name != name:
             changed = True
@@ -71,6 +79,32 @@ def migrate_installed_packages(packages: list[str]) -> tuple[list[str], bool]:
         else:
             changed = True
     return migrated, changed
+
+
+def drop_removed_package_hashes(orch: dict) -> bool:
+    """配布終了パッケージの file_hashes 台帳エントリを orchestra.json から除去する。
+
+    Returns:
+        除去したエントリがあれば True。
+    """
+    file_hashes = orch.get("file_hashes")
+    if not isinstance(file_hashes, dict):
+        return False
+    dropped = False
+    for name in REMOVED_PACKAGES:
+        if file_hashes.pop(name, None) is not None:
+            dropped = True
+    return dropped
+
+
+def write_orchestra_json(orch_path: Path, orch: dict) -> None:
+    """orchestra.json を書き出す（書き込み失敗は同期全体を止めないため握りつぶす）。"""
+    try:
+        with open(orch_path, "w", encoding="utf-8") as f:
+            json.dump(orch, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+    except OSError:
+        pass
 
 
 def read_hook_input() -> dict:
@@ -109,6 +143,8 @@ def main() -> None:
     )
     if packages_migrated:
         orch["installed_packages"] = installed_packages
+    if drop_removed_package_hashes(orch):
+        packages_migrated = True
     orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
 
     if not orchestra_dir:
@@ -120,6 +156,10 @@ def main() -> None:
 
     scaffolded_count = ensure_claude_scaffold(project_dir, orchestra_path)
     if not installed_packages:
+        # 配布終了パッケージしか残っていなかった場合も、除去の保存と hook の取り外しは行う
+        if packages_migrated:
+            write_orchestra_json(orch_path, orch)
+            sync_hooks(project_dir, orchestra_path, installed_packages)
         if scaffolded_count > 0:
             print(f"[orchestra] {scaffolded_count} scaffolded")
         return
@@ -179,12 +219,7 @@ def main() -> None:
     if needs_save:
         orch["last_sync"] = datetime.datetime.now(datetime.UTC).isoformat()
         orch["synced_files"] = sorted(synced_files)
-        try:
-            with open(orch_path, "w", encoding="utf-8") as f:
-                json.dump(orch, f, indent=2, ensure_ascii=False)
-                f.write("\n")
-        except OSError:
-            pass
+        write_orchestra_json(orch_path, orch)
 
     # hooks 同期
     hooks_changed = sync_hooks(project_dir, orchestra_path, installed_packages)

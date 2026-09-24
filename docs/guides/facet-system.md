@@ -81,7 +81,7 @@ facets/
 | 品質              | `review`, `skill-review-policy`, `tdd`, `release-readiness`                                                                                            |
 | 開発フロー        | `startproject`, `issue-create`, `issue-fix`, `preflight`                                                                                               |
 | 状態管理          | `task-memory-usage`, `task-state`, `context-sharing`                                                                                                   |
-| その他            | `coding-principles` (rule), `cocoindex-usage`, `design`, `design-tracker`                                                                              |
+| その他            | `coding-principles` (rule), `design`, `design-tracker`                                                                                                 |
 
 ### Knowledge（ナレッジ）
 
@@ -303,7 +303,6 @@ orchex facet build --name my-skill --project .
 | Composition                         | 種別  | 所有パッケージ（manifest 参照） | ポリシー                                 | 出力契約      |
 | ----------------------------------- | ----- | ------------------------------- | ---------------------------------------- | ------------- |
 | `agent-routing-policy`              | rule  | agent-routing                   | —                                        | —             |
-| `cocoindex-usage`                   | rule  | cocoindex                       | —                                        | —             |
 | `codex-delegation`                  | rule  | codex-suggestions               | cli-language                             | —             |
 | `codex-suggestion-compliance`       | rule  | codex-suggestions               | —                                        | —             |
 | `codex-system`                      | skill | codex-suggestions               | cli-language                             | —             |

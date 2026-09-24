@@ -36,11 +36,7 @@ generated-images/
 # both success and failure, this only catches leftovers from abnormal exits)
 .imggen.*.marker
 
-.claude/.mcp-proxy.pid
 .worktrees/
-
-# CocoIndex local search index
-.cocoindex_code/
 
 # >>> AI Orchestra (.claude) >>>
 .claude/docs/

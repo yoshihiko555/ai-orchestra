@@ -31,7 +31,8 @@ def test_registry_keys_match_subparser_choices() -> None:
     _parser, subparsers = manager_mod.create_parser()
 
     assert set(manager_mod.COMMAND_REGISTRY) == set(subparsers.choices)
-    assert len(manager_mod.COMMAND_REGISTRY) == 14
+    assert len(manager_mod.COMMAND_REGISTRY) == 13
+    assert "proxy" not in manager_mod.COMMAND_REGISTRY
     for command_name, entry in manager_mod.COMMAND_REGISTRY.items():
         assert set(entry) == REGISTRY_FIELDS
         assert entry["name"] == command_name
