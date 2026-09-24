@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - 移行: `.mcp.json` / `.codex/config.toml` / `.gemini/settings.json` の `cocoindex-code` エントリと、`.cocoindex_code/` の索引は自動では消えないので手で削除する。proxy モードで mcp-proxy を起動していた場合、`proxy.idle_timeout` が有効なら接続が無くなった時点で自動停止するが、0 以下で無効にしていた場合はプロセスを手で停止する（`orchex proxy stop` は使えなくなる）。
 - **BREAKING** **`tmux-monitor` パッケージを削除**: tmux でサブエージェントを監視する opt-in パッケージの配布を終了した。`orchex install tmux-monitor` は使えなくなる。
   - 移行: 導入済みプロジェクトでは、次回の SessionStart 同期が `installed_packages` から `tmux-monitor` を外し、登録済みの tmux-monitor hook も削除する。同期前に読み込まれた旧 hook はスクリプト不在で失敗し `Agent` / `Task` の呼び出しをブロックしうるため、更新時点で起動中のセッションと更新後の最初のセッションは一度再起動する。
+  - 移行: tmux-monitor が作成した tmux セッション（`claude-*`）と、`/tmp/claude-session-info/`・`/tmp/claude-shared-*` の一時ファイルは自動では消えない。tmux サーバーの終了や OS の再起動で消えるが、残っていれば `tmux kill-session -t <名前>` と手動削除で片付ける。
 
 ### Fixed
 
