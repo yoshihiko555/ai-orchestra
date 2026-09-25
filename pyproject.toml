@@ -16,6 +16,8 @@ orchex = "ai_orchestra.cli:main"
 
 [project.optional-dependencies]
 dev = [
+    "hatchling",
+    "hatch-vcs",
     "pytest>=9.0",
     "pytest-cov>=6.0",
     "ruff>=0.15,<0.16",
@@ -28,18 +30,22 @@ packages = ["ai_orchestra"]
 "packages" = "ai_orchestra/packages"
 "templates" = "ai_orchestra/templates"
 "scripts" = "ai_orchestra/scripts"
+"facets" = "ai_orchestra/facets"
 "presets.json" = "ai_orchestra/presets.json"
 
 [tool.hatch.build.targets.sdist]
+# 先頭の / でリポジトリ直下に固定する（gitignore 形式のため、無いと .claude/skills/*/scripts/ 等の
+# 同名パスにも一致する）
 include = [
-    "ai_orchestra/",
-    "packages/",
-    "templates/",
-    "scripts/",
-    "presets.json",
-    "README.md",
-    "CLAUDE.md",
-    "pyproject.toml",
+    "/ai_orchestra/",
+    "/packages/",
+    "/templates/",
+    "/scripts/",
+    "/facets/",
+    "/presets.json",
+    "/README.md",
+    "/CLAUDE.md",
+    "/pyproject.toml",
 ]
 
 [tool.hatch.version]
