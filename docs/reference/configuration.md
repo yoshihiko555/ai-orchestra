@@ -96,6 +96,7 @@ antigravity:
   # model の妥当性チェック用 allowlist（未掲載モデルはコマンド提案時に [WARN] 付与）
   model_allowlist:
     - gemini-3.1-pro-high
+    - gemini-3.8-flash-high
     # ...（cli-tools.yaml 参照）
 
   # agy コマンドに常に付与するフラグ
