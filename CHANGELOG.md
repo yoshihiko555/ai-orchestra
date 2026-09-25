@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`agent-routing`: `cli-tools.yaml` の debugger の sandbox 既定値を `read-only` に変更**: `agents.debugger.sandbox` が `workspace-write` のまま残っていたのを、Edit を持たない分析役に合わせて `read-only` にした。`.local.yaml` で debugger の tool を `codex` に切り替えている場合の sandbox 指定が変わる。tool の既定値（`claude-direct`）は変わらない。
 - **`agent-routing`: `cli-tools.yaml` の `antigravity.model_allowlist` を現行の `agy models` に合わせて更新**: Gemini 3.6 / 3.7 / 3.8 Flash を追加し、`agy models` に表示されなくなった Gemini 3.5 Flash、接尾辞なしの `gemini-3.1-pro`、名前が変わった Claude 4.6 系の旧スラッグ（`claude-4.6-sonnet-thinking` / `claude-4.6-opus-thinking`）を外した。`antigravity.model` にこれらを指定している場合は警告が出るので、`agy models` に表示される名前（例: `claude-sonnet-4-6`）に変更する。
 
+### Fixed
+
+- **`core`: `explain-visually` の `template.html` を prettier で整形しても図が描画されるようになった**: 整形で inline script の中身が変わり、CSP のハッシュと一致しなくなって Mermaid の描画とページ高さの報告がブロックされていた。script 2 本を `prettier-ignore` で整形対象から外した。整形済みの template.html をコミットしているプロジェクトは、次回 sync 後の template.html をコミットし直す。
+
 ## [0.3.4] - 2026-09-25
 
 ### Added
