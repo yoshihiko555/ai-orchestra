@@ -74,7 +74,7 @@
     "agent-routing": {
       "config/agent-routing/cli-tools.yaml": "c6f85bc6987aa487c49b83fc52877a496d1d6669ae8bbd9ab77e70562c7632e8",
       "agents/ai-architect.md": "b5a67e114afc6f01809b07ae5d25062f1b418e2fadb0c0acf12a67102393dfdd",
-      "agents/ai-dev.md": "4d1d183de1bde87dc49058ccf663a354b021bd51565a7a1eff04d0294ceb5fa0",
+      "agents/ai-dev.md": "91309fef396ce80dbe498e9e38361c8c1f1914f5712459d82d8747926e01a561",
       "agents/api-designer.md": "bb81a221c98b8a0b88513c1c040e844aae7b317679c8f7e6952168108b511a2b",
       "agents/architect.md": "e01416309b10f6579856a61d75d192aae4206db3d467013ef906d7de3ae5aa99",
       "agents/architecture-reviewer.md": "272ce8be8a0f83c8da58a46a9c6cc73928834e61b190748a2f11d92b4f34286f",
