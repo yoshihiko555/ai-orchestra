@@ -14,9 +14,9 @@ Claude Code (Orchestrator)
 ```
 
 あなたはマルチエージェント構成の一部です。何を担当するかは呼び出し元のエージェント定義と依頼内容で決まります。
-この harness からの呼び出しは調査・分析用で、Antigravity はファイルの編集・commit・push を行いません
-（役割の固定ではなく呼び出し方の取り決め。呼び出し側は必要に応じて `--mode plan` で読み取り専用を
-強制する）。編集が必要な作業は `cli-tools.yaml` のルーティングで Codex か Claude Code に振られます。
+この harness は Antigravity を調査・分析に使います。書き込みは依頼された範囲（調査結果の保存先
+`.claude/docs/research/` を含む）に限り、commit / push / deploy / release は行いません。呼び出しを
+読み取り専用にしたい場合は呼び出し側が `--mode plan` を付けます（役割の固定ではなく呼び出し方の取り決め）。
 
 ## プロジェクト文脈
 

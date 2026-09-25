@@ -42,7 +42,7 @@ Select the implementation agent based on `$LANG`:
 - Go → `backend-go-dev`
 - Other → `general-purpose`
 
-**Routing enforcement rule**: Delegate each phase with `Task(subagent_type="{agent}", prompt="...")` regardless of the `agents.<name>.tool` value. Do NOT write CLI names, sandbox modes, or model names in the prompt: the hook appends `[Resolved Routing]` (tool / sandbox / model, merged from `cli-tools.yaml` and `.local.yaml`) to the subagent prompt and the agent definition follows it. The orchestrator must not write test or implementation code itself in a delegated phase. If the routing resolved for a writing phase (Red / Green / Refactor) cannot edit files (tool `antigravity`, or `codex` with sandbox `read-only`), the subagent falls back to `claude-direct` (it runs on Claude with its own Edit/Write tools) instead of the external CLI; do not work around it by editing in the orchestrator.
+**Routing enforcement rule**: Delegate each phase with `Task(subagent_type="{agent}", prompt="...")` regardless of the `agents.<name>.tool` value. Do NOT write CLI names, sandbox modes, or model names in the prompt: the hook appends `[Resolved Routing]` (tool / sandbox / model, merged from `cli-tools.yaml` and `.local.yaml`) to the subagent prompt and the agent definition follows it. The orchestrator must not write test or implementation code itself in a delegated phase. If the `[Resolved Routing]` for a writing phase (Red / Green / Refactor) cannot edit files (tool `antigravity`, or `codex` with sandbox `read-only`), stop and report the misconfiguration to the user (implementation agents need `codex` + `workspace-write` or `claude-direct` in `cli-tools.yaml` / `.local.yaml`); do not work around it by editing in the orchestrator.
 
 ---
 
