@@ -91,11 +91,12 @@ antigravity:
 
   # agy -p "..." --model <この値> で使用されるモデル slug。空文字で CLI デフォルトを使用
   # 注意: agy は無効な slug でも exit 0 でデフォルトモデルに黙ってフォールバックする
-  model: gemini-3.1-pro-high
+  model: gemini-3.8-flash-high
 
   # model の妥当性チェック用 allowlist（未掲載モデルはコマンド提案時に [WARN] 付与）
   model_allowlist:
     - gemini-3.1-pro-high
+    - gemini-3.8-flash-high
     # ...（cli-tools.yaml 参照）
 
   # agy コマンドに常に付与するフラグ
@@ -105,13 +106,13 @@ antigravity:
   requires_sandbox_disable: false
 ```
 
-| キー                       | 型     | デフォルト            | 説明                                            |
-| -------------------------- | ------ | --------------------- | ----------------------------------------------- |
-| `enabled`                  | bool   | `true`                | `false` で Antigravity 呼び出しを全停止         |
-| `model`                    | string | `gemini-3.1-pro-high` | agy で使用するモデル slug                       |
-| `model_allowlist`          | list   | `agy models` の ID    | slug 妥当性チェック用（黙示フォールバック対策） |
-| `flags`                    | string | `""`                  | agy に常時付与するフラグ                        |
-| `requires_sandbox_disable` | bool   | `false`               | sandbox 外での実行が必要か                      |
+| キー                       | 型     | デフォルト              | 説明                                            |
+| -------------------------- | ------ | ----------------------- | ----------------------------------------------- |
+| `enabled`                  | bool   | `true`                  | `false` で Antigravity 呼び出しを全停止         |
+| `model`                    | string | `gemini-3.8-flash-high` | agy で使用するモデル slug                       |
+| `model_allowlist`          | list   | `agy models` の ID      | slug 妥当性チェック用（黙示フォールバック対策） |
+| `flags`                    | string | `""`                    | agy に常時付与するフラグ                        |
+| `requires_sandbox_disable` | bool   | `false`                 | sandbox 外での実行が必要か                      |
 
 ### subagent セクション
 

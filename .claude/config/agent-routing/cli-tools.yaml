@@ -41,7 +41,7 @@ antigravity:
   # agy -p "..." --model <この値> で指定される
   # 未指定（空文字）の場合は --model フラグを省略し CLI デフォルトモデルを使用
   # 注意: agy は無効な slug でも exit 0 でデフォルトモデルに黙ってフォールバックする
-  model: gemini-3.1-pro-high
+  model: gemini-3.8-flash-high
   # model の妥当性チェック用 allowlist（コマンド構築時に警告判定へ使用）
   # `agy models` の出力に合わせる（2026-09-25 / agy 1.1.24 で確認）。
   # アカウントで使えるモデルが異なる場合は .local.yaml で上書き拡張する
