@@ -73,6 +73,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
   - `test-gate-checker.py` — テスト品質チェック
 - skills (facet build): `review`, `tdd`, `design-tracker`, `release-readiness`
 - rules (facet build): `skill-review-policy`
+- config: `quality-gates.json`（機能フラグ・状態ディレクトリ、Issue #153 で `audit` から分離）, `evaluation-set-mapping.yaml`
 
 ---
 
@@ -161,7 +162,7 @@ meta-harness と loop-harness が共有する Docker CLI、hardened security pro
   - `log-viewer.py` — イベントログ閲覧
   - `kpi-report.py` — KPI レポート生成
   - `analyze-cli-usage.py` — CLI 使用状況分析
-- config: `delegation-policy.json`, `audit-flags.json`
+- config: `delegation-policy.json`, `audit-flags.json`（機能フラグは route_audit / kpi_scorecard のみ。quality_gate 系は Issue #153 で `quality-gates` パッケージへ分離）
 
 ---
 

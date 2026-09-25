@@ -428,8 +428,8 @@ def test_main_normalizes_subdirectory_before_config_lookups(
     subdirectory.mkdir(parents=True)
     config_calls = []
 
-    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
-        config_calls.append((package_name, filename, project_dir))
+    def _load_config(project_dir: str) -> dict:
+        config_calls.append(project_dir)
         return {
             "features": {
                 "quality_gate": {"enabled": True},
@@ -437,7 +437,7 @@ def test_main_normalizes_subdirectory_before_config_lookups(
             }
         }
 
-    monkeypatch.setattr(check_context_optimization, "load_package_config", _load_config)
+    monkeypatch.setattr(check_context_optimization, "load_quality_gates_config", _load_config)
     _make_stdin(
         {
             "cwd": str(subdirectory),
@@ -451,10 +451,7 @@ def test_main_normalizes_subdirectory_before_config_lookups(
         check_context_optimization.main()
 
     assert exc_info.value.code == 0
-    assert config_calls == [
-        ("audit", "audit-flags.json", str(repo_root)),
-        ("audit", "audit-flags.json", str(repo_root)),
-    ]
+    assert config_calls == [str(repo_root), str(repo_root)]
     assert capsys.readouterr().out == ""
 
 

@@ -6,13 +6,15 @@
 **最終レビュー日**: 2026-07-04（EV-05 を agy 検出統一に確定。README 構成誤り・未文書化キー文書化・gemini レガシー撤去は Issue #126 で追跡）
 **情報源**: packages/audit/README.md, docs/reference/packages.md（audit セクション）, .claude/rules/config-loading.md（補助: packages/audit/manifest.json, hooks/scripts のファイル名と docstring 冒頭）
 
+> Issue #153（config 分離。ADR-20260926-055）で `quality_gate` 系の機能フラグを `quality-gates.json` へ読み替えた。EV-25 は新規追加で人間レビュー未実施（最終レビュー日は更新していない）。
+
 ## 1. 責務定義
 
 audit パッケージは、Claude Code セッション中のルーティング・CLI 呼び出し・サブエージェント実行・指示書読み込みを、セッション単位の JSONL イベントログ（`.claude/logs/audit/sessions/{session_id}.jsonl`）へ設定不要で自動記録する統合監査基盤である。記録は `audit-flags.json` の機能フラグ単位で有効/無効を切り替えられ、ログにはプロンプトやコマンド文字列に含まれ得る機密情報をマスキングした上で書き込む。蓄積したログは `dashboard` / `dashboard-html` / `log-viewer` / `kpi-report` / `analyze-cli-usage` スクリプトで可視化・分析できる。
 
 ### Non-Goals
 
-- 品質ゲートの合否判定・ブロックそのものは行わない（`quality_gate` イベントの記録元は `quality-gates` パッケージの `post-test-analysis.py` であり、audit は関連フラグを保管・共有するのみ）— 根拠: packages/audit/README.md
+- 品質ゲートの合否判定・ブロックそのものは行わない（`quality_gate` イベントの記録元は `quality-gates` パッケージの `post-test-analysis.py` であり、判定に使う機能フラグも Issue #153 で `quality-gates` パッケージが所有する `quality-gates.json` に移った。audit は event 記録のみを担う）— 根拠: packages/audit/README.md
 - エージェントのルーティング判断そのものは行わない（ルーティング決定は `agent-routing`、audit は予測ルートと実ルートの照合・記録のみを担う）— 根拠: docs/reference/packages.md（audit セクション）
 - リアルタイム通知・アラートは提供しない（スクリプトはオンデマンド実行のレポート生成のみ）— 根拠: packages/audit/README.md（スクリプトはすべて手動実行のコマンドとして記載）
 
@@ -46,7 +48,7 @@ audit パッケージは、Claude Code セッション中のルーティング�
 - [ ] EV-06（正常 / should）: SubagentStart / SubagentStop でそれぞれ `subagent_start` / `subagent_end` を記録し、`log-viewer --trace` でイベント連鎖を追跡できる — 根拠: packages/audit/README.md（log-viewer の `--trace` オプション説明）
 - [ ] EV-07（正常 / should）: InstructionsLoaded は読み込まれた指示書をログへ記録するが、stdout へ JSON 応答を出力しない観測専用フックである — 根拠: 実装挙動（audit-instructions-loaded.py モジュール docstring「stdout への JSON 出力は行わない（観測専用）」）
 - [ ] EV-08（正常 / must）: `route_audit.enabled=false` の場合、`prompt` / `route_decision` の記録が抑制される — 根拠: packages/audit/README.md（audit-flags.json フラグ表）
-- [ ] EV-09（正常 / must）: `quality_gate` イベント自体は audit 側の hook からは記録されず、`quality-gates` パッケージの `post-test-analysis.py` から記録される（audit は関連フラグの保管のみ） — 根拠: packages/audit/README.md（フック一覧の注記）
+- [ ] EV-09（正常 / must）: `quality_gate` イベント自体は audit 側の hook からは記録されず、`quality-gates` パッケージの `post-test-analysis.py` から記録される（判定に使う機能フラグも `quality-gates` 側の `quality-gates.json` が所有する。Issue #153） — 根拠: packages/audit/README.md（フック一覧の注記）
 - [ ] EV-10（境界 / should）: `route_audit.max_excerpt_chars`（デフォルト 160）を超えるプロンプト抜粋は切り詰めて記録される — 根拠: packages/audit/README.md（audit-flags.json フラグ表）
 - [ ] EV-11（境界 / should）: `--days` 未指定時、`kpi-report` は `kpi_scorecard.default_period_days`（デフォルト 7 日）を集計期間として使用する — 根拠: packages/audit/README.md（audit-flags.json フラグ表 + kpi-report 節）
 - [ ] EV-12（異常 / must）: `.claude/config/audit/audit-flags.local.json` が存在する場合、ベース設定（`audit-flags.json`）より優先して適用される — 根拠: packages/audit/README.md（設定節）+ .claude/rules/config-loading.md
@@ -72,6 +74,7 @@ audit パッケージは、Claude Code セッション中のルーティング�
 - [ ] EV-22（異常 / must）: root 解決の堅牢性の core 委譲 — `_resolve_root_worktree` / `_resolve_log_root` は audit 固有の git 解決ロジックを持たず core（`hook_common.resolve_root_worktree` / `resolve_log_root`）へ委譲するため、`git init --separate-git-dir` 構成の誤検出、ambient な `GIT_DIR`/`GIT_WORK_TREE` 環境変数汚染、非 UTF-8 パスでの `UnicodeDecodeError` があっても誤ったログ出力先を解決しない（core 側の防御をそのまま享受する） — 根拠: docs/adr/ADR-20260728-046.md + 実装挙動（event_logger.py が hook_common から import）
 - [ ] EV-23（境界 / should）: sys.path bootstrap フォールバック — `event_logger.py` は `AI_ORCHESTRA_DIR` 環境変数が未設定でも `__file__` 相対の `../../core/hooks` を候補として core の `hook_common` を解決でき、`packages/audit/scripts/` 配下のスクリプトが `event_logger` を単体 import しても解決に失敗しない — 根拠: 実装挙動
 - [ ] EV-24（異常 / must）: `codex exec` の prompt 抽出は、同一 Bash 呼び出し内の heredoc + `"$(cat "$VAR")"` 形式に加え、書き出しと `codex exec` が別の Bash 呼び出しになる `"$(cat '<絶対パス>')"` 形式でもファイル内容を記録する。読み込みは basename `codex-prompt.*` の通常ファイル（symlink 不可・サイズ上限あり）に限り、読めない場合は prompt を記録しない（コマンド置換の文字列を prompt として記録しない） — 根拠: Issue #463 / PR #469 レビュー指摘 — 自動テスト: `packages/audit/tests/test_audit_hooks.py::TestExtractCodexPromptLiteralPathForm`, `packages/audit/tests/test_audit_hooks.py::TestMainCliCallPromptFile::test_literal_path_command_records_real_prompt_and_masks_secrets`
+- [ ] EV-25（正常 / should）: `audit-bootstrap.py` は `.claude/config/audit/` の `audit-flags.local.json`（または未同期の `audit-flags.json`）に `quality-gates.json` へ移動済みのキー（`quality_gate` / `context_optimization` / `evaluation_set_check` / `paths.state_dir`）を検出した場合、SessionStart の出力に移行案内を 1 行だけ追加する。文言はファイル種別で分け、`audit-flags.local.json` は「0.4.x の間は読み替えて動作する」、`audit-flags.json`（配布 base）は「読み込まれない」と明記する（base は読み替え対象外のため）。該当が無ければ既存の出力を変えない。JSON が壊れていても例外を出さない（fail-open） — 根拠: Issue #153 / ADR-20260926-055 — 自動テスト: `packages/audit/tests/test_audit_bootstrap.py`
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

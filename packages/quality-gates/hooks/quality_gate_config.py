@@ -47,11 +47,35 @@ else:
     if str(_fallback_core_hooks) not in sys.path:
         sys.path.insert(0, str(_fallback_core_hooks))
 
-from hook_common import load_package_config, resolve_path_within  # noqa: E402
+# NOTE: `_find_local_config_path` / `_read_config_file` は hook_common の private 名だが、
+# base / legacy local / new local の 3 層を個別に読む必要があり `load_package_config`
+# （base+local を丸ごと merge して返す）では表現できないため直接使う
+# （evaluation-set-checker.py に前例あり。hook_common 側を変える際はここも追従する）。
+from hook_common import (  # noqa: E402
+    _find_local_config_path,
+    _read_config_file,
+    deep_merge,
+    find_package_config,
+    resolve_path_within,
+)
 from log_common import find_project_root  # noqa: E402
 
+# Issue #153 で quality-gates パッケージへ移した設定の正本。
+QUALITY_GATES_CONFIG_PACKAGE = "quality-gates"
+QUALITY_GATES_CONFIG_FILENAME = "quality-gates.json"
+LEGACY_CONFIG_PACKAGE = "audit"
+LEGACY_CONFIG_FILENAME = "audit-flags.json"
+
+# audit-flags.json から quality-gates.json へ移動したキー（deprecation 期間中の読み替え対象）
+LEGACY_FEATURE_KEYS: tuple[str, ...] = (
+    "quality_gate",
+    "context_optimization",
+    "evaluation_set_check",
+)
+LEGACY_PATH_KEYS: tuple[str, ...] = ("state_dir",)
+
 # features.quality_gate.enabled が config に無い場合のデフォルト値。
-# audit-flags.json のベース値 (enabled: true) に合わせることで、
+# quality-gates.json のベース値 (enabled: true) に合わせることで、
 # Edit/Write 警告とテスト結果ブロック判定の非対称を防ぐ。
 QUALITY_GATE_ENABLED_DEFAULT = True
 
@@ -66,10 +90,97 @@ DEFAULT_TEST_GATE_STATE: dict = {
 }
 
 # .claude/state/ 配下に状態ファイルを解決する既定ディレクトリ。
-# evaluation-set-checker.py と同じ規約（audit-flags.json の paths.state_dir で
+# evaluation-set-checker.py と同じ規約（quality-gates.json の paths.state_dir で
 # 上書き可能）。/tmp のグローバル共有ファイルはプロジェクト外に置かれるため、
 # パストラバーサル対策込みで worktree（= project_dir）配下に閉じ込める。
 DEFAULT_STATE_DIR = os.path.join(".claude", "state")
+
+
+def _local_config_filename(filename: str) -> str:
+    """`name.json` → `name.local.json`（hook_common の .local 命名規約と同じ）。"""
+    name, ext = os.path.splitext(filename)
+    return f"{name}.local{ext}"
+
+
+def extract_legacy_quality_gates_sections(config: dict) -> dict:
+    """旧 audit config から quality-gates 所有キーだけを取り出す。
+
+    Issue #153 のパッケージ所有権分離後も 0.4.x の deprecation 期間中だけ
+    ``audit-flags.local.json`` を読み替えるため、dict 形式の移動済みキーに限定する。
+    """
+    features = config.get("features")
+    extracted_features = {
+        key: copy.deepcopy(features[key])
+        for key in LEGACY_FEATURE_KEYS
+        if isinstance(features, dict) and isinstance(features.get(key), dict)
+    }
+
+    paths = config.get("paths")
+    extracted_paths = {
+        key: copy.deepcopy(paths[key])
+        for key in LEGACY_PATH_KEYS
+        if isinstance(paths, dict) and isinstance(paths.get(key), str)
+    }
+
+    extracted: dict = {}
+    if extracted_features:
+        extracted["features"] = extracted_features
+    if extracted_paths:
+        extracted["paths"] = extracted_paths
+    return extracted
+
+
+def load_legacy_local_overrides(project_dir: str) -> dict:
+    """旧 audit の local-only 設定から移動済みキーを読み替える。
+
+    Issue #153 の所有権分離に伴う 0.4.x deprecation 対応であり、配布済み base や
+    ``$AI_ORCHESTRA_DIR`` 側は読まず、プロジェクトの ``.local.json`` だけを読む。
+    """
+    legacy_local_path = os.path.join(
+        project_dir,
+        ".claude",
+        "config",
+        LEGACY_CONFIG_PACKAGE,
+        _local_config_filename(LEGACY_CONFIG_FILENAME),
+    )
+    legacy_config = _read_config_file(legacy_local_path)
+    return extract_legacy_quality_gates_sections(legacy_config)
+
+
+def load_quality_gates_config(project_dir: str) -> dict:
+    """quality-gates の実効 config を優先順位どおりに構成する。
+
+    Issue #153 の所有権分離後も 0.4.x の deprecation 期間中は旧
+    ``audit-flags.local.json`` だけを読み替え、新 ``.local.json`` を最後に適用する。
+    """
+    base_path = find_package_config(
+        QUALITY_GATES_CONFIG_PACKAGE,
+        QUALITY_GATES_CONFIG_FILENAME,
+        project_dir,
+    )
+    base = _read_config_file(base_path)
+    legacy = load_legacy_local_overrides(project_dir)
+
+    if base_path:
+        local_path = _find_local_config_path(
+            QUALITY_GATES_CONFIG_PACKAGE,
+            QUALITY_GATES_CONFIG_FILENAME,
+            project_dir,
+            base_path,
+        )
+    else:
+        # base 未配布（sync 前）でも project の .local.json だけは尊重する。
+        # load_package_config は base 不在で即 {} を返すが、ここでは legacy / local を
+        # 読み続ける（契約が異なるので load_package_config に寄せないこと）。
+        local_path = os.path.join(
+            project_dir,
+            ".claude",
+            "config",
+            QUALITY_GATES_CONFIG_PACKAGE,
+            _local_config_filename(QUALITY_GATES_CONFIG_FILENAME),
+        )
+    local = _read_config_file(local_path)
+    return deep_merge(deep_merge(base, legacy), local)
 
 
 def _sanitize_state_filename(filename: str) -> str:
@@ -106,7 +217,7 @@ def resolve_state_path(project_dir: str, filename: str, config: dict | None = No
     config 読み込み・パス解決を行う。`.claude/` が見つからない場合は元の
     project_dir をそのまま使う（既存の呼び出し元・テストとの後方互換）。
 
-    `config` に呼び出し側が事前読み込みした audit-flags.json の dict を渡すと、
+    `config` に呼び出し側が事前読み込みした quality-gates.json の dict を渡すと、
     同一 hook 呼び出し内での重複読み込みを避けられる（省略時は内部で読み込む。
     既存呼び出し元との後方互換のためデフォルト None）。
 
@@ -118,9 +229,7 @@ def resolve_state_path(project_dir: str, filename: str, config: dict | None = No
     """
     normalized_project_dir = find_project_root(project_dir) if project_dir else find_project_root()
     resolved_config = (
-        config
-        if config is not None
-        else load_package_config("audit", "audit-flags.json", normalized_project_dir)
+        config if config is not None else load_quality_gates_config(normalized_project_dir)
     )
     state_dir_value = resolved_config.get("paths", {}).get("state_dir")
     state_dir = (
@@ -142,8 +251,8 @@ def resolve_quality_gate_enabled(quality_gate: dict) -> bool:
 
 
 def is_quality_gate_enabled(project_dir: str) -> bool:
-    """audit-flags.json を読み込み quality_gate feature の enabled を判定する。"""
-    config = load_package_config("audit", "audit-flags.json", project_dir)
+    """quality-gates.json を読み込み quality_gate feature の enabled を判定する。"""
+    config = load_quality_gates_config(project_dir)
     quality_gate = config.get("features", {}).get("quality_gate", {})
     return resolve_quality_gate_enabled(quality_gate)
 

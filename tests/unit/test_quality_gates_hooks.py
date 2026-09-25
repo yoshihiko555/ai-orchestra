@@ -151,7 +151,7 @@ class TestTestGateChecker:
         """設定ファイルから閾値を読む。"""
         monkeypatch.setattr(
             test_gate_checker,
-            "load_package_config",
+            "load_quality_gates_config",
             lambda *args: {
                 "features": {
                     "quality_gate": {
@@ -169,13 +169,13 @@ class TestTestGateChecker:
     ) -> None:
         """閾値到達時にテスト実行を促す。
 
-        main() は audit-flags.json を一度だけ読んで enabled 判定と閾値取得を
-        兼ねる（Issue #154: 重複読み込み解消）ため、load_package_config を
+        main() は quality-gates.json を一度だけ読んで enabled 判定と閾値取得を
+        兼ねる（Issue #154: 重複読み込み解消）ため、load_quality_gates_config を
         monkeypatch して両方を一括で差し替える。
         """
         monkeypatch.setattr(
             test_gate_checker,
-            "load_package_config",
+            "load_quality_gates_config",
             lambda *args: {
                 "features": {
                     "quality_gate": {

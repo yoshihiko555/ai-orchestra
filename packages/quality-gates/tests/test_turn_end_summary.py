@@ -175,7 +175,7 @@ class TestMain:
 
         monkeypatch.setattr(
             turn_end,
-            "load_package_config",
+            "load_quality_gates_config",
             lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
         )
 

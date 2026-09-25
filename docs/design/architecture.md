@@ -365,12 +365,13 @@ templates/project/CLAUDE.md  (生成物・直接編集禁止)
 
 ### 8.2 主要設定ファイル
 
-| ファイル                 | パッケージ    | 内容                                                                         |
-| ------------------------ | ------------- | ---------------------------------------------------------------------------- |
-| `cli-tools.yaml`         | agent-routing | Codex/Antigravity モデル名、sandbox 設定、30 エージェントの tool 割り当て    |
-| `task-memory.yaml`       | core          | Plans.md パス、タスクマーカー定義                                            |
-| `audit-flags.json`       | audit         | 機能フラグ（route_audit, quality_gate, kpi_scorecard, context_optimization） |
-| `delegation-policy.json` | audit         | ルーティングポリシー（将来用）                                               |
+| ファイル                 | パッケージ    | 内容                                                                                                                     |
+| ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `cli-tools.yaml`         | agent-routing | Codex/Antigravity モデル名、sandbox 設定、30 エージェントの tool 割り当て                                                |
+| `task-memory.yaml`       | core          | Plans.md パス、タスクマーカー定義                                                                                        |
+| `audit-flags.json`       | audit         | 機能フラグ（route_audit, kpi_scorecard）                                                                                 |
+| `quality-gates.json`     | quality-gates | 機能フラグ（quality_gate, context_optimization, evaluation_set_check）・状態ディレクトリ（Issue #153 で audit から分離） |
+| `delegation-policy.json` | audit         | ルーティングポリシー（将来用）                                                                                           |
 
 ### 8.3 cli-tools.yaml の構造
 

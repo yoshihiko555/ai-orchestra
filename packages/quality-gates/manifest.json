@@ -32,5 +32,8 @@
   "agents": [],
   "rules": ["skill-review-policy", "evaluation-set-policy"],
   "scripts": [],
-  "config": ["config/evaluation-set-mapping.yaml"]
+  "config": [
+    "config/evaluation-set-mapping.yaml",
+    "config/quality-gates.json"
+  ]
 }

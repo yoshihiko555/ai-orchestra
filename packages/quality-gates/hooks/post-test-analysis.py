@@ -58,6 +58,7 @@ from quality_gate_config import (  # noqa: E402
     DEFAULT_TEST_GATE_STATE,
     get_project_state_key,
     load_project_scoped_state,
+    load_quality_gates_config,
     resolve_quality_gate_enabled,
     resolve_state_path,
     save_project_scoped_state,
@@ -118,7 +119,7 @@ def extract_failure_summary(output: str) -> str:
 def load_test_gate_state(project_dir: str, config: dict | None = None) -> dict:
     """Load the shared test-gate state from file (scoped to the current project).
 
-    `config` may be an already-loaded audit-flags.json dict (see main()) to
+    `config` may be an already-loaded quality-gates.json dict (see main()) to
     avoid re-reading the config file within the same hook invocation.
     """
     project_key = get_project_state_key(project_dir)
@@ -129,7 +130,7 @@ def load_test_gate_state(project_dir: str, config: dict | None = None) -> dict:
 def save_test_gate_state(project_dir: str, state: dict, config: dict | None = None) -> None:
     """Save the shared test-gate state to file (scoped to the current project).
 
-    `config` may be an already-loaded audit-flags.json dict (see main()) to
+    `config` may be an already-loaded quality-gates.json dict (see main()) to
     avoid re-reading the config file within the same hook invocation.
     """
     project_key = get_project_state_key(project_dir)
@@ -145,7 +146,7 @@ def record_test_result(
     On success: reset change counters and warned flag.
     On failure: keep counters (changes are not yet validated).
 
-    `config` may be an already-loaded audit-flags.json dict (see main()) so
+    `config` may be an already-loaded quality-gates.json dict (see main()) so
     the load+save pair below reads the config file at most once instead of
     twice (Issue #154 review: architecture-reviewer).
     """
@@ -163,16 +164,12 @@ def record_test_result(
 
 
 def load_quality_gate_config(project_dir: str, config: dict | None = None) -> dict:
-    """audit-flags.json から quality_gate 設定を読み込む。
+    """quality-gates.json から quality_gate 設定を読み込む。
 
     `config` が渡された場合は再読み込みしない（main() で読み込み済みの
-    audit-flags.json を再利用する）。
+    quality-gates.json を再利用する）。
     """
-    resolved_config = (
-        config
-        if config is not None
-        else load_package_config("audit", "audit-flags.json", project_dir)
-    )
+    resolved_config = config if config is not None else load_quality_gates_config(project_dir)
     features = resolved_config.get("features", {})
     return features.get("quality_gate", {}) if isinstance(features, dict) else {}
 
@@ -193,7 +190,7 @@ def emit_quality_gate_event(
     呼び出し側が導出して渡す。`exit_code` は payload 記録用に保持する
     （パイプで終了コードがマスクされても出力パターンで失敗を検知できる）。
 
-    `config` は main() で読み込み済みの audit-flags.json dict（project_dir が
+    `config` は main() で読み込み済みの quality-gates.json dict（project_dir が
     resolve_project_root_from_hook_data(data) の解決結果と一致する場合のみ
     呼び出し側が渡す想定）。渡されない場合はここで読み込む。
 
@@ -290,12 +287,12 @@ def main():
         analysis_failed = not gate_passed
         detected_by = failure.get("detected_by") if failure else None
 
-        # Read audit-flags.json once and reuse it for record_test_result's
+        # Read quality-gates.json once and reuse it for record_test_result's
         # load+save pair and (when project_dir resolutions agree)
         # emit_quality_gate_event's quality_gate lookup, instead of reading
         # it independently up to 3x per invocation (Issue #154 review:
         # architecture-reviewer).
-        config = load_package_config("audit", "audit-flags.json", project_dir)
+        config = load_quality_gates_config(project_dir)
 
         # EV-21: quality_gate.enabled=false のときは提案・警告・ブロック・audit
         # イベント記録だけでなく、record_test_result による状態書き込みも含め

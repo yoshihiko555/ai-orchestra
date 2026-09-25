@@ -292,7 +292,7 @@ def test_main_no_op_when_quality_gate_disabled(
     project_a, _project_b = _clean_state
     monkeypatch.setattr(
         post_implementation_review,
-        "load_package_config",
+        "load_quality_gates_config",
         lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
     )
 
@@ -319,14 +319,14 @@ def test_main_normalizes_subdirectory_before_disabled_config_lookup(
     subdirectory.mkdir(parents=True)
     config_calls = []
 
-    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
-        config_calls.append((package_name, filename, project_dir))
+    def _load_config(project_dir: str) -> dict:
+        config_calls.append(project_dir)
         return {"features": {"quality_gate": {"enabled": False}}}
 
     def _fail_if_state_updated(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         pytest.fail("state must not be updated when quality_gate is disabled")
 
-    monkeypatch.setattr(post_implementation_review, "load_package_config", _load_config)
+    monkeypatch.setattr(post_implementation_review, "load_quality_gates_config", _load_config)
     monkeypatch.setattr(
         post_implementation_review, "update_project_scoped_state", _fail_if_state_updated
     )
@@ -336,7 +336,7 @@ def test_main_normalizes_subdirectory_before_disabled_config_lookup(
         post_implementation_review.main()
 
     assert exc_info.value.code == 0
-    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert config_calls == [str(repo_root)]
     assert capsys.readouterr().out == ""
     state_file = repo_root / ".claude" / "state" / post_implementation_review.STATE_FILENAME
     assert not state_file.exists()
@@ -355,7 +355,7 @@ def test_main_fails_open_on_unexpected_exception(
     def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(post_implementation_review, "load_package_config", _raise)
+    monkeypatch.setattr(post_implementation_review, "load_quality_gates_config", _raise)
     _write_payload(monkeypatch, "src/module.py", "line\n", project_a)
 
     with pytest.raises(SystemExit) as exc_info:
