@@ -6,12 +6,12 @@ Claude Code用のマルチエージェントオーケストレーションシス
 
 AI Orchestra は AI コーディングの実行基盤を 3 つの層で組み立て、さらに「変更しても壊れない」ための整合性層を加えた 4 層で捉える。
 
-| 層                    | 役割                     | AI Orchestra での実体                                                                                                    |
-| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| **Prompt**            | 何を指示するか           | facets（policies / instructions / output-contracts）から合成する Skill・Rule                                             |
-| **Context**           | 何を踏まえるか           | `CLAUDE.md` / `AGENTS.md` テンプレート、config の階層上書き、`.claude/context/` のセッション間共有                       |
-| **Harness**           | どう実行するか           | hooks、agent-routing（30 エージェント）、packages 配布、外部 CLI（Codex / Antigravity）協調                              |
-| **Coherence（CoDD）** | 変更が入っても整合を保つ | `packages/codd`：各ドキュメントの `codd:` フロントマターで依存を宣言し、`scan` で依存グラフ構築・`validate` で不整合検出 |
+| 層                    | 役割                     | AI Orchestra での実体                                                                                                          |
+| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| **Prompt**            | 何を指示するか           | facets（policies / instructions / output-contracts）から合成する Skill・Rule                                                   |
+| **Context**           | 何を踏まえるか           | `AGENTS.md` テンプレート（Claude Code / Codex / Antigravity 共通）、config の階層上書き、`.claude/context/` のセッション間共有 |
+| **Harness**           | どう実行するか           | hooks、agent-routing（30 エージェント）、packages 配布、外部 CLI（Codex / Antigravity）協調                                    |
+| **Coherence（CoDD）** | 変更が入っても整合を保つ | `packages/codd`：各ドキュメントの `codd:` フロントマターで依存を宣言し、`scan` で依存グラフ構築・`validate` で不整合検出       |
 
 最初の 3 層が「一度うまく動かす」ための基盤であるのに対し、**CoDD（Coherence-Driven Development / 整合性駆動開発）** は「要件や設計が変わったとき、波及先の成果物まで整合を保つ」ことを扱うレイヤー。AI Orchestra ではこれを独立パッケージ `packages/codd`（essential プリセット）として配布レールに載せ、導入先プロジェクトが生成するドキュメントまで整合性管理の対象にする。
 
@@ -222,8 +222,9 @@ orchex setup essential --project /path/to/project --dry-run
 - **essential** — core, agent-routing, audit, quality-gates, codd
 - **all** — 全パッケージ
 
-> **テンプレートのプレースホルダーについて**: 配布される `CLAUDE.md` / `AGENTS.md` には `<YOUR_PROJECT_NAME>` などの `<YOUR_...>` 形式のプレースホルダーが含まれています。セットアップ後にプロジェクト固有の内容に書き換えてください。
-> `AGENTS.md` は `codex-suggestions` パッケージがインストール済みの場合のみ配布されます（Codex CLI と Antigravity CLI が共用。`antigravity.md` セクションを合成）。
+> **指示書（AGENTS.md）について**: 指示書は `AGENTS.md` の 1 本で、Claude Code・Codex CLI・Antigravity CLI が共通で読みます（`CLAUDE.md` は配布しません）。Claude Code は **2.1.277 以降**が必要です（`CLAUDE.md` が無いときに `AGENTS.md` を読みます。`/config` の Project instructions を `claude-md` にしている場合や、プロジェクトまたは親ディレクトリに `CLAUDE.md` / `.claude/CLAUDE.md` / `CLAUDE.local.md` がある場合は読まれません）。
+> `AGENTS.md` は、プロジェクト固有の記述欄（`<YOUR_PROJECT_NAME>` などの `<YOUR_...>` プレースホルダー。セットアップ後に書き換えてください）と、末尾の `ai-orchestra` 管理ブロック（AI Orchestra の使い方。`orchex context sync` のたびに最新化されるので手編集しない）で構成されます。
+> Claude Code の `InstructionsLoaded` hook は直接読み込まれた `AGENTS.md` では発火しないため、audit パッケージの指示書読み込みログには `AGENTS.md` が記録されません。
 
 ### 2b. 個別インストール
 
@@ -287,16 +288,16 @@ orchex disable <package> --project .
 orchex scripts
 orchex scripts --package audit
 
-# CLAUDE.md / AGENTS.md テンプレート管理
+# AGENTS.md テンプレート管理
 orchex context build
 orchex context check
 orchex context sync --project /path/to/project
-orchex context sync --project /path/to/project --force
+orchex context sync --project /path/to/project --force   # 記述欄も含めてファイル全体をひな形で上書き
 
-# 注意: AGENTS.md は codex-suggestions パッケージがインストール済みの場合のみ配布されます
-#       （Codex CLI / Antigravity CLI 共用。codex.md + antigravity.md のセクション合成）
-#       「報告形式」の重要度の定義は facets/output-contracts/tiered-review.md から生成されます
-# 注意: 旧 .gemini/GEMINI.md（生成物のみ）は context sync 時に自動削除されます
+# 注意: context sync は既存 AGENTS.md の ai-orchestra 管理ブロックだけを最新化し、ブロック外は保持します
+#       （管理ブロックが無ければ末尾に追記）。重要度の定義は facets/output-contracts/tiered-review.md から生成されます
+# 注意: 旧生成物の CLAUDE.md / .gemini/GEMINI.md は context sync 時に自動削除され、旧生成物の AGENTS.md
+#       （Codex / Antigravity 向け）は新しいテンプレートで置き換えられます。手書きの CLAUDE.md は残して警告します
 
 # パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）
 orchex run audit dashboard
@@ -378,6 +379,7 @@ SessionStart 時に `facet build` が自動実行されるため、通常は手�
 ### 自動管理されるファイル
 
 - `.gitignore` — `orchex install` 時に AI Orchestra 用ブロックを追加（`.claude/docs/`, `.claude/logs/`, `.claude/state/` 等）
+- `AGENTS.md` — `orchex init` / `install` / `context sync` 時に作成し、以降は末尾の `ai-orchestra` 管理ブロックだけを最新化
 
 ### 開発者向け: ソースからのインストール
 
@@ -495,6 +497,7 @@ cd ai-orchestra && git pull
 | Hook スクリプト修正      | アップグレード後、即反映                            |
 | Skills/Agents/Rules 修正 | アップグレード後、次回 Claude Code 起動時に自動同期 |
 | 新フックイベント追加     | アップグレード + `orchex install` 再実行            |
+| AGENTS.md 管理ブロック   | アップグレード + `orchex context sync --project .`  |
 
 ### リリース手順（メンテナ向け）
 

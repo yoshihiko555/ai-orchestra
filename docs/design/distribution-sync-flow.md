@@ -49,7 +49,7 @@ orchex install {package} --project /path/to/project
 | 処理                  | 内容                                                            |
 | --------------------- | --------------------------------------------------------------- |
 | ディレクトリ作成      | `.claude/{docs,logs,state}/`                                    |
-| テンプレート配置      | `Plans.md`, `CLAUDE.md`, `.codex/`, `.gemini/`                 |
+| テンプレート配置      | `Plans.md`, `AGENTS.md`, `.codex/`                              |
 | orchestra.json 初期化 | `installed_packages: []`                                        |
 | 環境変数登録          | `$AI_ORCHESTRA_DIR` を `~/.claude/settings.json` に設定         |
 | hook 登録             | `sync-orchestra.py` を SessionStart hook に登録                 |

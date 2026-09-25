@@ -83,13 +83,14 @@
     "config/task-memory.yaml"
   ],
   "context_files": {
-    "source": "claude.md",
-    "template": "templates/project/CLAUDE.md",
+    "source": "agents.md",
+    "managed": ["orchestra.md"],
+    "template": "templates/project/AGENTS.md",
     "init": [
-      "CLAUDE.md"
+      "AGENTS.md"
     ],
     "sync": [
-      "CLAUDE.md"
+      "AGENTS.md"
     ]
   }
 }

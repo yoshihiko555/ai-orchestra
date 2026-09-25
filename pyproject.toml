@@ -44,7 +44,7 @@ include = [
     "/facets/",
     "/presets.json",
     "/README.md",
-    "/CLAUDE.md",
+    "/AGENTS.md",
     "/pyproject.toml",
 ]
 
