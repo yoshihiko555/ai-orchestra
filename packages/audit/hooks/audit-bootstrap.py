@@ -24,23 +24,18 @@ from event_logger import emit_event, generate_id, init_session_dir, save_trace_s
 from hook_common import read_hook_input, safe_hook_execution
 from log_common import find_project_root
 
-# quality-gates.json へ移動した旧キー（Issue #153）。audit-flags(.local).json に残っていたら案内する。
-# quality-gates 側の LEGACY_FEATURE_KEYS / LEGACY_PATH_KEYS（quality_gate_config.py）と同じ一覧を
-# 持つ。audit → quality-gates の依存を作らないための重複であり、shim 削除（0.5.0 で再検討）時は
-# 両方を同時に消す。
+# 案内専用の一覧。quality-gates.json の features / paths と対応する。
 MOVED_FEATURE_KEYS = ("quality_gate", "context_optimization", "evaluation_set_check")
 MOVED_PATH_KEYS = ("state_dir",)
-LEGACY_LOCAL_FILENAME = "audit-flags.local.json"
-LEGACY_BASE_FILENAME = "audit-flags.json"
+AUDIT_LOCAL_FILENAME = "audit-flags.local.json"
+AUDIT_BASE_FILENAME = "audit-flags.json"
 MIGRATION_TARGET = ".claude/config/quality-gates/quality-gates.local.json"
 
 
 def _collect_moved_keys(config: dict) -> list[str]:
     """audit-flags 形式の dict から移動済みキーを列挙する。
 
-    quality-gates 側の読み替え（`extract_legacy_quality_gates_sections`）と同じ判定
-    （features.* は dict 値、paths.* は str 値のみ）に揃え、「案内は出るのに読み替え
-    られない」不一致を作らない。
+    features.* は dict 値、paths.* は str 値のみを対象とする（誤検出防止）。
     """
     features = config.get("features")
     paths = config.get("paths")
@@ -60,14 +55,13 @@ def find_moved_quality_gates_keys(project_dir: str) -> dict[str, list[str]]:
     """Issue #153 で所有分離した quality-gates の旧キーを検出する。
 
     {ファイル名: ["features.quality_gate", "paths.state_dir", ...]} を返す。
-    対象は audit-flags.local.json（0.4.x の間は読み替え対象）と、sync が手編集を
-    検出してスキップした / 未同期の audit-flags.json（読み替え対象外）。
+    audit-flags.local.json と audit-flags.json は、どちらも案内の検出だけに使う。
     読み込み失敗時は空扱いにする（fail-open）。
     """
     config_dir = os.path.join(project_dir, ".claude", "config", "audit")
     moved_keys_by_file: dict[str, list[str]] = {}
 
-    for filename in (LEGACY_LOCAL_FILENAME, LEGACY_BASE_FILENAME):
+    for filename in (AUDIT_LOCAL_FILENAME, AUDIT_BASE_FILENAME):
         config_path = os.path.join(config_dir, filename)
         try:
             with open(config_path, encoding="utf-8") as config_file:
@@ -86,27 +80,26 @@ def find_moved_quality_gates_keys(project_dir: str) -> dict[str, list[str]]:
 
 
 def build_migration_notice(moved_keys_by_file: dict[str, list[str]]) -> str:
-    """移動済みキーの所在に応じた 1 行の案内文を組み立てる。
+    """対象ファイルと移動済みキーをまとめた 1 行の案内文を組み立てる。"""
+    filenames: list[str] = []
+    moved_keys: list[str] = []
+    seen_keys: set[str] = set()
 
-    .local.json は 0.4.x の間 quality-gates 側が読み替えるが、配布 base の
-    audit-flags.json は読まない（PR レビュー指摘: 同じ文言だと base に残した値が
-    効いていると誤解させる）ので、ファイル種別ごとに文言を分ける。
-    """
-    parts: list[str] = []
-    local_keys = moved_keys_by_file.get(LEGACY_LOCAL_FILENAME)
-    if local_keys:
-        parts.append(
-            f"{LEGACY_LOCAL_FILENAME} の {', '.join(local_keys)} は 0.4.x の間は読み替えて動作しますが、"
-            f"{MIGRATION_TARGET} へ移してください"
-        )
-    base_keys = moved_keys_by_file.get(LEGACY_BASE_FILENAME)
-    if base_keys:
-        parts.append(
-            f"{LEGACY_BASE_FILENAME} の {', '.join(base_keys)} は読み込まれません（配布 base は読み替え対象外）。"
-            f"手編集で sync が更新をスキップしている場合は、値を {MIGRATION_TARGET} へ移してから"
-            " base を配布版に戻してください"
-        )
-    return "[audit] quality-gates へ移動した設定が残っています: " + "。".join(parts)
+    for filename in (AUDIT_LOCAL_FILENAME, AUDIT_BASE_FILENAME):
+        keys = moved_keys_by_file.get(filename)
+        if not keys:
+            continue
+        filenames.append(filename)
+        for key in keys:
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            moved_keys.append(key)
+
+    return (
+        f"[audit] {', '.join(filenames)} に quality-gates へ移動した設定が残っています"
+        f"（{', '.join(moved_keys)}）。この値は読み込まれません。{MIGRATION_TARGET} へ移してください"
+    )
 
 
 @safe_hook_execution

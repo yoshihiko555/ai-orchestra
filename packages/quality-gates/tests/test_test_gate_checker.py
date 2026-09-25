@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import subprocess
@@ -351,12 +352,11 @@ def test_main_normalizes_subdirectory_before_disabled_config_lookup(
     assert not state_file.exists()
 
 
-def test_main_honors_legacy_local_disabled_flag(
+def test_main_ignores_legacy_local_disabled_flag(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """0.4.x では旧 audit local の disabled 設定でも hook が no-op になる。"""
+    """旧 audit local の disabled 設定は読まず、状態を読み込む。"""
     config_dir = tmp_path / ".claude" / "config" / "audit"
     config_dir.mkdir(parents=True)
     (config_dir / "audit-flags.local.json").write_text(
@@ -364,8 +364,11 @@ def test_main_honors_legacy_local_disabled_flag(
         encoding="utf-8",
     )
 
-    def _fail_if_state_loaded(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        pytest.fail("state must not be loaded when the legacy local config disables the gate")
+    state_load_calls: list[str] = []
+
+    def _load_state(project_dir: str, config: dict | None = None) -> dict:
+        state_load_calls.append(project_dir)
+        return copy.deepcopy(test_gate_checker.DEFAULT_TEST_GATE_STATE)
 
     payload = {
         "tool_name": "Write",
@@ -373,13 +376,13 @@ def test_main_honors_legacy_local_disabled_flag(
         "tool_input": {"file_path": "src/main.py", "content": "print(1)\n"},
     }
     monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
-    monkeypatch.setattr(test_gate_checker, "load_test_gate_state", _fail_if_state_loaded)
+    monkeypatch.setattr(test_gate_checker, "load_test_gate_state", _load_state)
 
     with pytest.raises(SystemExit) as exc_info:
         test_gate_checker.main()
 
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out == ""
+    assert state_load_calls == [str(tmp_path)]
 
 
 # ---------------------------------------------------------------------------

@@ -23,17 +23,17 @@
 
 ## 2. 期待するフローと成果物
 
-| ステップ | スキル / フェーズ | 入力 | 期待する成果物・振る舞い |
-| -------- | ----------------- | ---- | ------------------------ |
-| 1 | review Phase 0 | git diff | diff_stat / diff_full / file_contexts を 1 回だけ収集（500 行超は変更ハンク + 前後 30 行） |
-| 2 | review Phase 1 | 変更ファイル・diff | ベースライン 2 名 + パス/コンテンツシグナルによる専門枠最大 2 名の選定結果 |
-| 3 | review Phase 2 | diff サイズ・リスクシグナル | モデル選択（≤100 行かつ override なしで sonnet 明示指定） |
-| 4 | review Phase 3 | 選定レビュアー + 事前収集コンテキスト | 並列 Task 起動（コンテキスト注入済みプロンプト） |
-| 5 | review Phase 3.5 | 各レビュアーの Critical/High 指摘 | `finding-verifier` による反証検証（confirmed / refuted / uncertain）。`review.verify_findings: false` ならスキップ |
-| 6 | review Phase 4 | 各レビュアーの Tiered 報告 + 検証結果 | 重複統合済みの Review Summary（refuted は除外し「Refuted Findings」に理由付き表示、severity 過大は格下げ） |
-| 7 | review Phase 5 | 集約結果 + `review.*` config | Pass/Fail 判定（`critical_zero`。uncertain Critical も Fail 扱い） |
-| 8 | review Phase 6 | Critical 指摘（confirmed のみ） | 拡張子マッピングに基づく修正エージェントによる自動修正 |
-| 9 | review Phase 7 | 修正後の新 diff | 再レビューループ（`max_loops` 上限）。新規/変更 Critical/High は再検証し、flip-flop は NEEDS_REVIEW で停止して Final Report |
+| ステップ | スキル / フェーズ | 入力                                  | 期待する成果物・振る舞い                                                                                                    |
+| -------- | ----------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 1        | review Phase 0    | git diff                              | diff_stat / diff_full / file_contexts を 1 回だけ収集（500 行超は変更ハンク + 前後 30 行）                                  |
+| 2        | review Phase 1    | 変更ファイル・diff                    | ベースライン 2 名 + パス/コンテンツシグナルによる専門枠最大 2 名の選定結果                                                  |
+| 3        | review Phase 2    | diff サイズ・リスクシグナル           | モデル選択（≤100 行かつ override なしで sonnet 明示指定）                                                                   |
+| 4        | review Phase 3    | 選定レビュアー + 事前収集コンテキスト | 並列 Task 起動（コンテキスト注入済みプロンプト）                                                                            |
+| 5        | review Phase 3.5  | 各レビュアーの Critical/High 指摘     | `finding-verifier` による反証検証（confirmed / refuted / uncertain）。`review.verify_findings: false` ならスキップ          |
+| 6        | review Phase 4    | 各レビュアーの Tiered 報告 + 検証結果 | 重複統合済みの Review Summary（refuted は除外し「Refuted Findings」に理由付き表示、severity 過大は格下げ）                  |
+| 7        | review Phase 5    | 集約結果 + `review.*` config          | Pass/Fail 判定（`critical_zero`。uncertain Critical も Fail 扱い）                                                          |
+| 8        | review Phase 6    | Critical 指摘（confirmed のみ）       | 拡張子マッピングに基づく修正エージェントによる自動修正                                                                      |
+| 9        | review Phase 7    | 修正後の新 diff                       | 再レビューループ（`max_loops` 上限）。新規/変更 Critical/High は再検証し、flip-flop は NEEDS_REVIEW で停止して Final Report |
 
 ## 3. 評価観点
 
@@ -79,7 +79,7 @@
 
 ### 設計書との突合（design-flow の旧 EV-20 から移管）
 
-- [ ] EV-24（正常 / must）: 設計書（`docs/requirements/` `docs/architecture/` `docs/screens/` `docs/api/` `docs/database/` のいずれか）が存在するプロジェクトで `.md` 以外の変更を含む diff をレビューするとき、Phase 1 のスマート選定は `spec-reviewer` を専門枠に必ず加え（シグナル検出に依存しない）、Phase 0 は変更ファイルに関係する設計書を事前収集コンテキストへ含める。`spec-reviewer` は実装 diff を設計書と突合し、承認されていない逸脱を指摘する。設計書が無いプロジェクトでは従来どおり仕様書・API ドキュメントの整合のみを見る — 根拠: ADR-20260926-056 §決定 4（`/startproject` Phase 7 の突合を `/review` へ移す。旧 design-flow EV-20 の「設計書が存在する場合は突合する」保証を維持）/ 検証: 実行観察 / 実装: `facets/instructions/review.md` Phase 0・Phase 1 の改修は ADR-056 §決定 5 の 5（スキル改修）で行う（評価セット先行）
+- [ ] EV-24（正常 / must）: 設計書（`docs/requirements/` `docs/architecture/` `docs/screens/` `docs/api/` `docs/database/` のいずれか）が存在するプロジェクトで `.md` 以外の変更を含む diff をレビューするとき、Phase 1 のスマート選定は `spec-reviewer` を専門枠に必ず加え（シグナル検出に依存しない）、Phase 0 は変更ファイルに関係する設計書を事前収集コンテキストへ含める。`spec-reviewer` は実装 diff を設計書と突合し、承認されていない逸脱を指摘する。設計書が無いプロジェクトでは従来どおり仕様書・API ドキュメントの整合のみを見る — 根拠: ADR-20260926-056 §決定 4（`/startproject` Phase 7 の突合を `/review` へ移す。旧 design-flow EV-20 の「設計書が存在する場合は突合する」保証を維持）/ 検証: 実行観察 / 実装: `facets/instructions/review.md` Phase 0・Phase 1 の改修は ADR-056 §決定 6 の 5（スキル改修）で行う（評価セット先行）
 
 ## 4. 検証方法
 

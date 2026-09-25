@@ -20,14 +20,14 @@
 
 ## ファイル構成
 
-| ファイル              | 内容                                                     |
-| --------------------- | -------------------------------------------------------- |
-| `README.md`           | 本書。共通フォーマット・類型別観点・共通レビュー判断基準 |
-| `_template.md`        | 各パッケージ評価セットの雛形                             |
-| `<package>.md`        | パッケージごとの評価セット（packages/ 配下と 1:1 対応）  |
+| ファイル                | 内容                                                          |
+| ----------------------- | ------------------------------------------------------------- |
+| `README.md`             | 本書。共通フォーマット・類型別観点・共通レビュー判断基準      |
+| `_template.md`          | 各パッケージ評価セットの雛形                                  |
+| `<package>.md`          | パッケージごとの評価セット（packages/ 配下と 1:1 対応）       |
 | `<package>.checks.yaml` | must 観点を runnable check へ写像する自動化用 sidecar（任意） |
-| `skills/_template.md` | スキルフロー評価セットの雛形                             |
-| `skills/<flow>.md`    | スキルフロー単位の評価セット（下記「二層構造」参照）     |
+| `skills/_template.md`   | スキルフロー評価セットの雛形                                  |
+| `skills/<flow>.md`      | スキルフロー単位の評価セット（下記「二層構造」参照）          |
 
 ## checks sidecar
 
@@ -37,15 +37,15 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 
 各 entry は次のキーを持つ。
 
-| キー         | 内容                                                         |
-| ------------ | ------------------------------------------------------------ |
-| `ev_id`      | 対応する評価観点 ID（例: `EV-38`）                           |
-| `phase`      | 実装フェーズ番号                                             |
-| `priority`   | `must` / `should`                                            |
-| `oracle`     | 判定方式（例: `command_exit`）                               |
-| `command`    | 代表実行コマンド                                             |
-| `covered_by` | 具体的なテスト nodeid の配列                                 |
-| `notes`      | カバレッジ範囲・未自動化条件の補足                           |
+| キー         | 内容                               |
+| ------------ | ---------------------------------- |
+| `ev_id`      | 対応する評価観点 ID（例: `EV-38`） |
+| `phase`      | 実装フェーズ番号                   |
+| `priority`   | `must` / `should`                  |
+| `oracle`     | 判定方式（例: `command_exit`）     |
+| `command`    | 代表実行コマンド                   |
+| `covered_by` | 具体的なテスト nodeid の配列       |
+| `notes`      | カバレッジ範囲・未自動化条件の補足 |
 
 更新者は、対象テストを追加・変更した実装者である。staleness は `covered_by` の pytest nodeid が
 存在することを CI またはレビュー時の `pytest --collect-only` 相当で検出する。これはレビュー時に
@@ -67,12 +67,12 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 
 ### スキルフロー評価セット一覧
 
-| フロー | ファイル | 概要 |
-| ------ | -------- | ---- |
-| design-flow | `skills/design-flow.md` | 設計 → 発注書 → 実行エンジンのフロー（design / order（仮名）。preflight / startproject は ADR-056 で廃止） |
-| loop-issue | `skills/loop-issue.md` | GitHub Issue 起点で loop-harness の LP-1 を駆動するフロー |
-| review-respond | `skills/review-respond.md` | PR の bot レビュー指摘を検出 → 修正 → 返信/resolve するフロー |
-| review | `skills/review.md` | `/review` のスマート選定 → 並列レビュー → 集約 → auto-fix ループ（Phase 0-7） |
+| フロー         | ファイル                   | 概要                                                                                                                                                |
+| -------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| design-flow    | `skills/design-flow.md`    | 設計 → 発注書 → 実行エンジンのフロー（design / order（仮名）。preflight / startproject は ADR-056 で廃止予定（決定済み、実ファイル削除は後続 PR）） |
+| loop-issue     | `skills/loop-issue.md`     | GitHub Issue 起点で loop-harness の LP-1 を駆動するフロー                                                                                           |
+| review-respond | `skills/review-respond.md` | PR の bot レビュー指摘を検出 → 修正 → 返信/resolve するフロー                                                                                       |
+| review         | `skills/review.md`         | `/review` のスマート選定 → 並列レビュー → 集約 → auto-fix ループ（Phase 0-7）                                                                       |
 
 ## 共通フォーマット
 
@@ -100,11 +100,11 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 
 パッケージは主たる構成物により 3 類型に分類する（複合パッケージは主類型 + 副類型を併記）。
 
-| 類型         | 主な構成物                                     | 該当パッケージ例                                                                                           |
-| ------------ | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 類型         | 主な構成物                                     | 該当パッケージ例                                                                  |
+| ------------ | ---------------------------------------------- | --------------------------------------------------------------------------------- |
 | hook 型      | SessionStart / PreToolUse 等の hook スクリプト | core, quality-gates, audit, codex-suggestions, antigravity-suggestions, fail-logs |
-| CLI ツール型 | lib + scripts で提供されるコマンド             | codd, skill-evolution, audit（scripts）                                                                    |
-| スキル型     | スキル指示書 + エージェント定義                | image-generation, reverse, git-workflow                                                                    |
+| CLI ツール型 | lib + scripts で提供されるコマンド             | codd, skill-evolution, audit（scripts）                                           |
+| スキル型     | スキル指示書 + エージェント定義                | image-generation, reverse, git-workflow                                           |
 
 ## 類型別観点チェックリスト
 

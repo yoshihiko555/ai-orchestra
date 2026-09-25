@@ -68,8 +68,8 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | util   | `hook_common.py`             | 全 hook 共通ユーティリティ（config 読み込み、JSON 操作等）                                                     |
 | util   | `log_common.py`              | ログ関連ユーティリティ                                                                                         |
 | util   | `context_store.py`           | コンテキスト共有ストア                                                                                         |
-| skill  | `preflight`                  | 実装計画の策定                                                                                                 |
-| skill  | `startproject`               | マルチエージェント協調で新規開発を開始                                                                         |
+| skill  | `preflight`                  | 実装計画の策定（ADR-056 で廃止予定）                                                                           |
+| skill  | `startproject`               | マルチエージェント協調で新規開発を開始（ADR-056 で廃止予定）                                                   |
 | skill  | `task-state`                 | Plans.md の作成・更新                                                                                          |
 | skill  | `design`                     | 要件定義・設計ドキュメント作成                                                                                 |
 | skill  | `explain-visually`           | 計画・差分・PR/Issue を図解 HTML にして説明                                                                    |
@@ -170,7 +170,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | script | `analyze-cli-usage.py`         | CLI 利用パターン分析                                                      |
 | module | `event_logger.py`              | 統一イベントログ書き込み / トレース state 管理                            |
 | config | `delegation-policy.json`       | ルーティングポリシー                                                      |
-| config | `audit-flags.json`             | 監査・品質ゲート系の機能フラグ                                            |
+| config | `audit-flags.json`             | 監査系の機能フラグ（route_audit / kpi_scorecard）                         |
 
 ### スクリプト実行
 

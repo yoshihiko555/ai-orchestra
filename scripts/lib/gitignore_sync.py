@@ -27,6 +27,7 @@ ENTRIES = [
     ".codex/reports/",
     ".claude/Plans.md",
     ".claude/Plans.archive.md",
+    ".claude/handoffs/",
 ]
 
 
