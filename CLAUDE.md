@@ -70,6 +70,7 @@ tests/                       # unit tests
 
 - `templates/context/claude.md` を編集すると `templates/project/CLAUDE.md` と `<project>/CLAUDE.md` に反映される
 - `templates/context/codex.md` と `templates/context/antigravity.md` は `AGENTS.md` のソース（Codex CLI / Antigravity CLI 共用、セクション合成）
+- `AGENTS.md` の「報告形式」の重要度の定義は `facets/output-contracts/tiered-review.md` から `context build` が生成する（`codex.md` には手書きしない）。手動管理のルート `AGENTS.md` は一致をテストで検出する
 - `templates/project/CLAUDE.md`, `templates/codex/AGENTS.md` は generated 扱いで直接編集しない
 
 ---
