@@ -15,6 +15,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tests.module_loader import load_module
 
 # ---------------------------------------------------------------------------
@@ -29,6 +31,12 @@ cleanup_mod = load_module(
 )
 
 context_store = load_module("context_store", "packages/core/hooks/context_store.py")
+
+
+@pytest.fixture(autouse=True)
+def _clear_ambient_claude_project_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """各 tmp_path を ambient な live-session project から分離する。"""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
 
 
 # ---------------------------------------------------------------------------

@@ -47,16 +47,16 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 
 ### core
 
-| フック                       | イベント         | 対象       | 説明                                                             |
-| ---------------------------- | ---------------- | ---------- | ---------------------------------------------------------------- |
-| `load-task-state.py`         | SessionStart     | —          | Plans.md からタスク状態を読み込みサマリーを出力                  |
-| `set-plan-gate.py`           | PostToolUse      | Agent/Task | プラン完了後にプランゲートを設定                                 |
-| `check-plan-gate.py`         | PreToolUse       | Agent/Task | プランゲート確認（実装エージェントをブロック）                   |
-| `clear-plan-gate.py`         | UserPromptSubmit | —          | ユーザー入力時にプランゲートをクリア                             |
-| `inject-shared-context.py`   | PreToolUse       | Agent/Task | サブエージェントに共有コンテキストを注入                         |
-| `capture-task-result.py`     | PostToolUse      | Agent/Task | サブエージェント結果を `.claude/context/session/entries/` に記録 |
-| `update-working-context.py`  | PostToolUse      | Edit/Write | 変更ファイルを `working-context.json` に追記                     |
-| `cleanup-session-context.py` | SessionEnd       | —          | `.claude/context/session/` をクリーンアップ                      |
+| フック                       | イベント         | 対象       | 説明                                                                                   |
+| ---------------------------- | ---------------- | ---------- | -------------------------------------------------------------------------------------- |
+| `load-task-state.py`         | SessionStart     | —          | Plans.md からタスク状態を読み込みサマリーを出力                                        |
+| `set-plan-gate.py`           | PostToolUse      | Agent/Task | プラン完了後にプランゲートを設定                                                       |
+| `check-plan-gate.py`         | PreToolUse       | Agent/Task | プランゲート確認（実装エージェントをブロック）                                         |
+| `clear-plan-gate.py`         | UserPromptSubmit | —          | ユーザー入力時にプランゲートをクリア                                                   |
+| `inject-shared-context.py`   | PreToolUse       | Agent/Task | サブエージェントに解決済みルーティング（`[Resolved Routing]`）と共有コンテキストを注入 |
+| `capture-task-result.py`     | PostToolUse      | Agent/Task | サブエージェント結果を `.claude/context/session/entries/` に記録                       |
+| `update-working-context.py`  | PostToolUse      | Edit/Write | 変更ファイルを `working-context.json` に追記                                           |
+| `cleanup-session-context.py` | SessionEnd       | —          | `.claude/context/session/` をクリーンアップ                                            |
 
 ### agent-routing
 
@@ -150,7 +150,7 @@ Plans.md からタスク状態を読み込み、セッション開始時にサ�
 
 ```
 [Codex CLI] Agent 'backend-python-dev' ('Python') uses Codex:
-`codex exec --model gpt-5.3-codex --sandbox workspace-write --full-auto "..." 2>/dev/null`
+`codex exec --model gpt-5.3-codex --sandbox read-only "..." < /dev/null 2>/dev/null`
 
 [Agent Routing] 'Python' → `backend-python-dev` (tool: codex):
 Task(subagent_type="backend-python-dev", prompt="...")
@@ -170,7 +170,7 @@ Task(subagent_type="backend-python-dev", prompt="...")
 
 ```
 [Codex Suggestion] File path contains 'config'. Consider consulting Codex before this change:
-`codex exec --model gpt-5.3-codex --sandbox read-only --full-auto '...'`
+`codex exec --model gpt-5.3-codex --sandbox read-only '...' < /dev/null 2>/dev/null`
 ```
 
 **例外（発火しないケース）:**

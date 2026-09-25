@@ -62,21 +62,22 @@ codex:
     # 実装・修正用（ワークスペース内のファイル変更可）
     implementation: workspace-write
 
-  # codex exec に常に付与するフラグ
-  flags: --full-auto
+  # codex exec に常に付与するフラグ（sandbox を無効化・上書きするフラグ
+  # --full-auto / --sandbox / --dangerously-bypass-approvals-and-sandbox 等を書くと Codex は使われない）
+  flags: ""
 
   # sandbox 外での実行が必要か（codex 0.145 系は sandbox 内で app-server 初期化に失敗する。Issue #85）
   requires_sandbox_disable: true
 ```
 
-| キー                       | 型     | デフォルト        | 説明                              |
-| -------------------------- | ------ | ----------------- | --------------------------------- |
-| `enabled`                  | bool   | `true`            | `false` で Codex 呼び出しを全停止 |
-| `model`                    | string | `gpt-5.3-codex`   | Codex CLI で使用するモデル        |
-| `sandbox.analysis`         | string | `read-only`       | 分析用サンドボックスモード        |
-| `sandbox.implementation`   | string | `workspace-write` | 実装用サンドボックスモード        |
-| `flags`                    | string | `--full-auto`     | Codex CLI に常時付与するフラグ    |
-| `requires_sandbox_disable` | bool   | `true`            | sandbox 外での実行が必要か        |
+| キー                       | 型     | デフォルト        | 説明                                                                                    |
+| -------------------------- | ------ | ----------------- | --------------------------------------------------------------------------------------- |
+| `enabled`                  | bool   | `true`            | `false` で Codex 呼び出しを全停止                                                       |
+| `model`                    | string | `gpt-5.3-codex`   | Codex CLI で使用するモデル                                                              |
+| `sandbox.analysis`         | string | `read-only`       | 分析用サンドボックスモード                                                              |
+| `sandbox.implementation`   | string | `workspace-write` | 実装用サンドボックスモード                                                              |
+| `flags`                    | string | `""`              | Codex CLI に常時付与するフラグ（sandbox を上書きするフラグを含むと Codex は使われない） |
+| `requires_sandbox_disable` | bool   | `true`            | sandbox 外での実行が必要か                                                              |
 
 ### antigravity セクション
 

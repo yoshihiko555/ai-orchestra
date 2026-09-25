@@ -29,21 +29,25 @@ You analyze tasks and create actionable implementation plans:
 ## Task: {task name}
 
 ### Overview
+
 {1-2 sentence summary}
 
 ### Steps
+
 1. [ ] {Step 1} - {brief description}
    - Depends on: none
    - Priority: high/medium/low
 2. [ ] {Step 2} - {brief description}
    - Depends on: Step 1
    - Priority: high/medium/low
-...
+     ...
 
 ### Risks
+
 - {Risk 1}: {mitigation}
 
 ### Recommendations
+
 - {Actionable suggestion}
 ```
 

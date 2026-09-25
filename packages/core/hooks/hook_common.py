@@ -35,7 +35,20 @@ GIT_COMMAND_TIMEOUT_SECONDS = 5
 # 障害時にとにかく何か動く値を返す」こと。値が多少古くても安全網としては許容する。
 DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
 DEFAULT_CODEX_SANDBOX_ANALYSIS = "read-only"
+DEFAULT_CODEX_SANDBOX_IMPLEMENTATION = "workspace-write"
+ALLOWED_CODEX_SANDBOXES = ("read-only", "workspace-write")
 DEFAULT_CODEX_FLAGS = ""
+# `.claude/rules/codex-delegation.md` の「Bash サンドボックス制約」条件 2 に
+# 基づく fail-closed 判定。`--full-auto` も実 CLI で read-only を
+# workspace-write に拡張するため、codex.flags に含まれる場合は Codex を無効化する。
+CODEX_BYPASS_FLAGS = ("--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto")
+# シェルへ未引用のまま渡される codex.flags / codex.model の許可文字集合。
+# 引用符・$・バッククォート・バックスラッシュ・; | & < > ( ) ・改行を含め、
+# Bash のワード分割/クォート除去で Python 側の str.split() 判定を欺けそうな
+# 文字を一切許可しない（.claude/rules/codex-delegation.md の
+# 「Bash サンドボックス制約」条件 2）。
+_CODEX_FLAGS_SAFE_PATTERN = re.compile(r"[A-Za-z0-9_.,:/@+=\- ]*")
+_CODEX_MODEL_SAFE_PATTERN = re.compile(r"[A-Za-z0-9_.,:/@+=\-]+")
 # 空文字 = --model フラグを省略し、Antigravity CLI のデフォルトモデルに委ねる意図。
 DEFAULT_ANTIGRAVITY_MODEL = ""
 DEFAULT_ANTIGRAVITY_FLAGS = ""
@@ -284,6 +297,275 @@ def is_cli_enabled(cli_name: str, config: dict, default: bool = True) -> bool:
     if not isinstance(section, dict):
         return default
     return bool(section.get("enabled", default))
+
+
+def get_agent_tool(agent_name: str, config: dict) -> str:
+    """config から指定エージェントの tool を取得。CLI 無効時は claude-direct にフォールバック。"""
+    agents = config.get("agents", {})
+    cfg = agents.get(agent_name, {})
+    tool = cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
+
+    # 旧ツール値の読み替え（正規化前の config を直接渡された場合の保険）
+    if tool == "gemini":
+        tool = "antigravity"
+
+    # CLI 無効時のフォールバック
+    if tool == "codex" and not is_cli_enabled("codex", config):
+        return "claude-direct"
+    if tool == "antigravity" and not is_cli_enabled("antigravity", config):
+        return "claude-direct"
+
+    return tool
+
+
+def resolve_agent_sandbox(agent_name: str, config: dict, purpose: str = "analysis") -> str:
+    """エージェント別上書きと用途別設定から Codex sandbox を解決する。"""
+    safe_config = config if isinstance(config, dict) else {}
+
+    agents = safe_config.get("agents", {})
+    agent_config = agents.get(agent_name, {}) if isinstance(agents, dict) else {}
+    if isinstance(agent_config, dict):
+        agent_sandbox = agent_config.get("sandbox")
+        if isinstance(agent_sandbox, str) and agent_sandbox:
+            return agent_sandbox
+
+    codex = safe_config.get("codex", {})
+    codex = codex if isinstance(codex, dict) else {}
+    sandboxes = codex.get("sandbox", {})
+    if isinstance(sandboxes, dict):
+        purpose_sandbox = sandboxes.get(purpose)
+        if isinstance(purpose_sandbox, str) and purpose_sandbox:
+            return purpose_sandbox
+
+    if purpose == "implementation":
+        return DEFAULT_CODEX_SANDBOX_IMPLEMENTATION
+    return DEFAULT_CODEX_SANDBOX_ANALYSIS
+
+
+def find_codex_sandbox_override(flags: str) -> str | None:
+    """Return the first token in ``flags`` that could override the resolved --sandbox value.
+
+    Detects (in this order, first match wins):
+    (a) an exact match against CODEX_BYPASS_FLAGS (e.g. "--full-auto", "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox").
+    (b) any token whose lowercased form contains the substring "sandbox" (covers "--sandbox",
+        "--sandbox=<value>", "sandbox_mode=<value>" as produced by "-c sandbox_mode=..." or
+        "--config=sandbox_mode=...", and incidentally re-covers (a)'s
+        "--dangerously-bypass-approvals-and-sandbox").
+    (c) Codex CLI's short "-s" sandbox flag: the token equals "-s", or the token starts with "-s"
+        and does NOT start with "--" (covers the concatenated short form
+        "-sdanger-full-access"). This must not false-positive on long-form flags like
+        "--skip-git-repo-check" (which starts with "--", so excluded by the
+        "not startswith('--')" guard).
+
+    Splits ``flags`` on whitespace via ``str.split()`` (no shell-quoting awareness needed here;
+    this is a defense-in-depth heuristic, not a shell parser).
+    """
+    tokens = flags.split()
+    for token in tokens:
+        if token in CODEX_BYPASS_FLAGS:
+            return token
+    for token in tokens:
+        if "sandbox" in token.lower():
+            return token
+    for token in tokens:
+        if token == "-s" or (token.startswith("-s") and not token.startswith("--")):
+            return token
+    return None
+
+
+def _is_single_line_str(value: object) -> bool:
+    """Return True if value is a str with no newline/carriage-return characters."""
+    return isinstance(value, str) and "\n" not in value and "\r" not in value
+
+
+def _resolve_codex_section(
+    agent_name: str,
+    agent_config: dict,
+    configured_tool: str,
+    config: dict,
+) -> tuple[dict | None, list[str]]:
+    """Build the `codex` sub-dict for resolve_agent_routing, or (None, notes) if fail-closed."""
+    codex_config = config.get("codex", {})
+    codex_config = codex_config if isinstance(codex_config, dict) else {}
+    notes: list[str] = []
+    is_valid = True
+
+    raw_flags = codex_config.get("flags")
+    if raw_flags is None:
+        flags = DEFAULT_CODEX_FLAGS
+    elif isinstance(raw_flags, str):
+        flags = raw_flags or DEFAULT_CODEX_FLAGS
+    else:
+        flags = raw_flags
+        notes.append("codex.flags must be a string -> codex disabled")
+        is_valid = False
+
+    model = codex_config.get("model") or DEFAULT_CODEX_MODEL
+    if isinstance(flags, str) and not _CODEX_FLAGS_SAFE_PATTERN.fullmatch(flags):
+        notes.append("codex.flags contains characters outside the allowed set -> codex disabled")
+        is_valid = False
+    if not isinstance(model, str) or not _CODEX_MODEL_SAFE_PATTERN.fullmatch(model):
+        notes.append("codex.model contains characters outside the allowed set -> codex disabled")
+        is_valid = False
+
+    raw_requires_sandbox_disable = codex_config.get("requires_sandbox_disable", True)
+    if isinstance(raw_requires_sandbox_disable, bool):
+        requires_sandbox_disable = raw_requires_sandbox_disable
+    else:
+        notes.append("codex.requires_sandbox_disable must be a boolean -> codex disabled")
+        is_valid = False
+        requires_sandbox_disable = True
+
+    codex_routing = {
+        "model": model,
+        "flags": flags,
+        "requires_sandbox_disable": requires_sandbox_disable,
+    }
+
+    agent_sandbox = agent_config.get("sandbox")
+    if isinstance(agent_sandbox, str) and agent_sandbox:
+        codex_routing["sandbox"] = agent_sandbox
+    elif configured_tool == "auto":
+        codex_routing["sandbox_analysis"] = resolve_agent_sandbox(agent_name, config, "analysis")
+        codex_routing["sandbox_implementation"] = resolve_agent_sandbox(
+            agent_name, config, "implementation"
+        )
+    else:
+        codex_routing["sandbox"] = resolve_agent_sandbox(agent_name, config, "analysis")
+
+    sandbox_values = [
+        value
+        for key, value in codex_routing.items()
+        if key in {"sandbox", "sandbox_analysis", "sandbox_implementation"}
+    ]
+    invalid_sandboxes = [value for value in sandbox_values if value not in ALLOWED_CODEX_SANDBOXES]
+    for invalid_sandbox in dict.fromkeys(invalid_sandboxes):
+        notes.append(
+            f"codex sandbox {invalid_sandbox!r} is not in "
+            f"{ALLOWED_CODEX_SANDBOXES!r} -> codex disabled"
+        )
+        is_valid = False
+
+    # `.claude/rules/codex-delegation.md` の「Bash サンドボックス制約」条件 2 により、
+    # 解決済み sandbox を後段の flags で上書きできる経路も fail-closed にする。
+    if isinstance(flags, str):
+        override_token = find_codex_sandbox_override(flags)
+        if override_token is not None:
+            notes.append(
+                f"codex.flags contains a sandbox-overriding token {override_token!r} "
+                "-> codex disabled"
+            )
+            is_valid = False
+
+    if not is_valid:
+        return None, notes
+    return codex_routing, notes
+
+
+def _resolve_antigravity_section(config: dict) -> tuple[dict | None, list[str]]:
+    """Build the `antigravity` sub-dict for resolve_agent_routing, or (None, notes) if invalid."""
+    antigravity_config = config.get("antigravity", {})
+    antigravity_config = antigravity_config if isinstance(antigravity_config, dict) else {}
+    notes: list[str] = []
+    is_valid = True
+
+    raw_model = antigravity_config.get("model")
+    if raw_model is None:
+        model = DEFAULT_ANTIGRAVITY_MODEL
+    elif isinstance(raw_model, str):
+        model = raw_model
+    else:
+        model = raw_model
+        notes.append("antigravity.model must be a string -> antigravity disabled")
+        is_valid = False
+
+    raw_flags = antigravity_config.get("flags")
+    if raw_flags is None:
+        flags = DEFAULT_ANTIGRAVITY_FLAGS
+    elif isinstance(raw_flags, str):
+        flags = raw_flags
+    else:
+        flags = raw_flags
+        notes.append("antigravity.flags must be a string -> antigravity disabled")
+        is_valid = False
+
+    if isinstance(model, str) and not _is_single_line_str(model):
+        notes.append("antigravity.model must be a single-line string -> antigravity disabled")
+        is_valid = False
+    if isinstance(flags, str) and not _is_single_line_str(flags):
+        notes.append("antigravity.flags must be a single-line string -> antigravity disabled")
+        is_valid = False
+
+    if not is_valid:
+        return None, notes
+
+    allowlist = antigravity_config.get("model_allowlist")
+    allowlist_warning = ""
+    if model and isinstance(allowlist, list) and allowlist and model not in allowlist:
+        allowlist_warning = f"model {model!r} is not in antigravity.model_allowlist"
+
+    return {
+        "model": model,
+        "flags": flags,
+        "allowlist_warning": allowlist_warning,
+    }, notes
+
+
+def resolve_agent_routing(agent_name: str, config: dict) -> dict:
+    """サブエージェント 1 件の実効ルーティングを解決する。"""
+    safe_config = config if isinstance(config, dict) else {}
+    agents = safe_config.get("agents", {})
+    agent_config = agents.get(agent_name, {}) if isinstance(agents, dict) else {}
+    configured_tool = (
+        agent_config.get("tool", "claude-direct")
+        if isinstance(agent_config, dict)
+        else "claude-direct"
+    )
+    if configured_tool == "gemini":
+        configured_tool = "antigravity"
+
+    codex_enabled = is_cli_enabled("codex", safe_config)
+    antigravity_enabled = is_cli_enabled("antigravity", safe_config)
+    resolved_tool = configured_tool
+    notes: list[str] = []
+
+    if configured_tool == "codex" and not codex_enabled:
+        resolved_tool = "claude-direct"
+        notes.append("configured tool 'codex' -> claude-direct (codex.enabled is false)")
+    elif configured_tool == "antigravity" and not antigravity_enabled:
+        resolved_tool = "claude-direct"
+        notes.append(
+            "configured tool 'antigravity' -> claude-direct (antigravity.enabled is false)"
+        )
+
+    routing: dict = {
+        "agent": agent_name,
+        "tool": resolved_tool,
+        "notes": notes,
+    }
+
+    if resolved_tool == "codex" or (configured_tool == "auto" and codex_enabled):
+        codex_section, codex_notes = _resolve_codex_section(
+            agent_name, agent_config, configured_tool, safe_config
+        )
+        notes.extend(codex_notes)
+        if codex_section is None:
+            if resolved_tool == "codex":
+                routing["tool"] = "claude-direct"
+        else:
+            routing["codex"] = codex_section
+
+    if resolved_tool == "antigravity" or (configured_tool == "auto" and antigravity_enabled):
+        antigravity_section, antigravity_notes = _resolve_antigravity_section(safe_config)
+        notes.extend(antigravity_notes)
+        if antigravity_section is None:
+            if resolved_tool == "antigravity":
+                routing["tool"] = "claude-direct"
+        else:
+            routing["antigravity"] = antigravity_section
+
+    return routing
 
 
 def read_hook_input() -> dict:

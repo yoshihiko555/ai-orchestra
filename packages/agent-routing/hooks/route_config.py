@@ -23,9 +23,12 @@ from hook_common import (  # noqa: E402, F401
     DEFAULT_CODEX_MODEL,
     DEFAULT_CODEX_SANDBOX_ANALYSIS,
     TASK_NOTIFICATION_TAG,
+    get_agent_tool,
     is_cli_enabled,
     is_task_notification,
     load_cli_tools_config,
+    resolve_agent_routing,
+    resolve_agent_sandbox,
 )
 
 # エージェントルーティング設定（catch-all の general-purpose を除く 29 エージェント分）
@@ -178,25 +181,6 @@ def load_config(data: dict) -> dict:
     """
     project_dir = _project_dir_from_data(data)
     return load_cli_tools_config(project_dir)
-
-
-def get_agent_tool(agent_name: str, config: dict) -> str:
-    """config から指定エージェントの tool を取得。CLI 無効時は claude-direct にフォールバック。"""
-    agents = config.get("agents", {})
-    cfg = agents.get(agent_name, {})
-    tool = cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
-
-    # 旧ツール値の読み替え（正規化前の config を直接渡された場合の保険）
-    if tool == "gemini":
-        tool = "antigravity"
-
-    # CLI 無効時のフォールバック
-    if tool == "codex" and not is_cli_enabled("codex", config):
-        return "claude-direct"
-    if tool == "antigravity" and not is_cli_enabled("antigravity", config):
-        return "claude-direct"
-
-    return tool
 
 
 # トリガー用の単語境界正規表現のキャッシュ（UserPromptSubmit で毎回走るため）

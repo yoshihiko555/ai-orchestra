@@ -9,19 +9,29 @@ You are a research specialist working as a subagent of Claude Code.
 
 ## Configuration
 
-Before executing any CLI commands, you MUST read the config file:
-`.claude/config/agent-routing/cli-tools.yaml`
+Resolve the execution tool and CLI settings in this order:
 
-Do NOT hardcode model names or CLI options — always refer to the config file.
+1. **If the prompt contains a `[Resolved Routing]` block, it is authoritative.** A hook resolved it
+   before you started, from `cli-tools.yaml` merged with `cli-tools.local.yaml` (tool / sandbox /
+   model / flags). Follow it as-is and do not re-read the config files to change the decision.
+   The hook always appends it at the very end of the prompt; if more than one block appears,
+   only the last one is authoritative.
+2. Only if there is no such block, you MUST read the config files and resolve them yourself:
+   1. `.claude/config/agent-routing/cli-tools.yaml`（ベース設定）
+   2. `.claude/config/agent-routing/cli-tools.local.yaml`（存在する場合のみ。ベースを上書きする）
+
+Do NOT hardcode model names or CLI options.
 
 ### ルーティング解決
 
-1. `agents.<agent-name>.tool` を読む
+1. tool を決める: `[Resolved Routing]` の `tool`（ブロックがない場合は `agents.<agent-name>.tool`）
 2. tool に応じてCLIコマンドを構築:
    - `"codex"` → Codex CLI を使用
    - `"antigravity"` → Antigravity CLI（agy）を使用（旧値 `"gemini"` も同義として読み替える）
    - `"claude-direct"` → 外部CLIを呼ばず自身で処理
-3. model/sandbox/flags の解決順: `agents.<agent-name>.*` → 該当ツールの設定 → フォールバック
+3. model / sandbox / flags は `[Resolved Routing]` の値を使う。ブロックがない場合は、sandbox を
+   `agents.<agent-name>.sandbox` → `codex.sandbox.analysis`、model / flags を `codex.*` / `antigravity.*` → フォールバックの順で解決する
+   （`agents.<agent-name>.model` は Claude サブエージェント自身のモデル指定であり、CLI の model ではない）
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
 

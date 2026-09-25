@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`agent-routing` / `core`: `.local.yaml` のルーティング上書きがサブエージェントに効かないことがある問題を修正（Issue #453）**: サブエージェント起動前に hook が base と `.local.yaml` をマージした設定から tool / sandbox / model を解決し、`[Resolved Routing]` として渡すようにした。`codex.flags` に `--full-auto` や `--sandbox` など sandbox を上書きするフラグがある場合や、sandbox が `read-only` / `workspace-write` 以外の場合は Codex を使わない。
 - **`core`: `explain-visually` の `template.html` を prettier で整形しても図が描画されるようになった**: 整形で inline script の中身が変わり、CSP のハッシュと一致しなくなって Mermaid の描画とページ高さの報告がブロックされていた。script 2 本を `prettier-ignore` で整形対象から外した。整形済みの template.html をコミットしているプロジェクトは、次回 sync 後の template.html をコミットし直す。
 
 ### Fixed
