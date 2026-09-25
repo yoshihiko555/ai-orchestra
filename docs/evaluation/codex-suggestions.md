@@ -27,7 +27,7 @@
 ## 3. 評価観点
 
 - [ ] EV-01（正常 / must）: before-write: ファイルパスに `core/` や `config` / `class ` 等の設計系キーワード（DESIGN_INDICATORS）を含む Edit/Write で `[Codex Suggestion]` を出力する — 根拠: docs/reference/packages.md（発火条件: `core/` を含むファイルパス、`config`/`class` 等のキーワード）
-- [ ] EV-02（正常 / must）: before-write: 大きなコンテンツ（実装閾値 500 文字超）を含む新規ファイル作成で `[Codex Suggestion]` を出力する — 根拠: docs/reference/packages.md（発火条件: 大きなコンテンツを含む新規ファイル作成）
+- [ ] EV-02（正常 / must）: before-write: 大きなコンテンツ（実装閾値 500 文字超）を含む新規ファイル作成で `[Codex Suggestion]` を出力する — 根拠: docs/reference/packages.md（発火条件: 大きなコンテンツを含む新規ファイル作成）。**追記（Issue #463）**: `additionalContext` 内の理由文は `tool_name` で区別し、Edit は編集向け、既存ファイルへの Write は上書き向け、実際の新規 Write（または不明な `tool_name`）のみ新規ファイル作成向けの文言とする。Edit のサイズベースの発火条件自体は変更せず、Edit を発火対象にすべきかの見直しはスコープ外として Issue #456 に委ねる
 - [ ] EV-03（異常 / must）: before-write: `codex.enabled: false`（`cli-tools.yaml` または `.local.yaml` 上書き）のとき、他条件に関わらず `[Codex Suggestion]` を出力しない — 根拠: .claude/rules/codex-suggestion-compliance.md（例外: `codex.enabled: false` の場合は hook 自体が提案を抑制する）
 - [ ] EV-04（境界 / should）: before-write: `SIMPLE_EDIT_PATTERNS`（`.gitignore` / `README.md` / `CHANGELOG.md` / `requirements.txt` / `package.json` / `pyproject.toml` / `.env.example`）に該当するファイルパスでは、他条件を満たしても提案を出力しない — 根拠: 実装挙動
 - [ ] EV-05（境界 / should）: before-write: 設計系キーワードに非該当かつコンテンツも小さい通常の Edit/Write では `additionalContext` を出力しない — 根拠: 実装挙動

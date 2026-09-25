@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`agent-routing` / `core`: `.local.yaml` のルーティング上書きがサブエージェントに効かないことがある問題を修正（Issue #453）**: サブエージェント起動前に hook が base と `.local.yaml` をマージした設定から tool / sandbox / model を解決し、`[Resolved Routing]` として渡すようにした。`codex.flags` に `--full-auto` や `--sandbox` など sandbox を上書きするフラグがある場合や、sandbox が `read-only` / `workspace-write` 以外の場合は Codex を使わない。
 - **`core`: `explain-visually` の `template.html` を prettier で整形しても図が描画されるようになった**: 整形で inline script の中身が変わり、CSP のハッシュと一致しなくなって Mermaid の描画とページ高さの報告がブロックされていた。script 2 本を `prettier-ignore` で整形対象から外した。整形済みの template.html をコミットしているプロジェクトは、次回 sync 後の template.html をコミットし直す。
+- **`codex-delegation` / `codex-system` / エージェント定義: Codex 呼び出し例を、プロンプトの書き出しと `codex exec` の 2 回の Bash に分けた（Issue #463）**: 例どおりに実行しても sandbox を外すのが `codex exec` の呼び出しだけになる。`startproject` の実装フェーズも Codex 決め打ちをやめ、解決済みの tool に従う記述にした。
+- **`quality-gates`: Bash で grep / rg / find を使ったときの案内が、Grep / Glob ツールのないセッションでも従える内容になった（Issue #463）**: 専用ツールがない場合に Bash だけで出力を絞る方法（`-c` / `-l` / `| head -n N` 等）を併記する。
+- **`codex-suggestions`: 既存ファイルの Edit で `[Codex Suggestion]` の理由が「Creating new file with significant content」と出る問題を修正（Issue #463）**: Edit と既存ファイルへの Write では別の理由文を出す。発火条件は変わらない。
 
 ### Fixed
 

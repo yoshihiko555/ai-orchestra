@@ -34,6 +34,52 @@ def test_imports_without_agent_routing_hooks_on_path() -> None:
         sys.path.extend(removed_paths)
 
 
+def test_edit_reason_for_edit_does_not_claim_new_file_creation() -> None:
+    should_suggest, reason = check_codex_before_write.should_suggest_codex(
+        "tools/script.py", "x" * 600, tool_name="Edit"
+    )
+    assert should_suggest is True
+    assert "Creating new file" not in reason
+
+
+def test_edit_reason_for_write_to_existing_file_reports_overwrite(tmp_path) -> None:
+    existing_file = tmp_path / "script.py"
+    existing_file.write_text("old content", encoding="utf-8")
+
+    should_suggest, reason = check_codex_before_write.should_suggest_codex(
+        str(existing_file), "x" * 600, tool_name="Write"
+    )
+    assert should_suggest is True
+    assert "Overwriting" in reason
+    assert "Creating new file" not in reason
+
+
+def test_edit_reason_for_write_to_new_file_preserves_creation_reason(tmp_path) -> None:
+    new_file = tmp_path / "new_script.py"
+
+    should_suggest, reason = check_codex_before_write.should_suggest_codex(
+        str(new_file), "x" * 600, tool_name="Write"
+    )
+    assert should_suggest is True
+    assert reason == "Creating new file with significant content"
+
+
+def test_edit_reason_without_tool_name_preserves_creation_reason() -> None:
+    should_suggest, reason = check_codex_before_write.should_suggest_codex(
+        "tools/script.py", "x" * 600
+    )
+    assert should_suggest is True
+    assert reason == "Creating new file with significant content"
+
+
+def test_edit_reason_for_source_edit_uses_source_edit_wording() -> None:
+    should_suggest, reason = check_codex_before_write.should_suggest_codex(
+        "src/feature.py", "x" * 250, tool_name="Edit"
+    )
+    assert should_suggest is True
+    assert reason == "Large edit to source file"
+
+
 # --- main (stdin/stdout contract, EV-12/EV-14/EV-15) ---
 
 
@@ -73,6 +119,24 @@ def test_main_no_output_for_non_triggering_change(monkeypatch) -> None:
     stdout, _stderr, exit_code = _run_main_with_stdin(data)
     assert exit_code == 0
     assert stdout == ""
+
+
+def test_main_edit_reason_uses_tool_name_from_stdin(monkeypatch) -> None:
+    monkeypatch.setattr(check_codex_before_write, "has_project_config", lambda *_: True)
+    monkeypatch.setattr(
+        check_codex_before_write, "load_package_config", lambda *_: {"codex": {"enabled": True}}
+    )
+    data = {
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "tools/script.py", "new_string": "x" * 600},
+        "cwd": "/project",
+    }
+    stdout, _stderr, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+
+    output = json.loads(stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "Creating new file" not in context
 
 
 def test_main_fail_safe_on_internal_exception(monkeypatch) -> None:

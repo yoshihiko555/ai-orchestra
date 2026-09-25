@@ -55,6 +55,7 @@ quality-gates は実装後の品質チェックを自動化する hook 群と、
 - [ ] EV-28（異常 / must）: `audit-flags.json`（または `.local.json` 上書き）の `features.evaluation_set_check.enabled=false` のとき、`evaluation-set-checker.py` は突合案内・未整備警告を含む一切の出力を行わない — 根拠: Issue #123 仕様
 - [ ] EV-29（境界 / should）: 同一 session_id かつ同一パッケージへの通知は `.claude/state/evaluation-set-checker.json` に記録され、以後同一セッション内では重複通知しない。パッケージを特定できない場合は `unknown:<相対ファイルパス>` をキーとしたファイル単位の dedup となり、特定不能な別ファイルはそれぞれ再通知される — 根拠: Issue #123 仕様
 - [ ] EV-30（正常 / must）: 編集対象が `packages/<pkg>/tests/`・`tests/unit/`・`tests/e2e/` のいずれにも該当しないファイルの場合、`evaluation-set-checker.py` は突合案内・警告を一切出力しない（PostToolUse: Edit|Write で発火するが非テストファイルには反応しない） — 根拠: Issue #123 仕様
+- [ ] EV-31（境界 / must）: `check-context-optimization.py` の grep/rg/find 向け Bash 案内は、すべてのセッションで専用の Grep/Glob ツールが利用可能とは仮定せず、専用ツールが無い場合も `-c` / `-l` / `-maxdepth` / `head -n N` で出力を絞り込める Bash のみの代替手段を必ず含む — 根拠: Issue #463 — 自動テスト: `packages/quality-gates/tests/test_check_context_optimization.py::test_check_bash_grep_advice_does_not_require_grep_tool`, `packages/quality-gates/tests/test_check_context_optimization.py::test_check_bash_find_advice_does_not_require_glob_tool`
 
 ## 4. 類型別観点
 

@@ -57,6 +57,24 @@ BASH_REPLACEMENTS: dict[str, str] = {
     "rg": "Grep",
 }
 
+BASH_SEARCH_ADVICE: dict[str, str] = {
+    "grep": (
+        "専用の Grep ツールがあればそれを使ってください。"
+        "無ければ Bash の grep のまま `-c`（件数）→ `-l`（ファイル名のみ）で先に絞り込み、"
+        "内容表示は `| head -n N` のように上限を付けてください。"
+    ),
+    "rg": (
+        "専用の Grep ツールがあればそれを使ってください。"
+        "無ければ Bash の rg のまま `-c`（件数）→ `-l`（ファイル名のみ）で先に絞り込み、"
+        "内容表示は `| head -n N` のように上限を付けてください。"
+    ),
+    "find": (
+        "専用の Glob ツールがあればそれを使ってください。"
+        "無ければ Bash の find のまま `-maxdepth` で探索範囲を絞るか、"
+        "`| head -n N` のように件数の上限を付けてください。"
+    ),
+}
+
 # 検出時に剥がして次トークンを評価する単純なラッパー
 BASH_WRAPPER_PREFIXES: frozenset[str] = frozenset({"sudo", "time", "nice"})
 
@@ -197,9 +215,12 @@ def check_bash(tool_input: dict, _settings: dict) -> str:
         return ""
 
     used_safe = _sanitize_for_message(used, max_len=40)
+    advice = BASH_SEARCH_ADVICE.get(used)
+    if advice is None:
+        advice = f"代わりに {replacement} を使うと出力サイズを制御できます。"
     return (
         f"[Context Optimization] Bash で `{used_safe}` を使用しようとしています。\n"
-        f"  → 代わりに {replacement} を使うと出力サイズを制御できます。\n"
+        f"  → {advice}\n"
         f"  → {ESCALATION_REF}"
     )
 

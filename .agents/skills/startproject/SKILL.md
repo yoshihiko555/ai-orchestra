@@ -263,7 +263,7 @@ Decisions / Notes のコンテキストは Plans.md を直接読むか、`.claud
 1. **Phase 4 で作成したタスクリストを順に処理する**
 2. **各タスクを適切な implementation agent に委譲する**（`frontend-dev`, `backend-python-dev`, `backend-go-dev`, `ai-dev`, `tester` 等）
 3. **オーケストレーター自身は Edit/Write で実装コードを書かない** — サブエージェントに全て任せる
-4. **implementation agents は `cli-tools.yaml` の `agents.{name}.tool` 設定に従い、自動的に Codex CLI 経由で実装する**
+4. **implementation agents は解決済みの tool（サブエージェントの prompt に注入される `[Resolved Routing]`、ない場合は `cli-tools.yaml` と `.local.yaml` を合わせた `agents.{name}.tool`）に従って実装する**
 
 ### 実行パターン
 
@@ -283,8 +283,10 @@ Task(subagent_type="backend-python-dev", prompt="""
 - 設計方針: {design decisions from Phase 3}
 - 設計書: {対応する docs/ 配下の設計書パス（API-001.md 等）。存在する場合は実装前に必ず読み、逸脱が必要なら実装前に報告すること}
 
-IMPORTANT: cli-tools.yaml の設定に従い、Codex CLI (workspace-write) で実装すること。
-エラー時は claude-direct にフォールバック。
+IMPORTANT: 解決済みの tool（`[Resolved Routing]` があればそれ、なければ cli-tools.yaml と
+.local.yaml を合わせた agents.{name}.tool）に従って実装すること。tool が codex なら
+sandbox は `[Resolved Routing]` の codex.sandbox に従う。エラー時は claude-direct に
+フォールバック。
 
 実装してください。
 """)
@@ -297,8 +299,10 @@ Task(subagent_type="frontend-dev", prompt="""
 - プロジェクト: {feature}
 - 関連ファイル: {files}
 
-IMPORTANT: cli-tools.yaml の設定に従い、Codex CLI (workspace-write) で実装すること。
-エラー時は claude-direct にフォールバック。
+IMPORTANT: 解決済みの tool（`[Resolved Routing]` があればそれ、なければ cli-tools.yaml と
+.local.yaml を合わせた agents.{name}.tool）に従って実装すること。tool が codex なら
+sandbox は `[Resolved Routing]` の codex.sandbox に従う。エラー時は claude-direct に
+フォールバック。
 
 実装してください。
 """)

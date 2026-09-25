@@ -36,8 +36,10 @@ sandbox 無効化の必須条件（fail-closed。1 つでも満たさない場�
   `workspace-write` のいずれかであり、`codex.flags` に bypass 系フラグ
   （`--dangerously-bypass-approvals-and-sandbox` 等）が含まれないこと
 - `codex exec` 単体コマンドに限定し、他のシェルコマンドと連結しないこと
-- 信頼できない文字列（Issue 本文・ログ等）を prompt に含める場合は一時ファイルへ書き出し
-  `"$(cat "$PROMPT_FILE")"` で渡すこと
+- 信頼できない文字列（Issue 本文・ログ等）を prompt に含める場合は、sandbox を外さない別の Bash
+  呼び出しで `mktemp "${TMPDIR:-/tmp}/codex-prompt.XXXXXX"` に書き出して絶対パスを表示し、
+  `codex exec` の呼び出しでは `"$(cat '<表示された絶対パス>')"` で渡すこと（書き出しと
+  `codex exec` を同じ Bash に入れない。シェル変数は Bash 呼び出しをまたいで残らない）
 - エラー時は `claude-direct` にフォールバックする
 
 ## Implementation Method（必須）

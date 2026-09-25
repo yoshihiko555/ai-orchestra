@@ -167,16 +167,54 @@ def test_check_bash_suggests_read_for_cat() -> None:
     msg = check_context_optimization.check_bash({"command": "cat src/foo.py"}, _settings())
     assert "Read" in msg
     assert "cat" in msg
+    assert "代わりに Read を使うと出力サイズを制御できます。" in msg
+    assert "専用の" not in msg
+
+
+@pytest.mark.parametrize(
+    ("command", "replacement"),
+    [
+        ("head -n 10 src/foo.py", "Read (offset/limit 指定)"),
+        ("tail -n 10 src/foo.py", "Read (末尾は offset で指定)"),
+    ],
+)
+def test_check_bash_read_advice_remains_unconditional(command: str, replacement: str) -> None:
+    msg = check_context_optimization.check_bash({"command": command}, _settings())
+    assert f"代わりに {replacement} を使うと出力サイズを制御できます。" in msg
+    assert "専用の" not in msg
 
 
 def test_check_bash_suggests_glob_for_find() -> None:
     msg = check_context_optimization.check_bash({"command": "find . -name '*.py'"}, _settings())
     assert "Glob" in msg
+    assert "専用の Glob ツール" in msg
+    assert "head -n" in msg
 
 
 def test_check_bash_suggests_grep_for_rg() -> None:
     msg = check_context_optimization.check_bash({"command": "rg --files src/"}, _settings())
     assert "Grep" in msg
+    assert "専用の Grep ツール" in msg
+    assert "head -n" in msg
+
+
+def test_check_bash_grep_advice_does_not_require_grep_tool() -> None:
+    msg = check_context_optimization.check_bash({"command": "grep TODO src/app.py"}, _settings())
+    assert "専用の Grep ツールがあれば" in msg
+    assert "無ければ Bash の grep のまま" in msg
+    assert "-c" in msg
+    assert "-l" in msg
+    assert "head -n" in msg
+    assert "代わりに Grep" not in msg
+
+
+def test_check_bash_find_advice_does_not_require_glob_tool() -> None:
+    msg = check_context_optimization.check_bash({"command": "find . -name '*.py'"}, _settings())
+    assert "専用の Glob ツールがあれば" in msg
+    assert "無ければ Bash の find のまま" in msg
+    assert "-maxdepth" in msg
+    assert "head -n" in msg
+    assert "代わりに Glob" not in msg
 
 
 def test_check_bash_handles_sudo_prefix() -> None:
