@@ -177,7 +177,7 @@ Target: 80%+ line coverage on the new module.
 
 - [x] {test1}: {description}
 - [x] {test2}: {description}
-      ...
+- [x] ...（残りのテストケース）
 
 ### Coverage
 

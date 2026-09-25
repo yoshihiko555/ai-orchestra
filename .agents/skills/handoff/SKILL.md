@@ -169,8 +169,8 @@ Key files to review:
 
 Never commit on an integration branch. Before the first commit, run
 `git branch --show-current`: if it prints nothing (detached HEAD), or the Base branch
-above, or the remote default branch (`git symbolic-ref --short refs/remotes/origin/HEAD`
-without the `origin/` prefix), create a feature branch first
+above, or the remote default branch (`git symbolic-ref --short refs/remotes/origin/HEAD`;
+strip the `origin/` prefix before comparing), create a feature branch first
 (`git switch -c <type>/<short-name>`).
 When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`.
 When a Phase's Acceptance Criteria are met, check them (`- [ ]` → `- [x]`) only after

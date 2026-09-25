@@ -14,7 +14,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`agent-routing`: Antigravity の既定モデルを `gemini-3.8-flash-high` に変更**: `cli-tools.yaml` の `antigravity.model` の既定値を `gemini-3.1-pro-high` から `gemini-3.8-flash-high` に変えた。従来のモデルを使い続ける場合は `cli-tools.local.yaml` で `antigravity.model: gemini-3.1-pro-high` を指定する。
 - **`agent-routing`: `cli-tools.yaml` の debugger の sandbox 既定値を `read-only` に変更**: `agents.debugger.sandbox` が `workspace-write` のまま残っていたのを、Edit を持たない分析役に合わせて `read-only` にした。`.local.yaml` で debugger の tool を `codex` に切り替えている場合の sandbox 指定が変わる。tool の既定値（`claude-direct`）は変わらない。
 - **`agent-routing`: `cli-tools.yaml` の `antigravity.model_allowlist` を現行の `agy models` に合わせて更新**: Gemini 3.6 / 3.7 / 3.8 Flash を追加し、`agy models` に表示されなくなった Gemini 3.5 Flash、接尾辞なしの `gemini-3.1-pro`、名前が変わった Claude 4.6 系の旧スラッグ（`claude-4.6-sonnet-thinking` / `claude-4.6-opus-thinking`）を外した。`antigravity.model` にこれらを指定している場合は警告が出るので、`agy models` に表示される名前（例: `claude-sonnet-4-6`）に変更する。
-
 - **`handoff`: 引き継ぎファイルの Codex 向け指示を強化**: base ブランチ上なら feature ブランチを先に作る、パス単位でステージし `git add -A` を使わない、`.claude/Plans.md` / `.claude/handoffs/` をステージしない、Acceptance Criteria は verify / judge を確認した後にだけチェックする、を明記。起動コマンドには `cli-tools.yaml` の model / sandbox を適用し、`codex.enabled: false` なら案内しない。
 
 ### Deprecated
