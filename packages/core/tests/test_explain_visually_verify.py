@@ -13,7 +13,8 @@ Chrome を実際に起動しないテストのみを対象とする（`dump_dom`
 - EV-32（must）: `parse_dom_metrics` による DOM 解析（描画済み/未描画の図・ready フラグ・高さ・title）。
   未描画検出はタグ非依存（`<pre>`/`<div>` 等の `class="mermaid"`）で `mermaid-box` とは区別する
 - EV-33（must）: `build_warnings` による警告生成（sources/rendered 不一致・未 ready・高さ欠落）
-- EV-34（should）: template.html ↔ verify_page.py の契約（fig- id・data-* フラグ・プレースホルダ）
+- EV-34（should）: template.html ↔ verify_page.py の契約（fig- id・data-* フラグ・プレースホルダ・
+  script の prettier 除外）
 - EV-35（must）: 生成 HTML の注入可能な markup・未置換 placeholder と、テンプレート由来の
   CSP・script 本文の改変検出
 """
@@ -948,6 +949,19 @@ class TestTemplateContract:
         for body in scripts:
             digest = base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
             assert f"'sha256-{digest}'" in csp
+
+    def test_inline_scripts_are_excluded_from_prettier(self) -> None:
+        """inline script 2 本の直前に `<!-- prettier-ignore -->` がある（EV-34）。
+
+        導入先プロジェクトの prettier（lint-on-save hook や一括整形）が script 本文の
+        インデントや引用符を書き換えると、CSP ハッシュが外れて Mermaid 描画がブロックされる。
+        """
+        template = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+        script_starts = [match.start() for match in re.finditer(r"<script\b", template)]
+        assert len(script_starts) == verify_page.TEMPLATE_SCRIPT_COUNT
+        for start in script_starts:
+            assert template[:start].rstrip().endswith("<!-- prettier-ignore -->")
 
     def test_csp_blocks_external_connections_and_images(self) -> None:
         template = TEMPLATE_PATH.read_text(encoding="utf-8")
