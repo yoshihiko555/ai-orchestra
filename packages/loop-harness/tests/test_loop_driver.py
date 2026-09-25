@@ -9218,6 +9218,86 @@ def test_run_one_llm_reviewer_passes_check_result_schema(
     assert json.loads(captured["json_schema"]) == lds.CHECK_RESULT_JSON_SCHEMA
 
 
+def test_run_one_llm_reviewer_falls_back_when_cli_rejects_json_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-182: cache a CLI's schema rejection and use the bare-JSON fallback thereafter."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    reviewer_payload = {
+        "passed": True,
+        "layer": "llm_review",
+        "signature": None,
+        "findings": [],
+        "raw_artifact_path": "",
+        "infrastructure_failure": False,
+    }
+    commands: list[list[str]] = []
+
+    def fake_run_child(
+        cmd: list[str], *_args: Any, **_kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        if len(commands) == 1:
+            return subprocess.CompletedProcess(cmd, 1, "", "error: unknown option '--json-schema'")
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": reviewer_payload}), "")
+
+    monkeypatch.setattr(d, "_run_child", fake_run_child)
+
+    result = d._run_one_llm_reviewer(state, "act-000061", "code-reviewer")
+
+    assert len(commands) == 2
+    assert "--json-schema" in commands[0]
+    assert "--json-schema" not in commands[1]
+    assert "no code fences" in commands[1][-1].lower()
+    assert result.passed is True
+    assert result.infrastructure_failure is False
+    assert d._reviewer_json_schema_supported is False
+
+    later_result = d._run_one_llm_reviewer(state, "act-000062", "another-reviewer")
+
+    assert len(commands) == 3
+    assert "--json-schema" not in commands[2]
+    assert later_result.passed is True
+    assert later_result.infrastructure_failure is False
+
+
+def test_run_one_llm_reviewer_does_not_fall_back_on_other_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-182: unrelated `claude -p` failures retain normal infrastructure handling."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    commands: list[list[str]] = []
+
+    def fake_run_child(
+        cmd: list[str], *_args: Any, **_kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, "", "API Error: 500")
+
+    monkeypatch.setattr(d, "_run_child", fake_run_child)
+
+    result = d._run_one_llm_reviewer(state, "act-000063", "code-reviewer")
+
+    assert len(commands) == 1
+    assert result.passed is False
+    assert result.infrastructure_failure is True
+    assert d._reviewer_json_schema_supported is True
+
+
 def test_run_one_llm_reviewer_saves_raw_output_on_invalid_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -10934,6 +11014,18 @@ def test_reviewer_prompt_restricts_bash_and_leaves_format_to_schema() -> None:
     assert "git diff" in prompt and "git log" in prompt
     assert "do not run tests or linters" in prompt.lower()
     assert "no code fences" not in prompt.lower()
+
+
+def test_reviewer_prompt_without_schema_requires_bare_json() -> None:
+    """EV-166/EV-182 fallback: a CLI without `--json-schema` must be asked for bare JSON."""
+    state = lc._initial_state(
+        "abcd1234-issue-1", "issue-loop", "abcd1234", "/tmp/wt", "main", "implementation"
+    )
+
+    prompt = driver._reviewer_prompt(state, "code-reviewer", "abc123", structured_output=False)
+
+    assert "no code fences" in prompt.lower()
+    assert "Reply with JSON only" in prompt
 
 
 def test_run_one_llm_reviewer_threads_pre_maker_head_into_the_diff_instruction(

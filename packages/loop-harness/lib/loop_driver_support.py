@@ -733,6 +733,20 @@ def parse_claude_p_json(stdout: str) -> dict[str, Any]:
     return data
 
 
+def is_unknown_option_error(completed: subprocess.CompletedProcess[str], option: str) -> bool:
+    """Return True when `completed` failed because the CLI does not recognize `option`.
+
+    Detects an older Claude Code CLI's argument-parsing rejection of a flag it does not know
+    (e.g. `--json-schema` on a pre-EV-182 CLI): such a rejection happens before any API call,
+    exits non-zero, and prints `error: unknown option '<flag>'` on stderr. Only True when both
+    the exit code is non-zero AND that exact substring appears in stderr -- a non-zero exit for
+    any other reason (API error, network failure, etc.) must not be mistaken for this case.
+    """
+    if completed.returncode == 0:
+        return False
+    return f"unknown option '{option}'" in (completed.stderr or "")
+
+
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
 
 # EV-182: enforce the Checker LLM response shape through Claude Code's `--json-schema`.
