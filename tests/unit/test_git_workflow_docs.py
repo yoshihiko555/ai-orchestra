@@ -398,9 +398,27 @@ def test_issue_fix_plan_approval_gate_precedes_phase2() -> None:
     assert approval_idx < phase2_idx
 
 
-def test_issue_fix_task_prompt_respects_cli_tools_routing() -> None:
-    """EV-18 (should): 実装委譲の Task プロンプトに cli-tools.yaml ルーティング尊重指示を含める。"""
-    assert "IMPORTANT: cli-tools.yaml の設定に従い実装すること。" in ISSUE_FIX
+IMPLEMENTATION_TASK_OPENER = 'Task(subagent_type="{agent}", prompt="""'
+ROUTING_TOKENS = (
+    "codex",
+    "antigravity",
+    "agy",
+    "claude-direct",
+    "sandbox",
+    "workspace-write",
+    "read-only",
+    "cli-tools",
+    "[resolved routing]",
+)
+
+
+def test_issue_fix_task_prompt_leaves_routing_to_hook() -> None:
+    """EV-18 (should): 実装委譲の Task プロンプトは実行ツールや sandbox を書かず、hook の注入に委ねる。"""
+    start = ISSUE_FIX.index(IMPLEMENTATION_TASK_OPENER) + len(IMPLEMENTATION_TASK_OPENER)
+    prompt = ISSUE_FIX[start : ISSUE_FIX.index('""")', start)]
+    assert "タスク: {計画に基づく変更内容}" in prompt
+    leaked = [token for token in ROUTING_TOKENS if token in prompt.lower()]
+    assert leaked == []
 
 
 def test_issue_fix_new_branch_naming_rule() -> None:

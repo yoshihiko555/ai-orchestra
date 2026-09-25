@@ -94,13 +94,14 @@ Phase 7: Multi-Session Review (code-reviewer / security-reviewer)
 
 各フェーズでエージェントを呼び出す際は、`cli-tools.yaml` の `agents.{name}.tool` を参照してルーティングする。
 
-| `tool` 設定     | 呼び出し方法                                                                                                       |
-| --------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `claude-direct` | `Task(subagent_type="{agent}", prompt="...")`                                                                      |
-| `codex`         | `Task(subagent_type="{agent}", prompt="... Codex CLI (workspace-write) で実装すること ...")`                       |
-| `antigravity`   | `Task(subagent_type="general-purpose", prompt="Antigravity CLI で実行: agy -p '...' --model <antigravity.model>")` |
+| `tool` 設定               | 呼び出し方法                                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `claude-direct` / `codex` | `Task(subagent_type="{agent}", prompt="...")`                                                                      |
+| `antigravity`             | `Task(subagent_type="general-purpose", prompt="Antigravity CLI で実行: agy -p '...' --model <antigravity.model>")` |
 
-**例**: `agents.frontend-dev.tool` が `codex` なら `Task(subagent_type="frontend-dev", prompt="... Codex CLI で実装すること ...")`。named agent はドメイン固有の知識（コーディング規約、テックスタック）を保持するため、`general-purpose` ではなく直接呼び出す。
+`claude-direct` と `codex` の呼び分けは prompt に書かない。hook がサブエージェントの prompt 末尾に `[Resolved Routing]`（tool / sandbox / model）を注入し、エージェント定義がそれに従う。prompt に CLI や sandbox を書くと、`cli-tools.local.yaml` で上書きした環境で注入値と食い違う。
+
+**例**: `agents.frontend-dev.tool` が `codex` でも `claude-direct` でも `Task(subagent_type="frontend-dev", prompt="...")`。named agent はドメイン固有の知識（コーディング規約、テックスタック）を保持するため、`general-purpose` ではなく直接呼び出す。
 
 ---
 
@@ -263,7 +264,7 @@ Decisions / Notes のコンテキストは Plans.md を直接読むか、`.claud
 1. **Phase 4 で作成したタスクリストを順に処理する**
 2. **各タスクを適切な implementation agent に委譲する**（`frontend-dev`, `backend-python-dev`, `backend-go-dev`, `ai-dev`, `tester` 等）
 3. **オーケストレーター自身は Edit/Write で実装コードを書かない** — サブエージェントに全て任せる
-4. **implementation agents は `cli-tools.yaml` の `agents.{name}.tool` 設定に従い、自動的に Codex CLI 経由で実装する**
+4. **implementation agents は hook が prompt 末尾に注入する `[Resolved Routing]`（無い場合は `cli-tools.yaml` + `cli-tools.local.yaml`）に従って実行ツールを選ぶ** — prompt には CLI や sandbox を書かない（Agent Routing 参照）
 
 ### 実行パターン
 
@@ -283,9 +284,6 @@ Task(subagent_type="backend-python-dev", prompt="""
 - 設計方針: {design decisions from Phase 3}
 - 設計書: {対応する docs/ 配下の設計書パス（API-001.md 等）。存在する場合は実装前に必ず読み、逸脱が必要なら実装前に報告すること}
 
-IMPORTANT: cli-tools.yaml の設定に従い、Codex CLI (workspace-write) で実装すること。
-エラー時は claude-direct にフォールバック。
-
 実装してください。
 """)
 
@@ -297,9 +295,6 @@ Task(subagent_type="frontend-dev", prompt="""
 - プロジェクト: {feature}
 - 関連ファイル: {files}
 
-IMPORTANT: cli-tools.yaml の設定に従い、Codex CLI (workspace-write) で実装すること。
-エラー時は claude-direct にフォールバック。
-
 実装してください。
 """)
 
@@ -309,8 +304,6 @@ Task(subagent_type="tester", prompt="""
 
 コンテキスト:
 - 関連ファイル: {files}
-
-IMPORTANT: cli-tools.yaml の設定に従い実装すること。
 
 テストを作成してください。
 """)
