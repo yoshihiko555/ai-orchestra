@@ -166,9 +166,10 @@ When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:don
 生成後、以下をユーザーに **日本語で** 表示する:
 
 1. 生成されたファイルのパス
-2. Codex 起動コマンド:
+2. Codex 起動コマンド（引き継ぎファイルを新規セッションのプロンプトとして渡す。`-c` は config 上書き用で
+   ファイルは渡せない）:
    ```
-   codex -c .claude/handoffs/{timestamp}.md
+   codex "$(cat '.claude/handoffs/{timestamp}.md')"
    ```
 3. 引き継ぎ内容のサマリー（WIP タスク数、TODO タスク数）
 

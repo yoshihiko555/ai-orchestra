@@ -64,6 +64,7 @@
     "config/loop-harness/loops/issue-loop.yaml",
     "config/meta-harness/meta-harness.yaml",
     "config/quality-gates/evaluation-set-mapping.yaml",
+    "config/quality-gates/quality-gates.json",
     "config/skill-evolution/skill-evolution.yaml"
   ],
   "last_sync": "2026-09-25T11:31:11.550438+00:00",
@@ -106,7 +107,7 @@
     },
     "audit": {
       "config/audit/delegation-policy.json": "b092b5385d3ec51252c5781cdbafa2d2e55d075d9cb74d25e89b71e95279d231",
-      "config/audit/audit-flags.json": "dc32d6157cd9cfeacf0d92634e5e7866ab32dea12dee61135c5ca234de25c4ab"
+      "config/audit/audit-flags.json": "b39f2cba905759c88c29db260ea940ee71a9202a4b4794b56d6f43f9edbbc399"
     },
     "codd": {
       "config/codd/codd.yaml": "e4b986436334828293a1920903c57f86c8964accda55a5f6b491e4078d12f49f"
@@ -137,7 +138,8 @@
       "config/meta-harness/meta-harness.yaml": "21f506bfcaefd7c964d87ea0f036826f9974dc420d399d95668bac5825793bf5"
     },
     "quality-gates": {
-      "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95"
+      "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95",
+      "config/quality-gates/quality-gates.json": "6efbb1c0c84106d598a8019808f50b2af99189b0617b7aaa49801d3e5c8a6a43"
     }
   },
   "codex_file_hashes": {

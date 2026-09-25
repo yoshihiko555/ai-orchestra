@@ -3,7 +3,7 @@
 **対象スキル群**: `review`（正本: `facets/instructions/review.md`, `facets/output-contracts/tiered-review.md`）
 **単位**: スキルフロー（`/review` は Phase 0-7（Phase 3 と Phase 4 の間に指摘検証の Phase 3.5 を挟む） — コンテキスト収集 → スマート選定 → 並列レビュー → 指摘検証 → 集約 → Pass/Fail 判定 → Auto-Fix → 再レビュー — の多段フローであり、複数エージェントが成果物（diff・指摘・修正）を介して連続する。スキル名は単一だが「フロー単位で作る」ポリシーに沿うフローとして扱う）
 **作成日**: 2026-07-23
-**最終レビュー日**: 2026-07-26（Phase 3.5 指摘検証・`finding-verifier` エージェント追加を反映）
+**最終レビュー日**: 2026-09-26（ADR-20260926-056: design-flow の旧 EV-20（設計書との突合）を EV-24 として移管。前回: 2026-07-26（Phase 3.5 指摘検証・`finding-verifier` エージェント追加を反映））
 **情報源**: `facets/instructions/review.md` / `facets/output-contracts/tiered-review.md` / `packages/agent-routing/agents/adversarial-reviewer.md` / `packages/agent-routing/agents/finding-verifier.md` / `facets/instructions/skill-review-policy.md` / `cli-tools.yaml` の `review` セクション
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
@@ -76,6 +76,10 @@
 - [ ] EV-15（正常 / must）: `/review all` は全 7 レビュアー、`/review impl` は code + security + performance + adversarial の 4 名、`/review design` は spec + architecture の 2 名を起動する — 根拠: `facets/instructions/review.md` Execution 節 / 検証: PR レビュー
 - [ ] EV-16（正常 / must）: `/review adversarial` を含む Individual Review は指定レビュアーのみを起動し、Phase 5-7 のループを適用する — 根拠: 同 Individual Review 節 / 検証: 実行観察
 - [ ] EV-17（境界 / should）: diff サイズ ≤100 行かつリスク override（security / spec 選定）なしの場合のみ sonnet ダウングレードを適用する — 根拠: 同 Phase 2 / 検証: 実行観察
+
+### 設計書との突合（design-flow の旧 EV-20 から移管）
+
+- [ ] EV-24（正常 / must）: 設計書（`docs/requirements/` `docs/architecture/` `docs/screens/` `docs/api/` `docs/database/` のいずれか）が存在するプロジェクトで `.md` 以外の変更を含む diff をレビューするとき、Phase 1 のスマート選定は `spec-reviewer` を専門枠に必ず加え（シグナル検出に依存しない）、Phase 0 は変更ファイルに関係する設計書を事前収集コンテキストへ含める。`spec-reviewer` は実装 diff を設計書と突合し、承認されていない逸脱を指摘する。設計書が無いプロジェクトでは従来どおり仕様書・API ドキュメントの整合のみを見る — 根拠: ADR-20260926-056 §決定 4（`/startproject` Phase 7 の突合を `/review` へ移す。旧 design-flow EV-20 の「設計書が存在する場合は突合する」保証を維持）/ 検証: 実行観察 / 実装: `facets/instructions/review.md` Phase 0・Phase 1 の改修は ADR-056 §決定 5 の 5（スキル改修）で行う（評価セット先行）
 
 ## 4. 検証方法
 

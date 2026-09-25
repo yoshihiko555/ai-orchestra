@@ -50,10 +50,10 @@ def _make_evaluation_doc(project_dir: Path, pkg: str) -> None:
 
 
 def _write_flags(project_dir: Path, enabled: bool = True) -> None:
-    config_dir = project_dir / ".claude" / "config" / "audit"
+    config_dir = project_dir / ".claude" / "config" / "quality-gates"
     config_dir.mkdir(parents=True, exist_ok=True)
     config = {"features": {"evaluation_set_check": {"enabled": enabled}}}
-    (config_dir / "audit-flags.json").write_text(json.dumps(config), encoding="utf-8")
+    (config_dir / "quality-gates.json").write_text(json.dumps(config), encoding="utf-8")
 
 
 def _write_mapping_config(project_dir: Path, mappings: list[dict]) -> None:
@@ -168,17 +168,17 @@ def test_main_normalizes_subdirectory_before_disabled_config_lookup(
     test_file = subdirectory / "tests" / "test_foo.py"
     config_calls = []
 
-    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
-        config_calls.append((package_name, filename, project_dir))
+    def _load_config(project_dir: str) -> dict:
+        config_calls.append(project_dir)
         return {"features": {"evaluation_set_check": {"enabled": False}}}
 
-    monkeypatch.setattr(evaluation_set_checker, "load_package_config", _load_config)
+    monkeypatch.setattr(evaluation_set_checker, "load_quality_gates_config", _load_config)
     payload = _build_payload(str(test_file), subdirectory)
 
     output = _run_main(monkeypatch, capsys, payload)
 
     assert output == ""
-    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert config_calls == [str(repo_root)]
     state_file = repo_root / ".claude" / "state" / evaluation_set_checker.STATE_FILENAME
     assert not state_file.exists()
 
@@ -533,18 +533,18 @@ def test_evaluation_set_check_enabled_respects_false() -> None:
 
 # ---------------------------------------------------------------------------
 # Ordering / config-read-once regressions (code review: cheap checks before
-# expensive config read; audit-flags.json read only once per invocation)
+# expensive config read; quality-gates.json read only once per invocation)
 # ---------------------------------------------------------------------------
 
 
 def test_config_not_read_for_non_test_files(monkeypatch, capsys, tmp_path) -> None:
     """Non-test files short-circuit via is_target_test_file() before any
-    audit-flags.json read happens (cheap check first)."""
+    quality-gates.json read happens (cheap check first)."""
 
     def _fail_if_called(*args, **kwargs):
-        raise AssertionError("load_package_config must not be called for non-test files")
+        raise AssertionError("load_quality_gates_config must not be called for non-test files")
 
-    monkeypatch.setattr(evaluation_set_checker, "load_package_config", _fail_if_called)
+    monkeypatch.setattr(evaluation_set_checker, "load_quality_gates_config", _fail_if_called)
     payload = _build_payload("packages/foo/hooks/bar.py", tmp_path)
 
     output = _run_main(monkeypatch, capsys, payload)
@@ -553,7 +553,7 @@ def test_config_not_read_for_non_test_files(monkeypatch, capsys, tmp_path) -> No
 
 
 def test_config_read_only_once_per_invocation(monkeypatch, capsys, tmp_path) -> None:
-    """audit-flags.json is loaded exactly once per main() invocation, shared
+    """quality-gates.json is loaded exactly once per main() invocation, shared
     between evaluation_set_check_enabled() and resolve_state_path(). The
     evaluation-set-mapping.yaml lookup (Issue #237 / PR #243) reads base/local
     layers directly via _read_config_file (not load_package_config, since it
@@ -562,22 +562,25 @@ def test_config_read_only_once_per_invocation(monkeypatch, capsys, tmp_path) -> 
     _make_package_dir(tmp_path, "quality-gates")
     _make_evaluation_doc(tmp_path, "quality-gates")
 
-    call_counts: dict[str, int] = {}
-    original_load_package_config = evaluation_set_checker.load_package_config
+    config_calls = 0
+    original_load_quality_gates_config = evaluation_set_checker.load_quality_gates_config
 
-    def _counting_load_package_config(package_name, filename, project_dir):
-        call_counts[filename] = call_counts.get(filename, 0) + 1
-        return original_load_package_config(package_name, filename, project_dir)
+    def _counting_load_quality_gates_config(project_dir: str) -> dict:
+        nonlocal config_calls
+        config_calls += 1
+        return original_load_quality_gates_config(project_dir)
 
     monkeypatch.setattr(
-        evaluation_set_checker, "load_package_config", _counting_load_package_config
+        evaluation_set_checker,
+        "load_quality_gates_config",
+        _counting_load_quality_gates_config,
     )
     payload = _build_payload("packages/quality-gates/tests/test_foo.py", tmp_path)
 
     output = _run_main(monkeypatch, capsys, payload)
 
     assert output != ""
-    assert call_counts == {"audit-flags.json": 1}
+    assert config_calls == 1
 
 
 def test_mapping_config_files_each_read_once_per_invocation(monkeypatch, capsys, tmp_path) -> None:

@@ -108,10 +108,10 @@ orchex run audit kpi-report -- --days 7
 orchex run audit kpi-report -- --output report.txt
 ```
 
-| オプション        | 説明                            |
-| ----------------- | ------------------------------- |
+| オプション        | 説明                               |
+| ----------------- | ---------------------------------- |
 | `--days <N>`      | 集計対象の日数（未指定時は全期間） |
-| `--output <PATH>` | レポートの保存先ファイルパス    |
+| `--output <PATH>` | レポートの保存先ファイルパス       |
 
 ### analyze-cli-usage — CLI 利用パターン分析
 
@@ -125,8 +125,8 @@ orchex run audit analyze-cli-usage
 orchex run audit analyze-cli-usage -- --days 30
 ```
 
-| オプション   | 説明                             |
-| ------------ | -------------------------------- |
+| オプション   | 説明                               |
+| ------------ | ---------------------------------- |
 | `--days <N>` | 集計対象の日数（未指定時は全期間） |
 
 ## フック一覧
@@ -152,31 +152,16 @@ orchex run audit analyze-cli-usage -- --days 30
 
 ### audit-flags.json — 機能フラグ
 
-| フラグ                                     | デフォルト | 説明                                  |
-| ------------------------------------------ | ---------- | ------------------------------------- |
-| `route_audit.enabled`                      | `true`     | ルーティング記録の有効/無効           |
-| `route_audit.max_excerpt_chars`            | `160`      | プロンプト抜粋の最大文字数            |
-| `quality_gate.enabled`                     | `true`     | 品質ゲート記録 / 判定の有効・無効     |
-| `quality_gate.block_on_failed_test`        | `true`     | `quality-gates` が失敗テストを block するか（opt-out 方式。`false` を明示設定した場合のみ解除） |
-| `quality_gate.test_file_threshold`         | `3`        | テスト実行を促す変更ファイル数の閾値  |
-| `quality_gate.test_line_threshold`         | `100`      | テスト実行を促す変更行数の閾値        |
-| `kpi_scorecard.enabled`                    | `true`     | KPI スコアカード集計の有効/無効       |
-| `kpi_scorecard.default_period_days`        | `7`        | KPI 集計のデフォルト期間（日）        |
-| `context_optimization.enabled`             | `true`     | コンテキスト最適化チェックの有効/無効 |
-| `context_optimization.read_line_threshold` | `200`      | 警告を出すファイル読み込み行数の閾値  |
+| フラグ                              | デフォルト | 説明                            |
+| ----------------------------------- | ---------- | ------------------------------- |
+| `route_audit.enabled`               | `true`     | ルーティング記録の有効/無効     |
+| `route_audit.max_excerpt_chars`     | `160`      | プロンプト抜粋の最大文字数      |
+| `kpi_scorecard.enabled`             | `true`     | KPI スコアカード集計の有効/無効 |
+| `kpi_scorecard.default_period_days` | `7`        | KPI 集計のデフォルト期間（日）  |
 
-`features.quality_gate` セクションは `audit` と `quality-gates` の共有設定です。プロジェクト固有の上書きは `.claude/config/audit/audit-flags.local.json` で行います（`config-loading` ルール準拠）。
+`quality_gate` / `context_optimization` / `evaluation_set_check` の機能フラグと `paths.state_dir` は、Issue #153 で `quality-gates` パッケージが所有する `.claude/config/quality-gates/quality-gates.json` へ移りました（`audit` のコードはこれらを読みません）。プロジェクト固有の上書きは `.claude/config/quality-gates/quality-gates.local.json` で行います。既存プロジェクトの `.claude/config/audit/audit-flags.local.json` に残るこれらのキーは、0.4.x の間は読み替えてそのまま動作します（詳細・優先順位は `packages/quality-gates/README.md` を参照）。
 
-```json
-// .claude/config/audit/audit-flags.local.json（block を解除する opt-out 例）
-{
-  "features": {
-    "quality_gate": {
-      "block_on_failed_test": false
-    }
-  }
-}
-```
+opt-out 例（`block_on_failed_test` を解除する場合）は `packages/quality-gates/README.md`「設定キー」節を参照してください。
 
 ### delegation-policy.json — ルーティングポリシー
 

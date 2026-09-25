@@ -41,7 +41,6 @@ from hook_common import (  # noqa: E402
     _read_config_file,
     find_package_config,
     is_test_path,
-    load_package_config,
     read_hook_input,
     read_json_safe,
     safe_hook_execution,
@@ -53,7 +52,7 @@ from log_common import find_project_root  # noqa: E402
 # the quality-gates package (Issue #154 review: a local duplicate with a
 # diverging contract used to live here, which undermined the goal of
 # unifying the state-file convention).
-from quality_gate_config import resolve_state_path  # noqa: E402
+from quality_gate_config import load_quality_gates_config, resolve_state_path  # noqa: E402
 
 STATE_FILENAME = "evaluation-set-checker.json"
 
@@ -289,8 +288,8 @@ def identify_package(relative_path: str, project_dir: str) -> str | None:
 def evaluation_set_check_enabled(config: dict) -> bool:
     """Return whether the evaluation_set_check feature flag is enabled.
 
-    Takes an already-loaded audit-flags.json config dict (see
-    load_package_config) so callers that need both the enabled flag and
+    Takes an already-loaded quality-gates.json config dict (see
+    load_quality_gates_config) so callers that need both the enabled flag and
     resolve_state_path()'s paths.state_dir don't read the config file twice.
     """
     feature = config.get("features", {}).get("evaluation_set_check", {})
@@ -381,15 +380,15 @@ def main() -> None:
     session_id = str(data.get("session_id") or "")
 
     # Cheap, filesystem/config-free checks first (path pattern matching only)
-    # before the more expensive audit-flags.json config read below (mirrors
+    # before the more expensive quality-gates.json config read below (mirrors
     # test-gate-checker.py's is_code_file()-before-config-read convention).
     relative_path = to_relative_path(file_path, project_dir)
     if not is_target_test_file(relative_path):
         sys.exit(0)
 
-    # Read audit-flags.json once and reuse it for both the feature flag check
+    # Read quality-gates.json once and reuse it for both the feature flag check
     # and resolve_state_path()'s paths.state_dir lookup.
-    config = load_package_config("audit", "audit-flags.json", project_dir)
+    config = load_quality_gates_config(project_dir)
     if not evaluation_set_check_enabled(config):
         sys.exit(0)
 

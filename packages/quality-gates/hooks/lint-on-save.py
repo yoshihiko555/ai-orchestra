@@ -30,9 +30,11 @@ for _candidate in [
     if _candidate and os.path.isdir(_candidate) and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 
-from hook_common import load_package_config  # noqa: E402
 from log_common import find_project_root  # noqa: E402
-from quality_gate_config import resolve_quality_gate_enabled  # noqa: E402
+from quality_gate_config import (  # noqa: E402
+    load_quality_gates_config,
+    resolve_quality_gate_enabled,
+)
 from secret_masking import mask_secrets  # noqa: E402
 
 PYTHON_EXTENSIONS = {".py"}
@@ -276,7 +278,7 @@ def main() -> None:
         # （quality_gate_config.resolve_state_path と同じ正規化方式）。
         raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
         project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
-        config = load_package_config("audit", "audit-flags.json", project_dir)
+        config = load_quality_gates_config(project_dir)
         quality_gate = config.get("features", {}).get("quality_gate", {})
         if not resolve_quality_gate_enabled(quality_gate):
             sys.exit(0)

@@ -1,31 +1,8 @@
 {
-  "version": 2,
+  "version": 3,
   "features": {
-    "route_audit": {
-      "enabled": true,
-      "max_excerpt_chars": 160
-    },
-    "quality_gate": {
-      "enabled": true,
-      "block_on_failed_test": true,
-      "test_file_threshold": 3,
-      "test_line_threshold": 100
-    },
-    "kpi_scorecard": {
-      "enabled": true,
-      "default_period_days": 7
-    },
-    "context_optimization": {
-      "enabled": true,
-      "read_line_threshold": 200,
-      "max_file_size_bytes": 5242880
-    },
-    "evaluation_set_check": {
-      "enabled": true
-    }
+    "route_audit": { "enabled": true, "max_excerpt_chars": 160 },
+    "kpi_scorecard": { "enabled": true, "default_period_days": 7 }
   },
-  "paths": {
-    "state_dir": ".claude/state",
-    "logs_dir": ".claude/logs/audit"
-  }
+  "paths": { "logs_dir": ".claude/logs/audit" }
 }

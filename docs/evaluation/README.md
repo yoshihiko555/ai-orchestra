@@ -69,7 +69,7 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 
 | フロー | ファイル | 概要 |
 | ------ | -------- | ---- |
-| design-flow | `skills/design-flow.md` | 設計 → タスク分解 → 実装の一連のフロー（design / preflight / startproject） |
+| design-flow | `skills/design-flow.md` | 設計 → 発注書 → 実行エンジンのフロー（design / order（仮名）。preflight / startproject は ADR-056 で廃止） |
 | loop-issue | `skills/loop-issue.md` | GitHub Issue 起点で loop-harness の LP-1 を駆動するフロー |
 | review-respond | `skills/review-respond.md` | PR の bot レビュー指摘を検出 → 修正 → 返信/resolve するフロー |
 | review | `skills/review.md` | `/review` のスマート選定 → 並列レビュー → 集約 → auto-fix ループ（Phase 0-7） |

@@ -167,16 +167,21 @@ Confirm the test PASSES and report the result.
 
 After Green, assess whether refactoring is needed. If the code is already clean, skip to the next test.
 
-If refactoring is needed, the approach depends on `agents.code-reviewer.tool`:
-
-- **claude-direct**: Review and refactor inline (no subagent needed)
-- **codex**: Delegate refactoring to a subagent via Codex
+If refactoring is needed, delegate it to the implementation agent (the same `$IMPL_AGENT` as
+Step 2: it has Edit/Write and a `workspace-write` sandbox, unlike `code-reviewer`, which is
+read-only). The hook's `[Resolved Routing]` decides the tool; do not write CLI names in the prompt:
 
 ```
-# Review what to refactor
-# Then apply changes while ensuring tests still pass:
-$TEST_CMD {test file}
+Task(subagent_type="$IMPL_AGENT", prompt="""
+Refactor {file} without changing behavior: remove duplication, improve naming and structure
+introduced while making the tests pass. Do not add features.
+Tests: $TEST_CMD {test file} must stay green. Report what you changed and the test result.
+""")
 ```
+
+If you want an independent opinion on what to refactor first, ask `code-reviewer` (read-only)
+and pass its list to `$IMPL_AGENT`. Do not refactor inline in the orchestrator. After the
+subagent returns, re-run `$TEST_CMD {test file}` yourself to confirm the tests still pass.
 
 Refactoring targets:
 

@@ -45,7 +45,7 @@ def _setup_context_packages(orchestra_dir: Path, extra_packages: dict | None = N
 
 import pytest
 
-from tests.module_loader import load_module
+from tests.module_loader import REPO_ROOT, load_module
 
 manager_mod = load_module("orchestra_manager", "scripts/orchestra-manager.py")
 OrchestraManager = manager_mod.OrchestraManager
@@ -517,3 +517,285 @@ class TestInstallContextInitFiles:
         manager._install_context_init_files(pkg, project_dir, dry_run=False)
 
         assert list(project_dir.iterdir()) == []
+
+
+class TestSeverityDefinitionsExpansion:
+    MARKER = "<!-- severity-definitions: output-contracts/tiered-review -->"
+    SEVERITY_ROWS = (
+        ("Critical", "critical criteria", "critical response"),
+        ("High", "high criteria", "high response"),
+        ("Medium", "medium criteria", "medium response"),
+        ("Low", "low criteria", "low response"),
+    )
+    EXPECTED_LINES = (
+        "  - Critical: critical criteria",
+        "  - High: high criteria",
+        "  - Medium: medium criteria",
+        "  - Low: low criteria",
+    )
+
+    def _setup_marker_source(self, orchestra_dir: Path, marker: str | None = None) -> None:
+        """重要度定義マーカーを含む context ソースを作成する。"""
+        _setup_context_sources(orchestra_dir)
+        marker_line = marker or self.MARKER
+        (orchestra_dir / "templates" / "context" / "codex.md").write_text(
+            f"# AGENTS\n\n{marker_line}\n",
+            encoding="utf-8",
+        )
+
+    def _write_facet(self, orchestra_dir: Path, padded: bool = False) -> Path:
+        """前後に別セクションを持つ重要度定義 facet を作成する。"""
+        facet_path = orchestra_dir / "facets" / "output-contracts" / "tiered-review.md"
+        facet_path.parent.mkdir(parents=True, exist_ok=True)
+        if padded:
+            table_lines = [
+                "| 重要度         | 基準              | 対応              |",
+                "| -------------- | ----------------- | ----------------- |",
+                *(
+                    f"| **{severity}**{' ' * (10 - len(severity))} | "
+                    f"{criteria:<17} | {response:<17} |"
+                    for severity, criteria, response in self.SEVERITY_ROWS
+                ),
+            ]
+        else:
+            table_lines = [
+                "| 重要度 | 基準 | 対応 |",
+                "|---|---|---|",
+                *(
+                    f"| **{severity}** | {criteria} | {response} |"
+                    for severity, criteria, response in self.SEVERITY_ROWS
+                ),
+            ]
+        facet_path.write_text(
+            "\n".join(
+                [
+                    "# Contract",
+                    "",
+                    "## Before",
+                    "",
+                    "before body",
+                    "",
+                    "## 重要度の定義",
+                    "",
+                    *table_lines,
+                    "",
+                    "## After",
+                    "",
+                    "after body",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return facet_path
+
+    @staticmethod
+    def _built_agents_path(orchestra_dir: Path) -> Path:
+        """生成された Codex 向け AGENTS.md のパスを返す。"""
+        return orchestra_dir / "templates" / "codex" / "AGENTS.md"
+
+    @staticmethod
+    def _repo_severity_lines() -> list[str]:
+        """実リポジトリの重要度表を実装から独立した単純な方法で読む。"""
+        facet_path = REPO_ROOT / "facets" / "output-contracts" / "tiered-review.md"
+        content = facet_path.read_text(encoding="utf-8")
+        section = content.split("## 重要度の定義\n", maxsplit=1)[1]
+        section = section.split("\n## ", maxsplit=1)[0]
+        table_rows = [line for line in section.splitlines() if line.startswith("|")]
+        severity_lines: list[str] = []
+        for row in table_rows[2:]:
+            cells = [cell.strip() for cell in row.strip("|").split("|")]
+            severity_lines.append(f"  - {cells[0].strip('*')}: {cells[1]}")
+        assert len(severity_lines) == 4
+        return severity_lines
+
+    @staticmethod
+    def _extract_severity_block(text: str) -> list[str]:
+        """`- 各指摘に重要度ラベルを付ける:` 直後に続く `  - ` 行ブロックを抽出する。"""
+        lines = text.splitlines()
+        label_prefix = "- 各指摘に重要度ラベルを付ける:"
+        for index, line in enumerate(lines):
+            if not line.startswith(label_prefix):
+                continue
+            block: list[str] = []
+            for candidate in lines[index + 1 :]:
+                if not candidate.startswith("  - "):
+                    break
+                block.append(candidate)
+            return block
+        pytest.fail(f"severity label line not found: {label_prefix!r}")
+
+    def test_build_expands_severity_definitions_marker(self, tmp_path: Path) -> None:
+        self._setup_marker_source(tmp_path)
+        self._write_facet(tmp_path)
+
+        OrchestraManager(tmp_path).context_build()
+
+        generated = self._built_agents_path(tmp_path).read_text(encoding="utf-8")
+        for expected_line in self.EXPECTED_LINES:
+            assert expected_line in generated
+        assert "critical response" not in generated
+        assert self.MARKER not in generated
+        assert (
+            "<!-- Sources: templates/context/codex.md, "
+            "templates/context/antigravity.md, "
+            "facets/output-contracts/tiered-review.md, "
+            "templates/context/shared.md -->"
+        ) in generated
+
+    def test_sync_expands_severity_definitions_marker(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        self._setup_marker_source(orchestra_dir)
+        self._write_facet(orchestra_dir)
+        _setup_orchestra_json(project_dir)
+
+        OrchestraManager(orchestra_dir).context_sync(str(project_dir))
+
+        agents = (project_dir / "AGENTS.md").read_text(encoding="utf-8")
+        for expected_line in self.EXPECTED_LINES:
+            assert expected_line in agents
+        assert self.MARKER not in agents
+
+    def test_facet_change_is_detected_and_rebuilt(self, tmp_path: Path) -> None:
+        self._setup_marker_source(tmp_path)
+        facet_path = self._write_facet(tmp_path)
+        manager = OrchestraManager(tmp_path)
+        manager.context_build()
+
+        facet_content = facet_path.read_text(encoding="utf-8")
+        facet_path.write_text(
+            facet_content.replace("critical criteria", "updated critical criteria"),
+            encoding="utf-8",
+        )
+
+        assert manager.context_check() is False
+        manager.context_build()
+        generated = self._built_agents_path(tmp_path).read_text(encoding="utf-8")
+        assert "  - Critical: updated critical criteria" in generated
+
+    def test_missing_facet_exits(self, tmp_path: Path) -> None:
+        self._setup_marker_source(tmp_path)
+
+        with pytest.raises(SystemExit):
+            OrchestraManager(tmp_path).context_build()
+
+    def test_unreadable_facet_exits(self, tmp_path: Path) -> None:
+        self._setup_marker_source(tmp_path)
+        facet_path = tmp_path / "facets" / "output-contracts" / "tiered-review.md"
+        facet_path.mkdir(parents=True)
+
+        with pytest.raises(SystemExit):
+            OrchestraManager(tmp_path).context_build()
+
+    def test_missing_severity_section_exits(self, tmp_path: Path) -> None:
+        self._setup_marker_source(tmp_path)
+        facet_path = tmp_path / "facets" / "output-contracts" / "tiered-review.md"
+        facet_path.parent.mkdir(parents=True)
+        facet_path.write_text("# Contract\n\n## Different section\n", encoding="utf-8")
+
+        with pytest.raises(SystemExit):
+            OrchestraManager(tmp_path).context_build()
+
+    def test_empty_severity_table_exits(self, tmp_path: Path) -> None:
+        self._setup_marker_source(tmp_path)
+        facet_path = tmp_path / "facets" / "output-contracts" / "tiered-review.md"
+        facet_path.parent.mkdir(parents=True)
+        facet_path.write_text(
+            "## 重要度の定義\n\n| 重要度 | 基準 | 対応 |\n|---|---|---|\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(SystemExit):
+            OrchestraManager(tmp_path).context_build()
+
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            "<!-- severity-definitions: output-contracts/../x -->",
+            "<!-- severity-definitions : output-contracts/tiered-review -->",
+            "<!--severity-definitions:output-contracts/tiered-review-->",
+        ],
+    )
+    def test_malformed_marker_exits(self, tmp_path: Path, malformed: str) -> None:
+        self._setup_marker_source(tmp_path, marker=malformed)
+
+        with pytest.raises(SystemExit):
+            OrchestraManager(tmp_path).context_build()
+
+    def test_escaped_pipe_in_basis_cell_is_preserved(self, tmp_path: Path) -> None:
+        """GFM のエスケープ済みパイプ `\\|` を含むセルが表として正しく分割される。"""
+        self._setup_marker_source(tmp_path)
+        facet_path = tmp_path / "facets" / "output-contracts" / "tiered-review.md"
+        facet_path.parent.mkdir(parents=True, exist_ok=True)
+        facet_path.write_text(
+            "\n".join(
+                [
+                    "## 重要度の定義",
+                    "",
+                    "| 重要度 | 基準 | 対応 |",
+                    "|---|---|---|",
+                    "| **Critical** | critical criteria | critical response |",
+                    r"| **High** | A \| B | high response |",
+                    "| **Medium** | medium criteria | medium response |",
+                    "| **Low** | low criteria | low response |",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        OrchestraManager(tmp_path).context_build()
+
+        generated = self._built_agents_path(tmp_path).read_text(encoding="utf-8")
+        assert "  - High: A | B" in generated
+        assert "A \\" not in generated
+
+    def test_table_body_row_with_too_few_columns_exits(self, tmp_path: Path) -> None:
+        self._setup_marker_source(tmp_path)
+        facet_path = tmp_path / "facets" / "output-contracts" / "tiered-review.md"
+        facet_path.parent.mkdir(parents=True)
+        facet_path.write_text(
+            "## 重要度の定義\n\n| 重要度 | 基準 |\n|---|---|\n| **Critical** |\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(SystemExit):
+            OrchestraManager(tmp_path).context_build()
+
+    def test_prettier_aligned_table_matches_plain_table(self, tmp_path: Path) -> None:
+        self._setup_marker_source(tmp_path)
+        self._write_facet(tmp_path)
+        manager = OrchestraManager(tmp_path)
+        manager.context_build()
+        plain_output = self._built_agents_path(tmp_path).read_text(encoding="utf-8")
+
+        self._write_facet(tmp_path, padded=True)
+        manager.context_build()
+        padded_output = self._built_agents_path(tmp_path).read_text(encoding="utf-8")
+
+        assert padded_output == plain_output
+        for expected_line in self.EXPECTED_LINES:
+            assert expected_line in padded_output
+
+    def test_generated_codex_template_matches_repo_severity_table(self) -> None:
+        expected_lines = self._repo_severity_lines()
+        generated = (REPO_ROOT / "templates" / "codex" / "AGENTS.md").read_text(encoding="utf-8")
+
+        assert self._extract_severity_block(generated) == expected_lines
+
+    def test_root_agents_matches_repo_severity_table(self) -> None:
+        """手動管理のルート AGENTS.md も facet の重要度定義と同期させる。"""
+        expected_lines = self._repo_severity_lines()
+        root_agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+        assert self._extract_severity_block(root_agents) == expected_lines
+
+    def test_codex_context_uses_marker_instead_of_handwritten_rows(self) -> None:
+        context_source = (REPO_ROOT / "templates" / "context" / "codex.md").read_text(
+            encoding="utf-8"
+        )
+
+        assert self.MARKER in context_source
+        assert "  - Critical:" not in context_source
