@@ -52,6 +52,91 @@ ORDER_SECTION_HEADINGS = {
     "#### Open Questions",
 }
 
+_FENCE_OPEN_PATTERN = re.compile(r"^(`{3,}|~{3,})")
+_FENCE_CLOSE_PATTERN = re.compile(r"^(`{3,}|~{3,})\s*$")
+_HTML_COMMENT_START = "<!--"
+_HTML_COMMENT_END = "-->"
+_HTML_COMMENT_ONLY_PATTERN = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
+
+
+def structural_exclusions(lines: list[str]) -> set[int]:
+    """Plans.md の構造解析（見出し / cc: マーカー行判定）から除外すべき行番号を返す。
+
+    以下の 2 つの関心事を一箇所にまとめ、ファイル内の全パーサが同じ判定に従うようにする:
+    - 先頭の YAML frontmatter（先頭行が '---' で始まり、次に現れる単独 '---' 行まで）。
+    - フェンス付きコードブロック。フェンスは ` または ~ を3文字以上並べた行で開始し、
+      「同じ文字」かつ「開始時の文字数以上の文字数」を持つ単独行でのみ閉じる
+      （CommonMark に準拠したセマンティクス）。これにより、四連バッククォートの中に
+      三連バッククォートが入れ子で登場しても、内側のフェンスで外側が誤って閉じない。
+    """
+    excluded: set[int] = set()
+
+    start = 0
+    if lines and lines[0].strip() == "---":
+        closing = None
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                closing = i
+                break
+        if closing is not None:
+            excluded.update(range(0, closing + 1))
+            start = closing + 1
+
+    fence_char: str | None = None
+    fence_len = 0
+    for i in range(start, len(lines)):
+        stripped = lines[i].strip()
+
+        if fence_char is not None:
+            excluded.add(i)
+            close_match = _FENCE_CLOSE_PATTERN.match(stripped)
+            if (
+                close_match
+                and stripped[:1] == fence_char
+                and len(close_match.group(1)) >= fence_len
+            ):
+                fence_char = None
+                fence_len = 0
+            continue
+
+        open_match = _FENCE_OPEN_PATTERN.match(stripped)
+        if open_match:
+            excluded.add(i)
+            fence_char = stripped[0]
+            fence_len = len(open_match.group(1))
+
+    return excluded
+
+
+def html_comment_line_indices(lines: list[str]) -> set[int]:
+    """HTML コメント（<!-- ... -->）だけで構成される行の番号を返す（複数行スパン対応）。
+
+    行が（strip 後）'<!--' で始まる場合にのみコメントスパンを開始する。
+    箇条書き本文の中に現れるインラインコメント（例: '- <!-- memo -->'）は
+    `is_html_comment_only` で呼び出し側が個別に判定する。
+    """
+    excluded: set[int] = set()
+    in_comment = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if in_comment:
+            excluded.add(i)
+            if _HTML_COMMENT_END in stripped:
+                in_comment = False
+            continue
+        if not stripped.startswith(_HTML_COMMENT_START):
+            continue
+        excluded.add(i)
+        if _HTML_COMMENT_END not in stripped[len(_HTML_COMMENT_START) :]:
+            in_comment = True
+    return excluded
+
+
+def is_html_comment_only(text: str) -> bool:
+    """text（先頭の '- ' 等を除去済み）が HTML コメントのみで構成されるか判定する。"""
+    stripped = text.strip()
+    return bool(stripped) and bool(_HTML_COMMENT_ONLY_PATTERN.match(stripped))
+
 
 def resolve_markers(config: dict) -> dict[str, str]:
     """設定からマーカー定義を解決し、欠落時はデフォルトを使う。"""
@@ -94,25 +179,19 @@ DEFAULT_MARKER_PATTERN, DEFAULT_MARKER_TO_STATE = build_marker_parser(DEFAULT_MA
 
 def order_section_line_indices(lines: list[str]) -> set[int]:
     """Project 直下の order セクションに属する本文行番号を返す。"""
+    excluded = structural_exclusions(lines)
     indices: set[int] = set()
     in_project = False
     phase_started = False
     in_order_section = False
-    in_fence = False
 
     for line_index, line in enumerate(lines):
+        if line_index in excluded:
+            if in_order_section:
+                indices.add(line_index)
+            continue
+
         stripped = line.strip()
-
-        if stripped.startswith("```"):
-            in_fence = not in_fence
-            if in_order_section:
-                indices.add(line_index)
-            continue
-
-        if in_fence:
-            if in_order_section:
-                indices.add(line_index)
-            continue
 
         if stripped.startswith("## "):
             in_project = stripped.startswith("## Project:")
@@ -141,22 +220,19 @@ def order_section_line_indices(lines: list[str]) -> set[int]:
 def parse_orders(content: str) -> list[dict]:
     """Plans.md の Project ごとに Goal と Open Questions を抽出する。"""
     lines = content.splitlines()
+    excluded = structural_exclusions(lines)
+    comment_lines = html_comment_line_indices(lines)
     order_lines = order_section_line_indices(lines)
     orders: list[dict] = []
     current_entry: dict | None = None
     phase_started = False
     current_section: str | None = None
-    in_fence = False
 
     for line_index, line in enumerate(lines):
+        if line_index in excluded:
+            continue
+
         stripped = line.strip()
-
-        if stripped.startswith("```"):
-            in_fence = not in_fence
-            continue
-
-        if in_fence:
-            continue
 
         if stripped.startswith("## "):
             if stripped.startswith("## Project:"):
@@ -186,14 +262,19 @@ def parse_orders(content: str) -> list[dict]:
         if line_index not in order_lines:
             continue
 
+        if line_index in comment_lines:
+            continue
+
         if current_section == "#### Goal" and current_entry["goal"] is None and stripped:
             goal = stripped[2:].strip() if stripped.startswith("- ") else stripped
             if re.match(r"^\[[ xX]\]\s+", goal):
                 goal = goal[3:].strip()
+            if is_html_comment_only(goal):
+                continue
             if not goal.startswith("{"):
                 current_entry["goal"] = goal
-        elif current_section == "#### Open Questions" and stripped.startswith("- "):
-            question = stripped[2:].strip()
+        elif current_section == "#### Open Questions" and line.startswith("- "):
+            question = line[2:].strip()
             normalized = question.rstrip(".。").casefold()
             if not question.startswith("{") and normalized not in {"なし", "none", "n/a"}:
                 current_entry["open_questions"] += 1
@@ -284,18 +365,14 @@ def parse_tasks(
     }
 
     lines = content.splitlines()
+    excluded = structural_exclusions(lines)
     order_lines = order_section_line_indices(lines)
     in_ac_section = False
-    in_fence = False
     for line_index, line in enumerate(lines):
+        if line_index in excluded:
+            continue
+
         stripped = line.strip()
-
-        if stripped.startswith("```"):
-            in_fence = not in_fence
-            continue
-
-        if in_fence:
-            continue
 
         if stripped == AC_SECTION_HEADING:
             in_ac_section = True
@@ -433,13 +510,16 @@ def detect_completed_projects(
 ) -> list[dict]:
     """Plans.md から完了済みプロジェクトを検出する。"""
     lines = content.splitlines()
+    excluded = structural_exclusions(lines)
     completed: list[dict] = []
 
-    project_starts = [i for i, line in enumerate(lines) if line.startswith("## Project:")]
+    project_starts = [
+        i for i, line in enumerate(lines) if i not in excluded and line.startswith("## Project:")
+    ]
     for project_start in project_starts:
         project_end = len(lines) - 1
         for i in range(project_start + 1, len(lines)):
-            if lines[i].startswith("## "):
+            if i not in excluded and lines[i].startswith("## "):
                 project_end = i - 1
                 break
 
@@ -448,7 +528,7 @@ def detect_completed_projects(
 
         phase_starts: list[int] = []
         for i in range(project_start, project_end + 1):
-            if lines[i].startswith("### Phase"):
+            if i not in excluded and lines[i].startswith("### Phase"):
                 phase_starts.append(i)
 
         # フェーズが 1 つもないプロジェクトは完了扱いにしない
@@ -487,6 +567,8 @@ def detect_completed_projects(
             has_task = False
             ac_line_indices = {i for start, end in ac_ranges for i in range(start, end + 1)}
             for line_idx in range(phase_start + 1, phase_end + 1):
+                if line_idx in excluded:
+                    continue
                 stripped = lines[line_idx].strip()
                 if line_idx in ac_line_indices and classify_checkbox_line(stripped) is not None:
                     # AC セクション配下のチェックボックス行（チェック済み/未チェック共に）は
@@ -575,7 +657,11 @@ def archive_projects(
     else:
         kept_lines = list(lines)
 
-    has_projects = any(line.startswith("## Project:") for line in kept_lines)
+    kept_excluded = structural_exclusions(kept_lines)
+    has_projects = any(
+        i not in kept_excluded and line.startswith("## Project:")
+        for i, line in enumerate(kept_lines)
+    )
     moved_sections: list[str] = []
 
     if not has_projects:
@@ -583,11 +669,13 @@ def archive_projects(
         i = 0
         while i < len(kept_lines):
             line = kept_lines[i]
-            if line.startswith("## Decisions") or line.startswith("## Notes"):
+            if i not in kept_excluded and (
+                line.startswith("## Decisions") or line.startswith("## Notes")
+            ):
                 start = i
                 j = i + 1
                 while j < len(kept_lines):
-                    if kept_lines[j].startswith("## "):
+                    if j not in kept_excluded and kept_lines[j].startswith("## "):
                         break
                     j += 1
                 section_ranges.append((start, j - 1))

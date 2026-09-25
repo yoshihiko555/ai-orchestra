@@ -601,6 +601,30 @@ def test_detect_completed_projects_legacy_format_without_acceptance_criteria() -
     assert incomplete == []
 
 
+def test_detect_completed_projects_ignores_fenced_headings_and_tasks() -> None:
+    content = (
+        "## Project: Real\n\n"
+        "#### Context\n\n"
+        "```\n"
+        "## Project: Fake\n"
+        "### Phase 1: Ghost `cc:done`\n"
+        "- `cc:done` ghost task\n"
+        "```\n\n"
+        "### Phase 1: Actual `cc:WIP`\n\n"
+        "- `cc:WIP` actual task\n"
+    )
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+    assert completed == []
+
+
+def test_parse_tasks_nested_fence_requires_matching_char_and_length() -> None:
+    content = "````markdown\n```\n- `cc:WIP` fake nested task\n```\n````\n\n- `cc:WIP` real task\n"
+    tasks = load_task_state.parse_tasks(content)
+    assert tasks["WIP"] == [{"task": "real task", "reason": None}]
+
+
 def test_main_falls_back_to_default_markers_when_duplicates_exist(tmp_path, monkeypatch) -> None:
     plans_path = tmp_path / ".claude" / "Plans.md"
     plans_path.parent.mkdir(parents=True)
@@ -804,6 +828,56 @@ def test_parse_orders_ignores_none_open_question_bullets() -> None:
 
     assert orders == [{"name": "Settled", "goal": None, "open_questions": 0}]
     assert "Open Questions" not in summary
+
+
+def test_parse_orders_open_questions_counts_only_top_level_bullets() -> None:
+    content = (
+        "## Project: Test\n\n"
+        "#### Open Questions\n"
+        "- Top level question one\n"
+        "  - Nested sub-question\n"
+        "- Top level question two\n"
+    )
+    orders = load_task_state.parse_orders(content)
+    assert orders == [{"name": "Test", "goal": None, "open_questions": 2}]
+
+
+def test_parse_orders_ignores_leading_frontmatter() -> None:
+    content = (
+        "---\n"
+        "## Project: FrontmatterGhost\n"
+        "#### Goal\n"
+        "- Ghost goal\n"
+        "---\n"
+        "\n"
+        "## Project: Real\n"
+        "#### Goal\n"
+        "- Real goal\n"
+    )
+    orders = load_task_state.parse_orders(content)
+    assert orders == [{"name": "Real", "goal": "Real goal", "open_questions": 0}]
+
+
+def test_parse_orders_goal_skips_html_comment_lines() -> None:
+    content = (
+        "## Project: Single\n\n"
+        "#### Goal\n"
+        "<!-- fill this in later -->\n"
+        "- Actual goal text\n\n"
+        "## Project: Multi\n\n"
+        "#### Goal\n"
+        "<!--\n"
+        "multi\n"
+        "line\n"
+        "comment\n"
+        "-->\n"
+        "- Actual goal 2\n"
+    )
+    orders = load_task_state.parse_orders(content)
+    assert orders == [
+        {"name": "Single", "goal": "Actual goal text", "open_questions": 0},
+        {"name": "Multi", "goal": "Actual goal 2", "open_questions": 0},
+    ]
 
 
 def test_parse_orders_skips_placeholder_goal_and_open_question_bullets() -> None:
