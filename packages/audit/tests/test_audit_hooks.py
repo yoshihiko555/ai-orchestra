@@ -385,6 +385,106 @@ class TestExtractCodexPrompt:
         assert audit_cli.extract_codex_prompt(cmd) == "Investigate the actual real bug."
 
 
+class TestExtractCodexPromptLiteralPathForm:
+    """`"$(cat '<絶対パス>')"` / `"$(cat "<絶対パス>")"` 形式（書き出しと
+    `codex exec` が別々の Bash 呼び出しになるケース）の `extract_codex_prompt` テスト。
+    """
+
+    def test_single_quoted_literal_path_reads_file_content(self, tmp_path: Path) -> None:
+        """シングルクォートのリテラル絶対パスから実ファイルの内容を抽出できることを確認する。"""
+        prompt_file = tmp_path / "codex-prompt.AbC123"
+        prompt_file.write_text("Design a REST API for user management.", encoding="utf-8")
+        cmd = (
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            f"\"$(cat '{prompt_file}')\" < /dev/null 2>/dev/null"
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Design a REST API for user management."
+
+    def test_double_quoted_literal_path_reads_file_content(self, tmp_path: Path) -> None:
+        """ダブルクォートのリテラル絶対パス（`$` やバッククォートを含まない）から
+        実ファイルの内容を抽出できることを確認する。
+        """
+        prompt_file = tmp_path / "codex-prompt.XyZ789"
+        prompt_file.write_text("Refactor the auth module.", encoding="utf-8")
+        cmd = (
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            f'"$(cat "{prompt_file}")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Refactor the auth module."
+
+    def test_missing_file_returns_none_not_command_substitution_string(
+        self, tmp_path: Path
+    ) -> None:
+        """ファイルが存在しない場合、`$(cat ...)` という文字列そのものを prompt として
+        記録せず None を返すことを確認する（legacy の引用符ベース抽出への
+        フォールバックが起きないことの回帰テスト）。
+        """
+        missing_path = tmp_path / "codex-prompt.does-not-exist"
+        cmd = (
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            f"\"$(cat '{missing_path}')\" < /dev/null 2>/dev/null"
+        )
+        result = audit_cli.extract_codex_prompt(cmd)
+        assert result is None
+        assert result != f"$(cat '{missing_path}')"
+
+    def test_symlink_target_is_rejected(self, tmp_path: Path) -> None:
+        """symlink 経由のパスは None を返すことを確認する（symlink 経由での任意ファイル
+        読み取りを防ぐガードの回帰テスト）。
+        """
+        real_file = tmp_path / "real-secret.txt"
+        real_file.write_text("should not be read", encoding="utf-8")
+        symlink_path = tmp_path / "codex-prompt.symlink"
+        symlink_path.symlink_to(real_file)
+        cmd = (
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            f"\"$(cat '{symlink_path}')\" < /dev/null 2>/dev/null"
+        )
+        assert audit_cli.extract_codex_prompt(cmd) is None
+
+    def test_wrong_basename_prefix_is_rejected(self, tmp_path: Path) -> None:
+        """basename が `codex-prompt.` で始まらないファイルは None を返すことを確認する。"""
+        prompt_file = tmp_path / "not-a-prompt-file.txt"
+        prompt_file.write_text("Implement pagination.", encoding="utf-8")
+        cmd = (
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            f"\"$(cat '{prompt_file}')\" < /dev/null 2>/dev/null"
+        )
+        assert audit_cli.extract_codex_prompt(cmd) is None
+
+    def test_file_exceeding_size_limit_is_rejected(self, tmp_path: Path) -> None:
+        """サイズが上限（`CODEX_PROMPT_FILE_MAX_BYTES`）を超えるファイルは None を返すことを確認する。"""
+        prompt_file = tmp_path / "codex-prompt.too-big"
+        prompt_file.write_text("A" * (audit_cli.CODEX_PROMPT_FILE_MAX_BYTES + 1), encoding="utf-8")
+        cmd = (
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            f"\"$(cat '{prompt_file}')\" < /dev/null 2>/dev/null"
+        )
+        assert audit_cli.extract_codex_prompt(cmd) is None
+
+    def test_relative_path_is_rejected(self) -> None:
+        """絶対パスでないリテラルパスは None を返すことを確認する。"""
+        cmd = (
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            "\"$(cat 'codex-prompt.relative')\" < /dev/null 2>/dev/null"
+        )
+        assert audit_cli.extract_codex_prompt(cmd) is None
+
+    def test_variable_form_still_takes_precedence_and_still_works(self) -> None:
+        """既存の `"$VAR"` 形式（同一 Bash 呼び出し内の heredoc）が、新設したリテラル
+        パス判定の追加によって壊れていないことを確認する（回帰テスト）。
+        """
+        cmd = (
+            "PROMPT_FILE=$(mktemp)\n"
+            "cat > \"$PROMPT_FILE\" <<'PROMPT'\n"
+            "Design a REST API.\n"
+            "PROMPT\n"
+            "codex exec --model gpt-5.3-codex --sandbox read-only "
+            '"$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null'
+        )
+        assert audit_cli.extract_codex_prompt(cmd) == "Design a REST API."
+
+
 class TestCodexExecDetectionPromptFile:
     """PROMPT_FILE 形式（改行を挟んだ複数行コマンド）での `codex exec` 検出テスト。"""
 
@@ -926,6 +1026,57 @@ class TestMainCliCallPromptFile:
         prompt = captured["payload"]["prompt"]
         assert len(prompt) == audit_cli.MAX_PROMPT_CHARS + len("...[truncated]")
         assert prompt.endswith("...[truncated]")
+
+    def test_literal_path_command_records_real_prompt_and_masks_secrets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """書き出しと `codex exec` が別々の Bash 呼び出しになるリテラルパス形式
+        （`"$(cat '<絶対パス>')"`）でも、`cli_call.prompt` に実ファイルの内容
+        （機密情報はマスク済み）が記録されることを確認する（この Bash 呼び出しの
+        コマンド文字列には heredoc 書き込みが含まれない点が PROMPT_FILE 形式との
+        違い）。
+        """
+        project_dir = tmp_path
+        (project_dir / ".claude").mkdir()
+
+        prompt_file = tmp_path / "codex-prompt.AbC123"
+        prompt_file.write_text(
+            "Design a REST API. Use api_key=sk-abcdefghijklmnopqrstuvwx for testing.",
+            encoding="utf-8",
+        )
+
+        command = (
+            "codex exec --model gpt-5.3-codex --sandbox workspace-write "
+            f"\"$(cat '{prompt_file}')\" < /dev/null 2>/dev/null"
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project_dir),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": {"stdout": "ok", "exit_code": 0, "duration_ms": 1200},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+
+        captured: dict = {}
+
+        def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+            captured["type"] = event_type
+            captured["payload"] = payload
+            return payload
+
+        monkeypatch.setattr(audit_cli, "emit_event", fake_emit_event)
+
+        audit_cli.main()
+
+        assert captured["type"] == "cli_call"
+        prompt = captured["payload"]["prompt"]
+        assert prompt.startswith("Design a REST API.")
+        assert "sk-abcdefghijklmnopqrstuvwx" not in prompt
+        assert "[REDACTED]" in prompt
+        assert "$(cat" not in prompt
+        assert captured["payload"]["tool"] == "codex"
+        assert captured["payload"]["model"] == "gpt-5.3-codex"
 
 
 # ---------------------------------------------------------------------------

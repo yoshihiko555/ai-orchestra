@@ -81,7 +81,22 @@ SIMPLE_EDIT_PATTERNS = [
 ]
 
 
-def should_suggest_codex(file_path: str, content: str | None = None) -> tuple[bool, str]:
+def _size_trigger_reason(file_path: str, tool_name: str, *, source_file: bool) -> str:
+    """Return a size-trigger reason that reflects the write operation."""
+    if tool_name == "Edit":
+        return "Large edit to source file" if source_file else "Large edit with significant content"
+    if tool_name == "Write" and os.path.exists(file_path):
+        return (
+            "Overwriting existing source file"
+            if source_file
+            else "Overwriting existing file with significant content"
+        )
+    return "New source file" if source_file else "Creating new file with significant content"
+
+
+def should_suggest_codex(
+    file_path: str, content: str | None = None, *, tool_name: str = ""
+) -> tuple[bool, str]:
     """Determine if Codex consultation should be suggested."""
     filepath_lower = file_path.lower()
 
@@ -98,7 +113,7 @@ def should_suggest_codex(file_path: str, content: str | None = None) -> tuple[bo
     # Check content if available
     if content:
         if len(content) > 500:
-            return True, "Creating new file with significant content"
+            return True, _size_trigger_reason(file_path, tool_name, source_file=False)
 
         for indicator in DESIGN_INDICATORS:
             if indicator in content:
@@ -107,7 +122,7 @@ def should_suggest_codex(file_path: str, content: str | None = None) -> tuple[bo
     # New files in src/ directory
     if "/src/" in file_path or file_path.startswith("src/"):
         if content and len(content) > 200:
-            return True, "New source file"
+            return True, _size_trigger_reason(file_path, tool_name, source_file=True)
 
     return False, ""
 
@@ -144,6 +159,7 @@ def main():
         if not is_cli_enabled("codex", config, default=False):
             sys.exit(0)
 
+        tool_name = data.get("tool_name", "")
         tool_input = data.get("tool_input", {})
         file_path = tool_input.get("file_path", "")
         content = tool_input.get("content", "") or tool_input.get("new_string", "")
@@ -151,7 +167,7 @@ def main():
         if not validate_input(file_path, content):
             sys.exit(0)
 
-        should_suggest, reason = should_suggest_codex(file_path, content)
+        should_suggest, reason = should_suggest_codex(file_path, content, tool_name=tool_name)
 
         if should_suggest:
             codex_cmd = _build_codex_command(config)

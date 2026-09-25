@@ -141,6 +141,10 @@ Glob: pattern="**/*.ts"
 Grep: pattern="foo", path="src", output_mode="files_with_matches"
 ```
 
+Grep / Glob ツールを持たないセッション構成では、Bash の `grep` / `find` を使うしかない。その場合も
+段階的に絞り込む: `grep -c`（件数把握）→ `grep -l`（ファイル名のみ）→ `| head -n N`（上限付きで
+内容表示）の順で進める。`find` は `-maxdepth` で探索範囲を絞るか `| head -n N` で件数を絞る。
+
 ## サブエージェント委譲の判断
 
 次のいずれかに該当する場合はサブエージェント経由で実行する:

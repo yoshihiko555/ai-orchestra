@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`agent-routing` / `core`: `.local.yaml` のルーティング上書きがサブエージェントに効かないことがある問題を修正（Issue #453）**: サブエージェント起動前に hook が base と `.local.yaml` をマージした設定から tool / sandbox / model を解決し、`[Resolved Routing]` として渡すようにした。`codex.flags` に `--full-auto` や `--sandbox` など sandbox を上書きするフラグがある場合や、sandbox が `read-only` / `workspace-write` 以外の場合は Codex を使わない。
 - **`core`: `explain-visually` の `template.html` を prettier で整形しても図が描画されるようになった**: 整形で inline script の中身が変わり、CSP のハッシュと一致しなくなって Mermaid の描画とページ高さの報告がブロックされていた。script 2 本を `prettier-ignore` で整形対象から外した。整形済みの template.html をコミットしているプロジェクトは、次回 sync 後の template.html をコミットし直す。
+- **`codex-delegation` / `codex-system` / エージェント定義: Codex 呼び出し例を、プロンプトの書き出しと `codex exec` の 2 回の Bash に分けた（Issue #463）**: 例どおりに実行しても sandbox を外すのが `codex exec` の呼び出しだけになる。`audit` の `cli_call` もこの形式の prompt を記録する。
+- **`quality-gates`: Bash で grep / rg / find を使ったときの案内が、Grep / Glob ツールのないセッションでも従える内容になった（Issue #463）**: 専用ツールがない場合に Bash だけで出力を絞る方法（`-c` / `-l` / `| head -n N` 等）を併記する。
+- **`codex-suggestions`: 既存ファイルの Edit で `[Codex Suggestion]` の理由が「Creating new file with significant content」と出る問題を修正（Issue #463）**: Edit と既存ファイルへの Write では別の理由文を出す。発火条件は変わらない。
 - **pip / uv tool / pipx でインストールした `orchex` で `facet build` が失敗する問題を修正（Issue #399）**: 配布物に `facets/` が同梱されておらず、`facet build` は「compositions が見つかりません」で失敗し、SessionStart の自動ビルドはスキル・ルールを生成しないままスキップしていた。修正版に更新（`uv tool upgrade orchex` など）すると直る。
 - **hooks の誤注入・誤提案を修正**: バックグラウンド起動したサブエージェントの起動情報が後続サブエージェントに注入される、プロジェクト外のファイルが変更ファイルとして記録される、バックグラウンドタスクの完了通知に `[Agent Routing]` が出る、`Plans.md` を含むだけのプロンプトで `[Codex Review Suggestion]` が出るに加え、planner のバックグラウンド起動で plan gate が立つ・完了通知で plan gate が解除される、の計 6 件（#452）
 
