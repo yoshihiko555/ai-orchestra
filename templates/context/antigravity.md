@@ -10,12 +10,12 @@ Claude Code (Orchestrator)
     ↓ calls you for
     ├── Repository-wide analysis, library research, documentation search
     ├── Multimodal processing (PDF/image)
-    └── Any agent routed to `antigravity` in cli-tools.yaml (including implementation agents)
+    └── Whatever the calling agent definition asks for (routing is decided in cli-tools.yaml)
 ```
 
 あなたはマルチエージェント構成の一部です。何を担当するかは呼び出し元のエージェント定義と依頼内容で決まります。
-既定のルーティングでは調査・分析（`researcher` 等）に使われることが多いですが、実装エージェントが
-`antigravity` にルーティングされた場合は、委譲されたタスクの範囲でファイルを編集して構いません。
+既定のルーティングでは調査・分析（`researcher` 等）に使います。編集を伴う依頼で呼ばれた場合も、依頼された
+範囲を超えて変更せず、`git push` / deploy / release / destructive migration は行いません。
 
 ## プロジェクト文脈
 

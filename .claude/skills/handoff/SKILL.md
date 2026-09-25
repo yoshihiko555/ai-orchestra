@@ -162,8 +162,11 @@ Before the first commit, check the current branch: if it is the base branch
 (main / master / develop / staging / stage), create a feature branch first
 (`git switch -c <type>/<short-name>`); never commit to the base branch.
 When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`,
-then commit that task's changes with a descriptive message. Do not stage
-`.claude/Plans.md` (it is a local working file, not part of the change). Do not push;
+then commit that task's changes with a descriptive message. Stage only the files
+you changed for that task (`git add <paths>`); never use `git add -A`. Do not stage
+`.claude/Plans.md` or `.claude/handoffs/` (local working files, not part of the change).
+Changes that were already in the working tree when you started belong to the previous
+session: leave them unstaged unless the task tells you to include them. Do not push;
 Claude Code creates the PR with `/pr-create` from the committed work.
 ```
 
@@ -173,9 +176,10 @@ Claude Code creates the PR with `/pr-create` from the committed work.
 
 1. 生成されたファイルのパス
 2. Codex 起動コマンド（引き継ぎファイルを新規セッションのプロンプトとして渡す。`-c` は config 上書き用で
-   ファイルは渡せない）:
+   ファイルは渡せない）。`<codex.model>` と `<codex.sandbox.implementation>` は
+   `.claude/config/agent-routing/cli-tools.yaml`（+ `.local.yaml`）の実効値で置換して表示する:
    ```
-   codex "$(cat '.claude/handoffs/{timestamp}.md')"
+   codex --model <codex.model> --sandbox <codex.sandbox.implementation> "$(cat '.claude/handoffs/{timestamp}.md')"
    ```
 3. 引き継ぎ内容のサマリー（WIP タスク数、TODO タスク数）
 
@@ -187,7 +191,7 @@ Claude Code creates the PR with `/pr-create` from the committed work.
 
 ## 注意事項
 
-- 引き継ぎファイルは `.claude/handoffs/` に蓄積される（git 管理推奨）
+- 引き継ぎファイルは `.claude/handoffs/` に蓄積される（ローカル管理。`.gitignore` への追加を推奨し、コミットに含めない）
 - Plans.md が存在しない場合はエラーメッセージを表示して終了
 - diff が大きすぎる場合（100行超）は `--stat` のみに切り詰める
 - 機密情報（.env 等）は diff に含めない

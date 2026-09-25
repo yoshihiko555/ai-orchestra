@@ -120,7 +120,8 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 
 - **Thinking**: English
 - **Code**: English
-- **Output**: English (Claude Code translates to Japanese for user)
+- **Output**: Claude Code 経由（相談 / 委譲実装）は English（Claude Code がユーザー向けに日本語へ訳す）。
+  発注書実装（引き継ぎファイル・直接起動）はユーザーが直接読むため日本語
 - **GitHub PR review**: 日本語（GitHub の Pull Request 上で直接コードレビューを行う場合、
   レビューコメント・要約・提案はすべて日本語で出力する。この文脈ではユーザーが直接読むため、
   上記「Output: English」より優先する。コード例・識別子は原文のまま）
@@ -215,12 +216,12 @@ Claude Code (Orchestrator)
     ↓ calls you for
     ├── Repository-wide analysis, library research, documentation search
     ├── Multimodal processing (PDF/image)
-    └── Any agent routed to `antigravity` in cli-tools.yaml (including implementation agents)
+    └── Whatever the calling agent definition asks for (routing is decided in cli-tools.yaml)
 ```
 
 あなたはマルチエージェント構成の一部です。何を担当するかは呼び出し元のエージェント定義と依頼内容で決まります。
-既定のルーティングでは調査・分析（`researcher` 等）に使われることが多いですが、実装エージェントが
-`antigravity` にルーティングされた場合は、委譲されたタスクの範囲でファイルを編集して構いません。
+既定のルーティングでは調査・分析（`researcher` 等）に使います。編集を伴う依頼で呼ばれた場合も、依頼された
+範囲を超えて変更せず、`git push` / deploy / release / destructive migration は行いません。
 
 ## プロジェクト文脈
 

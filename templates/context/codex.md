@@ -117,7 +117,8 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 
 - **Thinking**: English
 - **Code**: English
-- **Output**: English (Claude Code translates to Japanese for user)
+- **Output**: Claude Code 経由（相談 / 委譲実装）は English（Claude Code がユーザー向けに日本語へ訳す）。
+  発注書実装（引き継ぎファイル・直接起動）はユーザーが直接読むため日本語
 - **GitHub PR review**: 日本語（GitHub の Pull Request 上で直接コードレビューを行う場合、
   レビューコメント・要約・提案はすべて日本語で出力する。この文脈ではユーザーが直接読むため、
   上記「Output: English」より優先する。コード例・識別子は原文のまま）
