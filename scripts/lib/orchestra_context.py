@@ -71,6 +71,7 @@ class ContextMixin:
     TABLE_SEPARATOR_CELL_PATTERN = re.compile(r":?-+:?")
     UNESCAPED_PIPE_PATTERN = re.compile(r"(?<!\\)\|")
     FENCE_LINE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+    MAX_BACKUP_NAME_ATTEMPTS = 100
 
     def get_project_dir(self, project: str | None) -> Path: ...
 
@@ -397,7 +398,7 @@ class ContextMixin:
             return self._write_full_context(dst, full_render, label, dry_run, created, project_dir)
 
         try:
-            existing = dst.read_text(encoding="utf-8", newline="")
+            existing = self._read_text_keep_newlines(dst)
         except (OSError, UnicodeDecodeError) as e:
             print(
                 f"警告: 読み込みに失敗したためスキップ: {label} ({e})",
@@ -427,6 +428,12 @@ class ContextMixin:
 
         return self._merge_managed_block(dst, existing, spec.managed_rels, label, dry_run)
 
+    @staticmethod
+    def _read_text_keep_newlines(path: Path) -> str:
+        """改行コードを変換せずに読む（Path.read_text の newline 引数は 3.13 以降のため使わない）。"""
+        with path.open(encoding="utf-8", newline="") as source:
+            return source.read()
+
     def _write_full_context(
         self,
         dst: Path,
@@ -440,7 +447,7 @@ class ContextMixin:
         existing: str | None = None
         if dst.exists():
             try:
-                existing = dst.read_text(encoding="utf-8", newline="")
+                existing = self._read_text_keep_newlines(dst)
             except (OSError, UnicodeDecodeError):
                 existing = None
 
@@ -477,15 +484,40 @@ class ContextMixin:
         except OSError:
             return None
 
-        timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
         backup_dir = project_dir / ".claude" / "state" / "legacy-context"
-        backup_path = backup_dir / f"{rel.replace('/', '__')}.{timestamp}.bak"
+        if not self._is_safe_backup_dir(project_dir, backup_dir):
+            print(
+                f"警告: 退避先がプロジェクト外を指すため使えません: {backup_dir}", file=sys.stderr
+            )
+            return None
+
+        timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        stem = f"{rel.replace('/', '__')}.{timestamp}"
+        for attempt in range(self.MAX_BACKUP_NAME_ATTEMPTS):
+            suffix = "" if attempt == 0 else f".{attempt}"
+            backup_path = backup_dir / f"{stem}{suffix}.bak"
+            try:
+                with backup_path.open("xb") as backup_file:
+                    backup_file.write(content)
+            except FileExistsError:
+                continue
+            except OSError:
+                return None
+            return backup_path
+        return None
+
+    def _is_safe_backup_dir(self, project_dir: Path, backup_dir: Path) -> bool:
+        """退避先を作成し、symlink を経由せずプロジェクト内にあるかを確かめる。"""
+        project_root = project_dir.resolve()
+        for part in (backup_dir.parent.parent, backup_dir.parent, backup_dir):
+            if part.is_symlink():
+                return False
         try:
             backup_dir.mkdir(parents=True, exist_ok=True)
-            backup_path.write_bytes(content)
-        except OSError:
-            return None
-        return backup_path
+            backup_dir.resolve().relative_to(project_root)
+        except (OSError, ValueError):
+            return False
+        return True
 
     def _splice_managed_block(self, existing: str, managed_body: str) -> tuple[str, str]:
         """管理ブロックを追記または置換し、変更種別とともに返す。"""
@@ -533,20 +565,30 @@ class ContextMixin:
         raise _MalformedManagedBlockError
 
     def _fenced_line_indices(self, lines: list[str]) -> set[int]:
-        """``` / ~~~ フェンス内側の行インデックス集合を返す（フェンス行自体は含まない）。"""
+        """``` / ~~~ フェンス内側の行インデックス集合を返す（フェンス行自体は含まない）。
+
+        閉じフェンスは開始と同じ文字で、開始以上の長さを持ち、後ろに空白しか無い行に限る。
+        """
         fenced: set[int] = set()
-        fence_char: str | None = None
+        open_fence: str | None = None
         for index, line in enumerate(lines):
             match = self.FENCE_LINE_PATTERN.match(line)
-            if fence_char is None:
+            if open_fence is None:
                 if match:
-                    fence_char = match.group(1)[0]
+                    open_fence = match.group(1)
                 continue
-            if match and match.group(1)[0] == fence_char:
-                fence_char = None
+            if match and self._closes_fence(line, match.group(1), open_fence):
+                open_fence = None
                 continue
             fenced.add(index)
         return fenced
+
+    @staticmethod
+    def _closes_fence(line: str, fence: str, open_fence: str) -> bool:
+        """フェンス行が開いているフェンスを閉じるか判定する。"""
+        if fence[0] != open_fence[0] or len(fence) < len(open_fence):
+            return False
+        return line.strip() == fence
 
     def _merge_managed_block(
         self,

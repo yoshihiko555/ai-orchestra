@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 
@@ -246,6 +248,53 @@ class TestContextSyncCreateForceDryRun:
         assert backups[0].read_text(encoding="utf-8") == original
         assert agents_path.read_text(encoding="utf-8") == expected
 
+    def test_force_twice_in_same_second_keeps_both_backups(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir)
+        manager = OrchestraManager(orchestra_dir)
+        context_mod = sys.modules[type(manager)._backup_legacy_file.__module__]
+        frozen = datetime.datetime(2026, 9, 26, tzinfo=datetime.UTC)
+
+        class _FrozenDatetime(datetime.datetime):
+            @classmethod
+            def now(cls, tz: datetime.tzinfo | None = None) -> datetime.datetime:
+                return frozen
+
+        monkeypatch.setattr(context_mod.datetime, "datetime", _FrozenDatetime)
+        agents_path = project_dir / "AGENTS.md"
+        agents_path.write_text("# first\n", encoding="utf-8")
+        manager.context_sync(str(project_dir), force=True)
+        agents_path.write_text("# second\n", encoding="utf-8")
+        manager.context_sync(str(project_dir), force=True)
+
+        backups = sorted(
+            (project_dir / ".claude" / "state" / "legacy-context").glob("AGENTS.md.*.bak")
+        )
+        assert sorted(b.read_text(encoding="utf-8") for b in backups) == ["# first\n", "# second\n"]
+
+    def test_backup_refuses_symlinked_directory_outside_project(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        (project_dir / ".claude" / "state").mkdir(parents=True)
+        (project_dir / ".claude" / "state" / "legacy-context").symlink_to(outside_dir)
+        _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir)
+        agents_path = project_dir / "AGENTS.md"
+        original = "# Hand-written\n"
+        agents_path.write_text(original, encoding="utf-8")
+
+        OrchestraManager(orchestra_dir).context_sync(str(project_dir), force=True)
+
+        assert list(outside_dir.iterdir()) == []
+        assert agents_path.read_text(encoding="utf-8") == original
+
     def test_force_backs_up_invalid_utf8_before_full_overwrite(self, tmp_path: Path) -> None:
         orchestra_dir = tmp_path / "orchestra"
         project_dir = tmp_path / "project"
@@ -405,6 +454,37 @@ class TestContextSyncManagedBlockMerge:
         assert f"See also: {manager.GENERATED_MARKER}" in merged
         assert merged.count(manager.MANAGED_BLOCK_BEGIN) == 1
         assert merged.count(manager.MANAGED_BLOCK_END) == 1
+
+    def test_shorter_inner_fence_does_not_close_longer_fence(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        _setup_context_sources(orchestra_dir)
+        _setup_orchestra_json(project_dir)
+        manager = OrchestraManager(orchestra_dir)
+        agents_path = project_dir / "AGENTS.md"
+        fenced_example = "\n".join(
+            [
+                "# Marker example",
+                "",
+                "````markdown",
+                "```text",
+                manager.MANAGED_BLOCK_BEGIN,
+                "example managed body",
+                manager.MANAGED_BLOCK_END,
+                "```",
+                "````",
+                "",
+            ]
+        )
+        agents_path.write_text(fenced_example, encoding="utf-8")
+
+        manager.context_sync(str(project_dir))
+
+        merged = agents_path.read_text(encoding="utf-8")
+        assert merged.startswith(fenced_example)
+        assert "example managed body" in merged
+        assert merged.count(manager.MANAGED_BLOCK_BEGIN) == 2
 
     def test_sync_ignores_managed_markers_inside_fenced_code_block(self, tmp_path: Path) -> None:
         orchestra_dir = tmp_path / "orchestra"
