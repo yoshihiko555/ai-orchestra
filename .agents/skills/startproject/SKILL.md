@@ -138,7 +138,7 @@ Task tool parameters:
       Read/Grep/Glob で同等の調査を実施し、同形式で要約を作成する。
 
     Save full output to: .claude/docs/research/{feature}.md
-    Return CONCISE summary (5-7 bullet points)
+    Return a concise summary.
 ```
 
 ---

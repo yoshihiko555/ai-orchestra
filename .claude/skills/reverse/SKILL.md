@@ -481,7 +481,7 @@ If antigravity.enabled == false, derive equivalent analysis using Read/Grep/Glob
 and note that fallback mode is active.
 
 Save full output to: .claude/docs/reverse/{YYYY-MM-DD}_{target-slug}/features.md
-Return a concise 5-7 bullet summary.
+Return a concise summary.
 """)
 ```
 

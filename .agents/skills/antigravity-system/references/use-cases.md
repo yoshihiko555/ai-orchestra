@@ -29,7 +29,7 @@ IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> 2>/
 
 ### 2. Repository-Wide Understanding
 
-Leverage the large context window for comprehensive codebase analysis.
+Pass the whole repository with `--add-dir` for comprehensive codebase analysis.
 
 ```bash
 # Full repository analysis

@@ -134,7 +134,7 @@ def main():
                     "additionalContext": (
                         f"[Antigravity Suggestion] {reason}. "
                         "For comprehensive research, consider Antigravity CLI "
-                        "(large context + Google Search grounding):\n"
+                        "(Google Search grounding):\n"
                         f"{agy_cmd}"
                     ),
                 }

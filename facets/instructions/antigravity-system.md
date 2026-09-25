@@ -63,7 +63,7 @@ Task tool parameters:
     リトライ: タイムアウトや質問検出時は antigravity-delegation.md のリトライプロトコルに従う。
 
     Save full output to: .claude/docs/research/{topic}.md
-    Return CONCISE summary (5-7 bullet points).
+    Return a concise summary.
 ```
 
 ### Direct Call (Short Questions Only)
@@ -116,7 +116,7 @@ This allows Claude and Codex to reference the research later.
 ### Pre-Implementation Research
 
 ```bash
-agy -p "Research best practices for {feature} in Python 2025.
+agy -p "Research the latest best practices for {feature} in Python.
 Include:
 - Common patterns and anti-patterns
 - Library recommendations (with comparison)
