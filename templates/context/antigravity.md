@@ -102,7 +102,7 @@ Claude Code が再利用しやすい形で返答してください。
 - **Thinking**: English
 - **Research output**: English
 - **Code examples**: English
-- Claude Code translates to Japanese for user
+- Claude Code translates to Japanese for user（Claude Code 経由の呼び出しのみ）
 
 ## Key Principles
 

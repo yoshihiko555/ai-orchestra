@@ -124,7 +124,7 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
   発注書実装（引き継ぎファイル・直接起動）はユーザーが直接読むため日本語
 - **GitHub PR review**: 日本語（GitHub の Pull Request 上で直接コードレビューを行う場合、
   レビューコメント・要約・提案はすべて日本語で出力する。この文脈ではユーザーが直接読むため、
-  上記「Output: English」より優先する。コード例・識別子は原文のまま）
+  上記 Output の English より優先する。コード例・識別子は原文のまま）
 
 ## Review Guidelines
 
@@ -163,7 +163,7 @@ GitHub PR レビュー・コードレビュー依頼の際は、以下の観点�
 
 ## Harness ワークフロー
 
-実装モードでは以下に従う。
+委譲実装 / 発注書実装では以下に従う。
 
 このリポジトリには `.codex/hooks.json` によるガードレール（prompt secret scan / コマンドポリシー / Stop 時検証）が配布されています。詳細は `.codex/rules/*.rules` と `.claude/rules/codex-delegation.md` を参照してください。
 
@@ -308,7 +308,7 @@ Claude Code が再利用しやすい形で返答してください。
 - **Thinking**: English
 - **Research output**: English
 - **Code examples**: English
-- Claude Code translates to Japanese for user
+- Claude Code translates to Japanese for user（Claude Code 経由の呼び出しのみ）
 
 ## Key Principles
 

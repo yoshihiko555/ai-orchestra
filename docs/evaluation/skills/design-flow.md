@@ -1,6 +1,6 @@
 # design-flow 評価セット（スキルフロー）
 
-**対象スキル群**: `design` と、その下流の発注書スキル `/order`（仮名。ADR-20260926-056 で新設予定）。`preflight` / `startproject` は同 ADR で廃止（正本: `facets/instructions/design.md`, `facets/knowledge/design-review.md` ほか knowledge 6 本）
+**対象スキル群**: `design` と、その下流の発注書スキル `/order`（仮名。ADR-20260926-056 で新設予定）。`preflight` / `startproject` は同 ADR で廃止予定（決定済み。実ファイル削除は後続 PR。正本: `facets/instructions/design.md`, `facets/knowledge/design-review.md` ほか knowledge 6 本）
 **単位**: スキルフロー（設計 → タスク分解 → 実装の一連の振る舞い）
 **作成日**: 2026-07-04
 **最終レビュー日**: 2026-09-26（ADR-20260926-056: `preflight` / `startproject` の廃止決定に伴い EV-14〜EV-21 を廃止予定（実ファイル削除まで有効）とし移管先を明記。フロー横断 EV-22・EV-23 を `/order` 前提に改訂。`/order` 自体の観点は `docs/evaluation/skills/order.md` に新設予定）
@@ -12,7 +12,7 @@
 
 ## 1. フロー責務定義
 
-`/design` が対話で要件定義・基本設計・詳細設計を進めて `docs/` 配下に設計書（codd フロントマター付き）を出力し、設計品質を二段品質ゲート（セルフチェック + 自動レビュー）で担保するフロー。設計書は下流の発注書スキル `/order`（仮名）が Context として参照し、実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）へ渡す。旧 `/preflight`（設計要否判定とタスク分解）と `/startproject`（設計書を参照した実装と突合）は ADR-20260926-056 で廃止が決定した（実ファイルの削除は同 ADR §決定 6 の 5 で行う）。
+`/design` が対話で要件定義・基本設計・詳細設計を進めて `docs/` 配下に設計書（codd フロントマター付き）を出力し、設計品質を二段品質ゲート（セルフチェック + 自動レビュー）で担保するフロー。設計書は下流の発注書スキル `/order`（仮名）が Context として参照し、実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）へ渡す。旧 `/preflight`（設計要否判定とタスク分解）と `/startproject`（設計書を参照した実装と突合）は ADR-20260926-056 で廃止予定（決定済み。実ファイルの削除は同 ADR §決定 6 の 5 で行う）。
 
 ### Non-Goals
 

@@ -161,8 +161,11 @@ Key files to review:
 Before the first commit, check the current branch: if it is the base branch
 (main / master / develop / staging / stage), create a feature branch first
 (`git switch -c <type>/<short-name>`); never commit to the base branch.
-When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`,
-then commit that task's changes with a descriptive message. Stage only the files
+When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`.
+When a Phase's Acceptance Criteria are met, check them (`- [ ]` → `- [x]`) only after
+you actually ran the `verify:` command and it passed, or confirmed the `judge:` criterion;
+never check an unverified criterion. Then commit that task's changes with a descriptive
+message. Stage only the files
 you changed for that task (`git add <paths>`); never use `git add -A`. Do not stage
 `.claude/Plans.md` or `.claude/handoffs/` (local working files, not part of the change).
 Changes that were already in the working tree when you started belong to the previous
