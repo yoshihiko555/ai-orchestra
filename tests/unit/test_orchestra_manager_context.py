@@ -609,6 +609,22 @@ class TestSeverityDefinitionsExpansion:
         assert len(severity_lines) == 4
         return severity_lines
 
+    @staticmethod
+    def _extract_severity_block(text: str) -> list[str]:
+        """`- 各指摘に重要度ラベルを付ける:` 直後に続く `  - ` 行ブロックを抽出する。"""
+        lines = text.splitlines()
+        label_prefix = "- 各指摘に重要度ラベルを付ける:"
+        for index, line in enumerate(lines):
+            if not line.startswith(label_prefix):
+                continue
+            block: list[str] = []
+            for candidate in lines[index + 1 :]:
+                if not candidate.startswith("  - "):
+                    break
+                block.append(candidate)
+            return block
+        pytest.fail(f"severity label line not found: {label_prefix!r}")
+
     def test_build_expands_severity_definitions_marker(self, tmp_path: Path) -> None:
         self._setup_marker_source(tmp_path)
         self._write_facet(tmp_path)
@@ -694,12 +710,47 @@ class TestSeverityDefinitionsExpansion:
         with pytest.raises(SystemExit):
             OrchestraManager(tmp_path).context_build()
 
-    def test_malformed_marker_exits(self, tmp_path: Path) -> None:
-        malformed = "<!-- severity-definitions: output-contracts/../x -->"
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            "<!-- severity-definitions: output-contracts/../x -->",
+            "<!-- severity-definitions : output-contracts/tiered-review -->",
+            "<!--severity-definitions:output-contracts/tiered-review-->",
+        ],
+    )
+    def test_malformed_marker_exits(self, tmp_path: Path, malformed: str) -> None:
         self._setup_marker_source(tmp_path, marker=malformed)
 
         with pytest.raises(SystemExit):
             OrchestraManager(tmp_path).context_build()
+
+    def test_escaped_pipe_in_basis_cell_is_preserved(self, tmp_path: Path) -> None:
+        """GFM のエスケープ済みパイプ `\\|` を含むセルが表として正しく分割される。"""
+        self._setup_marker_source(tmp_path)
+        facet_path = tmp_path / "facets" / "output-contracts" / "tiered-review.md"
+        facet_path.parent.mkdir(parents=True, exist_ok=True)
+        facet_path.write_text(
+            "\n".join(
+                [
+                    "## 重要度の定義",
+                    "",
+                    "| 重要度 | 基準 | 対応 |",
+                    "|---|---|---|",
+                    "| **Critical** | critical criteria | critical response |",
+                    r"| **High** | A \| B | high response |",
+                    "| **Medium** | medium criteria | medium response |",
+                    "| **Low** | low criteria | low response |",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        OrchestraManager(tmp_path).context_build()
+
+        generated = self._built_agents_path(tmp_path).read_text(encoding="utf-8")
+        assert "  - High: A | B" in generated
+        assert "A \\" not in generated
 
     def test_table_body_row_with_too_few_columns_exits(self, tmp_path: Path) -> None:
         self._setup_marker_source(tmp_path)
@@ -732,16 +783,14 @@ class TestSeverityDefinitionsExpansion:
         expected_lines = self._repo_severity_lines()
         generated = (REPO_ROOT / "templates" / "codex" / "AGENTS.md").read_text(encoding="utf-8")
 
-        for expected_line in expected_lines:
-            assert expected_line in generated
+        assert self._extract_severity_block(generated) == expected_lines
 
     def test_root_agents_matches_repo_severity_table(self) -> None:
         """手動管理のルート AGENTS.md も facet の重要度定義と同期させる。"""
         expected_lines = self._repo_severity_lines()
         root_agents = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
-        for expected_line in expected_lines:
-            assert expected_line in root_agents
+        assert self._extract_severity_block(root_agents) == expected_lines
 
     def test_codex_context_uses_marker_instead_of_handwritten_rows(self) -> None:
         context_source = (REPO_ROOT / "templates" / "context" / "codex.md").read_text(

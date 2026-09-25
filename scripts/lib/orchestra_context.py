@@ -37,9 +37,11 @@ class ContextMixin:
         r"^[ \t]*<!-- severity-definitions: output-contracts/([A-Za-z0-9_-]+) -->[ \t]*$",
         re.MULTILINE,
     )
+    SEVERITY_MARKER_CANDIDATE_PATTERN = re.compile(r"<!--.*severity-definitions")
     SEVERITY_SECTION_HEADING = "## 重要度の定義"
     SECTION_BOUNDARY_PATTERN = re.compile(r"^#{1,2} ")
     TABLE_SEPARATOR_CELL_PATTERN = re.compile(r":?-+:?")
+    UNESCAPED_PIPE_PATTERN = re.compile(r"(?<!\\)\|")
 
     def get_project_dir(self, project: str | None) -> Path: ...
 
@@ -118,9 +120,8 @@ class ContextMixin:
 
     def _validate_severity_markers(self, content: str, source_path: Path) -> None:
         """不正な重要度定義マーカーを検出して終了する。"""
-        marker_prefix = "<!-- severity-definitions:"
         for line in content.splitlines():
-            if marker_prefix not in line:
+            if not self.SEVERITY_MARKER_CANDIDATE_PATTERN.search(line):
                 continue
             if self.SEVERITY_MARKER_PATTERN.fullmatch(line):
                 continue
@@ -212,8 +213,10 @@ class ContextMixin:
 
     @staticmethod
     def _split_markdown_table_row(row: str) -> list[str]:
-        """Markdown 表の行を空白除去済みセルへ分割する。"""
-        return [cell.strip() for cell in row.strip()[1:-1].split("|")]
+        """Markdown 表の行を空白除去済みセルへ分割する（エスケープされた `\\|` は分割しない）。"""
+        inner = row.strip()[1:-1]
+        cells = ContextMixin.UNESCAPED_PIPE_PATTERN.split(inner)
+        return [cell.strip().replace("\\|", "|") for cell in cells]
 
     def _format_severity_row(self, row: str, facet_path: Path) -> str:
         """重要度表の1行を Codex 向け箇条書きへ変換する。"""
