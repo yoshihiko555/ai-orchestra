@@ -5,9 +5,10 @@
 1. stdin から PostToolUse JSON を読み込む
 2. tool_name が "Edit" でも "Write" でもなければ何もしない
 3. tool_input.file_path からファイルパスを取得する
-4. .claude/ 配下のファイルは除外する（自己参照防止）
-5. project_dir を解決して相対パスに変換する
-6. context_store.update_working_context() で modified_files に追加する
+4. project_dir を解決して相対パスに変換する
+5. プロジェクト外のパスは記録しない
+6. .claude/ 配下のファイルは除外する（自己参照防止）
+7. context_store.update_working_context() で modified_files に追加する
 """
 
 from __future__ import annotations
@@ -73,6 +74,12 @@ def to_relative_path(file_path: str, project_dir: str) -> str:
     """file_path から project_dir プレフィックスを除去して相対パスに変換する。
 
     project_dir が含まれない場合は file_path をそのまま返す。
+
+    file_path をそのまま（変換前の原文のまま）返すのは次の 3 通りのみ:
+    (1) project_dir が空、(2) resolve() が例外を送出、(3) 解決後のパスが
+    project_dir 配下にない。(1)(2) は絶対パスとは限らないが、(1)(2)(3) の
+    いずれであっても `is_outside_project()` はプロジェクト外として除外する
+    （安全側に倒す保守的な仕様）。
     """
     if not project_dir:
         return file_path
@@ -91,6 +98,21 @@ def to_relative_path(file_path: str, project_dir: str) -> str:
         return file_path
 
     return file_path
+
+
+def is_outside_project(relative_path: str) -> bool:
+    """to_relative_path() の戻り値がプロジェクト外のパスかどうかを判定する。
+
+    to_relative_path() は project_dir 配下に解決できない場合、file_path を
+    そのまま返す契約になっている（`relative_to()` が返す相対パスには `..` は
+    含まれない性質を利用する）。この関数はその戻り値を受け取り、次のいずれか
+    であればプロジェクト外と判定する:
+    - 絶対パスのまま（project_dir 空 / resolve() 例外 / 解決不能）
+    - `..` を含む相対パス（`../other/foo.py` のように project_dir の外側へ
+      抜けようとする表記）
+    """
+    path = Path(relative_path)
+    return path.is_absolute() or ".." in path.parts
 
 
 def is_claude_internal(relative_path: str) -> bool:
@@ -126,6 +148,8 @@ def main() -> None:
 
     project_dir = get_project_dir(data)
     relative_path = to_relative_path(file_path, project_dir)
+    if is_outside_project(relative_path):
+        return
 
     # .claude/ 配下のファイルは除外する
     if is_claude_internal(relative_path):

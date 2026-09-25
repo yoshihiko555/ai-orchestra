@@ -157,6 +157,23 @@ class TestTruncateSummary:
         assert result == "12345"
 
 
+class TestIsAsyncLaunch:
+    def test_returns_true_when_is_async_is_true(self) -> None:
+        assert capture_mod.is_async_launch({"isAsync": True}) is True
+
+    def test_returns_true_when_status_is_async_launched(self) -> None:
+        assert capture_mod.is_async_launch({"status": "async_launched"}) is True
+
+    def test_returns_false_for_normal_string_tool_response(self) -> None:
+        assert capture_mod.is_async_launch("All tests passed.") is False
+
+    def test_returns_false_for_normal_dict(self) -> None:
+        assert capture_mod.is_async_launch({"status": "completed"}) is False
+
+    def test_returns_false_for_non_dict_input(self) -> None:
+        assert capture_mod.is_async_launch(["async_launched"]) is False
+
+
 class TestCaptureTaskResultMain:
     def test_writes_entry_for_task_tool(self, tmp_path: Path) -> None:
         # Arrange
@@ -204,6 +221,36 @@ class TestCaptureTaskResultMain:
                 capture_mod.main()
 
         # Assert – no entries written
+        assert not _entries_dir(tmp_path).exists()
+
+    def test_skips_async_launch_response(self, tmp_path: Path) -> None:
+        # Arrange — run_in_background=true launch metadata, not a real result
+        stdin_data = json.dumps(
+            {
+                "tool_name": "Task",
+                "cwd": str(tmp_path),
+                "tool_input": {
+                    "subagent_type": "tester",
+                    "description": "Run tests",
+                    "prompt": "pytest -q",
+                },
+                "tool_response": {
+                    "isAsync": True,
+                    "status": "async_launched",
+                    "agentId": "abc123",
+                    "description": "Run tests",
+                    "resolvedModel": "sonnet",
+                    "prompt": "pytest -q",
+                },
+            }
+        )
+
+        # Act
+        with patch.object(sys, "stdin", StringIO(stdin_data)):
+            with patch.object(capture_mod, "_CONTEXT_STORE_AVAILABLE", True):
+                capture_mod.main()
+
+        # Assert — no entries written
         assert not _entries_dir(tmp_path).exists()
 
 
@@ -494,6 +541,20 @@ class TestToRelativePath:
         assert result == "/project/src/foo.py"
 
 
+class TestIsOutsideProject:
+    def test_returns_true_for_absolute_path_outside_project(self) -> None:
+        assert update_mod.is_outside_project("/other/src/foo.py") is True
+
+    def test_returns_true_for_relative_path_with_dotdot(self) -> None:
+        assert update_mod.is_outside_project("../other/foo.py") is True
+
+    def test_returns_false_for_relative_path_inside_project(self) -> None:
+        assert update_mod.is_outside_project("src/foo.py") is False
+
+    def test_returns_false_for_claude_path_inside_project(self) -> None:
+        assert update_mod.is_outside_project(".claude/Plans.md") is False
+
+
 class TestIsClaudeInternal:
     def test_returns_true_for_claude_subpath(self) -> None:
         assert update_mod.is_claude_internal(".claude/Plans.md") is True
@@ -581,6 +642,77 @@ class TestUpdateWorkingContextMain:
                     update_mod.main()
 
         # Assert – .claude/ file is excluded; working-context not created
+        assert not _working_context_path(tmp_path).exists()
+
+    def test_skips_file_outside_project(self, tmp_path: Path) -> None:
+        # Arrange — file_path resolves to a path outside the project (sibling repo)
+        outside_path = tmp_path.parent / "other-repo" / "src" / "foo.py"
+        stdin_data = json.dumps(
+            {
+                "tool_name": "Edit",
+                "cwd": str(tmp_path),
+                "tool_input": {"file_path": str(outside_path)},
+            }
+        )
+
+        # Act
+        with patch.object(sys, "stdin", StringIO(stdin_data)):
+            with patch.object(update_mod, "_CONTEXT_STORE_AVAILABLE", True):
+                with patch.object(
+                    update_mod,
+                    "read_hook_input",
+                    return_value=json.loads(stdin_data),
+                ):
+                    update_mod.main()
+
+        # Assert — no working-context.json created
+        assert not _working_context_path(tmp_path).exists()
+
+    def test_skips_other_repo_claude_plans_outside_project(self, tmp_path: Path) -> None:
+        # Arrange — another repo's own .claude/Plans.md (absolute path outside project)
+        outside_path = tmp_path.parent / "other-repo" / ".claude" / "Plans.md"
+        stdin_data = json.dumps(
+            {
+                "tool_name": "Edit",
+                "cwd": str(tmp_path),
+                "tool_input": {"file_path": str(outside_path)},
+            }
+        )
+
+        # Act
+        with patch.object(sys, "stdin", StringIO(stdin_data)):
+            with patch.object(update_mod, "_CONTEXT_STORE_AVAILABLE", True):
+                with patch.object(
+                    update_mod,
+                    "read_hook_input",
+                    return_value=json.loads(stdin_data),
+                ):
+                    update_mod.main()
+
+        # Assert
+        assert not _working_context_path(tmp_path).exists()
+
+    def test_skips_relative_path_escaping_outside_project(self, tmp_path: Path) -> None:
+        # Arrange — a relative path that escapes the project root via ".."
+        stdin_data = json.dumps(
+            {
+                "tool_name": "Edit",
+                "cwd": str(tmp_path),
+                "tool_input": {"file_path": "../other/foo.py"},
+            }
+        )
+
+        # Act
+        with patch.object(sys, "stdin", StringIO(stdin_data)):
+            with patch.object(update_mod, "_CONTEXT_STORE_AVAILABLE", True):
+                with patch.object(
+                    update_mod,
+                    "read_hook_input",
+                    return_value=json.loads(stdin_data),
+                ):
+                    update_mod.main()
+
+        # Assert
         assert not _working_context_path(tmp_path).exists()
 
     def test_does_nothing_for_non_edit_write_tool(self, tmp_path: Path) -> None:

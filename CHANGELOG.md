@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`core`: `explain-visually` の `template.html` を prettier で整形しても図が描画されるようになった**: 整形で inline script の中身が変わり、CSP のハッシュと一致しなくなって Mermaid の描画とページ高さの報告がブロックされていた。script 2 本を `prettier-ignore` で整形対象から外した。整形済みの template.html をコミットしているプロジェクトは、次回 sync 後の template.html をコミットし直す。
 
+### Fixed
+
+- **hooks の誤注入・誤提案を修正**: バックグラウンド起動したサブエージェントの起動情報が後続サブエージェントに注入される、プロジェクト外のファイルが変更ファイルとして記録される、バックグラウンドタスクの完了通知に `[Agent Routing]` が出る、`Plans.md` を含むだけのプロンプトで `[Codex Review Suggestion]` が出るに加え、planner のバックグラウンド起動で plan gate が立つ・完了通知で plan gate が解除される、の計 6 件（#452）
+
 ## [0.3.4] - 2026-09-25
 
 ### Added

@@ -47,6 +47,39 @@ def test_get_field_coerces_non_string_value_to_string() -> None:
     assert hook_common.get_field({}, "x") == ""
 
 
+class TestIsAsyncLaunch:
+    def test_async_returns_true_when_is_async_is_true(self) -> None:
+        assert hook_common.is_async_launch({"isAsync": True}) is True
+
+    def test_async_returns_true_when_status_is_async_launched(self) -> None:
+        assert hook_common.is_async_launch({"status": "async_launched"}) is True
+
+    def test_async_returns_false_for_normal_dict(self) -> None:
+        assert hook_common.is_async_launch({"status": "completed"}) is False
+
+    def test_async_returns_false_for_plain_string(self) -> None:
+        assert hook_common.is_async_launch("done") is False
+
+    def test_async_returns_false_for_none(self) -> None:
+        assert hook_common.is_async_launch(None) is False
+
+
+class TestIsTaskNotification:
+    def test_notification_returns_true_when_prompt_starts_with_tag(self) -> None:
+        prompt = "<task-notification>\n<task-id>abc</task-id>\n</task-notification>"
+        assert hook_common.is_task_notification(prompt) is True
+
+    def test_notification_returns_true_with_leading_whitespace(self) -> None:
+        assert hook_common.is_task_notification("  \n<task-notification>...") is True
+
+    def test_notification_returns_false_for_normal_prompt(self) -> None:
+        assert hook_common.is_task_notification("テストを書いて") is False
+
+    def test_notification_returns_false_when_tag_appears_mid_body(self) -> None:
+        prompt = "この文章の <task-notification> タグを説明して"
+        assert hook_common.is_task_notification(prompt) is False
+
+
 class TestIsTestPath:
     @pytest.mark.parametrize(
         ("path", "expected"),

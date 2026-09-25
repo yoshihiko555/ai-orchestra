@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook: cli-tools.yaml 駆動のエージェントルーティング提案。"""
+"""UserPromptSubmit hook: cli-tools.yaml 駆動のエージェントルーティング提案。
+
+バックグラウンドタスクの完了通知（`<task-notification>`）はユーザー入力ではないため提案しない。
+"""
 
 import json
 import sys
@@ -9,6 +12,7 @@ from route_config import (
     build_cli_suggestion,
     detect_agent,
     get_agent_tool,
+    is_task_notification,
     load_config,
 )
 
@@ -18,6 +22,8 @@ def main():
         data = json.load(sys.stdin)
         prompt = data.get("prompt", "")
         if len(prompt) < 5:
+            sys.exit(0)
+        if is_task_notification(prompt):
             sys.exit(0)
 
         config = load_config(data)

@@ -3,12 +3,12 @@
 **パッケージ**: `packages/codex-suggestions`
 **類型**: hook 型
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-03（EV-15 を仕様確定、EV-07・EV-10 を欠番化。裁定内容は §3 参照）
+**最終レビュー日**: 2026-09-25（Issue #452 レビュー指摘対応: EV-18 を新設。after-plan は `tool_response` が async 起動メタデータのとき発火しないことを追加（判定は `hook_common.is_async_launch` に集約）。前回: Issue #452: EV-17 を新設し after-plan 発火条件を「暫定仕様（subagent_type のみ）」として確定、prompt 部分一致（plan_keywords）を廃止。正式な発火条件と Claude-only 環境を前提にした設計原則の見直しは Issue #456 で行う。前回レビュー 2026-07-03: EV-15 を仕様確定、EV-07・EV-10 を欠番化。裁定内容は §3 参照）
 **情報源**: docs/reference/packages.md（codex-suggestions セクション）, .claude/rules/codex-suggestion-compliance.md, .claude/rules/codex-delegation.md, .claude/rules/config-loading.md（補助: packages/codex-suggestions/manifest.json, hooks/check-codex-before-write.py, hooks/check-codex-after-plan.py, packages/core/hooks/hook_common.py の実装挙動）
 
 ## 1. 責務定義
 
-本パッケージは、Edit/Write によるファイル変更前と、Plan 系サブエージェントタスク完了後の 2 箇所で、Codex CLI への相談を促す非拘束的な提案（advisory suggestion）を `additionalContext` として注入する。提案は `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled` に従って有効/無効を切り替えられ、いかなる場合もツール実行やエージェント実行そのものをブロックしない。ただし after-plan（Plan 系タスク完了後）の発火条件および hook の存置可否は 2026-07-03 レビューで再検討対象となった（EV-07・EV-10 欠番、Issue #129）。
+本パッケージは、Edit/Write によるファイル変更前と、Plan 系サブエージェントタスク完了後の 2 箇所で、Codex CLI への相談を促す非拘束的な提案（advisory suggestion）を `additionalContext` として注入する。提案は `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled` に従って有効/無効を切り替えられ、いかなる場合もツール実行やエージェント実行そのものをブロックしない。ただし after-plan（Plan 系タスク完了後）の発火条件および hook の存置可否は 2026-07-03 レビューで再検討対象となった（EV-07・EV-10 欠番、Issue #129）。2026-09-25（Issue #452）で、発火条件は「暫定仕様（`tool_input.subagent_type` のみで判定、prompt 部分一致は廃止）」として EV-17 に確定した。正式な発火条件と Claude-only 環境を前提にした設計原則の見直しは Issue #456 で行う。
 
 ### Non-Goals
 
@@ -19,10 +19,10 @@
 
 ## 2. 期待する入出力・副作用
 
-| 構成要素                      | 入力                                                                                        | 期待する出力                                                                                                              | 副作用                                                           |
-| ----------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `check-codex-before-write.py` | PreToolUse(Edit\|Write) stdin JSON（`tool_input.file_path`, `content`/`new_string`, `cwd`） | 条件成立時: `hookSpecificOutput.additionalContext` に `[Codex Suggestion] ...` を含む JSON を stdout へ／非該当時: 無出力 | なし（ファイル書き込み・ブロックを行わない。exit code は常に 0） |
-| `check-codex-after-plan.py`   | PostToolUse(Agent\|Task) stdin JSON（`tool_name`, `tool_input`, `tool_response`, `cwd`）    | 条件成立時: `[Codex Review Suggestion] ...` を含む JSON を stdout へ／非該当時: 無出力                                    | なし（同上）                                                     |
+| 構成要素                      | 入力                                                                                                                                                                                                | 期待する出力                                                                                                              | 副作用                                                           |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `check-codex-before-write.py` | PreToolUse(Edit\|Write) stdin JSON（`tool_input.file_path`, `content`/`new_string`, `cwd`）                                                                                                         | 条件成立時: `hookSpecificOutput.additionalContext` に `[Codex Suggestion] ...` を含む JSON を stdout へ／非該当時: 無出力 | なし（ファイル書き込み・ブロックを行わない。exit code は常に 0） |
+| `check-codex-after-plan.py`   | PostToolUse(Agent\|Task) stdin JSON（`tool_name`, `tool_input`, `tool_response`, `cwd`）。発火は `tool_input.subagent_type` のみで判定し、`tool_response` が async 起動メタデータの場合は発火しない | 条件成立時: `[Codex Review Suggestion] ...` を含む JSON を stdout へ／非該当時: 無出力                                    | なし（同上）                                                     |
 
 ## 3. 評価観点
 
@@ -38,7 +38,10 @@
 - ~~EV-10~~（**欠番**, 2026-07-03 レビュー）: after-plan の非該当時無出力条件は EV-07 と一体で未確定と判定（下記注記・Issue #129）
 - [ ] EV-11（境界 / should）: オーケストレーターは `[Codex Suggestion]` 発火後であっても、typo 修正（1-2文字）やコメント文言修正等の軽微な変更に限り Codex 相談をスキップしてよい — 根拠: .claude/rules/codex-suggestion-compliance.md（例外セクション）。**スコープ注記**: これは hook スクリプト自体の非発火条件ではなく、提案が出た後のオーケストレーター側の遵守判断である（hook にはコンテンツの変更量から typo か否かを判定するロジックはない）。hook 単体の pytest ではなく、エージェント挙動の統合テスト/レビューで担保すべき観点
 
-> **after-plan 発火条件の再検討（EV-07・EV-10 欠番, 2026-07-03）**: 当初 after-plan hook は「計画・レビュー系のサブエージェントタスク完了後に Codex レビューを促す」用途を想定していたが、現状その用途はほぼ使われない見込み。Plan 系タスクの判定条件・非該当時の無出力が「あるべき仕様」かは未確定のため、正しい発火条件の再定義（または after-plan hook の廃止）を Issue #129 で検討する。確定後に新 ID で観点を追加する。
+- [ ] EV-17（境界 / must）: after-plan: **暫定仕様** — `tool_input.subagent_type` が `plan` / `planner`（大文字小文字不問）のときのみ発火し、prompt の部分一致（`plan` / `計画` 等）では発火しない（`Plans.md` を含むだけのプロンプトで誤発火するため廃止）— 根拠: Issue #452。正式な発火条件と Claude-only 環境を前提にした設計原則の見直しは Issue #456 で行う — 自動テスト: 否定側 `packages/codex-suggestions/tests/test_check_codex_after_plan.py -k substring`、肯定側 `test_is_plan_agent_task_true_for_subagent_type_only`（同ファイル）
+- [ ] EV-18（境界 / must）: after-plan: `tool_response` が async 起動メタデータ（`isAsync: true` または `status: async_launched`）のときは発火しない（判定は `hook_common.is_async_launch` に集約）— 根拠: Issue #452（バックグラウンド起動時点では計画がまだ完了していないため）— 自動テスト: `packages/codex-suggestions/tests/test_check_codex_after_plan.py -k async`
+
+> **after-plan 発火条件の再検討（EV-07・EV-10 欠番, 2026-07-03 → EV-17 で暫定仕様確定, 2026-09-25）**: 当初 after-plan hook は「計画・レビュー系のサブエージェントタスク完了後に Codex レビューを促す」用途を想定していたが、現状その用途はほぼ使われない見込み。Plan 系タスクの判定条件・非該当時の無出力が「あるべき仕様」かは未確定だったため、Issue #452 で prompt 部分一致による誤発火（`Plans.md` 等を含むだけのプロンプト）を解消する暫定仕様（EV-17: `subagent_type` のみで判定）を確定した。正式な発火条件の再定義（または after-plan hook の廃止）と Claude-only 環境を前提にした設計原則の見直しは Issue #456 で検討する。
 
 ## 4. 類型別観点
 
@@ -52,7 +55,7 @@
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
-- EV-07・EV-10 は 2026-07-03 レビューで欠番化された（after-plan 発火条件が仕様未確定）。現状実装の Plan 系トリガーを「正」とするテストは追加せず、仕様が確定するまで after-plan hook の発火条件を固定化するテストを書かない（Issue #129）
+- EV-07・EV-10 は 2026-07-03 レビューで欠番化された（after-plan 発火条件が仕様未確定）。Issue #452 で暫定仕様（EV-17: `subagent_type` のみで判定）を確定したため、`subagent_type` 判定は固定化テストの対象とする。正式な発火条件の再定義（または after-plan hook の廃止）と設計原則の見直しは Issue #456 で行う
 - EV-11 は hook スクリプトの pytest では検証できない（オーケストレーター/エージェントの遵守判断のため）。この観点をカバーすると称するテストがある場合、対象が hook 単体テストなのか統合テスト・レビューなのかを明確にし、hook 単体テストで typo 判定を検証しようとしていないか確認する
 - `SIMPLE_EDIT_PATTERNS`（EV-04）・`DESIGN_INDICATORS`（EV-01/EV-02）の具体的な文字列リストは実装のみが根拠。リストの内容そのものを固定的な仕様として厳密比較するテストは、リスト変更のたびに壊れる「実装追認」になっていないか確認し、リスト変更が意図的な仕様変更かどうかのレビューを優先する
 - 例外条項（typo 修正・セッション内相談済み・`tool: codex` の implementation agent 内での Edit/Write 等）の適用判断は hook の責務ではなく、提案を受けたオーケストレーター側（`codex-suggestion-compliance` ルール）の責務である。hook 側のテストに例外判定を求めない
