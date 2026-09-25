@@ -101,18 +101,19 @@ class TestParseOrderSections:
 
         orders = parse_order_sections(content)
 
-        assert orders == {
-            "Test": {
+        assert orders == [
+            {
+                "name": "Test",
                 "goal": ["Ship v2", "[ ] Keep checkbox text"],
                 "context": ["ADR-001"],
                 "constraints": ["Python 3.12"],
             }
-        }
+        ]
 
     def test_project_without_order_sections_has_empty_project_order(self) -> None:
         content = "## Project: Legacy\n### Phase 1: Build `cc:TODO`\n"
 
-        assert parse_order_sections(content) == {"Legacy": {}}
+        assert parse_order_sections(content) == [{"name": "Legacy"}]
 
     def test_empty_goal_section_omits_goal_key(self) -> None:
         content = (
@@ -124,7 +125,7 @@ class TestParseOrderSections:
             "### Phase 1: Build `cc:TODO`\n"
         )
 
-        assert parse_order_sections(content) == {"Empty": {"context": ["Existing context"]}}
+        assert parse_order_sections(content) == [{"name": "Empty", "context": ["Existing context"]}]
 
     def test_skips_placeholder_order_bullets(self) -> None:
         content = (
@@ -139,18 +140,81 @@ class TestParseOrderSections:
 
         orders = parse_order_sections(content)
 
-        assert orders == {"Scaffolded": {"context": ["Existing context"]}}
+        assert orders == [{"name": "Scaffolded", "context": ["Existing context"]}]
+
+    def test_fenced_code_block_inside_order_section_is_not_treated_as_structure(self) -> None:
+        content = (
+            "## Project: Test\n"
+            "#### Context\n"
+            "```\n"
+            "### Phase 9: Fake `cc:WIP`\n"
+            "#### Tasks\n"
+            "- `cc:TODO` fake task\n"
+            "```\n"
+            "- Real context note\n"
+            "### Phase 1: Build `cc:TODO`\n"
+            "#### Tasks\n"
+            "- `cc:TODO` Real task\n"
+        )
+
+        orders = parse_order_sections(content)
+        tasks = parse_tasks(content)
+
+        assert orders == [{"name": "Test", "context": ["Real context note"]}]
+        assert tasks["TODO"] == [{"task": "Real task", "reason": None}]
+
+    def test_preserves_duplicate_project_names_as_separate_entries(self) -> None:
+        content = (
+            "## Project: Dup\n"
+            "#### Goal\n"
+            "- First goal\n"
+            "### Phase 1: Build `cc:TODO`\n"
+            "## Project: Dup\n"
+            "#### Goal\n"
+            "- Second goal\n"
+            "### Phase 1: Build `cc:TODO`\n"
+        )
+
+        orders = parse_order_sections(content)
+
+        assert orders == [
+            {"name": "Dup", "goal": ["First goal"]},
+            {"name": "Dup", "goal": ["Second goal"]},
+        ]
+
+    def test_preserves_wrapped_bullet_continuation_lines(self) -> None:
+        content = (
+            "## Project: Test\n"
+            "#### Context\n"
+            "- Keep compatibility with all existing\n"
+            "  plugins and config keys.\n"
+            "- Second bullet\n"
+            "### Phase 1: Build `cc:TODO`\n"
+        )
+
+        orders = parse_order_sections(content)
+
+        assert orders == [
+            {
+                "name": "Test",
+                "context": [
+                    "Keep compatibility with all existing plugins and config keys.",
+                    "Second bullet",
+                ],
+            }
+        ]
 
 
 class TestRenderOrderMarkdown:
     def test_renders_present_sections_in_fixed_order(self) -> None:
-        orders = {
-            "Beta": {
+        orders = [
+            {
+                "name": "Beta",
                 "constraints": ["Python 3.12"],
                 "goal": ["Ship v2"],
             },
-            "Empty": {},
-        }
+            {"name": "Empty"},
+        ]
 
         markdown = render_order_markdown(orders)
 
@@ -161,8 +225,8 @@ class TestRenderOrderMarkdown:
         assert "### Empty" not in markdown
 
     def test_returns_empty_string_for_empty_or_all_empty_orders(self) -> None:
-        assert render_order_markdown({}) == ""
-        assert render_order_markdown({"Empty": {}}) == ""
+        assert render_order_markdown([]) == ""
+        assert render_order_markdown([{"name": "Empty"}]) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +346,7 @@ class TestCollectHandoffData:
         assert len(data["tasks"]["TODO"]) == 1
         assert data["tasks"]["WIP"][0]["task"] == "Task A"
         assert len(data["decisions"]) == 1
-        assert data["order"] == {"Test": {}}
+        assert data["order"] == [{"name": "Test"}]
         assert data["order_markdown"] == ""
         assert "timestamp" in data
 
@@ -308,13 +372,14 @@ class TestCollectHandoffData:
         with patch("facets.scripts.handoff.run_git", return_value=None):
             data = collect_handoff_data(tmp_path)
 
-        assert data["order"] == {
-            "Test": {
+        assert data["order"] == [
+            {
+                "name": "Test",
                 "goal": ["Ship v2"],
                 "context": ["ADR-001"],
                 "constraints": ["Python 3.12"],
             }
-        }
+        ]
         assert data["order_markdown"] == (
             "## Order\n\n"
             "### Test\n\n"
