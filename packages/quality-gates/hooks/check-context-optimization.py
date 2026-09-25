@@ -57,23 +57,30 @@ BASH_REPLACEMENTS: dict[str, str] = {
     "rg": "Grep",
 }
 
+# grep / rg で重複していた案内文言を 1 テンプレートに集約（コマンド名のみ差し替え）。
+_GREP_LIKE_ADVICE_TEMPLATE = (
+    "専用の Grep ツールがあればそれを使ってください。"
+    "無ければ Bash の {cmd} のまま `-c`（件数）→ `-l`（ファイル名のみ）で先に絞り込み、"
+    "内容表示は `| head -n N` のように上限を付けてください。"
+)
+
 BASH_SEARCH_ADVICE: dict[str, str] = {
-    "grep": (
-        "専用の Grep ツールがあればそれを使ってください。"
-        "無ければ Bash の grep のまま `-c`（件数）→ `-l`（ファイル名のみ）で先に絞り込み、"
-        "内容表示は `| head -n N` のように上限を付けてください。"
-    ),
-    "rg": (
-        "専用の Grep ツールがあればそれを使ってください。"
-        "無ければ Bash の rg のまま `-c`（件数）→ `-l`（ファイル名のみ）で先に絞り込み、"
-        "内容表示は `| head -n N` のように上限を付けてください。"
-    ),
+    "grep": _GREP_LIKE_ADVICE_TEMPLATE.format(cmd="grep"),
+    "rg": _GREP_LIKE_ADVICE_TEMPLATE.format(cmd="rg"),
     "find": (
         "専用の Glob ツールがあればそれを使ってください。"
         "無ければ Bash の find のまま `-maxdepth` で探索範囲を絞るか、"
         "`| head -n N` のように件数の上限を付けてください。"
     ),
 }
+
+# `rg --files`（ファイル列挙モード）専用の案内。`-c` / `-l` は検索用フラグであり、
+# `--files` と併用すると `path` が検索パターンとして扱われてしまい誤動作するため、
+# grep/rg の一般的な検索向け案内（BASH_SEARCH_ADVICE["rg"]）とは別に案内する。
+_RG_FILES_MODE_ADVICE = (
+    "`rg --files` はファイル列挙なので、専用の Glob ツールがあればそれを使い、"
+    "無ければ `| head -n N` で件数に上限を付けるか `| wc -l` で件数だけ確認してください。"
+)
 
 # 検出時に剥がして次トークンを評価する単純なラッパー
 BASH_WRAPPER_PREFIXES: frozenset[str] = frozenset({"sudo", "time", "nice"})
@@ -182,40 +189,50 @@ def check_grep(tool_input: dict, _settings: dict) -> str:
     )
 
 
-def _bash_replacement(command: str) -> tuple[str, str]:
-    """command の先頭トークンを解析し、(検出されたコマンド, 推奨ツール) を返す。
+def _bash_replacement(command: str) -> tuple[str, str, list[str]]:
+    """command の先頭トークンを解析し、(検出されたコマンド, 推奨ツール, トークン列) を返す。
 
     `sudo cat foo` や `sudo nice cat foo` のような連続ラッパーは
     BASH_WRAPPER_PREFIXES に含まれる限り何段でも剥がして次のトークンを評価する。
+
+    トークン列も返すのは、呼び出し側（`check_bash`）が検出後のコマンドに付随する
+    フラグ（例: `rg --files` の `--files`）を追加で調べる際に、再度 `shlex.split`
+    し直さずに済ませるため。
     """
     if not command:
-        return "", ""
+        return "", "", []
     try:
         tokens = shlex.split(command, comments=False, posix=True)
     except ValueError:
-        return "", ""
+        return "", "", []
 
     idx = 0
     while idx < len(tokens) and os.path.basename(tokens[idx]) in BASH_WRAPPER_PREFIXES:
         idx += 1
     if idx >= len(tokens):
-        return "", ""
+        return "", "", tokens
 
     base = os.path.basename(tokens[idx])
     if base in BASH_REPLACEMENTS:
-        return base, BASH_REPLACEMENTS[base]
-    return "", ""
+        return base, BASH_REPLACEMENTS[base], tokens
+    return "", "", tokens
 
 
 def check_bash(tool_input: dict, _settings: dict) -> str:
     """Bash 呼び出しを検査し、専用ツール推奨メッセージを返す。"""
     command = tool_input.get("command", "")
-    used, replacement = _bash_replacement(command)
+    used, replacement, tokens = _bash_replacement(command)
     if not used:
         return ""
 
     used_safe = _sanitize_for_message(used, max_len=40)
-    advice = BASH_SEARCH_ADVICE.get(used)
+    if used == "rg" and "--files" in tokens:
+        # `rg --files` はファイル列挙モードであり、検索向けの `-c`/`-l` 案内は
+        # `path` を検索パターンとして扱わせてしまい誤動作を招くため、専用の
+        # ファイル列挙向け案内に差し替える（BASH_SEARCH_ADVICE["rg"] は使わない）。
+        advice = _RG_FILES_MODE_ADVICE
+    else:
+        advice = BASH_SEARCH_ADVICE.get(used)
     if advice is None:
         advice = f"代わりに {replacement} を使うと出力サイズを制御できます。"
     return (

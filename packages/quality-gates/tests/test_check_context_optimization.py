@@ -191,10 +191,33 @@ def test_check_bash_suggests_glob_for_find() -> None:
     assert "head -n" in msg
 
 
-def test_check_bash_suggests_grep_for_rg() -> None:
-    msg = check_context_optimization.check_bash({"command": "rg --files src/"}, _settings())
+def test_check_bash_suggests_grep_for_rg_search() -> None:
+    msg = check_context_optimization.check_bash({"command": "rg foo src/"}, _settings())
     assert "Grep" in msg
     assert "専用の Grep ツール" in msg
+    assert "-c" in msg
+    assert "-l" in msg
+    assert "head -n" in msg
+
+
+def test_check_bash_rg_files_suggests_glob_not_grep_style() -> None:
+    """`rg --files` はファイル列挙モードなので、`-c`/`-l`（検索向け）ではなく
+    Glob/head/wc の専用案内が出ることを確認する（Issue #463 レビュー指摘: `-c`/`-l`
+    を付けると `rg --files -c path` のように `path` が検索パターン扱いになり誤動作する）。
+    """
+    msg = check_context_optimization.check_bash({"command": "rg --files src/"}, _settings())
+    assert "Glob" in msg
+    assert "`-c`" not in msg
+    assert "`-l`" not in msg
+    assert "head -n" in msg
+
+
+def test_check_bash_rg_files_with_wrapper_prefix_suggests_glob() -> None:
+    """`sudo rg --files` のようにラッパーが付いていても `--files` 専用案内になることを確認する。"""
+    msg = check_context_optimization.check_bash({"command": "sudo rg --files src/"}, _settings())
+    assert "Glob" in msg
+    assert "`-c`" not in msg
+    assert "`-l`" not in msg
     assert "head -n" in msg
 
 
