@@ -16,6 +16,8 @@ orchex = "ai_orchestra.cli:main"
 
 [project.optional-dependencies]
 dev = [
+    "hatchling",
+    "hatch-vcs",
     "pytest>=9.0",
     "pytest-cov>=6.0",
     "ruff>=0.15,<0.16",
@@ -28,6 +30,7 @@ packages = ["ai_orchestra"]
 "packages" = "ai_orchestra/packages"
 "templates" = "ai_orchestra/templates"
 "scripts" = "ai_orchestra/scripts"
+"facets" = "ai_orchestra/facets"
 "presets.json" = "ai_orchestra/presets.json"
 
 [tool.hatch.build.targets.sdist]
@@ -36,6 +39,7 @@ include = [
     "packages/",
     "templates/",
     "scripts/",
+    "facets/",
     "presets.json",
     "README.md",
     "CLAUDE.md",
