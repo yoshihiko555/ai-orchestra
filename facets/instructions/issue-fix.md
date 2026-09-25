@@ -152,8 +152,6 @@ Phase 1 の計画に基づいてコードを変更する。
 Task(subagent_type="{agent}", prompt="""
 タスク: {計画に基づく変更内容}
 対象ファイル: {files}
-
-IMPORTANT: cli-tools.yaml の設定に従い実装すること。
 """)
 ```
 
