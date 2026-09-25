@@ -1,8 +1,8 @@
-# handoff スキ���のファセット構成��義
+# handoff スキルのファセット構成定義
 name: handoff
 description: Claude Code → Codex CLI タスク引き継ぎファイル生成
 
-# フロ���トマター（生成される SKILL.md に付与）
+# フロントマター（生成される SKILL.md に付与）
 frontmatter:
   name: handoff
   description: |
@@ -17,7 +17,7 @@ frontmatter:
 policies:
   - cli-language
 
-# スキル固有の instruction（フ��イル参照）
+# スキル固有の instruction（ファイル参照）
 instruction: handoff
 
 scripts:
