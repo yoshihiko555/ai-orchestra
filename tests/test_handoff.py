@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 # Import the module under test
 from facets.scripts.handoff import (
+    attach_tasks_to_orders,
     collect_handoff_data,
     filter_sensitive_lines,
     find_project_root,
@@ -73,7 +74,31 @@ class TestParseTasks:
 
         tasks = parse_tasks(content)
 
-        assert tasks["TODO"] == [{"task": "Real task", "reason": None}]
+        assert tasks["TODO"] == [{"task": "Real task", "reason": None, "project": "Test"}]
+
+    def test_records_project_name_per_task_without_cross_project_leakage(self) -> None:
+        content = (
+            "## Project: Alpha\n"
+            "### Phase 1: Build `cc:WIP`\n"
+            "- `cc:WIP` Alpha task\n"
+            "## Project: Beta\n"
+            "### Phase 1: Build `cc:TODO`\n"
+            "- `cc:TODO` Beta task\n"
+        )
+
+        tasks = parse_tasks(content)
+
+        assert tasks["WIP"] == [{"task": "Alpha task", "reason": None, "project": "Alpha"}]
+        assert tasks["TODO"] == [{"task": "Beta task", "reason": None, "project": "Beta"}]
+
+    def test_nested_fence_requires_matching_char_and_length(self) -> None:
+        content = (
+            "````markdown\n```\n- `cc:WIP` fake nested task\n```\n````\n\n- `cc:WIP` real task\n"
+        )
+
+        tasks = parse_tasks(content)
+
+        assert tasks["WIP"] == [{"task": "real task", "reason": None, "project": None}]
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +167,37 @@ class TestParseOrderSections:
 
         assert orders == [{"name": "Scaffolded", "context": ["Existing context"]}]
 
+    def test_ignores_leading_frontmatter(self) -> None:
+        content = (
+            "---\n"
+            "## Project: FrontmatterGhost\n"
+            "#### Goal\n"
+            "- Ghost goal\n"
+            "---\n"
+            "\n"
+            "## Project: Real\n"
+            "#### Goal\n"
+            "- Real goal\n"
+        )
+
+        orders = parse_order_sections(content)
+
+        assert orders == [{"name": "Real", "goal": ["Real goal"]}]
+
+    def test_skips_html_comment_bullets(self) -> None:
+        content = (
+            "## Project: Test\n"
+            "#### Context\n"
+            "<!-- fill this in later -->\n"
+            "- <!-- inline comment bullet -->\n"
+            "- Real context note\n"
+            "### Phase 1: Build `cc:TODO`\n"
+        )
+
+        orders = parse_order_sections(content)
+
+        assert orders == [{"name": "Test", "context": ["Real context note"]}]
+
     def test_fenced_code_block_inside_order_section_is_not_treated_as_structure(self) -> None:
         content = (
             "## Project: Test\n"
@@ -161,7 +217,7 @@ class TestParseOrderSections:
         tasks = parse_tasks(content)
 
         assert orders == [{"name": "Test", "context": ["Real context note"]}]
-        assert tasks["TODO"] == [{"task": "Real task", "reason": None}]
+        assert tasks["TODO"] == [{"task": "Real task", "reason": None, "project": "Test"}]
 
     def test_preserves_duplicate_project_names_as_separate_entries(self) -> None:
         content = (
@@ -206,6 +262,28 @@ class TestParseOrderSections:
 
 
 class TestRenderOrderMarkdown:
+    def test_attaches_tasks_to_matching_order_without_project_key(self) -> None:
+        orders = [{"name": "Alpha"}, {"name": "Beta"}]
+        tasks = {
+            "WIP": [{"task": "Alpha task", "reason": None, "project": "Alpha"}],
+            "TODO": [],
+            "blocked": [{"task": "Legacy task", "reason": None, "project": None}],
+        }
+
+        attach_tasks_to_orders(orders, tasks)
+
+        assert orders == [
+            {
+                "name": "Alpha",
+                "tasks": {
+                    "WIP": [{"task": "Alpha task", "reason": None}],
+                    "TODO": [],
+                    "blocked": [],
+                },
+            },
+            {"name": "Beta"},
+        ]
+
     def test_renders_present_sections_in_fixed_order(self) -> None:
         orders = [
             {
@@ -346,8 +424,19 @@ class TestCollectHandoffData:
         assert len(data["tasks"]["TODO"]) == 1
         assert data["tasks"]["WIP"][0]["task"] == "Task A"
         assert len(data["decisions"]) == 1
-        assert data["order"] == [{"name": "Test"}]
-        assert data["order_markdown"] == ""
+        assert data["order"] == [
+            {
+                "name": "Test",
+                "tasks": {
+                    "WIP": [{"task": "Task A", "reason": None}],
+                    "TODO": [{"task": "Task B", "reason": None}],
+                    "blocked": [],
+                },
+            }
+        ]
+        assert data["order_markdown"] == (
+            "## Order\n\n### Test\n\n#### Tasks\n\n- `cc:WIP` Task A\n- `cc:TODO` Task B"
+        )
         assert "timestamp" in data
 
     def test_collects_order_sections_and_markdown(self, tmp_path: Path) -> None:
@@ -378,6 +467,11 @@ class TestCollectHandoffData:
                 "goal": ["Ship v2"],
                 "context": ["ADR-001"],
                 "constraints": ["Python 3.12"],
+                "tasks": {
+                    "WIP": [{"task": "Task A", "reason": None}],
+                    "TODO": [],
+                    "blocked": [],
+                },
             }
         ]
         assert data["order_markdown"] == (
@@ -388,5 +482,35 @@ class TestCollectHandoffData:
             "#### Context\n\n"
             "- ADR-001\n\n"
             "#### Constraints\n\n"
-            "- Python 3.12"
+            "- Python 3.12\n\n"
+            "#### Tasks\n\n"
+            "- `cc:WIP` Task A"
         )
+
+    def test_associates_tasks_with_correct_project_only(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        plans = claude_dir / "Plans.md"
+        plans.write_text(
+            "# Plans\n\n"
+            "## Project: Alpha\n\n"
+            "#### Goal\n"
+            "- Ship alpha\n\n"
+            "### Phase 1: Build `cc:WIP`\n\n"
+            "- `cc:WIP` Alpha task\n\n"
+            "## Project: Beta\n\n"
+            "### Phase 1: Build `cc:TODO`\n\n"
+            "- `cc:TODO` Beta task\n",
+            encoding="utf-8",
+        )
+
+        with patch("facets.scripts.handoff.run_git", return_value=None):
+            data = collect_handoff_data(tmp_path)
+
+        alpha = next(entry for entry in data["order"] if entry["name"] == "Alpha")
+        beta = next(entry for entry in data["order"] if entry["name"] == "Beta")
+
+        assert alpha["tasks"]["WIP"] == [{"task": "Alpha task", "reason": None}]
+        assert alpha["tasks"]["TODO"] == []
+        assert beta["tasks"]["TODO"] == [{"task": "Beta task", "reason": None}]
+        assert beta["tasks"]["WIP"] == []

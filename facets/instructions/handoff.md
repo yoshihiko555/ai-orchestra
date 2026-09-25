@@ -24,7 +24,7 @@ python3 .claude/skills/handoff/scripts/handoff.py
 スクリプトが JSON を stdout に出力する。内容:
 
 - Plans.md の WIP/TODO/blocked タスク
-- Plans.md の Project ごとの Goal / Context / Constraints（発注書の節。`order_markdown` として整形済み。無ければ空）
+- Plans.md の Project ごとの Goal / Context / Constraints と、その Project に属する WIP / TODO / blocked タスク（`order_markdown` として整形済み。Project が複数あってもタスクは所属 Project の下に出る）
 - 未コミット diff のサマリー（`git diff --stat`）
 - ブランチ名、最近のコミット
 - Decisions セクション
@@ -73,6 +73,12 @@ Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマ�
 
 - {Constraints の行}
 
+#### Tasks
+
+- WIP: {この Project の WIP タスク}
+- TODO: {この Project の TODO タスク}
+- Blocked: {この Project の blocked タスク} — Reason: {reason}
+
 ## Current Task State
 
 ### In Progress (WIP)
@@ -109,9 +115,10 @@ Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマ�
 You are continuing work that was started in Claude Code.
 Focus on the WIP tasks listed above. The conversation summary
 provides context on what has been done and what remains.
-Treat the Order section as the specification: stay within its Goal,
-read the files listed under Context before changing code, and respect
-every Constraint.
+Treat the Order section as the specification: for each task, follow the Goal,
+Context and Constraints of the Project it is listed under (Constraints of one
+Project do not apply to another Project's tasks); read the files listed under
+Context before changing code.
 
 Key files to review:
 
