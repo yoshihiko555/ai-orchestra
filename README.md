@@ -202,6 +202,8 @@ pip install orchex
 pipx install orchex
 ```
 
+インストールした `orchex` は、インストール先の `site-packages/ai_orchestra/` を AI Orchestra のルートとして使う。配布物（wheel / sdist）には `packages/`・`templates/`・`scripts/`・`facets/`・`presets.json` が `ai_orchestra/` 配下に同梱されるため、リポジトリを clone しなくても `facet build` などの全コマンドが動く。
+
 ### 2. プロジェクトへのセットアップ
 
 ```bash
