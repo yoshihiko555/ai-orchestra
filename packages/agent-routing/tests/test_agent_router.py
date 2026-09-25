@@ -18,6 +18,30 @@ route_config = load_module("route_config", "packages/agent-routing/hooks/route_c
 
 
 # ---------------------------------------------------------------------------
+# is_task_notification
+# ---------------------------------------------------------------------------
+
+
+def test_is_task_notification_returns_true_for_notification_block() -> None:
+    prompt = "<task-notification>\n<task-id>abc</task-id>\n</task-notification>"
+    assert route_config.is_task_notification(prompt) is True
+
+
+def test_is_task_notification_allows_leading_whitespace_before_notification() -> None:
+    prompt = " \n\t<task-notification>\n<task-id>abc</task-id>"
+    assert route_config.is_task_notification(prompt) is True
+
+
+def test_is_task_notification_returns_false_for_normal_prompt() -> None:
+    assert route_config.is_task_notification("テストを書いて") is False
+
+
+def test_is_task_notification_returns_false_when_notification_tag_is_in_body() -> None:
+    prompt = "この文章の <task-notification> タグを説明して"
+    assert route_config.is_task_notification(prompt) is False
+
+
+# ---------------------------------------------------------------------------
 # detect_agent: 日本語トリガー
 # ---------------------------------------------------------------------------
 

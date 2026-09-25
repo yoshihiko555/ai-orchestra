@@ -20,13 +20,13 @@
 
 ## 自動動作
 
-| イベント | hook | 動作 |
-|---------|------|------|
-| セッション開始 | `load-task-state.py` | `init_context_dir()` でディレクトリ初期化 |
-| サブエージェント起動前 | `inject-shared-context.py` | 解決済みルーティング + 既存エントリー + working-context を prompt に注入 |
-| サブエージェント完了後 | `capture-task-result.py` | 結果サマリーを `session/entries/` に書き出し |
-| ファイル編集後 | `update-working-context.py` | 変更ファイルを `working-context.json` に追記 |
-| セッション終了 | `cleanup-session-context.py` | `session/` と `working-context.json` を削除 |
+| イベント               | hook                         | 動作                                                                    |
+| ---------------------- | ---------------------------- | ----------------------------------------------------------------------- |
+| セッション開始         | `load-task-state.py`         | `init_context_dir()` でディレクトリ初期化                               |
+| サブエージェント起動前 | `inject-shared-context.py`   | 既存エントリー + working-context + 解決済みルーティングを prompt に注入 |
+| サブエージェント完了後 | `capture-task-result.py`     | 結果サマリーを `session/entries/` に書き出し                            |
+| ファイル編集後         | `update-working-context.py`  | 変更ファイルを `working-context.json` に追記                            |
+| セッション終了         | `cleanup-session-context.py` | `session/` と `working-context.json` を削除                             |
 
 ## 注入形式
 
@@ -69,6 +69,7 @@ implementation 用の両方を示す）、`read-only` / `workspace-write` 以外
 - 各エントリーの summary は 200 文字にトランケート
 - modified_files は最新 20 件まで表示
 - `.claude/` 配下のファイル変更は working-context に記録しない
+- プロジェクト外（別リポジトリ・scratchpad 等）のファイル変更は working-context に記録しない
 
 ## セッション間記憶
 

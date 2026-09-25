@@ -4,9 +4,10 @@
 処理フロー:
 1. stdin から PostToolUse JSON を読み込む
 2. tool_name が "Agent"（または後方互換の "Task"）でなければ何もしない
-3. tool_input から agent_id / task_name を取得する
-4. tool_response を先頭 2000 文字にトランケートしてサマリーとする
-5. context_store.write_entry() でエントリーを書き出す
+3. 起動メタデータ（async 起動）の場合は記録しない
+4. tool_input から agent_id / task_name を取得する
+5. tool_response を先頭 2000 文字にトランケートしてサマリーとする
+6. context_store.write_entry() でエントリーを書き出す
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ if _HOOK_DIR not in sys.path:
     sys.path.insert(0, _HOOK_DIR)
 
 try:
-    from hook_common import safe_hook_execution
+    from hook_common import is_async_launch, safe_hook_execution
 except ImportError:
     import functools
     from collections.abc import Callable
@@ -39,6 +40,14 @@ except ImportError:
                 sys.exit(0)
 
         return wrapper
+
+    def is_async_launch(tool_response: object) -> bool:  # type: ignore[misc]
+        """フォールバック: hook_common 不在時の最小実装（本体は hook_common.is_async_launch）。"""
+        if not isinstance(tool_response, dict):
+            return False
+        if tool_response.get("isAsync") is True:
+            return True
+        return tool_response.get("status") == "async_launched"
 
 
 try:
@@ -110,6 +119,8 @@ def main() -> None:
         tool_input = {}
 
     tool_response = data.get("tool_response") or ""
+    if is_async_launch(tool_response):
+        return
 
     agent_id = extract_agent_id(tool_input)
     task_name = extract_task_name(tool_input)

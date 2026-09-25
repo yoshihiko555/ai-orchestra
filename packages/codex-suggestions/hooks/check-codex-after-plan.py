@@ -4,6 +4,9 @@ PostToolUse hook: Suggest Codex review after Plan agent execution.
 
 Triggers after Task tool calls with Plan agent to suggest
 Codex review of the generated preflight plan.
+
+発火条件は暫定仕様（subagent_type のみ）。prompt 部分一致は Plans.md 等で
+誤発火するため廃止。正式な発火条件は Issue #456 で見直す。
 """
 
 import json
@@ -22,30 +25,21 @@ from hook_common import (  # noqa: E402
     DEFAULT_CODEX_MODEL,
     DEFAULT_CODEX_SANDBOX_ANALYSIS,
     has_project_config,
+    is_async_launch,
     is_cli_enabled,
     load_package_config,
 )
 
 
 def is_plan_agent_task(tool_input: dict) -> bool:
-    """Check if this was a Plan agent task."""
+    """Check if this was a Plan agent task.
+
+    発火条件は暫定仕様（subagent_type のみ）。prompt 部分一致（旧 plan_keywords）は
+    "Plans.md" 等の通常のプロンプトで誤発火するため廃止した。正式な発火条件は
+    Issue #456 で見直す。
+    """
     subagent_type = tool_input.get("subagent_type", "").lower()
-    prompt = tool_input.get("prompt", "").lower()
-
-    # Check if subagent_type is Plan or plan-related
-    if subagent_type in ("plan", "planner"):
-        return True
-
-    # Check prompt for planning keywords
-    plan_keywords = [
-        "計画",
-        "プラン",
-        "plan",
-        "implementation plan",
-        "設計計画",
-        "実装計画",
-    ]
-    return any(keyword in prompt for keyword in plan_keywords)
+    return subagent_type in ("plan", "planner")
 
 
 def _build_codex_command(config: dict) -> str:
@@ -87,6 +81,11 @@ def main():
 
         tool_input = data.get("tool_input", {})
         tool_response = data.get("tool_response", {})
+
+        # バックグラウンド起動時の起動メタデータ（async 起動）では計画がまだ
+        # 完了していないため、提案を出さない
+        if is_async_launch(tool_response):
+            sys.exit(0)
 
         # Check if this was a Plan agent task
         if not is_plan_agent_task(tool_input):

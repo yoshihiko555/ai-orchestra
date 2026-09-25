@@ -761,6 +761,38 @@ def get_field(data: dict, key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Claude Code ハーネスペイロード判定
+# ---------------------------------------------------------------------------
+
+TASK_NOTIFICATION_TAG = "<task-notification>"
+
+
+def is_async_launch(tool_response: object) -> bool:
+    """tool_response が非同期起動メタデータ（結果ではない）かどうかを判定する。
+
+    run_in_background=true で起動した Agent の PostToolUse では、tool_response が
+    実行結果ではなく次のような起動メタデータになる:
+      {"isAsync": True, "status": "async_launched", "agentId": "...", ...}
+    このメタデータをサブエージェント結果として記録してしまうと、後続のサブ
+    エージェントに誤った内容が [Shared Context] として注入されるため、除外する。
+    """
+    if not isinstance(tool_response, dict):
+        return False
+    if tool_response.get("isAsync") is True:
+        return True
+    return tool_response.get("status") == "async_launched"
+
+
+def is_task_notification(prompt: str) -> bool:
+    """prompt がバックグラウンドタスク完了通知（<task-notification> で始まる）かどうかを判定する。
+
+    UserPromptSubmit として届く通知本文はユーザー入力ではないため、
+    エージェントルーティング提案・plan gate 解除の対象から除外する。
+    """
+    return prompt.lstrip().startswith(TASK_NOTIFICATION_TAG)
+
+
+# ---------------------------------------------------------------------------
 # テストファイル判定
 # ---------------------------------------------------------------------------
 

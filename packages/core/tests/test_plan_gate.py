@@ -103,6 +103,24 @@ class TestSetPlanGate:
         assert result.returncode == 0
         assert not _gate_path(tmp_path).exists()
 
+    def test_subprocess_does_not_create_gate_for_async_launch_response(
+        self, tmp_path: Path
+    ) -> None:
+        payload = {
+            "tool_name": "Task",
+            "tool_input": {"subagent_type": "planner"},
+            "tool_response": {
+                "isAsync": True,
+                "status": "async_launched",
+                "agentId": "abc123",
+            },
+            "cwd": str(tmp_path),
+        }
+        result = _run_hook("set-plan-gate.py", payload, tmp_path)
+
+        assert result.returncode == 0
+        assert not _gate_path(tmp_path).exists()
+
     def test_subprocess_does_not_create_gate_when_response_has_nonzero_exit_code(
         self, tmp_path: Path
     ) -> None:

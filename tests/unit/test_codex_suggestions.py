@@ -237,37 +237,40 @@ class TestIsPlanAgentTask:
         assert codex_plan.is_plan_agent_task({"subagent_type": "Planner"}) is True
 
     def test_non_plan_agent(self):
-        """plan 以外は prompt キーワードで判定。"""
+        """plan 以外は False（発火条件は subagent_type のみ、Issue #452）。"""
         assert codex_plan.is_plan_agent_task({"subagent_type": "researcher"}) is False
 
-    def test_plan_keyword_in_prompt_japanese(self):
-        """日本語の計画キーワードで True。"""
+    def test_plan_keyword_in_prompt_japanese_no_longer_matches(self):
+        """日本語の計画キーワードが prompt に含まれていても、subagent_type が
+        plan/planner でなければ False（Issue #452: prompt 部分一致は
+        "Plans.md" 等で誤発火するため廃止。暫定仕様は EV-17 参照）。
+        """
         assert (
             codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "実装計画を立てて"})
-            is True
+            is False
         )
         assert (
             codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "プランを作成"})
-            is True
+            is False
         )
         assert (
             codex_plan.is_plan_agent_task(
                 {"subagent_type": "other", "prompt": "設計計画をまとめて"}
             )
-            is True
+            is False
         )
         assert (
             codex_plan.is_plan_agent_task({"subagent_type": "other", "prompt": "プランを考えて"})
-            is True
+            is False
         )
 
-    def test_plan_keyword_in_prompt_english(self):
-        """英語の plan キーワードで True。"""
+    def test_plan_keyword_in_prompt_english_no_longer_matches(self):
+        """英語の plan キーワードが prompt に含まれていても False（Issue #452）。"""
         assert (
             codex_plan.is_plan_agent_task(
                 {"subagent_type": "other", "prompt": "create implementation plan"}
             )
-            is True
+            is False
         )
 
     def test_no_plan_keywords(self):
