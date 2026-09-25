@@ -158,10 +158,13 @@ Key files to review:
 - .claude/Plans.md — Full task state (update markers as you complete tasks)
 - {other relevant files from working context}
 
+Before the first commit, check the current branch: if it is the base branch
+(main / master / develop / staging / stage), create a feature branch first
+(`git switch -c <type>/<short-name>`); never commit to the base branch.
 When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`,
-then commit that task's changes (including Plans.md is not needed; it is gitignored)
-with a descriptive message. Do not push; Claude Code creates the PR with `/pr-create`
-from the committed work.
+then commit that task's changes with a descriptive message. Do not stage
+`.claude/Plans.md` (it is a local working file, not part of the change). Do not push;
+Claude Code creates the PR with `/pr-create` from the committed work.
 ```
 
 ### Step 4: ユーザーへの案内
