@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import sys
 import time
 
@@ -216,6 +217,112 @@ def test_main_outputs_suggestion_when_project_local_config_exists(tmp_path, monk
     data = {
         "tool_input": {"file_path": "src/core/engine.py", "content": "class Engine: pass"},
         "cwd": str(project_dir),
+    }
+    stdout, _stderr, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+
+    output = json.loads(stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "[Codex Suggestion]" in context
+
+
+# --- EV-19: プロジェクト外パスの除外 ---
+
+
+def test_main_ev_19_no_output_for_outside_absolute_path(tmp_path, monkeypatch) -> None:
+    """EV-19: プロジェクト外の絶対パスには提案を出力しない。"""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(check_codex_before_write, "has_project_config", lambda *_: True)
+    monkeypatch.setattr(
+        check_codex_before_write, "load_package_config", lambda *_: {"codex": {"enabled": True}}
+    )
+    data = {
+        "tool_input": {
+            "file_path": str(tmp_path / "outside" / "engine.py"),
+            "content": "class Engine: pass",
+        },
+        "cwd": str(tmp_path / "project"),
+    }
+    stdout, _stderr, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+    assert stdout == ""
+
+
+def test_main_ev_19_outputs_suggestion_for_inside_absolute_path(tmp_path, monkeypatch) -> None:
+    """EV-19: プロジェクト内の絶対パスには従来どおり提案を出力する。"""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(check_codex_before_write, "has_project_config", lambda *_: True)
+    monkeypatch.setattr(
+        check_codex_before_write, "load_package_config", lambda *_: {"codex": {"enabled": True}}
+    )
+    data = {
+        "tool_input": {
+            "file_path": str(tmp_path / "project" / "src" / "core" / "engine.py"),
+            "content": "class Engine: pass",
+        },
+        "cwd": str(tmp_path / "project"),
+    }
+    stdout, _stderr, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+
+    output = json.loads(stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "[Codex Suggestion]" in context
+
+
+def test_main_ev_19_outputs_suggestion_for_inside_relative_path(tmp_path, monkeypatch) -> None:
+    """EV-19: 相対パスはプロジェクトルート基準で解決して提案を出力する。"""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(check_codex_before_write, "has_project_config", lambda *_: True)
+    monkeypatch.setattr(
+        check_codex_before_write, "load_package_config", lambda *_: {"codex": {"enabled": True}}
+    )
+    data = {
+        "tool_input": {"file_path": "src/core/engine.py", "content": "class Engine: pass"},
+        "cwd": str(tmp_path / "project"),
+    }
+    stdout, _stderr, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+
+    output = json.loads(stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "[Codex Suggestion]" in context
+
+
+def test_main_ev_19_no_output_for_inside_symlink_to_outside(tmp_path, monkeypatch) -> None:
+    """EV-19: プロジェクト内から外を指すシンボリックリンクには提案を出力しない。"""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(check_codex_before_write, "has_project_config", lambda *_: True)
+    monkeypatch.setattr(
+        check_codex_before_write, "load_package_config", lambda *_: {"codex": {"enabled": True}}
+    )
+    project_dir = tmp_path / "project"
+    outside_dir = tmp_path / "outside"
+    project_dir.mkdir()
+    outside_dir.mkdir()
+    outside_file = outside_dir / "engine.py"
+    outside_file.write_text("class Engine: pass", encoding="utf-8")
+    linked_file = project_dir / "linked_engine.py"
+    os.symlink(outside_file, linked_file)
+
+    data = {
+        "tool_input": {"file_path": str(linked_file), "content": "class Engine: pass"},
+        "cwd": str(project_dir),
+    }
+    stdout, _stderr, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+    assert stdout == ""
+
+
+def test_main_ev_19_outputs_suggestion_when_project_root_is_unresolved(monkeypatch) -> None:
+    """EV-19: プロジェクトルート不明時は fail-open で従来どおり提案を出力する。"""
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    monkeypatch.setattr(check_codex_before_write, "has_project_config", lambda *_: True)
+    monkeypatch.setattr(
+        check_codex_before_write, "load_package_config", lambda *_: {"codex": {"enabled": True}}
+    )
+    data = {
+        "tool_input": {"file_path": "src/core/engine.py", "content": "class Engine: pass"},
     }
     stdout, _stderr, exit_code = _run_main_with_stdin(data)
     assert exit_code == 0

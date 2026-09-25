@@ -9,6 +9,7 @@ for design decisions, complex implementations, or architectural changes.
 import json
 import os
 import sys
+from pathlib import Path
 
 # hook_common を $AI_ORCHESTRA_DIR/packages/core/hooks/ から読み込む
 _orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
@@ -40,6 +41,33 @@ def validate_input(file_path: str, content: str) -> bool:
     if ".." in file_path:
         return False
     return True
+
+
+def _resolve_project_root(data: dict) -> str:
+    """Resolve the project root used for file containment checks."""
+    project_root = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if project_root:
+        return project_root
+    return data.get("cwd", "") or ""
+
+
+def _is_within_project(file_path: str, project_root: str) -> bool:
+    """Return whether file_path resolves inside project_root."""
+    if not project_root:
+        return True
+
+    try:
+        resolved_project_root = Path(project_root).resolve()
+        resolved_file_path = Path(file_path)
+        if not resolved_file_path.is_absolute():
+            resolved_file_path = resolved_project_root / resolved_file_path
+        resolved_file_path = resolved_file_path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        # Unlike to_relative_path() in update-working-context.py, this intentionally
+        # fails open so an unexpected resolution error does not suppress a suggestion.
+        return True
+
+    return resolved_file_path.is_relative_to(resolved_project_root)
 
 
 # Patterns that suggest design/architecture decisions
@@ -165,6 +193,10 @@ def main():
         content = tool_input.get("content", "") or tool_input.get("new_string", "")
 
         if not validate_input(file_path, content):
+            sys.exit(0)
+
+        project_root = _resolve_project_root(data)
+        if not _is_within_project(file_path, project_root):
             sys.exit(0)
 
         should_suggest, reason = should_suggest_codex(file_path, content, tool_name=tool_name)

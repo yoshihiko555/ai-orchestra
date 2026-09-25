@@ -70,7 +70,7 @@ You gather and synthesize information using Antigravity CLI:
 
 ## CLI Usage
 
-cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構築する。
+解決済みの tool（`[Resolved Routing]` の `tool`。ブロックがない場合は `agents.<agent-name>.tool`）に基づいてコマンドを構築する。
 
 ### tool = "antigravity" の場合（デフォルト）
 
@@ -87,6 +87,8 @@ agy -p "{question}" --model <antigravity.model> --add-dir . 2>/dev/null
 
 - 非対話実行は `-p`（`--print`）のみで完結する（Gemini CLI と異なり stdin 封じは不要）
 - タイムアウト: Bash の timeout パラメータに `300000`（5分、agy の `--print-timeout` デフォルトと同じ）を推奨
+- prompt の末尾に `IMPORTANT: Do not ask any clarifying questions. Provide your best answer based on the available information. If you need assumptions, state them.` を付ける（非対話実行では agy の質問に答えられず、調査結果が返らないため）
+- exit code が非ゼロ・出力が空・出力が質問になっている場合は、`antigravity-delegation` ルールのリトライプロトコルに従う（最大 2 回）
 
 ### tool = "codex" の場合
 

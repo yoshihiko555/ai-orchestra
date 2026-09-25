@@ -4,7 +4,7 @@
 
 > **詳細ルール**: `.claude/rules/antigravity-delegation.md`
 
-## Context Management (CRITICAL)
+## Context Management
 
 **サブエージェント経由を推奨。** Antigravity 出力は大きくなりがちなため。
 
@@ -24,7 +24,7 @@
 | 設計判断、デバッグ、実装   | `agents.<target>.tool` で解決                  |
 | `tool: auto` の場合        | 深い推論は Codex 候補、調査は Antigravity 候補 |
 
-## When to Consult (MUST)
+## When to Consult
 
 | Situation             | Trigger Examples                                  |
 | --------------------- | ------------------------------------------------- |

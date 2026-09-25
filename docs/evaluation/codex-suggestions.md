@@ -3,7 +3,7 @@
 **パッケージ**: `packages/codex-suggestions`
 **類型**: hook 型
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-09-25（Issue #452 レビュー指摘対応: EV-18 を新設。after-plan は `tool_response` が async 起動メタデータのとき発火しないことを追加（判定は `hook_common.is_async_launch` に集約）。前回: Issue #452: EV-17 を新設し after-plan 発火条件を「暫定仕様（subagent_type のみ）」として確定、prompt 部分一致（plan_keywords）を廃止。正式な発火条件と Claude-only 環境を前提にした設計原則の見直しは Issue #456 で行う。前回レビュー 2026-07-03: EV-15 を仕様確定、EV-07・EV-10 を欠番化。裁定内容は §3 参照）
+**最終レビュー日**: 2026-09-25（Issue #452 レビュー指摘対応: EV-18 を新設。after-plan は `tool_response` が async 起動メタデータのとき発火しないことを追加（判定は `hook_common.is_async_launch` に集約）。前回: Issue #452: EV-17 を新設し after-plan 発火条件を「暫定仕様（subagent_type のみ）」として確定、prompt 部分一致（plan_keywords）を廃止。正式な発火条件と Claude-only 環境を前提にした設計原則の見直しは Issue #456 で行う。前回レビュー 2026-07-03: EV-15 を仕様確定、EV-07・EV-10 を欠番化。裁定内容は §3 参照）／EV-19（before-write のプロジェクト外パス除外、2026-09-25 追加）は未レビュー（人間レビュー待ち）
 **情報源**: docs/reference/packages.md（codex-suggestions セクション）, .claude/rules/codex-suggestion-compliance.md, .claude/rules/codex-delegation.md, .claude/rules/config-loading.md（補助: packages/codex-suggestions/manifest.json, hooks/check-codex-before-write.py, hooks/check-codex-after-plan.py, packages/core/hooks/hook_common.py の実装挙動）
 
 ## 1. 責務定義
@@ -40,6 +40,7 @@
 
 - [ ] EV-17（境界 / must）: after-plan: **暫定仕様** — `tool_input.subagent_type` が `plan` / `planner`（大文字小文字不問）のときのみ発火し、prompt の部分一致（`plan` / `計画` 等）では発火しない（`Plans.md` を含むだけのプロンプトで誤発火するため廃止）— 根拠: Issue #452。正式な発火条件と Claude-only 環境を前提にした設計原則の見直しは Issue #456 で行う — 自動テスト: 否定側 `packages/codex-suggestions/tests/test_check_codex_after_plan.py -k substring`、肯定側 `test_is_plan_agent_task_true_for_subagent_type_only`（同ファイル）
 - [ ] EV-18（境界 / must）: after-plan: `tool_response` が async 起動メタデータ（`isAsync: true` または `status: async_launched`）のときは発火しない（判定は `hook_common.is_async_launch` に集約）— 根拠: Issue #452（バックグラウンド起動時点では計画がまだ完了していないため）— 自動テスト: `packages/codex-suggestions/tests/test_check_codex_after_plan.py -k async`
+- [ ] EV-19（境界 / must）[2026-09-25 追加]: before-write: `file_path` がプロジェクトルート（`CLAUDE_PROJECT_DIR` → hook 入力の `cwd` の順で解決）配下に解決できない場合（scratchpad・メモリ・他リポジトリ等）は、他の発火条件を満たしても `[Codex Suggestion]` を出力しない。相対パスはプロジェクトルート基準で解決し、シンボリックリンク等で解決後にプロジェクト外を指す場合も対象外とする。プロジェクトルートを解決できない場合は従来どおり判定する（fail-open: 提案を抑制しすぎない） — 根拠: プロジェクト外のファイルは Codex 相談の対象にならず、提案はノイズになる（`update-working-context` がプロジェクト外の変更を記録しないのと同じ方針）
 
 > **after-plan 発火条件の再検討（EV-07・EV-10 欠番, 2026-07-03 → EV-17 で暫定仕様確定, 2026-09-25）**: 当初 after-plan hook は「計画・レビュー系のサブエージェントタスク完了後に Codex レビューを促す」用途を想定していたが、現状その用途はほぼ使われない見込み。Plan 系タスクの判定条件・非該当時の無出力が「あるべき仕様」かは未確定だったため、Issue #452 で prompt 部分一致による誤発火（`Plans.md` 等を含むだけのプロンプト）を解消する暫定仕様（EV-17: `subagent_type` のみで判定）を確定した。正式な発火条件の再定義（または after-plan hook の廃止）と Claude-only 環境を前提にした設計原則の見直しは Issue #456 で検討する。
 
