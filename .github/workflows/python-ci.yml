@@ -49,6 +49,34 @@ jobs:
           AI_ORCHESTRA_DIR: ${{ github.workspace }}
         run: pytest tests/e2e/ -v
 
+  package-test:
+    # packages/*/tests を一括実行する。新規パッケージも自動で対象になる。
+    # 除外・skip されるもの:
+    # - packages/meta-harness: srt（sandbox-runtime）が必要なため下の meta-harness-test（macOS）と
+    #   meta-harness-docker-containment（Docker）で実行する
+    # - loop-harness の pytest.mark.docker テスト（test_loop_driver_docker_containment_e2e.py /
+    #   test_loop_git_ephemeral_docker_e2e.py）: 実 Docker とビルド済みシナリオイメージが前提の
+    #   opt-in E2E。LOOP_HARNESS_RUN_DOCKER_GIT_E2E=1 のときだけ走り、ここでは skip される（-rs で表示）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Run package tests
+        env:
+          AI_ORCHESTRA_DIR: ${{ github.workspace }}
+        run: python -m pytest -q -rs packages --ignore=packages/meta-harness
+
   meta-harness-test:
     runs-on: macos-latest
     steps:
