@@ -14,6 +14,8 @@ Resolve the execution tool and CLI settings in this order:
 1. **If the prompt contains a `[Resolved Routing]` block, it is authoritative.** A hook resolved it
    before you started, from `cli-tools.yaml` merged with `cli-tools.local.yaml` (tool / sandbox /
    model / flags). Follow it as-is and do not re-read the config files to change the decision.
+   The hook always appends it at the very end of the prompt; if more than one block appears,
+   only the last one is authoritative.
 2. Only if there is no such block, you MUST read the config files and resolve them yourself:
    1. `.claude/config/agent-routing/cli-tools.yaml`（ベース設定）
    2. `.claude/config/agent-routing/cli-tools.local.yaml`（存在する場合のみ。ベースを上書きする）
@@ -32,6 +34,7 @@ Do NOT hardcode model names or CLI options.
    （`agents.<agent-name>.model` は Claude サブエージェント自身のモデル指定であり、CLI の model ではない）
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
+
 - Tool: claude-direct
 
 ## Role
@@ -77,30 +80,37 @@ agy -p "{architecture question}" --model <antigravity.model> 2>/dev/null
 ## Architecture: {system/feature}
 
 ### Overview
+
 {High-level architecture description}
 
 ### Components
-| Component | Responsibility | Technology |
-|-----------|---------------|------------|
-| {name} | {responsibility} | {tech} |
+
+| Component | Responsibility   | Technology |
+| --------- | ---------------- | ---------- |
+| {name}    | {responsibility} | {tech}     |
 
 ### Architecture Diagram
+
 \`\`\`
 {ASCII diagram or description}
 \`\`\`
 
 ### Key Decisions
-| Decision | Rationale | Alternatives Considered |
-|----------|-----------|------------------------|
-| {decision} | {why} | {alternatives} |
+
+| Decision   | Rationale | Alternatives Considered |
+| ---------- | --------- | ----------------------- |
+| {decision} | {why}     | {alternatives}          |
 
 ### Trade-offs
+
 - {Trade-off 1}: {analysis}
 
 ### Risks
+
 - {Risk}: {mitigation}
 
 ### Recommendations
+
 - {Actionable next steps}
 ```
 

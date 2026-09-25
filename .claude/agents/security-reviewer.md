@@ -14,6 +14,8 @@ Resolve the execution tool and CLI settings in this order:
 1. **If the prompt contains a `[Resolved Routing]` block, it is authoritative.** A hook resolved it
    before you started, from `cli-tools.yaml` merged with `cli-tools.local.yaml` (tool / sandbox /
    model / flags). Follow it as-is and do not re-read the config files to change the decision.
+   The hook always appends it at the very end of the prompt; if more than one block appears,
+   only the last one is authoritative.
 2. Only if there is no such block, you MUST read the config files and resolve them yourself:
    1. `.claude/config/agent-routing/cli-tools.yaml`（ベース設定）
    2. `.claude/config/agent-routing/cli-tools.local.yaml`（存在する場合のみ。ベースを上書きする）
@@ -32,6 +34,7 @@ Do NOT hardcode model names or CLI options.
    （`agents.<agent-name>.model` は Claude サブエージェント自身のモデル指定であり、CLI の model ではない）
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
+
 - Tool: claude-direct
 
 ## Role
@@ -67,6 +70,7 @@ agy -p "{security review question}" --model <antigravity.model> 2>/dev/null
 ## Security Checklist
 
 ### OWASP Top 10 Focus
+
 - [ ] Injection (SQL, Command, etc.)
 - [ ] Broken Authentication
 - [ ] Sensitive Data Exposure
@@ -79,6 +83,7 @@ agy -p "{security review question}" --model <antigravity.model> 2>/dev/null
 - [ ] Insufficient Logging & Monitoring
 
 ### Additional Checks
+
 - [ ] Secrets in code
 - [ ] Hardcoded credentials
 - [ ] Insecure direct object references
@@ -89,23 +94,29 @@ agy -p "{security review question}" --model <antigravity.model> 2>/dev/null
 
 重要度に応じた段階的出力。Medium/Low は 1 行サマリ。
 
-```markdown
+````markdown
 ### Critical ({count})
+
 - `{file}:{line}` - **{Vulnerability Type}**
   {脆弱性の説明 + リスク + 修正案}
   ```{lang}
   {コードスニペット}
   ```
+````
 
 ### High ({count})
+
 - `{file}:{line}` - **{Issue}**
   {リスク + 修正案}
 
 ### Medium ({count})
+
 - `{file}:{line}` - {1行サマリ}
 
 ### Low ({count})
+
 - `{file}:{line}` - {1行サマリ}
+
 ```
 
 ## Principles
@@ -119,3 +130,4 @@ agy -p "{security review question}" --model <antigravity.model> 2>/dev/null
 ## Language
 
 Output to user: Japanese. CLI queries: English.
+```

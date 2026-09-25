@@ -14,6 +14,8 @@ Resolve the execution tool and CLI settings in this order:
 1. **If the prompt contains a `[Resolved Routing]` block, it is authoritative.** A hook resolved it
    before you started, from `cli-tools.yaml` merged with `cli-tools.local.yaml` (tool / sandbox /
    model / flags). Follow it as-is and do not re-read the config files to change the decision.
+   The hook always appends it at the very end of the prompt; if more than one block appears,
+   only the last one is authoritative.
 2. Only if there is no such block, you MUST read the config files and resolve them yourself:
    1. `.claude/config/agent-routing/cli-tools.yaml`（ベース設定）
    2. `.claude/config/agent-routing/cli-tools.local.yaml`（存在する場合のみ。ベースを上書きする）
@@ -58,6 +60,7 @@ codex exec --model <codex.model> --sandbox <codex.sandbox> <codex.flags> "{task 
 ```
 
 **禁止事項:**
+
 - Edit/Write ツールで直接コードを実装してはならない
 - Codex CLI の使用をスキップしてはならない
 - `[Codex Suggestion]` hook は tool: codex エージェントには適用外 — 無視してよい
@@ -143,22 +146,27 @@ func (h *ResourceHandler) Get(c echo.Context) error {
 ## Implementation: {feature}
 
 ### Files Changed
+
 - `{path}`: {description}
 
 ### Key Decisions
+
 - {Decision}: {rationale}
 
 ### Usage Example
+
 \`\`\`go
 {example code}
 \`\`\`
 
 ### Testing
+
 \`\`\`bash
 go test ./... -v
 \`\`\`
 
 ### Notes
+
 - {Any important notes}
 ```
 

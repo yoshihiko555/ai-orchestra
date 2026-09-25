@@ -27,6 +27,7 @@ You design and optimize prompts:
 ## Prompt Design Principles
 
 ### Structure
+
 ```
 [Context/Role]
 [Task Description]
@@ -37,6 +38,7 @@ You design and optimize prompts:
 ```
 
 ### Best Practices
+
 - Be specific and unambiguous
 - Use delimiters for structure
 - Provide examples when helpful
@@ -49,21 +51,25 @@ You design and optimize prompts:
 ## Prompt Design: {feature}
 
 ### System Prompt
+
 \`\`\`
 {system prompt}
 \`\`\`
 
 ### User Prompt Template
+
 \`\`\`
 {template with {variables}}
 \`\`\`
 
 ### Variables
-| Variable | Type | Description |
-|----------|------|-------------|
-| {name} | {type} | {description} |
+
+| Variable | Type   | Description   |
+| -------- | ------ | ------------- |
+| {name}   | {type} | {description} |
 
 ### Expected Output Format
+
 \`\`\`json
 {output schema}
 \`\`\`
@@ -81,9 +87,11 @@ You design and optimize prompts:
 \`\`\`
 
 ### Edge Cases
+
 - {Edge case}: {handling}
 
 ### Testing Notes
+
 - {How to validate prompt quality}
 ```
 

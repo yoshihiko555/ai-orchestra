@@ -14,6 +14,8 @@ Resolve the execution tool and CLI settings in this order:
 1. **If the prompt contains a `[Resolved Routing]` block, it is authoritative.** A hook resolved it
    before you started, from `cli-tools.yaml` merged with `cli-tools.local.yaml` (tool / sandbox /
    model / flags). Follow it as-is and do not re-read the config files to change the decision.
+   The hook always appends it at the very end of the prompt; if more than one block appears,
+   only the last one is authoritative.
 2. Only if there is no such block, you MUST read the config files and resolve them yourself:
    1. `.claude/config/agent-routing/cli-tools.yaml`（ベース設定）
    2. `.claude/config/agent-routing/cli-tools.local.yaml`（存在する場合のみ。ベースを上書きする）
@@ -32,6 +34,7 @@ Do NOT hardcode model names or CLI options.
    （`agents.<agent-name>.model` は Claude サブエージェント自身のモデル指定であり、CLI の model ではない）
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
+
 - Tool: claude-direct
 
 ## Role
@@ -67,27 +70,32 @@ agy -p "{performance review question}" --model <antigravity.model> 2>/dev/null
 ## Performance Checklist
 
 ### Computation
+
 - [ ] Algorithm complexity (O notation)
 - [ ] Unnecessary iterations
 - [ ] Redundant calculations
 
 ### Database
+
 - [ ] N+1 queries
 - [ ] Missing indexes
 - [ ] Unoptimized queries
 - [ ] Unnecessary data fetching
 
 ### I/O
+
 - [ ] Blocking operations
 - [ ] Unnecessary network calls
 - [ ] Large file handling
 
 ### Memory
+
 - [ ] Memory leaks
 - [ ] Large object creation in loops
 - [ ] Unbounded growth
 
 ### Caching
+
 - [ ] Caching opportunities
 - [ ] Cache invalidation strategy
 
@@ -95,23 +103,29 @@ agy -p "{performance review question}" --model <antigravity.model> 2>/dev/null
 
 重要度に応じた段階的出力。Medium/Low は 1 行サマリ。
 
-```markdown
+````markdown
 ### Critical ({count})
+
 - `{file}:{line}` - **{Issue}**
   {問題の説明 + 計算量 + 影響 + 修正案}
   ```{lang}
   {コードスニペット}
   ```
+````
 
 ### High ({count})
+
 - `{file}:{line}` - **{Issue}**
   {影響 + 修正案}
 
 ### Medium ({count})
+
 - `{file}:{line}` - {1行サマリ}
 
 ### Low ({count})
+
 - `{file}:{line}` - {1行サマリ}
+
 ```
 
 ## Principles
@@ -125,3 +139,4 @@ agy -p "{performance review question}" --model <antigravity.model> 2>/dev/null
 ## Language
 
 Output to user: Japanese. CLI queries: English.
+```

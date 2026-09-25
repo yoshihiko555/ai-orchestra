@@ -50,7 +50,7 @@ core は全パッケージが依存する共通基盤であり、(1) `Plans.md` 
 - [ ] EV-06（異常 / must）: プランゲートが pending の状態で実装系エージェントが呼び出された場合、`check-plan-gate.py` が exit code 2 でツール呼び出しをブロックする — 根拠: architecture.md 5.1 / 5.2
 - [ ] EV-07（正常 / must）: UserPromptSubmit（ユーザーの次メッセージ送信）でプランゲートが解除される — 根拠: docs/reference/packages.md, architecture.md 5.1
 - [ ] EV-08（正常 / must）: SessionStart 時に `.claude/context/`（`session/`, `shared/`）が初期化される — 根拠: context-sharing.md
-- [ ] EV-09（正常 / must）: サブエージェント（Agent/Task）起動前に、直近のサブエージェント結果と working-context が `[Shared Context]`（`## Previous Agent Results` + `## Working Context`）形式で prompt 末尾に注入される。起動エージェントが `cli-tools.yaml` の `agents` に定義されている場合は、解決済みルーティング `[Resolved Routing]` も同じ hook が同じ `updatedInput` で注入し、shared context が空でもこちらは注入する（仕様の詳細は agent-routing 評価セット EV-04 / EV-27〜29） — 根拠: context-sharing.md, Issue #453
+- [ ] EV-09（正常 / must）: サブエージェント（Agent/Task）起動前に、直近のサブエージェント結果と working-context が `[Shared Context]`（`## Previous Agent Results` + `## Working Context`）形式で prompt 末尾に注入される。起動エージェントが `cli-tools.yaml` の `agents` に定義されている場合は、解決済みルーティング `[Resolved Routing]` も同じ hook が同じ `updatedInput` で注入し、shared context が空でもこちらは注入する。`[Resolved Routing]` は常に prompt の最後に置き、shared context に展開する値は 1 行に畳む（過去のサブエージェント出力で偽のルーティングブロックを作らせないため）（仕様の詳細は agent-routing 評価セット EV-04 / EV-27〜29） — 根拠: context-sharing.md, Issue #453
 - [ ] EV-10（境界 / should）: 注入されるサブエージェント結果エントリーは最新 5 件までに制限され、各エントリーの summary は 200 文字にトランケートされる — 根拠: context-sharing.md
 - [ ] EV-11（境界 / should）: 注入される modified_files は最新 20 件までに制限される — 根拠: context-sharing.md
 - [ ] EV-12（正常 / must）: サブエージェント完了後、結果サマリー（`tool_response` 先頭 2000 文字）が `session/entries/{agent_id}_{timestamp}.json` として書き出される — 根拠: architecture.md 9.2

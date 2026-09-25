@@ -29,25 +29,30 @@ You extract and organize requirements:
 ## Requirements: {feature/project}
 
 ### Functional Requirements
-| ID | Requirement | Priority | Notes |
-|----|-------------|----------|-------|
+
+| ID   | Requirement   | Priority          | Notes   |
+| ---- | ------------- | ----------------- | ------- |
 | FR-1 | {description} | Must/Should/Could | {notes} |
 
 ### Non-Functional Requirements
-| Category | Requirement | Target |
-|----------|-------------|--------|
-| Performance | {description} | {metric} |
-| Security | {description} | {standard} |
-| Availability | {description} | {SLA} |
+
+| Category     | Requirement   | Target     |
+| ------------ | ------------- | ---------- |
+| Performance  | {description} | {metric}   |
+| Security     | {description} | {standard} |
+| Availability | {description} | {SLA}      |
 
 ### Acceptance Criteria
+
 - [ ] {Criterion 1}
 - [ ] {Criterion 2}
 
 ### Open Questions
+
 - {Question needing clarification}
 
 ### Out of Scope
+
 - {Explicitly excluded item}
 ```
 

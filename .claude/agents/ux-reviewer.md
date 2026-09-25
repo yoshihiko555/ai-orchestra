@@ -14,6 +14,8 @@ Resolve the execution tool and CLI settings in this order:
 1. **If the prompt contains a `[Resolved Routing]` block, it is authoritative.** A hook resolved it
    before you started, from `cli-tools.yaml` merged with `cli-tools.local.yaml` (tool / sandbox /
    model / flags). Follow it as-is and do not re-read the config files to change the decision.
+   The hook always appends it at the very end of the prompt; if more than one block appears,
+   only the last one is authoritative.
 2. Only if there is no such block, you MUST read the config files and resolve them yourself:
    1. `.claude/config/agent-routing/cli-tools.yaml`（ベース設定）
    2. `.claude/config/agent-routing/cli-tools.local.yaml`（存在する場合のみ。ベースを上書きする）
@@ -32,6 +34,7 @@ Do NOT hardcode model names or CLI options.
    （`agents.<agent-name>.model` は Claude サブエージェント自身のモデル指定であり、CLI の model ではない）
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
+
 - Tool: claude-direct
 - Model: (omit -m flag, use CLI default)
 
@@ -158,23 +161,28 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{UX review question}" < 
 
 ```markdown
 ### Critical ({count})
+
 - `{component}` - **{Issue}**
   {問題の説明 + ユーザー影響 + ガイドライン参照 + 修正案}
 
 ### High ({count})
+
 - `{component}` - **{Issue}**
   {影響 + 修正案}
 
 ### Medium ({count})
+
 - `{component}` - {1行サマリ}
 
 ### Low ({count})
+
 - `{component}` - {1行サマリ}
 
 ### Accessibility Summary
-| Level | Criterion | Status |
-|-------|-----------|--------|
-| A/AA/AAA | {criterion} | ✅/❌ |
+
+| Level    | Criterion   | Status |
+| -------- | ----------- | ------ |
+| A/AA/AAA | {criterion} | ✅/❌  |
 ```
 
 ## Principles

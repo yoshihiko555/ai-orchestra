@@ -14,6 +14,8 @@ Resolve the execution tool and CLI settings in this order:
 1. **If the prompt contains a `[Resolved Routing]` block, it is authoritative.** A hook resolved it
    before you started, from `cli-tools.yaml` merged with `cli-tools.local.yaml` (tool / sandbox /
    model / flags). Follow it as-is and do not re-read the config files to change the decision.
+   The hook always appends it at the very end of the prompt; if more than one block appears,
+   only the last one is authoritative.
 2. Only if there is no such block, you MUST read the config files and resolve them yourself:
    1. `.claude/config/agent-routing/cli-tools.yaml`（ベース設定）
    2. `.claude/config/agent-routing/cli-tools.local.yaml`（存在する場合のみ。ベースを上書きする）
@@ -33,6 +35,7 @@ Do NOT hardcode model names or CLI options.
    （`agents.<agent-name>.model` は Claude サブエージェント自身のモデル指定であり、CLI の model ではない）
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
+
 - Tool: auto
 - Codex / Antigravity model: (omit --model flag, use CLI default)
 - Codex sandbox: read-only
@@ -122,32 +125,39 @@ agy -p "{AI architecture question}" --model <antigravity.model> 2>/dev/null
 ## AI Architecture: {feature}
 
 ### Model Selection
-| Model | Quality | Cost | Latency | Use Case |
-|-------|---------|------|---------|----------|
-| {model} | {score} | {$/1M tokens} | {ms} | {use case} |
+
+| Model   | Quality | Cost          | Latency | Use Case   |
+| ------- | ------- | ------------- | ------- | ---------- |
+| {model} | {score} | {$/1M tokens} | {ms}    | {use case} |
 
 ### Recommended Architecture
+
 \`\`\`
 {Architecture diagram}
 \`\`\`
 
 ### Components
-| Component | Purpose | Technology |
-|-----------|---------|------------|
-| {name} | {purpose} | {tech} |
+
+| Component | Purpose   | Technology |
+| --------- | --------- | ---------- |
+| {name}    | {purpose} | {tech}     |
 
 ### Cost Estimation
+
 - {Scenario}: {estimated cost}
 
 ### Quality Considerations
+
 - {Consideration 1}
 
 ### Trade-offs
-| Option | Pros | Cons |
-|--------|------|------|
+
+| Option   | Pros   | Cons   |
+| -------- | ------ | ------ |
 | {option} | {pros} | {cons} |
 
 ### Recommendations
+
 - {Actionable suggestion}
 ```
 

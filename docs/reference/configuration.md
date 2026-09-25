@@ -70,14 +70,14 @@ codex:
   requires_sandbox_disable: true
 ```
 
-| キー                       | 型     | デフォルト        | 説明                              |
-| -------------------------- | ------ | ----------------- | --------------------------------- |
-| `enabled`                  | bool   | `true`            | `false` で Codex 呼び出しを全停止 |
-| `model`                    | string | `gpt-5.3-codex`   | Codex CLI で使用するモデル        |
-| `sandbox.analysis`         | string | `read-only`       | 分析用サンドボックスモード        |
-| `sandbox.implementation`   | string | `workspace-write` | 実装用サンドボックスモード        |
-| `flags`                    | string | `--full-auto`     | Codex CLI に常時付与するフラグ    |
-| `requires_sandbox_disable` | bool   | `true`            | sandbox 外での実行が必要か        |
+| キー                       | 型     | デフォルト        | 説明                                                                                    |
+| -------------------------- | ------ | ----------------- | --------------------------------------------------------------------------------------- |
+| `enabled`                  | bool   | `true`            | `false` で Codex 呼び出しを全停止                                                       |
+| `model`                    | string | `gpt-5.3-codex`   | Codex CLI で使用するモデル                                                              |
+| `sandbox.analysis`         | string | `read-only`       | 分析用サンドボックスモード                                                              |
+| `sandbox.implementation`   | string | `workspace-write` | 実装用サンドボックスモード                                                              |
+| `flags`                    | string | `""`              | Codex CLI に常時付与するフラグ（sandbox を上書きするフラグを含むと Codex は使われない） |
+| `requires_sandbox_disable` | bool   | `true`            | sandbox 外での実行が必要か                                                              |
 
 ### antigravity セクション
 

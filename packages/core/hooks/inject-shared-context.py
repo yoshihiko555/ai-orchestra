@@ -79,6 +79,12 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + "..."
 
 
+def _to_single_line(value: object) -> str:
+    """任意の値を改行を含まない 1 行の文字列に畳む。"""
+    text = value if isinstance(value, str) else str(value)
+    return text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+
+
 def build_entries_section(entries: list[dict[str, Any]]) -> str:
     """セッションエントリーから注入テキストのセクションを構築する。
 
@@ -99,9 +105,9 @@ def build_entries_section(entries: list[dict[str, Any]]) -> str:
 
     lines = ["## Previous Agent Results"]
     for entry in recent:
-        agent_id = entry.get("agent_id") or "unknown"
-        task_name = entry.get("task_name") or ""
-        summary = entry.get("summary") or ""
+        agent_id = _to_single_line(entry.get("agent_id") or "unknown")
+        task_name = _to_single_line(entry.get("task_name") or "")
+        summary = _to_single_line(entry.get("summary") or "")
         truncated = _truncate(summary, _SUMMARY_TRUNCATE)
         lines.append(f"- {agent_id} ({task_name}): {truncated}")
 
@@ -121,15 +127,15 @@ def build_working_context_section(working_ctx: dict[str, Any]) -> str:
     modified_files: list[str] = working_ctx.get("modified_files") or []
     if isinstance(modified_files, list) and modified_files:
         limited = modified_files[-_MAX_MODIFIED_FILES:]
-        lines.append(f"- Modified files: {', '.join(limited)}")
+        lines.append(f"- Modified files: {', '.join(_to_single_line(file) for file in limited)}")
 
     current_phase = working_ctx.get("current_phase") or ""
     if current_phase:
-        lines.append(f"- Current phase: {current_phase}")
+        lines.append(f"- Current phase: {_to_single_line(current_phase)}")
 
     recent_decisions = working_ctx.get("recent_decisions") or ""
     if recent_decisions:
-        lines.append(f"- Recent decisions: {recent_decisions}")
+        lines.append(f"- Recent decisions: {_to_single_line(recent_decisions)}")
 
     # modified_files と既定フィールド以外の追加フィールドも出力する
     known_keys = {"modified_files", "current_phase", "recent_decisions", "updated_at"}
@@ -137,7 +143,7 @@ def build_working_context_section(working_ctx: dict[str, Any]) -> str:
         if key in known_keys:
             continue
         if value:
-            lines.append(f"- {key}: {value}")
+            lines.append(f"- {key}: {_to_single_line(value)}")
 
     # セクション本文が "## Working Context" のみなら空扱いにする
     if len(lines) == 1:
@@ -271,7 +277,7 @@ def main() -> None:
         return
 
     routing_part = f"\n\n{routing_text}" if routing_text else ""
-    combined = routing_part + injection
+    combined = injection + routing_part
 
     # additionalContext: オーケストレーターに表示される
     # updatedInput: サブエージェントの prompt に直接注入される

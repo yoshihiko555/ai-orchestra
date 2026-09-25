@@ -42,6 +42,13 @@ DEFAULT_CODEX_FLAGS = ""
 # 基づく fail-closed 判定。`--full-auto` も実 CLI で read-only を
 # workspace-write に拡張するため、codex.flags に含まれる場合は Codex を無効化する。
 CODEX_BYPASS_FLAGS = ("--dangerously-bypass-approvals-and-sandbox", "--yolo", "--full-auto")
+# シェルへ未引用のまま渡される codex.flags / codex.model の許可文字集合。
+# 引用符・$・バッククォート・バックスラッシュ・; | & < > ( ) ・改行を含め、
+# Bash のワード分割/クォート除去で Python 側の str.split() 判定を欺けそうな
+# 文字を一切許可しない（.claude/rules/codex-delegation.md の
+# 「Bash サンドボックス制約」条件 2）。
+_CODEX_FLAGS_SAFE_PATTERN = re.compile(r"[A-Za-z0-9_.,:/@+=\- ]*")
+_CODEX_MODEL_SAFE_PATTERN = re.compile(r"[A-Za-z0-9_.,:/@+=\-]+")
 # 空文字 = --model フラグを省略し、Antigravity CLI のデフォルトモデルに委ねる意図。
 DEFAULT_ANTIGRAVITY_MODEL = ""
 DEFAULT_ANTIGRAVITY_FLAGS = ""
@@ -395,17 +402,25 @@ def _resolve_codex_section(
         is_valid = False
 
     model = codex_config.get("model") or DEFAULT_CODEX_MODEL
-    if isinstance(flags, str) and not _is_single_line_str(flags):
-        notes.append("codex.flags must be a single-line string -> codex disabled")
+    if isinstance(flags, str) and not _CODEX_FLAGS_SAFE_PATTERN.fullmatch(flags):
+        notes.append("codex.flags contains characters outside the allowed set -> codex disabled")
         is_valid = False
-    if not isinstance(model, str) or not _is_single_line_str(model):
-        notes.append("codex.model must be a single-line string -> codex disabled")
+    if not isinstance(model, str) or not _CODEX_MODEL_SAFE_PATTERN.fullmatch(model):
+        notes.append("codex.model contains characters outside the allowed set -> codex disabled")
         is_valid = False
+
+    raw_requires_sandbox_disable = codex_config.get("requires_sandbox_disable", True)
+    if isinstance(raw_requires_sandbox_disable, bool):
+        requires_sandbox_disable = raw_requires_sandbox_disable
+    else:
+        notes.append("codex.requires_sandbox_disable must be a boolean -> codex disabled")
+        is_valid = False
+        requires_sandbox_disable = True
 
     codex_routing = {
         "model": model,
         "flags": flags,
-        "requires_sandbox_disable": bool(codex_config.get("requires_sandbox_disable", True)),
+        "requires_sandbox_disable": requires_sandbox_disable,
     }
 
     agent_sandbox = agent_config.get("sandbox")

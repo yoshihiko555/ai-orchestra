@@ -33,6 +33,14 @@
 サブエージェント起動時に prompt 末尾に以下が自動追加される:
 
 ```
+[Shared Context]
+## Previous Agent Results
+- {agent_id} ({task_name}): {summary}
+
+## Working Context
+- Modified files: file1.py, file2.py
+- Current phase: implementation
+
 [Resolved Routing]
 Resolved by hook from cli-tools.yaml + cli-tools.local.yaml (merged). Follow these values; do not re-read the config files to decide tool or sandbox. Call only the CLIs that have lines below.
 - agent: debugger
@@ -41,14 +49,6 @@ Resolved by hook from cli-tools.yaml + cli-tools.local.yaml (merged). Follow the
 - codex.sandbox: read-only
 - codex.flags: (none)
 - codex.requires_sandbox_disable: true
-
-[Shared Context]
-## Previous Agent Results
-- {agent_id} ({task_name}): {summary}
-
-## Working Context
-- Modified files: file1.py, file2.py
-- Current phase: implementation
 ```
 
 `[Resolved Routing]` は、起動するエージェント（`subagent_type`。省略時は `general-purpose`）が
@@ -60,6 +60,8 @@ implementation 用の両方を示す）、`read-only` / `workspace-write` 以外
 フラグ（`--dangerously-bypass-approvals-and-sandbox` / `--full-auto` / `--sandbox` 等）があれば Codex を使わない
 （`tool: codex` は `claude-direct` に、`tool: auto` は codex の行を出さない。理由は `note` に書く）。
 `[Shared Context]` は前回の結果か working-context がある場合にだけ付く。
+`[Resolved Routing]` は常に最後に置き、`[Shared Context]` に展開する値は 1 行に畳む
+（過去のサブエージェント出力に偽のルーティングブロックを紛れ込ませないため）。
 
 ## 制限
 

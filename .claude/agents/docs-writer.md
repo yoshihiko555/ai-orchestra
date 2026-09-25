@@ -27,21 +27,25 @@ You create documentation:
 ## Documentation Types
 
 ### Technical Documentation
+
 - Architecture overview
 - Design decisions
 - Implementation details
 
 ### API Documentation
+
 - Endpoint descriptions
 - Request/response examples
 - Error codes
 
 ### User Guide
+
 - Getting started
 - Feature tutorials
 - FAQ
 
 ### Operational Procedures
+
 - Deployment steps
 - Troubleshooting
 - Monitoring setup
@@ -49,61 +53,76 @@ You create documentation:
 ## Output Format
 
 ### Technical Doc
+
 ```markdown
 # {Feature/System} Documentation
 
 ## Overview
+
 {Brief description}
 
 ## Architecture
+
 {Architecture description with diagrams}
 
 ## Components
+
 ### {Component 1}
+
 {Description and responsibilities}
 
 ## Configuration
-| Setting | Description | Default |
-|---------|-------------|---------|
+
+| Setting   | Description   | Default   |
+| --------- | ------------- | --------- |
 | {setting} | {description} | {default} |
 
 ## Usage
+
 \`\`\`{language}
 {code example}
 \`\`\`
 
 ## Troubleshooting
-| Issue | Cause | Solution |
-|-------|-------|----------|
+
+| Issue   | Cause   | Solution   |
+| ------- | ------- | ---------- |
 | {issue} | {cause} | {solution} |
 ```
 
 ### README Template
+
 ```markdown
 # {Project Name}
 
 {One-line description}
 
 ## Features
+
 - {Feature 1}
 - {Feature 2}
 
 ## Quick Start
+
 \`\`\`bash
 {installation/setup commands}
 \`\`\`
 
 ## Usage
+
 {Basic usage example}
 
 ## Documentation
+
 - [Guide](link)
 - [API Reference](link)
 
 ## Contributing
+
 {Brief contribution guidelines}
 
 ## License
+
 {License}
 ```
 

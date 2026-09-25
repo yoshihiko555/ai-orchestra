@@ -141,6 +141,130 @@ def test_sandbox_resolution_non_string_flags_disable_codex() -> None:
 @pytest.mark.parametrize(
     "flags",
     [
+        '--sand"box" danger-full-access',
+        '--dangerously-bypass-approvals-and-sand"box"',
+        '-"s" danger-full-access',
+        "--sandbox\\ x",
+        "$(echo --sandbox)",
+        "`echo x`",
+    ],
+)
+def test_sandbox_resolution_shell_metacharacter_flags_disable_codex(flags: str) -> None:
+    config = {
+        "codex": {
+            "enabled": True,
+            "sandbox": {"analysis": "read-only"},
+            "flags": flags,
+        },
+        "agents": {"reviewer": {"tool": "codex"}},
+    }
+
+    routing = hook_common.resolve_agent_routing("reviewer", config)
+
+    assert routing["tool"] == "claude-direct"
+    assert "codex" not in routing
+    assert (
+        "codex.flags contains characters outside the allowed set -> codex disabled"
+        in routing["notes"]
+    )
+
+
+@pytest.mark.parametrize("model", ["gpt; rm -rf ~", "gpt $(id)"])
+def test_sandbox_resolution_shell_metacharacter_model_disables_codex(model: str) -> None:
+    config = {
+        "codex": {
+            "enabled": True,
+            "model": model,
+            "sandbox": {"analysis": "read-only"},
+        },
+        "agents": {"reviewer": {"tool": "codex"}},
+    }
+
+    routing = hook_common.resolve_agent_routing("reviewer", config)
+
+    assert routing["tool"] == "claude-direct"
+    assert "codex" not in routing
+    assert (
+        "codex.model contains characters outside the allowed set -> codex disabled"
+        in routing["notes"]
+    )
+
+
+def test_sandbox_resolution_safe_model_and_flags_keep_codex() -> None:
+    config = {
+        "codex": {
+            "enabled": True,
+            "model": "gpt-5.6-sol",
+            "sandbox": {"analysis": "read-only"},
+            "flags": "--skip-git-repo-check -c model_reasoning_effort=high",
+        },
+        "agents": {"reviewer": {"tool": "codex"}},
+    }
+
+    routing = hook_common.resolve_agent_routing("reviewer", config)
+
+    assert routing["tool"] == "codex"
+    assert "codex" in routing
+    assert routing["codex"]["model"] == "gpt-5.6-sol"
+    assert routing["codex"]["flags"] == ("--skip-git-repo-check -c model_reasoning_effort=high")
+
+
+@pytest.mark.parametrize("requires_sandbox_disable", ["false", 1])
+def test_sandbox_resolution_non_boolean_requires_sandbox_disable_disables_codex(
+    requires_sandbox_disable: object,
+) -> None:
+    config = {
+        "codex": {
+            "enabled": True,
+            "sandbox": {"analysis": "read-only"},
+            "requires_sandbox_disable": requires_sandbox_disable,
+        },
+        "agents": {"reviewer": {"tool": "codex"}},
+    }
+
+    routing = hook_common.resolve_agent_routing("reviewer", config)
+
+    assert routing["tool"] == "claude-direct"
+    assert "codex" not in routing
+    assert "codex.requires_sandbox_disable must be a boolean -> codex disabled" in routing["notes"]
+
+
+def test_sandbox_resolution_false_requires_sandbox_disable_keeps_codex() -> None:
+    config = {
+        "codex": {
+            "enabled": True,
+            "sandbox": {"analysis": "read-only"},
+            "requires_sandbox_disable": False,
+        },
+        "agents": {"reviewer": {"tool": "codex"}},
+    }
+
+    routing = hook_common.resolve_agent_routing("reviewer", config)
+
+    assert routing["tool"] == "codex"
+    assert "codex" in routing
+    assert routing["codex"]["requires_sandbox_disable"] is False
+
+
+def test_sandbox_resolution_omitted_requires_sandbox_disable_defaults_true() -> None:
+    config = {
+        "codex": {
+            "enabled": True,
+            "sandbox": {"analysis": "read-only"},
+        },
+        "agents": {"reviewer": {"tool": "codex"}},
+    }
+
+    routing = hook_common.resolve_agent_routing("reviewer", config)
+
+    assert routing["tool"] == "codex"
+    assert "codex" in routing
+    assert routing["codex"]["requires_sandbox_disable"] is True
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
         "--sandbox danger-full-access",
         "--sandbox=danger-full-access",
         "-s danger-full-access",

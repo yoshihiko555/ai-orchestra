@@ -53,18 +53,22 @@ Execute the actual test/lint/build commands found in Step 1 (via Bash), and reco
 ## Reality Check Report
 
 ### Commands Executed
+
 - {command}: {PASS / FAIL / UNVERIFIABLE, exit code}
 
 ### Claim vs. Evidence
-| Claim | Evidence Found | Status |
-|-------|----------------|--------|
+
+| Claim   | Evidence Found          | Status                     |
+| ------- | ----------------------- | -------------------------- |
 | {claim} | {file / command output} | PASS / FAIL / UNVERIFIABLE |
 
 ### Issues Found
+
 - Critical: {issue}
 - Should-fix: {issue}
 
 ### Certification
+
 **Status**: NEEDS WORK / READY / UNVERIFIABLE (default to NEEDS WORK unless evidence is overwhelming)
 **Rationale**: {evidence-based reasoning, not assumption}
 ```
