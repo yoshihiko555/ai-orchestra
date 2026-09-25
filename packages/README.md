@@ -37,6 +37,8 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 - skills (facet build): `preflight`, `startproject`, `task-state`, `design`
 - rules (facet build): `config-loading`, `coding-principles`, `task-memory-usage`, `context-sharing`
 - config: `task-memory.yaml`
+- context files (所有):
+  - `AGENTS.md` — init/install/sync 時に配布（Claude Code / Codex CLI / Antigravity CLI 共通の指示書。以降は末尾の `ai-orchestra` 管理ブロックだけを最新化）
 
 ---
 
@@ -181,7 +183,6 @@ meta-harness と loop-harness が共有する Docker CLI、hardened security pro
 - skills (facet build): `codex-system`
 - rules (facet build): `codex-delegation`, `codex-suggestion-compliance`
 - context files (所有):
-  - `AGENTS.md` — init/sync 時に配布（Codex CLI 用指示書）
   - `.codex/config.toml` — init 時に配布
   - `.codex/skills/context-loader/` — init 時に配布
 
@@ -231,7 +232,7 @@ WebSearch/WebFetch の前に Antigravity CLI でのリサーチを提案し、�
 - hooks: `suggest-antigravity-research.py`（WebSearch/WebFetch 前に `[Antigravity Suggestion]` を出力）
 - skills (facet build): `antigravity-system`
 - rules (facet build): `antigravity-delegation`, `antigravity-suggestion-compliance`
-- context files: なし（Antigravity 向け指示は codex-suggestions の `AGENTS.md` に `antigravity.md` セクションとして合成。旧 `.gemini/GEMINI.md` の生成物は context sync 時に自動削除される）
+- context files: なし（指示書は core が配布する共通の `AGENTS.md`。旧 `.gemini/GEMINI.md` の生成物は context sync 時に自動削除される）
 
 ---
 

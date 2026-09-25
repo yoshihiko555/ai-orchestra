@@ -22,14 +22,10 @@
   "config": [],
   "facet_targets": ["codex"],
   "context_files": {
-    "source": "codex.md",
-    "fragments": ["antigravity.md"],
-    "template": "templates/codex/AGENTS.md",
+    "template_dir": "templates/codex",
     "init": [
-      "AGENTS.md",
       ".codex/config.toml",
       ".codex/skills/context-loader/"
-    ],
-    "sync": ["AGENTS.md"]
+    ]
   }
 }

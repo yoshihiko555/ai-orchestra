@@ -54,7 +54,7 @@ import lib.gitignore_sync as gitignore_sync  # noqa: E402
 from lib.facet_builder import FacetBuilder  # noqa: E402
 from lib.hook_utils import SYNC_HOOK_COMMAND as _SYNC_HOOK_COMMAND  # noqa: E402
 from lib.hook_utils import migrate_hook_interpreters  # noqa: E402
-from lib.orchestra_context import ContextMixin  # noqa: E402
+from lib.orchestra_context import ContextMixin, ContextSpecEntry  # noqa: E402
 from lib.orchestra_hooks import HooksMixin  # noqa: E402
 from lib.orchestra_models import Package  # noqa: E402
 from lib.sync_engine import (  # noqa: E402
@@ -77,7 +77,6 @@ class OrchestraManager(ContextMixin, HooksMixin):
 
     SYNC_HOOK_COMMAND = _SYNC_HOOK_COMMAND
     SYNC_HOOK_TIMEOUT = 15
-    CONTEXT_SHARED_REL = "templates/context/shared.md"
     COLOR_RESET = "\033[0m"
     COLOR_GREEN = "\033[32m"
     COLOR_YELLOW = "\033[33m"
@@ -89,18 +88,14 @@ class OrchestraManager(ContextMixin, HooksMixin):
         self.packages_dir = orchestra_dir / "packages"
         self.use_color = sys.stdout.isatty() and os.getenv("NO_COLOR") is None
 
-    def _build_context_specs(
-        self,
-    ) -> tuple[tuple[str, tuple[str, ...], str, str, str | None], ...]:
+    def _build_context_specs(self) -> tuple[ContextSpecEntry, ...]:
         """manifest の context_files から CONTEXT_SPECS を動的に構築する。
 
-        core は常に先頭（CLAUDE.md を最初に処理）、その他はパッケージ名の昇順。
+        core は常に先頭（AGENTS.md を最初に処理）、その他はパッケージ名の昇順。
         core の context は required_package=None で常時配布扱い。
-        context_files.fragments があれば source に続けて連結する
-        （例: AGENTS.md = codex.md + antigravity.md のセクション合成）。
         """
         packages = self.load_packages()
-        specs_with_pkg: list[tuple[str, tuple[str, tuple[str, ...], str, str, str | None]]] = []
+        specs_with_pkg: list[tuple[str, ContextSpecEntry]] = []
         for pkg_name, pkg in packages.items():
             cf = pkg.context_files
             if not cf:
@@ -110,18 +105,29 @@ class OrchestraManager(ContextMixin, HooksMixin):
             sync_list = cf.get("sync") or []
             if not source or not template or not sync_list:
                 continue
-            fragments = cf.get("fragments") or []
-            sources = (source, *fragments)
+            managed = tuple(cf.get("managed") or [])
             project_rel = sync_list[0]
             required: str | None = None if pkg.name == "core" else pkg.name
             name = Path(source).stem
-            specs_with_pkg.append((pkg_name, (name, sources, template, project_rel, required)))
-        # core first (owns claude.md), then alphabetical by package name
+            specs_with_pkg.append(
+                (
+                    pkg_name,
+                    ContextSpecEntry(
+                        name=name,
+                        source_rels=(source,),
+                        managed_rels=managed,
+                        template_rel=template,
+                        project_rel=project_rel,
+                        required_pkg=required,
+                    ),
+                )
+            )
+        # core first (owns AGENTS.md), then alphabetical by package name
         specs_with_pkg.sort(key=lambda item: (0 if item[0] == "core" else 1, item[0]))
         return tuple(spec for _, spec in specs_with_pkg)
 
     @cached_property
-    def CONTEXT_SPECS(self) -> tuple[tuple[str, tuple[str, ...], str, str, str | None], ...]:
+    def CONTEXT_SPECS(self) -> tuple[ContextSpecEntry, ...]:
         """manifest.context_files から動的構築された context spec タプル。"""
         return self._build_context_specs()
 
@@ -450,11 +456,16 @@ class OrchestraManager(ContextMixin, HooksMixin):
         cf = pkg.context_files or {}
         init_entries: list[str] = cf.get("init") or []
         template_rel = cf.get("template")
-        if not init_entries or not template_rel:
+        template_dir_rel = cf.get("template_dir")
+        if not init_entries:
             return
 
-        template_file = self.orchestra_dir / template_rel
-        template_root = template_file.parent
+        if template_dir_rel:
+            template_root = self.orchestra_dir / template_dir_rel
+        elif template_rel:
+            template_root = (self.orchestra_dir / template_rel).parent
+        else:
+            return
         if not template_root.is_dir():
             print(
                 f"警告: テンプレートディレクトリが見つかりません: {template_root}",
@@ -473,7 +484,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
                 _, rest = entry_clean.split("/", 1)
                 src = template_root / rest
             else:
-                # ルート直下: AGENTS.md や CLAUDE.md
+                # ルート直下: AGENTS.md など
                 src = template_root / entry_clean
 
             dst = project_dir / entry_clean
@@ -865,6 +876,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
             self.save_settings(project_dir, settings)
 
         self.run_initial_sync(project_dir, dry_run)
+        self.context_sync(project, dry_run)
 
         if not dry_run:
             print(f"\n✓ プロジェクトを初期化しました: {project_dir}")
@@ -1293,7 +1305,7 @@ def build_context_parser(subparsers: Any) -> argparse.ArgumentParser:
     parser = _add_command_parser(
         subparsers,
         "context",
-        description="CLAUDE.md / AGENTS.md テンプレートを管理する"
+        description="AGENTS.md テンプレートを管理する"
         "（build: 生成、check: 整合性検証、sync: プロジェクトへ反映）。",
     )
     context_sub = parser.add_subparsers(dest="context_command", help="context サブコマンド")
@@ -1318,7 +1330,7 @@ def build_context_parser(subparsers: Any) -> argparse.ArgumentParser:
     sync_parser.add_argument(
         "--force",
         action="store_true",
-        help="既存ファイルも上書きする（デフォルトは既存ファイルをスキップ）",
+        help="ファイル全体をひな形で上書きする（プロジェクト固有の記述欄も失われる。元ファイルは .claude/state/legacy-context/ に退避。既定は管理ブロックのみ追記/更新）",
     )
     return parser
 
@@ -1463,7 +1475,7 @@ COMMAND_REGISTRY: dict[str, CommandEntry] = {
     "context": {
         "name": "context",
         "group": "generate_sync",
-        "summary": "CLAUDE.md / AGENTS.md / GEMINI.md テンプレート管理",
+        "summary": "AGENTS.md テンプレート管理",
         "examples": (
             "orchex context build",
             "orchex context check",

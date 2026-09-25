@@ -1,103 +1,66 @@
-# AI Orchestra
+# <YOUR_PROJECT_NAME>
 
-**概要**: Claude Code + Codex CLI + Antigravity CLI の協調実行を管理する Python 製オーケストレーション基盤。
+**概要**: <YOUR_PROJECT_DESCRIPTION>
 
-<!-- この AGENTS.md は Claude Code / Codex CLI / Antigravity CLI が共通で読む、このリポジトリ唯一の指示書。末尾の ai-orchestra ブロックは templates/context/orchestra.md から生成される（orchex context sync が更新する）。ブロックより上はこのリポジトリ用に手で管理する。CLAUDE.md は置かない（あると Claude Code がこのファイルを読まなくなる）。 -->
+<!-- この AGENTS.md は Claude Code / Codex CLI / Antigravity CLI が共通で読む指示書です。末尾の ai-orchestra ブロックより上がプロジェクト固有の記述欄です（orchex がここを書き換えるのは初回作成時と --force 実行時だけです）。CLAUDE.md を置くと Claude Code はこのファイルを読まなくなるため、指示はこのファイルに集約してください。 -->
 
 ---
 
 ## 目的
 
-- `orchex` CLI で packages/templates/scripts を配布・同期する
-- 既存導入プロジェクトの互換性を壊さずに設定と運用を進化させる
-- 複数プロジェクトへ横展開しやすいテンプレート運用を維持する
+<!-- TODO: プロジェクトの目的をここに記載してください -->
+
+- <YOUR_GOAL_1>
+- <YOUR_GOAL_2>
+- <YOUR_GOAL_3>
 
 ---
 
 ## 技術スタック
 
-- **Language**: Python 3.12+
-- **Packaging**: Hatchling (`pyproject.toml`), PyPI package `orchex`
-- **Quality**: `pytest`, `ruff`
-- **Config**: YAML / JSON (`.claude/config/**`)
+<!-- TODO: プロジェクトの技術スタックをここに記載してください -->
+
+- **Language**: <YOUR_LANGUAGE>
+- **Framework**: <YOUR_FRAMEWORK>
+- **Quality**: <YOUR_TEST_AND_LINT_TOOLS>
+- **Config**: <YOUR_CONFIG_FORMAT>
 
 ---
 
 ## 主要コマンド
 
-```bash
-# 開発依存込みでインストール
-pip install -e ".[dev]"
+<!-- TODO: プロジェクト固有のコマンドをここに記載してください（変更後の検証に使われます）-->
 
-# テスト（CI と同じ範囲）
-pytest -q tests/unit/
-pytest -q tests/e2e/
-pytest -q packages/<package>/tests
+```bash
+# 依存インストール
+<YOUR_INSTALL_COMMAND>
+
+# テスト
+<YOUR_TEST_COMMAND>
 
 # Lint / Format
-ruff check .
-ruff format --check .
-
-# 生成物の再生成（facets/ や templates/context/ を変更したら実行し、生成物もコミットする）
-python scripts/orchestra-manager.py facet build --project .
-python scripts/orchestra-manager.py facet build --target codex --project .
-python scripts/orchestra-manager.py context build
-python scripts/orchestra-manager.py context check
-python scripts/orchestra-manager.py context sync --project .
+<YOUR_LINT_COMMAND>
 ```
-
-- worktree（`.worktrees/<name>`）では各コマンドの先頭に `AI_ORCHESTRA_DIR="$PWD"` を付ける（シェルの `AI_ORCHESTRA_DIR` が root チェックアウトを指しているため）
-- worktree では `orchex` コマンドを使わず、必ず `AI_ORCHESTRA_DIR="$PWD" python "$PWD/scripts/orchestra-manager.py" facet build --project "$PWD"` の形で実行する（`context build` / `sync` / `--target codex` も同様）。editable install の `orchex` は root チェックアウトを解決するため、worktree の `facets/` を見ずに失敗する
-- CI は再生成後に `git diff --exit-code` を実行し、生成物のコミット漏れを検出する
 
 ---
 
 ## ディレクトリ構成
 
+<!-- TODO: プロジェクトのディレクトリ構成をここに記載してください -->
+
 ```text
-ai_orchestra/                # Python package entrypoint
-packages/                    # 配布パッケージ群（hooks/agents/config）
-facets/                      # ファセット定義（policies/instructions/knowledge/scripts/compositions）
-scripts/                     # 管理 CLI（orchestra-manager.py など）
-templates/                   # 配布テンプレート
-templates/context/           # 指示書のソース（手編集する場所）
-tests/                       # unit / e2e tests
-.claude/                     # 実行コンテキスト（agents/config は sync、skills/rules は facet build）
+<your-src>/          # メインソースコード
+<your-tests>/        # テストコード
+.claude/             # AI Orchestra の実行コンテキスト（agents/config は sync、skills/rules は facet build）
 ```
 
 ---
 
-## 指示書の正本と生成物
+## プロジェクト固有のルール
 
-- 指示書は `AGENTS.md` の 1 本（Claude Code / Codex CLI / Antigravity CLI 共通）。配布先にもこのリポジトリにも `CLAUDE.md` は置かない
-- 配布先の `AGENTS.md` = プロジェクト固有の記述欄 + `ai-orchestra` 管理ブロック
-  - `templates/context/agents.md`: 記述欄のひな形（初回作成時だけ書き込む）
-  - `templates/context/orchestra.md`: 管理ブロックの本文（`context sync` のたびに最新化する）
-  - 管理ブロック内の重要度の定義は `facets/output-contracts/tiered-review.md` から `context build` が生成する（`orchestra.md` には手書きしない）
-- `templates/project/AGENTS.md` は `context build` の生成物で、直接編集しない
-- このリポジトリの `AGENTS.md` も管理ブロックは生成物（テストで一致を検出する）。`templates/context/` を変えたら `context build` のあと `context sync --project .` で反映する。`context sync --force` は使わない（記述欄がひな形で上書きされる）
+<!-- TODO: 変更ガードレールやパス別のレビュー観点など、プロジェクト固有のルールをここに記載してください -->
 
----
-
-## 変更ガードレール
-
-- 既存 CLI コマンドと設定キー（特に `.claude/config/**`）の後方互換性を優先する
-- `config-loading` ルールに従い `*.local.*` 上書きを壊さない
-- 仕様変更時は `README.md` と必要なテストを同時更新する
-
----
-
-## レビュー観点（このリポジトリ固有）
-
-管理ブロックの「レビュー観点」に加えて確認する。
-
-- **後方互換性**: `.claude/config/**` の設定キーと `*.local.yaml` / `*.local.json` 上書きの仕組みを壊していないか
-- **正本と生成物の整合性**: 正本は `templates/context/*.md` と `facets/`。生成物（`templates/project/AGENTS.md`、ルート `AGENTS.md` の管理ブロック、`.claude/skills/`、`.agents/skills/`）だけを直接編集する変更や、正本変更時の再生成（`context build` / `context sync` / `facet build`）漏れは指摘する
-- パス別観点
-  - `packages/*/hooks/**`: hook は失敗しても Claude Code を止めない設計か、`hook_common.py` の共通ユーティリティを正しく利用しているか
-  - `packages/agent-routing/config/**`: キーの整合性、ツール参照の有効性、必須フィールドの存在
-  - `scripts/**`: 引数解析の正確性、ファイルシステム操作の安全性（symlink・パス解決）、エラー時の適切なメッセージ
-  - `tests/**`: テストの網羅性とアサーションの適切さ
+- <YOUR_RULE_1>
 
 <!-- BEGIN ai-orchestra: managed by `orchex context sync` (edits inside this block are overwritten) -->
 

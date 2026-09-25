@@ -16,7 +16,7 @@
 - Codex の agent loop を自前実装すること、`danger-full-access` を前提にした自動化（設計 §3.2 (3)(4)）
 - CI からの本番 deploy / merge / release の自動化（設計 §3.2 (5)）。`codex_run.py` / `codex_review.py` は patch / findings artifact の生成のみを行う。`gh pr merge` / `gh release create` / publish 系は rules・hook 双方で禁止する（承認しても実行不可）。一方 `git push` / `gh pr create` は rules で `prompt`（対話 Codex で人間承認時のみ実行）とし、ハードブロックはしない（Issue #161 フォローアップ）
 - 全 repo への同一設定の強制（設計 §3.2 (6)）。config マージは add-if-missing / upsert のレイヤ判断でユーザー設定と共存する
-- `AGENTS.md` および `.codex/config.toml` の新規作成・初期所有。これらは `codex-suggestions` パッケージの責務であり、本パッケージは既存の `.codex/config.toml` への設定マージのみを行う（Plans.md Decisions 2026-07-04）
+- `AGENTS.md` および `.codex/config.toml` の新規作成・初期所有。`AGENTS.md` は `core` パッケージ、`.codex/config.toml` は `codex-suggestions` パッケージの責務であり、本パッケージは既存の `.codex/config.toml` への設定マージのみを行う（Plans.md Decisions 2026-07-04）
 - MCP サーバーの `.codex/config.toml` `[mcp_servers.*]` 設定管理。本パッケージの config マージはこのセクションに触れない
 - hooks による完全なセキュリティ境界の代替。OS サンドボックス・コンテナ隔離・CI ポリシーの代替にはならない（設計 §16.2）
 - `.codex/runs/` `.codex/reports/` の `.gitignore` エントリ管理。これは `scripts/lib/gitignore_sync.py` の共通 ENTRIES が担当し、本パッケージの manifest では宣言しない

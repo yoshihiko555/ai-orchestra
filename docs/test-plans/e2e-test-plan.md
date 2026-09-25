@@ -150,12 +150,12 @@
 
 ### 6.1 context build / check / sync
 
-| #   | テスト内容                            | 期待結果                                                          | 結果   | 備考                         |
-| --- | ------------------------------------- | ----------------------------------------------------------------- | ------ | ---------------------------- |
-| 49  | `orchex context build`                | `templates/context/*.md` → `templates/project/CLAUDE.md` 等が生成 | `PASS` |                              |
-| 50  | `orchex context check`                | ソースと生成物が一致していれば OK                                 | `PASS` | `context check: OK`          |
-| 51  | ソース変更後に `context check`        | 不一致を検出                                                      | `PASS` | `context check: NG` + exit 1 |
-| 52  | `orchex context sync --project <dir>` | CLAUDE.md, AGENTS.md, GEMINI.md がプロジェクトにコピー            | `PASS` |                              |
+| #   | テスト内容                            | 期待結果                                                                            | 結果   | 備考                                  |
+| --- | ------------------------------------- | ----------------------------------------------------------------------------------- | ------ | ------------------------------------- |
+| 49  | `orchex context build`                | `templates/context/*.md` → `templates/project/AGENTS.md` が生成                     | `PASS` | 2026-09-26 AGENTS.md 一本化後に再確認 |
+| 50  | `orchex context check`                | ソースと生成物が一致していれば OK                                                   | `PASS` | `context check: OK`                   |
+| 51  | ソース変更後に `context check`        | 不一致を検出                                                                        | `PASS` | `context check: NG` + exit 1          |
+| 52  | `orchex context sync --project <dir>` | AGENTS.md（記述欄 + ai-orchestra 管理ブロック）が作成され、CLAUDE.md は作成されない | `PASS` | 2026-09-26 AGENTS.md 一本化後に再確認 |
 
 ### 6.2 セッション内コンテキスト共有
 
