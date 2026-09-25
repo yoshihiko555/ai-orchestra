@@ -453,6 +453,26 @@ def test_build_claude_p_command_terminates_add_dir_before_prompt() -> None:
     assert cmd.index("--") == max(add_dir_indices) + 2
 
 
+def test_build_claude_p_command_adds_json_schema_before_prompt_terminator() -> None:
+    cmd = lds.build_claude_p_command(
+        "do the thing",
+        allowed_tools="Read,Edit",
+        add_dirs=["/wt"],
+        json_schema='{"type": "object"}',
+    )
+
+    assert "--json-schema" in cmd
+    schema_index = cmd.index("--json-schema")
+    assert cmd[schema_index + 1] == '{"type": "object"}'
+    assert schema_index < cmd.index("--")
+
+
+def test_build_claude_p_command_omits_json_schema_by_default() -> None:
+    cmd = lds.build_claude_p_command("do the thing", allowed_tools="Read,Edit", add_dirs=["/wt"])
+
+    assert "--json-schema" not in cmd
+
+
 def test_build_claude_p_command_injects_settings_with_bash_guard_hook() -> None:
     """Layer 3 addendum (EV-49/EV-63): `--settings` wires in the `maker_bash_guard.py`
     PreToolUse hook so `bash -c "git push ..."` wrappers are caught too, not just literal
@@ -9158,6 +9178,126 @@ def test_run_one_llm_reviewer_treats_nonzero_returncode_as_infrastructure_failur
     assert stderr_artifact == "boom"
 
 
+def test_run_one_llm_reviewer_passes_check_result_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    captured: dict[str, Any] = {}
+
+    def fake_build_claude_p_command(prompt: str, **kwargs: Any) -> list[str]:
+        captured["json_schema"] = kwargs.get("json_schema")
+        return ["claude", "-p", prompt]
+
+    reviewer_payload = {
+        "passed": True,
+        "layer": "llm_review",
+        "signature": None,
+        "findings": [],
+        "raw_artifact_path": "",
+        "infrastructure_failure": False,
+    }
+    monkeypatch.setattr(lds, "build_claude_p_command", fake_build_claude_p_command)
+    monkeypatch.setattr(
+        d,
+        "_run_child",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [], 0, json.dumps({"result": reviewer_payload}), ""
+        ),
+    )
+
+    d._run_one_llm_reviewer(state, "act-000060", "code-reviewer")
+
+    assert captured["json_schema"] is not None
+    assert json.loads(captured["json_schema"]) == lds.CHECK_RESULT_JSON_SCHEMA
+
+
+def test_run_one_llm_reviewer_falls_back_when_cli_rejects_json_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-182: cache a CLI's schema rejection and use the bare-JSON fallback thereafter."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    reviewer_payload = {
+        "passed": True,
+        "layer": "llm_review",
+        "signature": None,
+        "findings": [],
+        "raw_artifact_path": "",
+        "infrastructure_failure": False,
+    }
+    commands: list[list[str]] = []
+
+    def fake_run_child(
+        cmd: list[str], *_args: Any, **_kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        if len(commands) == 1:
+            return subprocess.CompletedProcess(cmd, 1, "", "error: unknown option '--json-schema'")
+        return subprocess.CompletedProcess(cmd, 0, json.dumps({"result": reviewer_payload}), "")
+
+    monkeypatch.setattr(d, "_run_child", fake_run_child)
+
+    result = d._run_one_llm_reviewer(state, "act-000061", "code-reviewer")
+
+    assert len(commands) == 2
+    assert "--json-schema" in commands[0]
+    assert "--json-schema" not in commands[1]
+    assert "no code fences" in commands[1][-1].lower()
+    assert result.passed is True
+    assert result.infrastructure_failure is False
+    assert d._reviewer_json_schema_supported is False
+
+    later_result = d._run_one_llm_reviewer(state, "act-000062", "another-reviewer")
+
+    assert len(commands) == 3
+    assert "--json-schema" not in commands[2]
+    assert later_result.passed is True
+    assert later_result.infrastructure_failure is False
+
+
+def test_run_one_llm_reviewer_does_not_fall_back_on_other_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-182: unrelated `claude -p` failures retain normal infrastructure handling."""
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    commands: list[list[str]] = []
+
+    def fake_run_child(
+        cmd: list[str], *_args: Any, **_kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, "", "API Error: 500")
+
+    monkeypatch.setattr(d, "_run_child", fake_run_child)
+
+    result = d._run_one_llm_reviewer(state, "act-000063", "code-reviewer")
+
+    assert len(commands) == 1
+    assert result.passed is False
+    assert result.infrastructure_failure is True
+    assert d._reviewer_json_schema_supported is True
+
+
 def test_run_one_llm_reviewer_saves_raw_output_on_invalid_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -9282,6 +9422,50 @@ def test_run_one_llm_reviewer_parses_json_string_result_field(
     assert len(result.findings) == 1
     assert result.findings[0].severity == "high"
     assert result.findings[0].path == "foo.py"
+
+
+def test_run_one_llm_reviewer_prefers_structured_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop_id = "abcd1234-issue-1"
+    project_dir, token = _seed_running_loop(tmp_path, loop_id)
+    state = lc.load_state(loop_id, project_dir)
+    state.worktree_path = project_dir
+    lc._write_state(state, project_dir)
+    state = lc.load_state(loop_id, project_dir)
+
+    structured_output = {
+        "passed": False,
+        "layer": "llm_review",
+        "signature": None,
+        "findings": [
+            {
+                "severity": "high",
+                "summary": "missing null check",
+                "source": "code-reviewer",
+                "path": "foo.py",
+                "line": 12,
+            }
+        ],
+        "raw_artifact_path": "",
+        "infrastructure_failure": False,
+    }
+    d = driver.LoopDriver(loop_id, project_dir, token)
+    monkeypatch.setattr(
+        d,
+        "_run_child",
+        lambda *a, **k: subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({"result": "Looks fine to me.", "structured_output": structured_output}),
+            "",
+        ),
+    )
+
+    result = d._run_one_llm_reviewer(state, "act-000061", "code-reviewer")
+
+    assert len(result.findings) == 1
+    assert result.infrastructure_failure is False
 
 
 def test_classify_one_finding_returns_empty_string_on_nonzero_returncode(
@@ -10818,10 +11002,9 @@ def test_reviewer_prompt_falls_back_to_working_tree_diff_when_base_sha_unknown()
     assert "..HEAD" not in prompt
 
 
-def test_reviewer_prompt_restricts_bash_and_forbids_fenced_output() -> None:
-    """Issue #410: a reviewer previously wasted turns retrying denied `pytest`/`git show` calls
-    and sometimes wrapped its JSON reply in a code fence despite the [Output] instruction. The
-    prompt must spell out both constraints explicitly."""
+def test_reviewer_prompt_restricts_bash_and_leaves_format_to_schema() -> None:
+    """Issue #410/EV-182: the prompt keeps command restrictions explicit while leaving the
+    response format to `--json-schema` rather than duplicating it as a prompt instruction."""
     state = lc._initial_state(
         "abcd1234-issue-1", "issue-loop", "abcd1234", "/tmp/wt", "main", "implementation"
     )
@@ -10830,7 +11013,19 @@ def test_reviewer_prompt_restricts_bash_and_forbids_fenced_output() -> None:
 
     assert "git diff" in prompt and "git log" in prompt
     assert "do not run tests or linters" in prompt.lower()
+    assert "no code fences" not in prompt.lower()
+
+
+def test_reviewer_prompt_without_schema_requires_bare_json() -> None:
+    """EV-166/EV-182 fallback: a CLI without `--json-schema` must be asked for bare JSON."""
+    state = lc._initial_state(
+        "abcd1234-issue-1", "issue-loop", "abcd1234", "/tmp/wt", "main", "implementation"
+    )
+
+    prompt = driver._reviewer_prompt(state, "code-reviewer", "abc123", structured_output=False)
+
     assert "no code fences" in prompt.lower()
+    assert "Reply with JSON only" in prompt
 
 
 def test_run_one_llm_reviewer_threads_pre_maker_head_into_the_diff_instruction(

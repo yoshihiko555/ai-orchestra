@@ -506,6 +506,9 @@ class LoopDriver:
         # `RUN_CHECKER`'s result is schema-validated (`validate_implementation_checker_result()`)
         # and must never carry extra top-level keys.
         self._last_docker_broker_metrics_summary: dict[str, Any] | None = None
+        # EV-182: once the CLI rejects `--json-schema`, every later reviewer in this driver
+        # process skips the flag instead of repeating the same argument-parsing failure.
+        self._reviewer_json_schema_supported: bool = True
 
     # -- lifecycle -----------------------------------------------------------------------
 
@@ -1922,6 +1925,27 @@ class LoopDriver:
             results.append((reviewer, self._run_one_llm_reviewer(state, action_id, reviewer)))
         return results
 
+    def _build_reviewer_command(self, state: lc.LoopState, reviewer: str) -> list[str]:
+        """Build one reviewer's `claude -p` argv, honoring cached `--json-schema` support."""
+        prompt = _reviewer_prompt(
+            state,
+            reviewer,
+            self._pre_maker_head,
+            structured_output=self._reviewer_json_schema_supported,
+        )
+        json_schema = (
+            json.dumps(lds.CHECK_RESULT_JSON_SCHEMA)
+            if self._reviewer_json_schema_supported
+            else None
+        )
+        return lds.build_claude_p_command(
+            prompt,
+            allowed_tools="Read,Grep,Glob,Bash(git diff:*),Bash(git log:*)",
+            add_dirs=[state.worktree_path],
+            claude_bin=self.claude_bin,
+            json_schema=json_schema,
+        )
+
     def _run_one_llm_reviewer(
         self, state: lc.LoopState, action_id: str, reviewer: str
     ) -> lc.CheckResult:
@@ -1938,13 +1962,7 @@ class LoopDriver:
                 "falling back to working-tree diff",
                 file=sys.stderr,
             )
-        prompt = _reviewer_prompt(state, reviewer, self._pre_maker_head)
-        cmd = lds.build_claude_p_command(
-            prompt,
-            allowed_tools="Read,Grep,Glob,Bash(git diff:*),Bash(git log:*)",
-            add_dirs=[state.worktree_path],
-            claude_bin=self.claude_bin,
-        )
+        cmd = self._build_reviewer_command(state, reviewer)
         env = lds.maker_env(
             os.environ,
             scratch_home=lds.maker_scratch_home(self.project_dir, self.loop_id),
@@ -1973,6 +1991,39 @@ class LoopDriver:
                 raw_artifact_path="",
                 infrastructure_failure=True,
             )
+        if self._reviewer_json_schema_supported and lds.is_unknown_option_error(
+            completed, "--json-schema"
+        ):
+            print(
+                "loop_driver: claude CLI does not support --json-schema; "
+                "falling back to the JSON-only reviewer prompt",
+                file=sys.stderr,
+            )
+            self._reviewer_json_schema_supported = False
+            cmd = self._build_reviewer_command(state, reviewer)
+            timeout_seconds = lds.apportioned_timeout(
+                self._remaining_wall_clock_seconds(), CHECKER_LLM_TIMEOUT_SECONDS
+            )
+            if timeout_seconds <= 0:
+                return lc.CheckResult(
+                    passed=False,
+                    layer="llm_review",
+                    signature=None,
+                    findings=[],
+                    raw_artifact_path="",
+                    infrastructure_failure=True,
+                )
+            try:
+                completed = self._run_child(cmd, state.worktree_path, timeout_seconds, env)
+            except lds.ClaudePTimeoutError:
+                return lc.CheckResult(
+                    passed=False,
+                    layer="llm_review",
+                    signature=None,
+                    findings=[],
+                    raw_artifact_path="",
+                    infrastructure_failure=True,
+                )
         if completed.returncode != 0:
             # Issue #405: a `claude -p` process failure (e.g. every request budget-rejected by
             # the Docker credential broker) previously vanished into an opaque, artifact-free
@@ -1990,12 +2041,18 @@ class LoopDriver:
             )
         try:
             data = lds.parse_claude_p_json(completed.stdout)
-            result_field = data.get("result", data)
+            # EV-182: `--json-schema` returns the validated object in `structured_output`;
+            # retain the legacy result path for CLIs/callers where structured output is absent.
+            structured_output = data.get("structured_output")
+            if isinstance(structured_output, dict):
+                result_field = structured_output
+            else:
+                result_field = data.get("result", data)
             # code F3: `claude -p --output-format json`'s top-level "result" field is the
-            # reviewer's raw text reply (a JSON *string*, per `_reviewer_prompt`'s "Reply with
-            # JSON only" instruction), not an already-parsed object; passing it straight to
-            # `check_result_from_dict()` used to call `.get()` on a `str` and crash with an
-            # uncaught `AttributeError` instead of degrading to an infra-failure CheckResult.
+            # reviewer's raw text reply (a JSON *string*), not an already-parsed object; passing
+            # it straight to `check_result_from_dict()` used to call `.get()` on a `str` and
+            # crash with an uncaught `AttributeError` instead of degrading to an
+            # infra-failure CheckResult.
             #
             # Issue #410: `extract_check_result_json()` (not a bare `json.loads()`) tolerates a
             # ```json fenced code block or leading/trailing prose around the JSON object -- a
@@ -4678,7 +4735,13 @@ def _maker_prompt(
     )
 
 
-def _reviewer_prompt(state: lc.LoopState, reviewer: str, base_sha: str | None) -> str:
+def _reviewer_prompt(
+    state: lc.LoopState,
+    reviewer: str,
+    base_sha: str | None,
+    *,
+    structured_output: bool = True,
+) -> str:
     """Build a Checker LLM-review prompt asking for a CheckResult-shaped JSON result.
 
     code H10: when `base_sha` (the pre-Maker base commit, code H5) is known, the reviewer is
@@ -4686,26 +4749,44 @@ def _reviewer_prompt(state: lc.LoopState, reviewer: str, base_sha: str | None) -
     `git diff` — by the time the Checker runs, the Maker has already committed its changes, so
     a plain `git diff` sees no uncommitted changes and would let a reviewer vacuously pass an
     empty diff as "no findings" on the normal successful path.
+
+    `structured_output` (EV-182): when True (the default), response-shape enforcement is left to
+    `--json-schema` and the prompt only explains what each field means. When False, this is used
+    as the fallback prompt for a CLI that does not support `--json-schema` (detected via
+    `loop_driver_support.is_unknown_option_error()`) -- it additionally spells out the exact bare
+    JSON reply shape and forbids code fences/prose, matching the prompt's pre-EV-182 wording.
     """
     diff_instruction = f"git diff {base_sha}..HEAD" if base_sha else "git diff"
+    if not structured_output:
+        return (
+            f"[Role] You are the {reviewer} reviewing the diff at {state.worktree_path} "
+            f"(branch {state.branch}).\n"
+            f"[Task] Review `{diff_instruction}` for Critical/High/Medium/Low findings.\n"
+            "[Constraints] Only single, unpiped `git diff`/`git log` Bash commands are allowed "
+            "(no `&&`, `;`, `|`, or env-var prefixes); do not run tests or linters (a separate "
+            "mechanical check layer already does that). Reply with a bare JSON object only -- no "
+            "code fences, no text before or after it.\n"
+            "[Output] Reply with JSON only, matching this shape: "
+            '{"passed": bool, "layer": "llm_review", "signature": str|null, '
+            '"findings": [{"severity": "critical|high|medium|low", "summary": str, '
+            '"source": str, "path": str|null, "line": int|null}], '
+            '"raw_artifact_path": "", "infrastructure_failure": bool}'
+        )
     return (
         f"[Role] You are the {reviewer} reviewing the diff at {state.worktree_path} "
         f"(branch {state.branch}).\n"
         f"[Task] Review `{diff_instruction}` for Critical/High/Medium/Low findings.\n"
         # Issue #410: a reviewer previously spent turns repeatedly retrying `pytest`/`git show`
-        # (denied by `allowedTools`) before ever replying, and returned prose- or fence-wrapped
-        # JSON despite the [Output] instruction below. Spelling out both constraints up front
-        # reduces wasted turns and non-JSON replies; `extract_check_result_json()` still
-        # tolerates a fenced reply as a fallback either way.
+        # (denied by `allowedTools`) before ever replying. EV-182 now enforces the bare-object
+        # response shape via `--json-schema`, while EV-166's fallback prompt (structured_output=
+        # False, used when the CLI rejects `--json-schema`) keeps the bare-JSON wording instead.
         "[Constraints] Only single, unpiped `git diff`/`git log` Bash commands are allowed "
         "(no `&&`, `;`, `|`, or env-var prefixes); do not run tests or linters (a separate "
-        "mechanical check layer already does that). Reply with a bare JSON object only -- no "
-        "code fences, no text before or after it.\n"
-        "[Output] Reply with JSON only, matching this shape: "
-        '{"passed": bool, "layer": "llm_review", "signature": str|null, '
-        '"findings": [{"severity": "critical|high|medium|low", "summary": str, '
-        '"source": str, "path": str|null, "line": int|null}], '
-        '"raw_artifact_path": "", "infrastructure_failure": bool}'
+        "mechanical check layer already does that).\n"
+        "[Output] Put every finding in `findings` (severity critical|high|medium|low, a "
+        'one-line summary, source, and path/line when known). Set layer to "llm_review", '
+        'signature to null, raw_artifact_path to "", and infrastructure_failure to false. '
+        "The harness recomputes the overall pass/fail from findings."
     )
 
 
