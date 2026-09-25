@@ -99,7 +99,7 @@ You design and optimize prompts:
 
 - Iterate and test prompts
 - Measure quality with real examples
-- Consider cost (shorter is often better)
+- Consider cost: cut text that does not change behavior, but keep context and the reasons behind instructions
 - Handle edge cases explicitly
 - Return concise output (main orchestrator has limited context)
 

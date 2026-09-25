@@ -92,22 +92,17 @@ Phase 7: Multi-Session Review (code-reviewer / security-reviewer)
 
 ## Agent Routing
 
-各フェーズでエージェントを呼び出す際は、`cli-tools.yaml` の `agents.{name}.tool` を参照してルーティングする。
+各フェーズのエージェントは、`agents.{name}.tool` の値（`claude-direct` / `codex` / `antigravity`）によらず `Task(subagent_type="{agent}", prompt="...")` で直接呼び出す。
 
-| `tool` 設定               | 呼び出し方法                                                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `claude-direct` / `codex` | `Task(subagent_type="{agent}", prompt="...")`                                                                      |
-| `antigravity`             | `Task(subagent_type="general-purpose", prompt="Antigravity CLI で実行: agy -p '...' --model <antigravity.model>")` |
+実行ツールの呼び分けは prompt に書かない。hook がサブエージェントの prompt 末尾に `[Resolved Routing]`（tool / sandbox / model）を注入し、エージェント定義がそれに従う。prompt に CLI や sandbox を書くと、`cli-tools.local.yaml` で上書きした環境で注入値と食い違う。
 
-`claude-direct` と `codex` の呼び分けは prompt に書かない。hook がサブエージェントの prompt 末尾に `[Resolved Routing]`（tool / sandbox / model）を注入し、エージェント定義がそれに従う。prompt に CLI や sandbox を書くと、`cli-tools.local.yaml` で上書きした環境で注入値と食い違う。
-
-**例**: `agents.frontend-dev.tool` が `codex` でも `claude-direct` でも `Task(subagent_type="frontend-dev", prompt="...")`。named agent はドメイン固有の知識（コーディング規約、テックスタック）を保持するため、`general-purpose` ではなく直接呼び出す。
+**例**: `agents.frontend-dev.tool` が `codex` でも `claude-direct` でも `Task(subagent_type="frontend-dev", prompt="...")`。named agent はドメイン固有の知識（コーディング規約、テックスタック）を保持するため、`general-purpose` ではなく直接呼び出す（`general-purpose` で呼ぶと、hook は general-purpose 用のルーティングを注入する）。
 
 ---
 
 ## Phase 1: Research (Background)
 
-**Task tool でサブエージェントを起動し、`agents.researcher.tool` に従って調査を実行。**
+**Task tool で `researcher` サブエージェントを起動して調査を実行する。** 実行ツール（agy / codex / claude-direct）は researcher 定義と hook の `[Resolved Routing]` が決める（Agent Routing 参照）。
 
 ```
 Task tool parameters:
@@ -116,27 +111,13 @@ Task tool parameters:
 - prompt: |
     Research for: {feature}
 
-    Resolve route from cli-tools.yaml (`agents.researcher.tool`).
+    Analyze this repository and provide:
+    1. Repository structure and architecture
+    2. Relevant existing code and patterns
+    3. Library recommendations
+    4. Technical considerations
 
-    If tool == antigravity:
-      sandbox 内で agy を実行する。エラー時は claude-direct にフォールバック。
-      Bash timeout: 300000 を指定すること。
-      agy -p "Analyze this repository for: {feature}
-
-       Provide:
-       1. Repository structure and architecture
-       2. Relevant existing code and patterns
-       3. Library recommendations
-       4. Technical considerations
-
-       IMPORTANT: Do not ask any clarifying questions. Provide your best answer
-       based on the available information. If you need assumptions, state them.
-       " --model <antigravity.model> --add-dir . 2>/dev/null
-
-      リトライ: タイムアウトや質問検出時は antigravity-delegation.md のリトライプロトコルに従う。
-
-    If tool == claude-direct:
-      Read/Grep/Glob で同等の調査を実施し、同形式で要約を作成する。
+    If you need assumptions, state them.
 
     Save full output to: .claude/docs/research/{feature}.md
     Return a concise summary.

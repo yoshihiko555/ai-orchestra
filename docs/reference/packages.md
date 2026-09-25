@@ -201,7 +201,7 @@ orchex run audit analyze-cli-usage -- --format json
 
 ### 発火条件
 
-`check-codex-before-write.py` は以下の条件で `[Codex Suggestion]` を出力する:
+`check-codex-before-write.py` は以下の条件で `[Codex Suggestion]` を出力する（プロジェクト外のファイルは対象外）:
 
 - `core/` を含むファイルパスへの変更
 - `config` や `class` 等のキーワードを含む変更内容

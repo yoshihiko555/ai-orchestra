@@ -177,6 +177,7 @@ Task(subagent_type="backend-python-dev", prompt="...")
 
 - `codex.enabled: false` の場合
 - 既に Codex 相談済みのファイル
+- プロジェクト外のファイル（`CLAUDE_PROJECT_DIR` → `cwd` の順で解決したプロジェクトルートの外。scratchpad・メモリ等）
 
 ### suggest-antigravity-research.py（antigravity-suggestions）
 
