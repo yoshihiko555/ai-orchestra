@@ -608,6 +608,7 @@ def build_claude_p_command(
     allowed_tools: str,
     add_dirs: Sequence[str],
     claude_bin: str = "claude",
+    json_schema: str | None = None,
 ) -> list[str]:
     """Build the full `claude -p` argv for a Maker/Checker headless run.
 
@@ -615,6 +616,8 @@ def build_claude_p_command(
     `--disallowedTools`, wiring in the `maker_bash_guard.py` PreToolUse hook (design doc 2.2 節
     層3; EV-49/EV-63) that hard-denies Bash push/remote/gh-pr commands even when wrapped in
     `bash -c "..."` — a bypass `--disallowedTools`'s literal-prefix match alone cannot catch.
+
+    When provided, `json_schema` is passed through `--json-schema` before any `--add-dir` flags.
 
     A `--` terminator is inserted right before `prompt` because the current Claude Code CLI
     treats `--add-dir` as a variadic option: without the terminator, the prompt string that
@@ -635,6 +638,8 @@ def build_claude_p_command(
         "--settings",
         maker_hook_settings_path(),
     ]
+    if json_schema is not None:
+        cmd.extend(["--json-schema", json_schema])
     for add_dir in add_dirs:
         cmd.extend(["--add-dir", add_dir])
     cmd.append("--")
@@ -729,6 +734,45 @@ def parse_claude_p_json(stdout: str) -> dict[str, Any]:
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
+
+# EV-182: enforce the Checker LLM response shape through Claude Code's `--json-schema`.
+CHECK_RESULT_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "passed",
+        "layer",
+        "signature",
+        "findings",
+        "raw_artifact_path",
+        "infrastructure_failure",
+    ],
+    "properties": {
+        "passed": {"type": "boolean"},
+        "layer": {"type": "string", "enum": ["llm_review"]},
+        "signature": {"type": ["string", "null"]},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["severity", "summary", "source", "path", "line"],
+                "properties": {
+                    "severity": {
+                        "type": "string",
+                        "enum": ["critical", "high", "medium", "low"],
+                    },
+                    "summary": {"type": "string"},
+                    "source": {"type": "string"},
+                    "path": {"type": ["string", "null"]},
+                    "line": {"type": ["integer", "null"]},
+                },
+            },
+        },
+        "raw_artifact_path": {"type": "string"},
+        "infrastructure_failure": {"type": "boolean"},
+    },
+}
 
 
 def extract_check_result_json(text: str) -> dict[str, Any]:

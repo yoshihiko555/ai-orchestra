@@ -1944,6 +1944,7 @@ class LoopDriver:
             allowed_tools="Read,Grep,Glob,Bash(git diff:*),Bash(git log:*)",
             add_dirs=[state.worktree_path],
             claude_bin=self.claude_bin,
+            json_schema=json.dumps(lds.CHECK_RESULT_JSON_SCHEMA),
         )
         env = lds.maker_env(
             os.environ,
@@ -1990,12 +1991,18 @@ class LoopDriver:
             )
         try:
             data = lds.parse_claude_p_json(completed.stdout)
-            result_field = data.get("result", data)
+            # EV-182: `--json-schema` returns the validated object in `structured_output`;
+            # retain the legacy result path for CLIs/callers where structured output is absent.
+            structured_output = data.get("structured_output")
+            if isinstance(structured_output, dict):
+                result_field = structured_output
+            else:
+                result_field = data.get("result", data)
             # code F3: `claude -p --output-format json`'s top-level "result" field is the
-            # reviewer's raw text reply (a JSON *string*, per `_reviewer_prompt`'s "Reply with
-            # JSON only" instruction), not an already-parsed object; passing it straight to
-            # `check_result_from_dict()` used to call `.get()` on a `str` and crash with an
-            # uncaught `AttributeError` instead of degrading to an infra-failure CheckResult.
+            # reviewer's raw text reply (a JSON *string*), not an already-parsed object; passing
+            # it straight to `check_result_from_dict()` used to call `.get()` on a `str` and
+            # crash with an uncaught `AttributeError` instead of degrading to an
+            # infra-failure CheckResult.
             #
             # Issue #410: `extract_check_result_json()` (not a bare `json.loads()`) tolerates a
             # ```json fenced code block or leading/trailing prose around the JSON object -- a
@@ -4693,19 +4700,16 @@ def _reviewer_prompt(state: lc.LoopState, reviewer: str, base_sha: str | None) -
         f"(branch {state.branch}).\n"
         f"[Task] Review `{diff_instruction}` for Critical/High/Medium/Low findings.\n"
         # Issue #410: a reviewer previously spent turns repeatedly retrying `pytest`/`git show`
-        # (denied by `allowedTools`) before ever replying, and returned prose- or fence-wrapped
-        # JSON despite the [Output] instruction below. Spelling out both constraints up front
-        # reduces wasted turns and non-JSON replies; `extract_check_result_json()` still
-        # tolerates a fenced reply as a fallback either way.
+        # (denied by `allowedTools`) before ever replying. EV-182 now enforces the bare-object
+        # response shape via `--json-schema`, while EV-165's `extract_check_result_json()` stays
+        # as a fallback where structured output is unavailable or does not apply.
         "[Constraints] Only single, unpiped `git diff`/`git log` Bash commands are allowed "
         "(no `&&`, `;`, `|`, or env-var prefixes); do not run tests or linters (a separate "
-        "mechanical check layer already does that). Reply with a bare JSON object only -- no "
-        "code fences, no text before or after it.\n"
-        "[Output] Reply with JSON only, matching this shape: "
-        '{"passed": bool, "layer": "llm_review", "signature": str|null, '
-        '"findings": [{"severity": "critical|high|medium|low", "summary": str, '
-        '"source": str, "path": str|null, "line": int|null}], '
-        '"raw_artifact_path": "", "infrastructure_failure": bool}'
+        "mechanical check layer already does that).\n"
+        "[Output] Put every finding in `findings` (severity critical|high|medium|low, a "
+        'one-line summary, source, and path/line when known). Set layer to "llm_review", '
+        'signature to null, raw_artifact_path to "", and infrastructure_failure to false. '
+        "The harness recomputes the overall pass/fail from findings."
     )
 
 
