@@ -30,12 +30,12 @@ gh label list --json name,description --limit 100
 
 `$ARGUMENTS` から種類とタイトルを判定する。
 
-| パターン | 種類 | 例 |
-|---------|------|-----|
-| `bug ...` | bug | `/issue-create bug ログインエラー` |
-| `feature ...` | feature | `/issue-create feature ダークモード` |
-| `task ...` | task | `/issue-create task CI整備` |
-| 引数なし | — | AskUserQuestion で種類・タイトルをヒアリング |
+| パターン      | 種類    | 例                                           |
+| ------------- | ------- | -------------------------------------------- |
+| `bug ...`     | bug     | `/issue-create bug ログインエラー`           |
+| `feature ...` | feature | `/issue-create feature ダークモード`         |
+| `task ...`    | task    | `/issue-create task CI整備`                  |
+| 引数なし      | —       | AskUserQuestion で種類・タイトルをヒアリング |
 
 種類またはタイトルが不足している場合は AskUserQuestion で確認する。
 
@@ -114,6 +114,10 @@ gh label list --json name,description --limit 100
 ### Step 3: 受け入れ条件のヒアリング（必須）
 
 **種類（bug / feature / task）を問わず、受け入れ条件（Acceptance Criteria）の明記は必須。** 空欄や「{ユーザーに確認}」のまま次に進めない。
+
+**AC 確定済み経路**: `/order` から呼ばれた場合など、`verify` / `judge` 付きの受け入れ条件が確定した形で
+渡されたときは、このステップのヒアリングを省略してその条件をそのまま本文に載せる（聞き直さない）。
+Step 4 / Step 5 の検査（件数・記法・プレースホルダ）は省略しない。
 
 1. AskUserQuestion で受け入れ条件をヒアリングする。1 回の質問で聞く項目は **2〜3 個まで**（`dialog-rules` ポリシー準拠）。
 2. 条件は次の 2 種類に書き分ける:

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`order` スキルを追加（ADR-056）**: 対話で確定した計画を発注書（Goal / Context / Out of Scope / Constraints / Open Questions + Phase の受け入れ条件と Tasks）に固めて 1 回提示し、承認後に Plans.md か GitHub Issue のどちらか 1 か所に書く。`--from-plans` で Plans.md の Project を Issue に引き渡し、Plans.archive.md に移す。Issue 化の前に Open Questions の解消を求める。
+- **`development-workflow` ルールを追加（ADR-056）**: 発注書と実行エンジン（/goal / Codex 直接 / loop-issue / TAKT / issue-fix）の使い分け、状態の置き場、PR を出す工程の適用範囲を配布ルールとして明文化。`issue-create` に AC 確定済み経路（`/order` から渡された受け入れ条件は聞き直さない）を追加。
 - **`core`: Plans.md v2 — Project 直下に発注書の節（Goal / Context / Out of Scope / Constraints / Open Questions）を書けるようにした（ADR-056）**: SessionStart のサマリーに Goal の先頭 1 行と Open Questions の件数が加わり、節内の行はタスクとして数えない。`orchex init` の雛形と `/task-state init` は v2 形式を生成し、`add-phase` は `--ac` で合意済みの受け入れ条件を受け取る。`/handoff` の引き継ぎファイルに `## Order`（Goal / Context / Constraints）が入り、Codex の起動例を `codex "$(cat <file>)"` に直した。既存形式の Plans.md はそのまま動く。
 
 ### Changed

@@ -68,7 +68,8 @@
     "task-state",
     "design",
     "handoff",
-    "explain-visually"
+    "explain-visually",
+    "order"
   ],
   "agents": [],
   "rules": [
@@ -76,7 +77,8 @@
     "coding-principles",
     "task-memory-usage",
     "context-sharing",
-    "escalation-strategy"
+    "escalation-strategy",
+    "development-workflow"
   ],
   "scripts": [],
   "config": [
