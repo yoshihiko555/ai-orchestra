@@ -201,6 +201,41 @@ def test_main_uses_unlimited_when_configured_max_display_is_zero(tmp_path, monke
     assert printed == ["summary"]
 
 
+def test_main_prints_summary_when_only_orders_exist_and_no_tasks(tmp_path, monkeypatch) -> None:
+    plans_path = tmp_path / ".claude" / "Plans.md"
+    plans_path.parent.mkdir(parents=True)
+    plans_path.write_text(
+        """# Plans
+
+## Project: HeadingOnly
+
+#### Goal
+- Ship it later
+
+### Phase 1: Setup `cc:TODO`
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(load_task_state, "read_hook_input", lambda: {"cwd": str(tmp_path)})
+    monkeypatch.setattr(
+        load_task_state,
+        "load_config",
+        lambda _project_dir: {
+            "plans_file": ".claude/Plans.md",
+            "show_summary_on_start": True,
+            "max_display_tasks": 20,
+        },
+    )
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda message: printed.append(message))
+
+    load_task_state.main()
+
+    assert printed
+    assert "Goal: Ship it later" in printed[0]
+
+
 def test_main_falls_back_to_default_max_display_for_invalid_value(tmp_path, monkeypatch) -> None:
     plans_path = tmp_path / ".claude" / "Plans.md"
     plans_path.parent.mkdir(parents=True)
@@ -630,7 +665,7 @@ def test_parse_orders_and_summary_include_single_project_order() -> None:
     tasks = load_task_state.parse_tasks(content)
     summary = load_task_state.format_summary(tasks, 20, orders=orders)
 
-    assert orders == {"Launch": {"goal": "Ship v2", "open_questions": 2}}
+    assert orders == [{"name": "Launch", "goal": "Ship v2", "open_questions": 2}]
     assert summary.splitlines()[:4] == [
         "[task-memory] 1 tasks (WIP: 1)",
         "  Goal: Ship v2",
@@ -673,16 +708,79 @@ def test_summary_qualifies_order_labels_for_multiple_projects() -> None:
         load_task_state.parse_tasks(content), 20, orders=orders
     )
 
-    assert orders == {
-        "Alpha": {"goal": "Ship Alpha", "open_questions": 1},
-        "Beta": {"goal": "Ship Beta", "open_questions": 2},
-    }
+    assert orders == [
+        {"name": "Alpha", "goal": "Ship Alpha", "open_questions": 1},
+        {"name": "Beta", "goal": "Ship Beta", "open_questions": 2},
+    ]
     assert summary.splitlines()[1:5] == [
         "  Goal (Alpha): Ship Alpha",
         "  Goal (Beta): Ship Beta",
         "  Open Questions (Alpha): 1",
         "  Open Questions (Beta): 2",
     ]
+
+
+def test_summary_qualifies_goal_label_even_when_only_one_project_has_a_goal() -> None:
+    content = """# Plans
+
+## Project: Alpha
+
+#### Goal
+- Ship Alpha
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` Alpha task
+
+## Project: Beta
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` Beta task
+"""
+
+    orders = load_task_state.parse_orders(content)
+    summary = load_task_state.format_summary(
+        load_task_state.parse_tasks(content), 20, orders=orders
+    )
+
+    assert "  Goal (Alpha): Ship Alpha" in summary.splitlines()
+    assert "  Goal: Ship Alpha" not in summary.splitlines()
+
+
+def test_parse_orders_preserves_duplicate_project_names_as_separate_entries() -> None:
+    content = """# Plans
+
+## Project: Dup
+
+#### Goal
+- First goal
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` task one
+
+## Project: Dup
+
+#### Goal
+- Second goal
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` task two
+"""
+
+    orders = load_task_state.parse_orders(content)
+
+    assert orders == [
+        {"name": "Dup", "goal": "First goal", "open_questions": 0},
+        {"name": "Dup", "goal": "Second goal", "open_questions": 0},
+    ]
+    summary = load_task_state.format_summary(
+        load_task_state.parse_tasks(content), 20, orders=orders
+    )
+    assert "  Goal (Dup): First goal" in summary.splitlines()
+    assert "  Goal (Dup): Second goal" in summary.splitlines()
 
 
 def test_parse_orders_ignores_none_open_question_bullets() -> None:
@@ -704,7 +802,7 @@ def test_parse_orders_ignores_none_open_question_bullets() -> None:
         load_task_state.parse_tasks(content), 20, orders=orders
     )
 
-    assert orders == {"Settled": {"goal": None, "open_questions": 0}}
+    assert orders == [{"name": "Settled", "goal": None, "open_questions": 0}]
     assert "Open Questions" not in summary
 
 
@@ -732,8 +830,8 @@ def test_parse_orders_skips_placeholder_goal_and_open_question_bullets() -> None
         load_task_state.parse_tasks(content), 20, orders=orders
     )
 
-    assert orders["Placeholder Only"] == {"goal": None, "open_questions": 1}
-    assert orders["Real Goal"]["goal"] == "Ship the real change"
+    assert orders[0] == {"name": "Placeholder Only", "goal": None, "open_questions": 1}
+    assert orders[1]["goal"] == "Ship the real change"
     assert "{目的" not in summary
 
 
@@ -753,6 +851,40 @@ def test_parse_tasks_skips_cc_marker_inside_order_context() -> None:
     tasks = load_task_state.parse_tasks(content)
 
     assert tasks["TODO"] == [{"task": "Real task", "reason": None}]
+
+
+def test_fenced_code_block_inside_order_section_is_not_treated_as_structure() -> None:
+    content = """# Plans
+
+## Project: Test
+
+#### Context
+
+```
+### Phase 9: Fake `cc:WIP`
+#### Tasks
+- `cc:TODO` fake task
+```
+
+- Real context note
+
+#### Open Questions
+
+- Real question?
+
+### Phase 1: Build `cc:TODO`
+
+#### Tasks
+
+- `cc:TODO` Real task
+"""
+
+    orders = load_task_state.parse_orders(content)
+    tasks = load_task_state.parse_tasks(content)
+
+    assert orders == [{"name": "Test", "goal": None, "open_questions": 1}]
+    assert tasks["TODO"] == [{"task": "Real task", "reason": None}]
+    assert tasks["WIP"] == []
 
 
 def test_legacy_plans_remain_byte_for_byte_compatible() -> None:
@@ -789,7 +921,7 @@ def test_legacy_plans_remain_byte_for_byte_compatible() -> None:
 
     assert tasks == expected_tasks
     assert load_task_state.format_summary(tasks, 20) == expected_summary
-    assert orders == {"Legacy": {"goal": None, "open_questions": 0}}
+    assert orders == [{"name": "Legacy", "goal": None, "open_questions": 0}]
     assert load_task_state.format_summary(
         tasks, 20, orders=orders
     ) == load_task_state.format_summary(tasks, 20)

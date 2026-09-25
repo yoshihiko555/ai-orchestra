@@ -76,9 +76,21 @@ def _order_section_line_indices(lines: list[str]) -> set[int]:
     in_project = False
     phase_started = False
     in_order_section = False
+    in_fence = False
 
     for line_index, line in enumerate(lines):
         stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            if in_order_section:
+                indices.add(line_index)
+            continue
+
+        if in_fence:
+            if in_order_section:
+                indices.add(line_index)
+            continue
 
         if stripped.startswith("## "):
             in_project = stripped.startswith("## Project:")
@@ -104,69 +116,96 @@ def _order_section_line_indices(lines: list[str]) -> set[int]:
     return indices
 
 
-def parse_order_sections(content: str) -> dict[str, dict[str, list[str]]]:
+def parse_order_sections(content: str) -> list[dict[str, list[str] | str]]:
     """Extract Goal, Context, and Constraints bullets for each Project."""
     lines = content.splitlines()
     order_lines = _order_section_line_indices(lines)
     heading_to_key = {heading: key for key, heading in HANDOFF_ORDER_SECTIONS}
-    orders: dict[str, dict[str, list[str]]] = {}
-    current_project: str | None = None
+    orders: list[dict[str, list[str] | str]] = []
+    current_entry: dict[str, list[str] | str] | None = None
     phase_started = False
     current_section: str | None = None
+    in_fence = False
+    last_bullet_list: list[str] | None = None
 
     for line_index, line in enumerate(lines):
         stripped = line.strip()
 
-        if stripped.startswith("## "):
-            if stripped.startswith("## Project:"):
-                current_project = stripped.split("## Project:", 1)[1].strip()
-                orders[current_project] = {}
-                phase_started = False
-            else:
-                current_project = None
-            current_section = None
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            last_bullet_list = None
             continue
 
-        if current_project is None:
+        if in_fence:
+            continue
+
+        if stripped.startswith("## "):
+            if stripped.startswith("## Project:"):
+                project_name = stripped.split("## Project:", 1)[1].strip()
+                current_entry = {"name": project_name}
+                orders.append(current_entry)
+                phase_started = False
+            else:
+                current_entry = None
+            current_section = None
+            last_bullet_list = None
+            continue
+
+        if current_entry is None:
             continue
 
         if stripped.startswith("### "):
             phase_started = True
             current_section = None
+            last_bullet_list = None
             continue
 
         if stripped.startswith("#### "):
             current_section = heading_to_key.get(stripped) if not phase_started else None
+            last_bullet_list = None
             continue
 
         if line_index not in order_lines or current_section is None:
+            last_bullet_list = None
             continue
 
         bullet_line = line.lstrip()
-        if not bullet_line.startswith("- "):
+        is_indented = line != bullet_line
+        is_bullet = bullet_line.startswith("- ")
+
+        if is_bullet:
+            bullet_text = bullet_line[2:]
+            if bullet_text.strip() and not bullet_text.strip().startswith("{"):
+                bullets = current_entry.setdefault(current_section, [])
+                if isinstance(bullets, list):
+                    bullets.append(bullet_text)
+                    last_bullet_list = bullets
+            else:
+                last_bullet_list = None
             continue
-        bullet_text = bullet_line[2:]
-        if bullet_text.strip() and not bullet_text.strip().startswith("{"):
-            orders[current_project].setdefault(current_section, []).append(bullet_text)
+
+        if last_bullet_list is not None and is_indented and bullet_line.strip():
+            last_bullet_list[-1] = f"{last_bullet_list[-1]} {bullet_line.strip()}"
+            continue
+
+        last_bullet_list = None
 
     return orders
 
 
-def render_order_markdown(orders: dict[str, dict[str, list[str]]]) -> str:
+def render_order_markdown(orders: list[dict]) -> str:
     """Render extracted order data as a Markdown fragment."""
     projects = [
-        (project_name, sections)
-        for project_name, sections in orders.items()
-        if any(sections.get(key) for key, _heading in HANDOFF_ORDER_SECTIONS)
+        entry for entry in orders if any(entry.get(key) for key, _heading in HANDOFF_ORDER_SECTIONS)
     ]
     if not projects:
         return ""
 
     lines = ["## Order"]
-    for project_name, sections in projects:
-        lines.extend(["", f"### {project_name}"])
+    for entry in projects:
+        lines.extend(["", f"### {entry['name']}"])
         for key, heading in HANDOFF_ORDER_SECTIONS:
-            bullets = sections.get(key)
+            bullets = entry.get(key)
             if not bullets:
                 continue
             lines.extend(["", heading, ""])
@@ -185,8 +224,17 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
 
     lines = content.splitlines()
     order_lines = _order_section_line_indices(lines)
+    in_fence = False
     for line_index, line in enumerate(lines):
         stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+
+        if in_fence:
+            continue
+
         if not stripped.startswith("- "):
             continue
         if line_index in order_lines:

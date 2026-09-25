@@ -98,9 +98,21 @@ def order_section_line_indices(lines: list[str]) -> set[int]:
     in_project = False
     phase_started = False
     in_order_section = False
+    in_fence = False
 
     for line_index, line in enumerate(lines):
         stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            if in_order_section:
+                indices.add(line_index)
+            continue
+
+        if in_fence:
+            if in_order_section:
+                indices.add(line_index)
+            continue
 
         if stripped.startswith("## "):
             in_project = stripped.startswith("## Project:")
@@ -126,29 +138,38 @@ def order_section_line_indices(lines: list[str]) -> set[int]:
     return indices
 
 
-def parse_orders(content: str) -> dict[str, dict]:
+def parse_orders(content: str) -> list[dict]:
     """Plans.md の Project ごとに Goal と Open Questions を抽出する。"""
     lines = content.splitlines()
     order_lines = order_section_line_indices(lines)
-    orders: dict[str, dict] = {}
-    current_project: str | None = None
+    orders: list[dict] = []
+    current_entry: dict | None = None
     phase_started = False
     current_section: str | None = None
+    in_fence = False
 
     for line_index, line in enumerate(lines):
         stripped = line.strip()
 
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+
+        if in_fence:
+            continue
+
         if stripped.startswith("## "):
             if stripped.startswith("## Project:"):
-                current_project = stripped.split("## Project:", 1)[1].strip()
-                orders[current_project] = {"goal": None, "open_questions": 0}
+                project_name = stripped.split("## Project:", 1)[1].strip()
+                current_entry = {"name": project_name, "goal": None, "open_questions": 0}
+                orders.append(current_entry)
                 phase_started = False
             else:
-                current_project = None
+                current_entry = None
             current_section = None
             continue
 
-        if current_project is None:
+        if current_entry is None:
             continue
 
         if stripped.startswith("### "):
@@ -165,18 +186,17 @@ def parse_orders(content: str) -> dict[str, dict]:
         if line_index not in order_lines:
             continue
 
-        project_order = orders[current_project]
-        if current_section == "#### Goal" and project_order["goal"] is None and stripped:
+        if current_section == "#### Goal" and current_entry["goal"] is None and stripped:
             goal = stripped[2:].strip() if stripped.startswith("- ") else stripped
             if re.match(r"^\[[ xX]\]\s+", goal):
                 goal = goal[3:].strip()
             if not goal.startswith("{"):
-                project_order["goal"] = goal
+                current_entry["goal"] = goal
         elif current_section == "#### Open Questions" and stripped.startswith("- "):
             question = stripped[2:].strip()
             normalized = question.rstrip(".。").casefold()
             if not question.startswith("{") and normalized not in {"なし", "none", "n/a"}:
-                project_order["open_questions"] += 1
+                current_entry["open_questions"] += 1
 
     return orders
 
@@ -266,8 +286,16 @@ def parse_tasks(
     lines = content.splitlines()
     order_lines = order_section_line_indices(lines)
     in_ac_section = False
+    in_fence = False
     for line_index, line in enumerate(lines):
         stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+
+        if in_fence:
+            continue
 
         if stripped == AC_SECTION_HEADING:
             in_ac_section = True
@@ -318,7 +346,7 @@ def format_summary(
     tasks: dict[str, list[dict[str, str | None]]],
     max_display: int | None,
     *,
-    orders: dict[str, dict] | None = None,
+    orders: list[dict] | None = None,
 ) -> str:
     """タスク状態のサマリーをフォーマットする。"""
     parts: list[str] = []
@@ -330,27 +358,29 @@ def format_summary(
         count = len(tasks[state])
         if count > 0:
             stats.append(f"{state}: {count}")
-    parts.append(f"[task-memory] {total} tasks ({', '.join(stats)})")
+    if stats:
+        parts.append(f"[task-memory] {total} tasks ({', '.join(stats)})")
+    else:
+        parts.append(f"[task-memory] {total} tasks")
 
     if orders:
+        qualify = len(orders) > 1
         goals = [
-            (project_name, project_order.get("goal"))
-            for project_name, project_order in orders.items()
+            (project_order["name"], project_order.get("goal"))
+            for project_order in orders
             if project_order.get("goal") is not None
         ]
         for project_name, goal in goals:
-            label = f"Goal ({project_name})" if len(goals) > 1 else "Goal"
+            label = f"Goal ({project_name})" if qualify else "Goal"
             parts.append(f"  {label}: {goal}")
 
         open_questions = [
-            (project_name, project_order.get("open_questions", 0))
-            for project_name, project_order in orders.items()
+            (project_order["name"], project_order.get("open_questions", 0))
+            for project_order in orders
             if project_order.get("open_questions", 0) > 0
         ]
         for project_name, count in open_questions:
-            label = (
-                f"Open Questions ({project_name})" if len(open_questions) > 1 else "Open Questions"
-            )
+            label = f"Open Questions ({project_name})" if qualify else "Open Questions"
             parts.append(f"  {label}: {count}")
 
     if max_display is None:
@@ -682,8 +712,11 @@ def main() -> None:
     orders = parse_orders(content)
     tasks = parse_tasks(content, marker_pattern, marker_to_state)
 
-    # 1 つもタスクがなければ何も出力しない
-    if not any(tasks.values()):
+    has_orders = any(
+        project_order.get("goal") or project_order.get("open_questions", 0) > 0
+        for project_order in orders
+    )
+    if not any(tasks.values()) and not has_orders:
         return
 
     configured_max_display = config.get("max_display_tasks", 20)
