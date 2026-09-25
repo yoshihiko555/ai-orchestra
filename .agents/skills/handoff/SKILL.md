@@ -81,12 +81,19 @@ Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マー�
 python3 .claude/skills/handoff/scripts/handoff.py
 ```
 
+続けて base branch を resolver で解決する（PR Standards Policy の "Base Branch Resolution"。Step 3 の
+`**Base branch**` に入れ、Codex がブランチ判定に使う）:
+
+```bash
+: "${AI_ORCHESTRA_DIR:?AI_ORCHESTRA_DIR is not set}"
+BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_branch.py")
+```
+
 スクリプトが JSON を stdout に出力する。内容:
 
 - Plans.md の WIP/TODO/blocked タスク
 - 未コミット diff のサマリー（`git diff --stat`）
 - ブランチ名、最近のコミット
-- base branch（`packages/git-workflow/scripts/resolve_base_branch.py` で解決。Codex がブランチ判定に使う）
 - Decisions セクション
 
 ### Step 2: 会話要約の生成
@@ -111,7 +118,7 @@ Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマ�
 
 **Generated**: {YYYY-MM-DD HH:MM:SS UTC}
 **Branch**: {branch_name}
-**Base branch**: {Step 1 で resolve_base_branch.py が解決した base}
+**Base branch**: {Step 1 の $BASE}
 **Project**: {project directory}
 
 ## Conversation Summary
@@ -199,7 +206,7 @@ files, not part of the change). Do not push; Claude Code creates the PR with
 
 ## 注意事項
 
-- 引き継ぎファイルは `.claude/handoffs/` に蓄積される（ローカル管理。`.gitignore` への追加を推奨し、コミットに含めない）
+- 引き継ぎファイルは `.claude/handoffs/` に蓄積される（ローカル管理。`.gitignore` に自動追加される（gitignore 同期の対象）。コミットに含めない）
 - Plans.md が存在しない場合はエラーメッセージを表示して終了
 - diff が大きすぎる場合（100行超）は `--stat` のみに切り詰める
 - 機密情報（.env 等）は diff に含めない

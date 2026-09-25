@@ -24,13 +24,13 @@
 
 行 3〜5 は ADR-20260926-056 の新フロー（`/order` 実装後に有効）。旧フロー（`/preflight` Phase 1〜4、`/startproject` Phase 2〜7）の観点は EV-14〜EV-23 を参照。
 
-| ステップ | スキル / フェーズ      | 入力                    | 期待する成果物・振る舞い                                                      |
-| -------- | ---------------------- | ----------------------- | ----------------------------------------------------------------------------- |
-| 1        | design Phase 0         | 既存コード              | `.claude/docs/impact-analysis/{date}_{slug}.md`（researcher 経由）            |
-| 2        | design Phase 1-3       | 対話 + 上流成果物       | `docs/` 配下の設計書（codd フロントマター付き）+ 各フェーズ末の品質ゲート通過 |
-| 3        | `/order`（仮名）       | 対話の結論 + 設計成果物 | 発注書（Goal / Context / Out of Scope / Constraints / Open Questions + Phase の AC + Tasks）を Plans.md か Issue に 1 回だけ書く。Context に設計書パスを載せる |
-| 4        | 実行エンジン           | 発注書                  | 設計書を参照した実装（エンジン側の責務。本評価セットの対象外）                |
-| 5        | `/review`              | 実装 diff + 設計書      | Phase 1 で spec-reviewer を必須選定し、実装と設計書を突合（`docs/evaluation/skills/review.md` EV-24 の責務） |
+| ステップ | スキル / フェーズ | 入力                    | 期待する成果物・振る舞い                                                                                                                                       |
+| -------- | ----------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | design Phase 0    | 既存コード              | `.claude/docs/impact-analysis/{date}_{slug}.md`（researcher 経由）                                                                                             |
+| 2        | design Phase 1-3  | 対話 + 上流成果物       | `docs/` 配下の設計書（codd フロントマター付き）+ 各フェーズ末の品質ゲート通過                                                                                  |
+| 3        | `/order`（仮名）  | 対話の結論 + 設計成果物 | 発注書（Goal / Context / Out of Scope / Constraints / Open Questions + Phase の AC + Tasks）を Plans.md か Issue に 1 回だけ書く。Context に設計書パスを載せる |
+| 4        | 実行エンジン      | 発注書                  | 設計書を参照した実装（エンジン側の責務。本評価セットの対象外）                                                                                                 |
+| 5        | `/review`         | 実装 diff + 設計書      | Phase 1 で spec-reviewer を必須選定し、実装と設計書を突合（`docs/evaluation/skills/review.md` EV-24 の責務）                                                   |
 
 ## 3. 評価観点
 
