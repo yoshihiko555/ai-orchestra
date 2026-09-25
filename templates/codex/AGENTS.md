@@ -220,9 +220,9 @@ Claude Code (Orchestrator)
 ```
 
 あなたはマルチエージェント構成の一部です。何を担当するかは呼び出し元のエージェント定義と依頼内容で決まります。
-この harness は `agy -p` を編集モードなしで起動するため、Antigravity は読み取り専用で動き、ファイル編集・
-commit・push は行いません（役割の固定ではなく起動方法による制約）。編集が必要な作業は `cli-tools.yaml` の
-ルーティングで Codex か Claude Code に振られます。
+この harness からの呼び出しは調査・分析用で、Antigravity はファイルの編集・commit・push を行いません
+（役割の固定ではなく呼び出し方の取り決め。呼び出し側は必要に応じて `--mode plan` で読み取り専用を
+強制する）。編集が必要な作業は `cli-tools.yaml` のルーティングで Codex か Claude Code に振られます。
 
 ## プロジェクト文脈
 

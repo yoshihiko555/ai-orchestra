@@ -10,13 +10,13 @@ Before writing any code, resolve two things:
 
 Scan the project root for language markers and select the appropriate test framework and runner:
 
-| Marker File | Language | Test Framework | Run Command |
-|-------------|----------|---------------|-------------|
-| `pyproject.toml`, `setup.py` | Python | pytest | Project runner (uv/poetry/pip) + `pytest` |
-| `package.json` | TypeScript/JavaScript | vitest / jest | `npm test` or `npx vitest` / `npx jest` |
-| `go.mod` | Go | testing (stdlib) | `go test ./...` |
-| `Cargo.toml` | Rust | cargo test | `cargo test` |
-| `*.csproj`, `*.sln` | C# | xUnit / NUnit | `dotnet test` |
+| Marker File                  | Language              | Test Framework   | Run Command                               |
+| ---------------------------- | --------------------- | ---------------- | ----------------------------------------- |
+| `pyproject.toml`, `setup.py` | Python                | pytest           | Project runner (uv/poetry/pip) + `pytest` |
+| `package.json`               | TypeScript/JavaScript | vitest / jest    | `npm test` or `npx vitest` / `npx jest`   |
+| `go.mod`                     | Go                    | testing (stdlib) | `go test ./...`                           |
+| `Cargo.toml`                 | Rust                  | cargo test       | `cargo test`                              |
+| `*.csproj`, `*.sln`          | C#                    | xUnit / NUnit    | `dotnet test`                             |
 
 If multiple markers exist, prefer the one closest to the target module. If the project already has tests, follow the existing test conventions (directory structure, naming, framework).
 
@@ -28,20 +28,21 @@ Read `.claude/config/agent-routing/cli-tools.yaml` (and `.local.yaml` if present
 
 Key agents used in TDD:
 
-| Phase | Agent | Config Key |
-|-------|-------|-----------|
-| Test writing | `tester` | `agents.tester.tool` |
-| Implementation | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool` |
-| Refactor (apply) | `$IMPL_AGENT` (same as Implementation) | `agents.<lang-dev>.tool` |
-| Refactor review (optional) | `code-reviewer` | `agents.code-reviewer.tool` |
+| Phase                      | Agent                                      | Config Key                  |
+| -------------------------- | ------------------------------------------ | --------------------------- |
+| Test writing               | `tester`                                   | `agents.tester.tool`        |
+| Implementation             | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool`    |
+| Refactor (apply)           | `$IMPL_AGENT` (same as Implementation)     | `agents.<lang-dev>.tool`    |
+| Refactor review (optional) | `code-reviewer`                            | `agents.code-reviewer.tool` |
 
 Select the implementation agent based on `$LANG`:
+
 - Python → `backend-python-dev`
 - TypeScript/JavaScript → `frontend-dev`
 - Go → `backend-go-dev`
 - Other → `general-purpose`
 
-**Routing enforcement rule**: Delegate each phase with `Task(subagent_type="{agent}", prompt="...")` regardless of the `agents.<name>.tool` value. Do NOT write CLI names, sandbox modes, or model names in the prompt: the hook appends `[Resolved Routing]` (tool / sandbox / model, merged from `cli-tools.yaml` and `.local.yaml`) to the subagent prompt and the agent definition follows it. The orchestrator must not write test or implementation code itself in a delegated phase.
+**Routing enforcement rule**: Delegate each phase with `Task(subagent_type="{agent}", prompt="...")` regardless of the `agents.<name>.tool` value. Do NOT write CLI names, sandbox modes, or model names in the prompt: the hook appends `[Resolved Routing]` (tool / sandbox / model, merged from `cli-tools.yaml` and `.local.yaml`) to the subagent prompt and the agent definition follows it. The orchestrator must not write test or implementation code itself in a delegated phase. If the routing resolved for a writing phase (Red / Green / Refactor) cannot edit files (tool `antigravity`, or `codex` with sandbox `read-only`), the subagent falls back to `claude-direct` (it runs on Claude with its own Edit/Write tools) instead of the external CLI; do not work around it by editing in the orchestrator.
 
 ---
 
@@ -131,6 +132,7 @@ and pass its list to `$IMPL_AGENT`. Do not refactor inline in the orchestrator. 
 subagent returns, re-run `$TEST_CMD {test file}` yourself to confirm the tests still pass.
 
 Refactoring targets:
+
 - Remove duplication
 - Improve naming
 - Simplify structure
@@ -166,19 +168,23 @@ Target: 80%+ line coverage on the new module.
 ## TDD Complete: {Feature Name}
 
 ### Environment
+
 - Language: $LANG
 - Test Framework: $TEST_FRAMEWORK
 - Routing: tester=$TESTER_TOOL, impl=$IMPL_TOOL
 
 ### Test Cases
+
 - [x] {test1}: {description}
 - [x] {test2}: {description}
-...
+      ...
 
 ### Coverage
+
 {Coverage report}
 
 ### Implementation Files
+
 - `{source file}`: {description}
 - `{test file}`: {N} tests
 ```

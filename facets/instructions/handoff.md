@@ -107,18 +107,20 @@ Key files to review:
 - .claude/Plans.md — Full task state (update markers as you complete tasks)
 - {other relevant files from working context}
 
-Before the first commit, compare the current branch with the Base branch above.
-If they are the same, or `git branch --show-current` prints nothing (detached HEAD),
-create a feature branch first (`git switch -c <type>/<short-name>`); never commit
-to the base branch.
+Before the first commit, check the current branch (`git branch --show-current`).
+If it is empty (detached HEAD), equals the Base branch above, or is one of
+main / master / develop / staging / stage or the remote default branch
+(`git symbolic-ref refs/remotes/origin/HEAD`), create a feature branch first
+(`git switch -c <type>/<short-name>`); never commit to an integration branch.
 When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`.
 When a Phase's Acceptance Criteria are met, check them (`- [ ]` → `- [x]`) only after
 you actually ran the `verify:` command and it passed, or confirmed the `judge:` criterion;
 never check an unverified criterion. Then commit that task's changes with a descriptive
-message. The changes listed under "Uncommitted Changes" are the in-progress work you
-are continuing: include them in the commit of the task they belong to. Stage by path
-(`git add <paths>`), review `git diff --cached` before each commit, and never use
-`git add -A`. Do not stage `.claude/Plans.md` or `.claude/handoffs/` (local working
+message. Run `git status --porcelain` first: "Uncommitted Changes" lists tracked
+changes only, so untracked files may also belong to the work in progress. Commit only
+the paths that belong to the WIP tasks (Plans.md tasks and the working context above);
+leave unrelated changes unstaged. Stage by path (`git add <paths>`), review
+`git diff --cached` before each commit, and never use `git add -A`. Do not stage `.claude/Plans.md` or `.claude/handoffs/` (local working
 files, not part of the change). Do not push; Claude Code creates the PR with
 `/pr-create` from the committed work.
 ```
@@ -132,9 +134,10 @@ files, not part of the change). Do not push; Claude Code creates the PR with
    ファイルは渡せない）。`<codex.model>` と `<codex.sandbox.implementation>` は
    `.claude/config/agent-routing/cli-tools.yaml`（+ `.local.yaml`）の実効値で置換して表示する。
    実効値の `codex.enabled` が `false` なら起動コマンドは案内せず、Claude Code で続行するよう案内する。
-   sandbox は `read-only` / `workspace-write` 以外の値なら案内しない（`codex-delegation` の fail-closed と同じ）:
+   sandbox は `read-only` / `workspace-write` 以外、model は `[A-Za-z0-9._-]` 以外の文字を含む値なら
+   案内しない（`codex-delegation` の fail-closed と同じ）。値はシングルクォートで囲んで表示する:
    ```
-   codex --model <codex.model> --sandbox <codex.sandbox.implementation> "$(cat '.claude/handoffs/{timestamp}.md')"
+   codex --model '<codex.model>' --sandbox '<codex.sandbox.implementation>' "$(cat '.claude/handoffs/{timestamp}.md')"
    ```
 3. 引き継ぎ内容のサマリー（WIP タスク数、TODO タスク数）
 

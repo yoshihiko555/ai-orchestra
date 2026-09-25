@@ -23,17 +23,17 @@
 
 ## 2. 期待するフローと成果物
 
-| ステップ | スキル / フェーズ | 入力 | 期待する成果物・振る舞い |
-| -------- | ----------------- | ---- | ------------------------ |
-| 1 | review Phase 0 | git diff | diff_stat / diff_full / file_contexts を 1 回だけ収集（500 行超は変更ハンク + 前後 30 行） |
-| 2 | review Phase 1 | 変更ファイル・diff | ベースライン 2 名 + パス/コンテンツシグナルによる専門枠最大 2 名の選定結果 |
-| 3 | review Phase 2 | diff サイズ・リスクシグナル | モデル選択（≤100 行かつ override なしで sonnet 明示指定） |
-| 4 | review Phase 3 | 選定レビュアー + 事前収集コンテキスト | 並列 Task 起動（コンテキスト注入済みプロンプト） |
-| 5 | review Phase 3.5 | 各レビュアーの Critical/High 指摘 | `finding-verifier` による反証検証（confirmed / refuted / uncertain）。`review.verify_findings: false` ならスキップ |
-| 6 | review Phase 4 | 各レビュアーの Tiered 報告 + 検証結果 | 重複統合済みの Review Summary（refuted は除外し「Refuted Findings」に理由付き表示、severity 過大は格下げ） |
-| 7 | review Phase 5 | 集約結果 + `review.*` config | Pass/Fail 判定（`critical_zero`。uncertain Critical も Fail 扱い） |
-| 8 | review Phase 6 | Critical 指摘（confirmed のみ） | 拡張子マッピングに基づく修正エージェントによる自動修正 |
-| 9 | review Phase 7 | 修正後の新 diff | 再レビューループ（`max_loops` 上限）。新規/変更 Critical/High は再検証し、flip-flop は NEEDS_REVIEW で停止して Final Report |
+| ステップ | スキル / フェーズ | 入力                                  | 期待する成果物・振る舞い                                                                                                    |
+| -------- | ----------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 1        | review Phase 0    | git diff                              | diff_stat / diff_full / file_contexts を 1 回だけ収集（500 行超は変更ハンク + 前後 30 行）                                  |
+| 2        | review Phase 1    | 変更ファイル・diff                    | ベースライン 2 名 + パス/コンテンツシグナルによる専門枠最大 2 名の選定結果                                                  |
+| 3        | review Phase 2    | diff サイズ・リスクシグナル           | モデル選択（≤100 行かつ override なしで sonnet 明示指定）                                                                   |
+| 4        | review Phase 3    | 選定レビュアー + 事前収集コンテキスト | 並列 Task 起動（コンテキスト注入済みプロンプト）                                                                            |
+| 5        | review Phase 3.5  | 各レビュアーの Critical/High 指摘     | `finding-verifier` による反証検証（confirmed / refuted / uncertain）。`review.verify_findings: false` ならスキップ          |
+| 6        | review Phase 4    | 各レビュアーの Tiered 報告 + 検証結果 | 重複統合済みの Review Summary（refuted は除外し「Refuted Findings」に理由付き表示、severity 過大は格下げ）                  |
+| 7        | review Phase 5    | 集約結果 + `review.*` config          | Pass/Fail 判定（`critical_zero`。uncertain Critical も Fail 扱い）                                                          |
+| 8        | review Phase 6    | Critical 指摘（confirmed のみ）       | 拡張子マッピングに基づく修正エージェントによる自動修正                                                                      |
+| 9        | review Phase 7    | 修正後の新 diff                       | 再レビューループ（`max_loops` 上限）。新規/変更 Critical/High は再検証し、flip-flop は NEEDS_REVIEW で停止して Final Report |
 
 ## 3. 評価観点
 
