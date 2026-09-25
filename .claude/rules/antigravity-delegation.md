@@ -124,7 +124,7 @@ based on the available information." --model <antigravity.model> 2>/dev/null
 sandbox エラーや権限拒否が発生した場合は claude-direct にフォールバックすること。
 
 結果を .claude/docs/research/{topic}.md に保存し、
-要約を返してください（5-7ポイント）。
+要点を絞った要約を返してください。
 """)
 ```
 
@@ -146,11 +146,10 @@ IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> --a
 
 ## Antigravity の強み
 
-| 機能                           | 説明                                                     |
-| ------------------------------ | -------------------------------------------------------- |
-| 大規模コンテキスト             | コードベース全体を一度に分析可能                         |
-| Google Search グラウンディング | 最新情報へのアクセス                                     |
-| 複数モデル                     | Gemini 3.5 Flash / 3.1 Pro / Claude 4.6 / GPT-OSS の切替 |
+| 機能                           | 説明                                                   |
+| ------------------------------ | ------------------------------------------------------ |
+| Google Search グラウンディング | 最新情報へのアクセス                                   |
+| 複数モデル                     | `antigravity.model_allowlist` に登録されたモデルを切替 |
 
 ## 無効化
 

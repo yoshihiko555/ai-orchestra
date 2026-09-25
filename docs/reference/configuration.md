@@ -109,7 +109,7 @@ antigravity:
 | -------------------------- | ------ | --------------------- | ----------------------------------------------- |
 | `enabled`                  | bool   | `true`                | `false` で Antigravity 呼び出しを全停止         |
 | `model`                    | string | `gemini-3.1-pro-high` | agy で使用するモデル slug                       |
-| `model_allowlist`          | list   | 9 ID                  | slug 妥当性チェック用（黙示フォールバック対策） |
+| `model_allowlist`          | list   | `agy models` の ID    | slug 妥当性チェック用（黙示フォールバック対策） |
 | `flags`                    | string | `""`                  | agy に常時付与するフラグ                        |
 | `requires_sandbox_disable` | bool   | `false`               | sandbox 外での実行が必要か                      |
 

@@ -93,7 +93,7 @@ metadata:
 
 ```
 /review              # ベースライン(code + adversarial) + スマート選定（デフォルト）
-/review all          # 全 7 レビュアー並列実行（旧デフォルト）
+/review all          # 全 7 レビュアー並列実行
 /review code         # コードレビューのみ
 /review security     # セキュリティレビューのみ
 /review performance  # パフォーマンスレビューのみ
@@ -242,7 +242,7 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 Phase 3 で集まった Critical/High 指摘を `finding-verifier` で反証し、誤検知・過大評価を除去してから集約する。
 
 1. `cli-tools.yaml` の `review.verify_findings` を確認する（config-loading ルールに従い `.local.yaml` 上書きを適用。デフォルト `true`）
-2. `verify_findings: false` の場合 → Phase 3.5 全体をスキップし、Phase 3 の全指摘をそのまま Phase 4 へ渡す（従来動作）
+2. `verify_findings: false` の場合 → Phase 3.5 全体をスキップし、Phase 3 の全指摘をそのまま Phase 4 へ渡す
 3. `verify_findings: true` の場合 → 以下の起動ルールで `finding-verifier` を並列起動する:
    - **Critical**: 1 finding = 1 起動
    - **High**: レビュアー出力単位でバッチ化し、1 起動あたり最大 6 件まで
@@ -350,7 +350,7 @@ Task(subagent_type="finding-verifier", run_in_background=true, prompt="""
 Phase 4 の集約結果から通過判定を行う。
 
 1. `cli-tools.yaml` の `review.auto_fix` を確認する（config-loading ルールに従い `.local.yaml` 上書きを適用。詳細は `config-loading.md` 参照）
-2. `auto_fix: false` の場合 → Phase 4 の Review Summary を出力してスキル終了（従来動作）
+2. `auto_fix: false` の場合 → Phase 4 の Review Summary を出力してスキル終了
 3. `auto_fix: true` の場合 → 通過基準を `review.pass_threshold` から取得
 4. 通過基準の評価:
    - `critical_zero`: Critical 指摘が 0 件で通過
@@ -364,7 +364,7 @@ Critical 指摘をサブエージェントで自動修正する。
 
 **対象範囲**:
 - `review.verify_findings: true`（デフォルト）の場合 → **`verdict: confirmed` の Critical のみ**が対象。`refuted` は除外済み、`uncertain` は Phase 5 で Fail 扱いだが人手確認に回すため auto-fix の対象外
-- `review.verify_findings: false` の場合 → 従来通り、Phase 3 で報告された全 Critical が対象
+- `review.verify_findings: false` の場合 → Phase 3 で報告された全 Critical が対象
 
 1. 対象範囲の Critical 指摘をファイルごとにグループ化
 2. 各ファイルの拡張子から修正エージェントを決定（マッピングテーブル参照）
@@ -495,7 +495,7 @@ Phase 3.5（指摘検証）と Phase 5-7（Pass/Fail 判定 → Auto-Fix → Re-
 
 ## Execution: Full Review (`/review all`)
 
-全 7 レビュアーを並列起動する（旧 `/review` のデフォルト動作）。
+全 7 レビュアーを並列起動する（スマート選定をスキップ）。
 
 1. Phase 0 のコンテキスト事前収集を実行
 2. モデル選択を実行（Phase 2 と同じ）
@@ -541,11 +541,11 @@ Phase 3.5（指摘検証）と Phase 5-7（Pass/Fail 判定 → Auto-Fix → Re-
 - `/review design` は大規模リファクタリング前に推奨
 - リリース前は `/review all` を推奨
 
-## Quality Gate Rule（v3: Auto-Loop）
+## Quality Gate Rule（Auto-Loop）
 
 デフォルトで自動修正ループが有効。詳細は Phase 5-7 を参照。
 
-- `review.auto_fix: false` で従来動作（報告のみ）に切替可能
+- `review.auto_fix: false` で報告のみ（自動修正なし）に切替可能
 - デフォルトで Critical/High 指摘は `finding-verifier` による反証検証（Phase 3.5）を経てから集約・自動修正に回る
-- `review.verify_findings: false` で検証をスキップし、全指摘をそのまま集約・自動修正対象にする従来動作に切替可能
+- `review.verify_findings: false` で検証をスキップし、全指摘をそのまま集約・自動修正対象にできる
 - テストコード作成は `/tdd` の責務であり、`/review` の責務ではない

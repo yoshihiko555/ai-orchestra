@@ -7,7 +7,7 @@
 UserPromptSubmit hook の `[Agent Routing]` 提案が出た場合、オーケストレーターは以下に従う：
 
 1. **提案されたエージェントをサブエージェントとして呼び出す**（`Task(subagent_type=...)` を使用）
-2. **Codex/Gemini CLI を直接 Bash で実行しない**（サブエージェント内で実行させる）
+2. **Codex/Antigravity CLI を直接 Bash で実行しない**（サブエージェント内で実行させる）
 
 ## 理由
 

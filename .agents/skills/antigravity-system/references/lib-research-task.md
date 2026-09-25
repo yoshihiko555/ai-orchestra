@@ -11,7 +11,7 @@ Use Google Search to find:
 - Official documentation
 - GitHub README, Issues, Discussions
 - PyPI / npm pages
-- Latest blog posts, tutorials (2024-2025)
+- Latest blog posts, tutorials
 
 ---
 
@@ -63,7 +63,7 @@ Use Google Search to find:
 - Official documentation
 - GitHub README, Issues, Discussions
 - PyPI pages
-- Latest blog posts, tutorials (2024-2025)
+- Latest blog posts, tutorials
 
 [Template structure as above...]
 

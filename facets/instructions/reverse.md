@@ -61,7 +61,7 @@ README.md（インデックス）生成・完了
 | -------------------- | --------------------------------------------------------- |
 | 引数なし             | リポジトリルート（`git rev-parse --show-toplevel`）を対象 |
 | 相対パス `src/foo`   | リポジトリルートからの相対パスとして解決                  |
-| 絶対パス `/abs/path` | そのまま使用。リポジトリ外の場合はエラーとして中止        |
+| 絶対パス `/abs/path` | そのまま使用。リポジトリ外の場合は下記ガードに従う        |
 
 **ガード**: 解決したパスがリポジトリルート以下に含まれることを確認すること。リポジトリ外のパスが指定された場合は AskUserQuestion でユーザーに確認し、続行しない。
 
@@ -137,7 +137,7 @@ Phase 1 の重い処理（統計収集・エントリポイント抽出・Antigr
 `reverse-coordinator` サブエージェントに委譲し、メインには **要約＋成果物パスのみ** を返させる。
 中間 JSON（stats.json / entrypoints.json）や Antigravity 生出力はメインコンテキストに展開しない。
 
-> Note: Phase 1 のみ coordinator 委譲の試作。Phase 2〜5 は従来どおり `general-purpose` 直叩きで動く。
+> Note: Phase 1 は `reverse-coordinator` サブエージェントに委譲する。Phase 2〜5 は `general-purpose` を直接起動する。
 
 1. `reverse-coordinator` を起動して Phase 1 を内部完結させる。プロンプト中の `output_dir` の
    `{YYYY-MM-DD}_{target-slug}` は Phase 0 で確定した日付・スラッグに置換して渡す:
@@ -307,7 +307,7 @@ If antigravity.enabled == false, derive equivalent analysis using Read/Grep/Glob
 and note that fallback mode is active.
 
 Save full output to: .claude/docs/reverse/{YYYY-MM-DD}_{target-slug}/features.md
-Return a concise 5-7 bullet summary.
+Return a concise summary.
 """)
 ```
 

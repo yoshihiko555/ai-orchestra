@@ -9,7 +9,7 @@
 
 このスキルはマルチエージェント協調で、プロジェクト開始から実装後レビューまでをカバーする。
 
-### 運用メモ（v2）
+### 運用メモ
 
 - `/preflight` で事前計画済みの場合は、Phase 2 で差分確認を中心に進める
 - Phase 6 完了時点で **最小テストゲート**（changed tests + smoke）を通す
@@ -83,7 +83,7 @@ Task tool parameters:
       Read/Grep/Glob で同等の調査を実施し、同形式で要約を作成する。
 
     Save full output to: .claude/docs/research/{feature}.md
-    Return CONCISE summary (5-7 bullet points)
+    Return a concise summary.
 ```
 
 ---

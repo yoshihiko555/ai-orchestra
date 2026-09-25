@@ -37,8 +37,8 @@ codd:
 | plan        | `plan:codd-coherence-layer` | `.claude/Plans.md`       |
 | rule        | `rule:config-loading`       | `.claude/rules/*.md`     |
 | instruction | `instruction:claude-md`     | `templates/context/*.md` |
-| code        | `code:codd-scan`            | `code_scope.include` 内のソースファイル（opt-in、Issue #98） |
-| test        | `test:test-codd-cli`        | `code_scope.include` 内のテストファイル（opt-in、Issue #98） |
+| code        | `code:codd-scan`            | `code_scope.include` 内のソースファイル（opt-in） |
+| test        | `test:test-codd-cli`        | `code_scope.include` 内のテストファイル（opt-in） |
 
 > `code` / `test` は 1行の軽量注釈（`codd:<key> <value>`）で宣言する。詳細は
 > `docs/design/codd-coherence-layer.md` §4.3.1 を参照。

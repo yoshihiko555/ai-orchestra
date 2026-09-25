@@ -50,19 +50,8 @@ Review Checklist:
 
 ---
 
-Provide feedback in this format:
-
-### 🔴 Critical (Must Fix)
-Security issues, bugs, library misuse
-
-### 🟡 Warning (Should Fix)
-Lack of simplicity, best practice violations
-
-### 🟢 Suggestion (Consider)
-Better approach proposals
-
-### ✅ Good
-Well-implemented points
+Label each finding Critical / High / Medium / Low, with file:line.
+Also note well-implemented points briefly.
 ```
 
 ## Example Invocation
