@@ -3,8 +3,8 @@
 **パッケージ**: `packages/core`
 **類型**: 主: hook 型、副: 共通ライブラリ
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-09-26（ADR-20260926-055: Plans.md v2（発注書の節）に対応する EV-41〜EV-45 を新設。前回 2026-09-25: Issue #452 レビュー指摘対応で EV-39・EV-40 を新設）
-**情報源**: docs/reference/packages.md（core セクション）, docs/design/architecture.md（4.3 / 5 / 9 章）, docs/adr/ADR-20260926-055.md（§決定 2: Plans.md v2）, .claude/rules/task-memory-usage.md, .claude/rules/context-sharing.md, docs/adr/ADR-20260728-046.md（root worktree 解決パターン、EV-26）
+**最終レビュー日**: 2026-09-26（ADR-20260926-056: Plans.md v2（発注書の節）に対応する EV-41〜EV-45 を新設。前回 2026-09-25: Issue #452 レビュー指摘対応で EV-39・EV-40 を新設）
+**情報源**: docs/reference/packages.md（core セクション）, docs/design/architecture.md（4.3 / 5 / 9 章）, docs/adr/ADR-20260926-056.md（§決定 2: Plans.md v2）, .claude/rules/task-memory-usage.md, .claude/rules/context-sharing.md, docs/adr/ADR-20260728-046.md（root worktree 解決パターン、EV-26）
 **補助参照（構成要素の列挙のみ）**: packages/core/manifest.json, packages/core/hooks/ 配下のファイル名・docstring 冒頭
 
 ## 1. 責務定義
@@ -68,9 +68,9 @@ core は全パッケージが依存する共通基盤であり、(1) `Plans.md` 
 - [ ] EV-38（境界 / must）: `update-working-context.py` はプロジェクト外に解決されるパス（別リポジトリ・scratchpad 等の絶対パス、および `..` を含む相対パス）を `modified_files` に記録しない — 根拠: context-sharing.md 制限, Issue #452 — 自動テスト: `tests/unit/test_context_hooks.py -k outside`
 - [ ] EV-39（境界 / must）: `set-plan-gate.py` は `tool_response` が async 起動メタデータ（`isAsync: true` または `status: async_launched`）のとき plan gate を設定しない（判定は `hook_common.is_async_launch` に集約） — 根拠: Issue #452（バックグラウンド起動時点では計画がまだ存在しないため）— 自動テスト: `tests/unit/test_plan_gate.py` / `packages/core/tests/test_plan_gate.py -k async`
 - [ ] EV-40（境界 / must）: `clear-plan-gate.py` は `<task-notification>` で始まる UserPromptSubmit（バックグラウンドタスク完了通知。ユーザーの確認ではない）に対して plan gate を解除しない（判定は `hook_common.is_task_notification` に集約） — 根拠: Issue #452 — 自動テスト: `tests/unit/test_plan_gate.py -k notification`
-- [ ] EV-41（正常 / must）: `load-task-state.py` は `## Project:` 直下の発注書の節（`#### Goal` / `#### Context` / `#### Out of Scope` / `#### Constraints` / `#### Open Questions`）を認識し、SessionStart のサマリーに Goal の先頭 1 行と Open Questions の件数（0 件なら省略）を含める — 根拠: ADR-20260926-055 §決定 2, task-memory-usage.md（v2 書式）
-- [ ] EV-42（境界 / must）: 発注書の節内の行（箇条書き・チェックボックス・コード）は `cc:` マーカーを含まない限りタスクとして数えず、WIP / TODO / blocked の注入対象にもならない。節内に `cc:` マーカーを書いた場合の扱いは未定義であり、雛形とルールで「Tasks 以外に書かない」と案内する — 根拠: ADR-20260926-055 §決定 2
-- [ ] EV-43（境界 / must）: 発注書の節を持たない従来形式の Plans.md は、分類・注入・自動アーカイブの結果が v2 対応前と同一になる（後方互換。既存 Project に節を足す必要はない） — 根拠: ADR-20260926-055 §影響
+- [ ] EV-41（正常 / must）: `load-task-state.py` は `## Project:` 直下の発注書の節（`#### Goal` / `#### Context` / `#### Out of Scope` / `#### Constraints` / `#### Open Questions`）を認識し、SessionStart のサマリーに Goal の先頭 1 行と Open Questions の件数（0 件なら省略）を含める — 根拠: ADR-20260926-056 §決定 2, task-memory-usage.md（v2 書式）
+- [ ] EV-42（境界 / must）: 発注書の節内の行（箇条書き・チェックボックス・コード）は `cc:` マーカーを含まない限りタスクとして数えず、WIP / TODO / blocked の注入対象にもならない。節内に `cc:` マーカーを書いた場合の扱いは未定義であり、雛形とルールで「Tasks 以外に書かない」と案内する — 根拠: ADR-20260926-056 §決定 2
+- [ ] EV-43（境界 / must）: 発注書の節を持たない従来形式の Plans.md は、分類・注入・自動アーカイブの結果が v2 対応前と同一になる（後方互換。既存 Project に節を足す必要はない） — 根拠: ADR-20260926-056 §影響
 - [ ] EV-44（正常 / should）: 自動アーカイブは Project 単位で行われ、発注書の節も Phase と一緒に `Plans.archive.md` へ移る（節だけが Plans.md に残らない） — 根拠: task-memory-usage.md「自動アーカイブ」
 - [ ] EV-45（境界 / should）: Plans.md 先頭の codd frontmatter（`---` で囲まれた `codd:` ブロック）は分類・注入・アーカイブに影響しない（codd-frontmatter-policy の `plan:` kind と両立する） — 根拠: codd-frontmatter-policy.md（`plan` kind の由来は `.claude/Plans.md`）
 
