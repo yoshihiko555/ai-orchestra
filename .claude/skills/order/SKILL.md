@@ -68,7 +68,6 @@ metadata:
 /order                          # 出力先を AskUserQuestion で選ぶ
 /order --to plans               # Plans.md（/goal・Codex 直接 向け）
 /order --to issue               # GitHub Issue（/loop-issue・TAKT 向け）
-/order --to both                # plans → issue の順に同じ内容を書く
 /order --from-plans "{Project 名}" --to issue   # Plans.md の Project を Issue に引き渡す
 ```
 
@@ -105,24 +104,25 @@ metadata:
 
 - **plans**: `.claude/Plans.md` に `task-memory-usage` ルールの v2 書式で `## Project:` + 5 節 + Phase（AC と
   Tasks）を 1 回で書く。Plans.md が無ければ新規作成する。以後の状態更新は `/task-state` で行う
-- **issue**: `issue-create` の AC 確定済み経路で Issue を作る。写し方: Goal → 概要、Context / Constraints →
-  前提、Tasks → 作業内容、AC → 受け入れ条件、Out of Scope → 備考、Open Questions → 未決事項。
+- **issue**: `issue-create` の task テンプレートで Issue を作る（本文は `/order` が組み立て、`issue-create` は
+  AC 確定済み経路で Step 4 / 5 の検査だけ行う）。写し方: `## タスク内容` に Goal（冒頭）・`### 前提`（Context /
+  Constraints）・`### 作業項目`（Tasks）、`## 完了条件` に AC、`## 備考` に `### 対象外`（Out of Scope）と
+  `### 未決事項`（Open Questions）。
   **ゲート**: Issue 化の前に Open Questions が残っていれば解消をユーザーに求め、解消できない項目が残る場合は
   Issue 化せず Plans.md に留める（自律エンジンに未確定の前提を推測させない）
-- **both**: plans → issue の順に同じ内容を書く
 
 AC は対話で確定した内容を転記し、どちらの出力先でも聞き直さない。
 
 ### Step 3: Plans.md から Issue へ引き渡す（`--from-plans`）
 
 1. Plans.md の指定 Project を読み、Step 2 の issue と同じ写し方で Issue を作る（Open Questions のゲートも同じ）
-2. その Project セクションを Plans.md から取り除き、`.claude/Plans.archive.md` に
-   `## Archived: {YYYY-MM-DD}（#{N} へ引き渡し）` の見出しで追記する（SessionStart の自動アーカイブと同じ形。
-   状態を二重に持たない）
+2. その Project セクション（+ 区切り線 `---`）を Plans.md から取り除き、`.claude/Plans.archive.md` に追記する。
+   形は SessionStart の自動アーカイブに合わせる（ファイル新規作成時は先頭に `# Archived Plans`、見出しは
+   `## Archived: {YYYY-MM-DD}` に `（#{N} へ引き渡し）` を付記、本文の後に `---`）。状態を二重に持たない
 
 ### Step 4: 報告
 
-書き先（Plans.md か Issue #N）と、次に使うエンジンのコマンドを 1 行で案内する。
+書き先（Plans.md か Issue #N）と、次に使うエンジンのコマンドをエンジンごとに 1 行ずつ案内する。
 
 | エンジン   | 次のコマンド                        |
 | ---------- | ----------------------------------- |

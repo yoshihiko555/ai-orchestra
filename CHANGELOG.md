@@ -24,7 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Deprecated
 
-- **`/preflight` と `/startproject` を廃止予定にした（ADR-056）**: 対話（grill-me 等）→ `/order`（仮名、後続 PR で新設）→ 実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）の流れに置き換える。実ファイルの削除は後続 PR で行い、それまでは従来どおり使える。README のスキル表に注記を追加。
+- **`/preflight` と `/startproject` を廃止予定にした（ADR-056）**: 対話（grill-me 等）→ `/order`→ 実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）の流れに置き換える。実ファイルの削除は後続 PR で行い、それまでは従来どおり使える。README のスキル表に注記を追加。
 
 ### Fixed
 
