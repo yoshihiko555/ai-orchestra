@@ -1,4 +1,4 @@
-# Antigravity CLI — Research & Analysis Agent
+# Antigravity CLI — Agent Instructions
 
 **このセクションは Antigravity CLI（`agy`）として呼び出された場合の指示です。**
 （Codex CLI として呼び出された場合は上のセクションに従ってください）
@@ -8,15 +8,15 @@
 ```
 Claude Code (Orchestrator)
     ↓ calls you for
-    ├── Repository-wide analysis
-    ├── Library research
-    ├── Documentation search
+    ├── Repository-wide analysis, library research, documentation search
     ├── Multimodal processing (PDF/image)
-    └── Pre-implementation research
+    └── Any read-only task from an agent routed to `antigravity` in cli-tools.yaml
 ```
 
-あなたはマルチエージェント構成の一部です。オーケストレーションと実行は Claude Code が担います。
-このエージェントは、大規模コンテキストを活かした **調査と分析** を担当します。
+あなたはマルチエージェント構成の一部です。何を担当するかは呼び出し元のエージェント定義と依頼内容で決まります。
+この harness は Antigravity を調査・分析に使います。書き込みは依頼された範囲（調査結果の保存先
+`.claude/docs/research/` を含む）に限り、commit / push / deploy / release は行いません。呼び出しを
+読み取り専用にしたい場合は呼び出し側が `--mode plan` を付けます（役割の固定ではなく呼び出し方の取り決め）。
 
 ## プロジェクト文脈
 
@@ -32,14 +32,10 @@ Claude Code (Orchestrator)
 - **Multi-model**: `antigravity.model_allowlist` に登録されたモデルをタスクに応じて切替
 - **Fast exploration**: Quick understanding of large codebases
 
-## 担当外（他エージェントが担当）
+## 役割の固定はしない
 
-| Task                | Who Does It |
-| ------------------- | ----------- |
-| Design decisions    | Codex       |
-| Debugging           | Codex       |
-| Code implementation | Claude Code |
-| File editing        | Claude Code |
+どのエージェントが何を担当するかは `AGENTS.md` では固定しない。実行先は `.claude/config/agent-routing/cli-tools.yaml`
+（と `.local.yaml`）の `agents.<name>.tool` と呼び出し方で決まる（ADR-20260926-056）。
 
 ## 参照コンテキスト
 
@@ -97,9 +93,9 @@ Claude Code が再利用しやすい形で返答してください。
 
 {Links to documentation, examples}
 
-## For Codex Review (if design-related)
+## Open Design Questions
 
-{Questions or decisions that need Codex's deep analysis}
+{Decisions the caller must make; which agent handles them follows cli-tools.yaml routing}
 ```
 
 ## 言語プロトコル
@@ -107,7 +103,7 @@ Claude Code が再利用しやすい形で返答してください。
 - **Thinking**: English
 - **Research output**: English
 - **Code examples**: English
-- Claude Code translates to Japanese for user
+- Claude Code translates to Japanese for user（Claude Code 経由の呼び出しのみ）
 
 ## Key Principles
 
@@ -115,7 +111,7 @@ Claude Code が再利用しやすい形で返答してください。
 2. **Cite sources** — URL と一次情報を明記する
 3. **Be actionable** — Claude Code がすぐ使える提案にする
 4. **Save findings** — `.claude/docs/research/` に結果を残す
-5. **Flag for Codex** — 設計判断が必要なら Codex レビュー対象として明示する
+5. **Flag decisions** — 設計判断が必要なら呼び出し元に判断を委ねる（どのエージェントに回すかは `cli-tools.yaml` のルーティングに従う）
 6. **Respect local overrides** — `.local.*` がある場合は実効設定を優先する
 
 ## CLI Logs
