@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **`quality-gates` / `audit`: quality-gates の機能フラグを `audit-flags.json` から分離（Issue #153）**: `quality_gate` / `context_optimization` / `evaluation_set_check` の設定と上書きは `.claude/config/quality-gates/quality-gates.json` / `quality-gates.local.json` で行うようになった。既存プロジェクトの `audit-flags.local.json` に残る旧設定は 0.4.x の間はそのまま効き、SessionStart 時に移行案内が 1 行出る。
+- **BREAKING** **`quality-gates` / `audit`: quality-gates の機能フラグを `audit-flags.json` から分離（Issue #153）**: quality-gates の設定は `.claude/config/quality-gates/quality-gates.json` / `quality-gates.local.json` に移った。`audit-flags.local.json` に書いていた `quality_gate` / `context_optimization` / `evaluation_set_check` / `paths.state_dir` は読まれなくなるので `quality-gates.local.json` へ移す（SessionStart に案内が出る）。
 - **`agent-routing`: Antigravity の既定モデルを `gemini-3.8-flash-high` に変更**: `cli-tools.yaml` の `antigravity.model` の既定値を `gemini-3.1-pro-high` から `gemini-3.8-flash-high` に変えた。従来のモデルを使い続ける場合は `cli-tools.local.yaml` で `antigravity.model: gemini-3.1-pro-high` を指定する。
 - **`agent-routing`: `cli-tools.yaml` の debugger の sandbox 既定値を `read-only` に変更**: `agents.debugger.sandbox` が `workspace-write` のまま残っていたのを、Edit を持たない分析役に合わせて `read-only` にした。`.local.yaml` で debugger の tool を `codex` に切り替えている場合の sandbox 指定が変わる。tool の既定値（`claude-direct`）は変わらない。
 - **`agent-routing`: `cli-tools.yaml` の `antigravity.model_allowlist` を現行の `agy models` に合わせて更新**: Gemini 3.6 / 3.7 / 3.8 Flash を追加し、`agy models` に表示されなくなった Gemini 3.5 Flash、接尾辞なしの `gemini-3.1-pro`、名前が変わった Claude 4.6 系の旧スラッグ（`claude-4.6-sonnet-thinking` / `claude-4.6-opus-thinking`）を外した。`antigravity.model` にこれらを指定している場合は警告が出るので、`agy models` に表示される名前（例: `claude-sonnet-4-6`）に変更する。

@@ -78,21 +78,20 @@ fail-open 設計を採用する（内部エラーでセッションを止めな�
 }
 ```
 
-### 旧 `audit-flags.local.json` からの移行（0.4.x の間は読み替え）
+### 旧 `audit-flags.local.json` からの移行
 
 Issue #153 で `quality_gate` / `context_optimization` / `evaluation_set_check` の機能フラグと
 `paths.state_dir` の所有パッケージを `audit` から `quality-gates` に移した。既存プロジェクトの
-`.claude/config/audit/audit-flags.local.json` にこれらのキーが残っていても、0.4.x の間は
-読み替えて従来どおり動作する。実効値の優先順位（後勝ち）は次のとおり:
+`.claude/config/audit/audit-flags.local.json` にこれらのキーが残っていても、`quality-gates` 側の
+ローダーはこれを読まない。実効値の優先順位（後勝ち）は次のとおり:
 
 1. `.claude/config/quality-gates/quality-gates.json`（base）
-2. `.claude/config/audit/audit-flags.local.json` の該当キー（deprecated 読み替え）
-3. `.claude/config/quality-gates/quality-gates.local.json`（最優先）
+2. `.claude/config/quality-gates/quality-gates.local.json`（最優先）
 
 新規プロジェクトおよび今後の変更は `.claude/config/quality-gates/quality-gates.local.json` を使うこと。
 `audit-flags.local.json`（または配布先 base の未同期 `audit-flags.json`）に該当キーが残っている場合、
-SessionStart 時（`audit-bootstrap.py`）に 1 行の移行案内が出る。この読み替えは 0.4.x の間維持し、
-0.5.0 で削除を再検討する。
+SessionStart 時（`audit-bootstrap.py`）に 1 行の移行案内が出るので、該当キーを
+`quality-gates.local.json` へ移す。
 
 `config/evaluation-set-mapping.yaml` は `evaluation-set-checker.py` が使う評価セット ID →
 テストパス glob の明示マッピング（詳細は `docs/evaluation/quality-gates.md` EV-26 参照）。
@@ -107,5 +106,4 @@ SessionStart 時（`audit-bootstrap.py`）に 1 行の移行案内が出る。�
 
 - `core`（`hook_common`）
 - `audit`（`event_logger`, `secret_masking`）。`quality_gate.*` 等の機能フラグはもはや `audit` との
-  共有設定ではなく `quality-gates` 自身が所有するが、旧 `audit-flags.local.json` の読み替え
-  （上記「旧 `audit-flags.local.json` からの移行」参照）のみ `audit` のディレクトリ構造を参照する
+  共有設定ではなく `quality-gates` 自身が所有する
