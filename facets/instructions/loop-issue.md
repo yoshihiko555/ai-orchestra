@@ -380,17 +380,16 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
 - `classify_severity(...)`（Step 2 分類応答の決定論パース。下記「severity 分類」参照）
 - `apply_severity_classifications(...)`（分類結果の state 永続化と finding 除外を一括適用）
 - `mark_addressed_findings(...)`（前反復で `open` だった blocking が今反復で reraise されなかった
-  シグネチャを `addressed` へ更新。`status` が正確に `open` のレコードだけを対象とする fail-closed。
-  Issue #235）
+  シグネチャを `addressed` へ更新。`status` が正確に `open` のレコードだけを対象とする fail-closed）
 - `resolve_addressed_findings(...)`（`mark_addressed_findings()` が実際に addressed へ更新した
   シグネチャの、信頼済み GitHub review thread へ best-effort で reply + resolve。GitHub 側失敗では
-  例外を投げず合否を落とさない。Issue #235）
+  例外を投げず合否を落とさない）
 - `addressed_findings_missing_thread_resolution(...)`（`status == "addressed"` だが `thread_resolved`
-  が未確定のレコードを毎 poll 完了で再列挙し、resolve をべき等に再試行させる。Issue #424）
+  が未確定のレコードを毎 poll 完了で再列挙し、resolve をべき等に再試行させる）
 - `phase_check_from_completion_outcome(...)`
 - `phase_check_from_review_findings(..., include_persisted_open_blocking=<bool>)`（既定 `False` の
   **opt-in** 引数。pre-rebaseline drain は必ず `False`、post-poll の最終合否だけ `True` を渡す。
-  下記「pre-rebaseline drain」「poll 完了後の addressed 解決と最終合否」参照。Issue #424）
+  下記「pre-rebaseline drain」「poll 完了後の addressed 解決と最終合否」参照）
 
 `wait_external_review` proposal の `params.push_required` は、この pending action 内で review 待機前の
 追加 push が必要かを示す bool である。値を独自に推測せず、次の 2 経路だけを実行する。
@@ -421,7 +420,7 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
     が 1 件以上含まれる場合は、上記「severity 分類（Step 2）」の手順をこの場でインラインに適用し、
     `apply_severity_classifications(...)` まで完了させてから次の判定に進む（分類を次サイクルへ持ち越さない）。
   - drain の合否判定には必ず `phase_check_from_review_findings(drained, include_persisted_open_blocking=False)`
-    を使う（既定値に頼らず `False` を明示する。Issue #424）。この drain は `run_maker` の直後・push 前に
+    を使う（既定値に頼らず `False` を明示する）。この drain は `run_maker` の直後・push 前に
     走るため、Maker が今まさに対応中の finding は `state.pr_review.findings` でまだ `status: "open"`
     のままなのが正常である。ここで `include_persisted_open_blocking=True` を渡すと、その永続化された
     open blocking を毎反復「再検出」し続け、push もレビューもできないデッドロックに陥る（LP-2 の
@@ -477,7 +476,7 @@ snapshot が永続化された後にだけ `confirm_review_findings_reported(...
 API error など）の場合も同じ API で変換する。この 2 経路では下記「addressed 解決」も
 `phase_check_from_review_findings()` も呼ばない。
 
-### poll 完了後の addressed 解決と最終合否（Issue #235・#213・#424）
+### poll 完了後の addressed 解決と最終合否
 
 レビュー取り込み（collect → snapshot → confirm → severity 分類）まで済んだら、`phase_check_from_review_findings()`
 で最終合否に変換する**前に**、以下の addressed 解決を行う。すべて `pr_review_wait.py` の決定論 API を
@@ -513,7 +512,7 @@ API error など）の場合も同じ API で変換する。この 2 経路で�
    `open_blocking` スナップショットが blocking 扱いし続けるのを防ぐ）。
 4. **GitHub thread の best-effort resolve**: `actually_addressed` と、proposal の
    `params.pr_review.addressed_pending_thread_resolution`（`status == "addressed"` だが未 resolve の積み残し。
-   Issue #424。state を読み直さず proposal のスナップショットを使う）の和集合を
+   state を読み直さず proposal のスナップショットを使う）の和集合を
    `resolve_addressed_findings(..., lease_token, action_id=<現在の action_id>)` へ 1 回だけ渡す。同 API は
    resolve 直前に fenced state を読み、その時点で `status` が `addressed` でない signature（poll 中に再提起され
    `open` に戻ったもの）は `not_addressed` outcome として除外するので、事前スナップショットの候補をそのまま
@@ -529,7 +528,7 @@ API error など）の場合も同じ API で変換する。この 2 経路で�
 
 変換後は `lc.phase_check_to_dict()` の ready-to-complete JSON を 0600 の result file に保存し、元 proposal
 と同じ `state_version` で complete する。critical/high はゼロでも medium/low が open のまま残っている場合は
-非ブロッキングとして `passed: true` になりうる（Issue #213 B 軸）。専用 outcome や stop reason を
+非ブロッキングとして `passed: true` になりうる。専用 outcome や stop reason を
 手書きせず、独自の `gh` polling も実装しない。
 
 CodeRabbit のレート制限応答を検知しても、Codex 等の別 reviewer allowlist entry または
@@ -676,14 +675,14 @@ Task(subagent_type="general-purpose", prompt="""
    `gh pr view <params.pr_number> --json isDraft,headRefName` を取得する。`headRefName` が
    `params.branch` と一致し、かつ Draft なら、保持中の `lease_token` で
    `python3 "$LOOP_STEP" heartbeat` を通して lease と pending action が有効であることを確認してから
-   `gh pr ready <params.pr_number>` で ready に戻す（Issue #425）。ブランチ名だけで PR を検索しない
+   `gh pr ready <params.pr_number>` で ready に戻す。ブランチ名だけで PR を検索しない
    （fork の同名ブランチを誤って Ready 化しうる）。marker が無い Draft PR（このループが Draft 化して
    いない、または人間が意図的に Draft へ戻したもの）・既に ready・identity 未検証・lease 喪失の
    場合は何もしない。`gh` の失敗やタイムアウトは出口処理を止めず、結果ファイルに `pr_mark_ready`
    の失敗として記録して続行する。push は伴わない。
 3. 下記「通常終了の Issue コメント」に `PASSED` と要約を入れ、`params.issue_number` の対象 Issue へ
    投稿する。critical/high はゼロだが medium/low が `open`（未 dismiss）のまま残っている場合も
-   `exit_success` に到達しうる（非ブロッキング。Issue #213 B 軸）。この場合、`params` が提供する
+   `exit_success` に到達しうる（非ブロッキング）。この場合、`params` が提供する
    `non_blocking_open`（全反復累積の非 dismissed medium/low 一覧）を「残存した非ブロッキング指摘」
    セクションへ列挙する。0 件ならセクション自体を省略する。
 4. macOS 通知を発火する。

@@ -113,9 +113,9 @@ agy -p "{質問}" --model <antigravity.model> --add-dir . 2>/dev/null
 | 大きな出力が予想される | サブエージェント経由                     |
 | 複数の分析が必要       | 並列サブエージェント                     |
 | 詳細なレビュー         | `/review` スキル使用                     |
-| Codex/Gemini 相談      | サブエージェント経由（出力が大きい場合） |
+| Codex/Antigravity 相談 | サブエージェント経由（出力が大きい場合） |
 
-### Codex/Gemini 呼び出しパターン
+### Codex/Antigravity 呼び出しパターン
 
 ```
 # 大きな出力が予想される場合はサブエージェント経由

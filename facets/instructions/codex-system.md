@@ -75,14 +75,14 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex
 | `read-only`       | 分析、レビュー、デバッグ助言 |
 | `workspace-write` | 実装、修正、リファクタリング |
 
-## Integration with Gemini
+## Integration with Antigravity
 
-| Task                                | Use                       |
-| ----------------------------------- | ------------------------- |
-| 外部調査が必要                      | Gemini → (必要なら) Codex |
-| 実装タスクで route が codex         | Codex                     |
-| 実装タスクで route が claude-direct | Claude direct             |
-| route が auto                       | タスク特性で選択          |
+| Task                                | Use                            |
+| ----------------------------------- | ------------------------------ |
+| 外部調査が必要                      | Antigravity → (必要なら) Codex |
+| 実装タスクで route が codex         | Codex                          |
+| 実装タスクで route が claude-direct | Claude direct                  |
+| route が auto                       | タスク特性で選択               |
 
 ## Why This Skill
 

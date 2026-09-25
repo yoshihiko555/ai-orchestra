@@ -43,7 +43,7 @@ CHANGELOG は自動生成ではなく PR ごとに手書きする（`## [Unrelea
 
 meta-harness の `skill:<slug>` promotion PR と `claude-harness` promotion PR では、promoter が
 `## [Unreleased]` / `### Changed` へ 1 行のエントリを自動追記する。`routing-config` promotion PR は
-対象外であり、従来どおり人間が追記する。これは「CHANGELOG に何を書くかの判断」を自動化に委譲
+対象外であり、人間が追記する。これは「CHANGELOG に何を書くかの判断」を自動化に委譲
 するものではなく、あくまでドラフトの下書きである。掲載可否・粒度・文言の最終判断は、promote PR
 のチェックリスト（未チェックの `- [ ] CHANGELOG.md \`Unreleased\`: auto-inserted draft entry`）に
 従って人間レビューで行う。レビュー時は本ポリシー（判定の基準・粒度・フォーマット）と照合し、

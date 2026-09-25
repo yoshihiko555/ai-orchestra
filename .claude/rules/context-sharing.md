@@ -4,7 +4,7 @@
 
 ## 概要
 
-`.claude/context/` ディレクトリを通じて、セッション内サブエージェント間およびCLI間（Claude Code / Codex CLI / Gemini CLI）で作業コンテキストを共有する。
+`.claude/context/` ディレクトリを通じて、セッション内サブエージェント間およびCLI間（Claude Code / Codex CLI / Antigravity CLI）で作業コンテキストを共有する。
 
 ## ストレージ構造
 
