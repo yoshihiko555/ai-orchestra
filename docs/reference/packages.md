@@ -71,13 +71,11 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | skill  | `preflight`                  | 実装計画の策定（ADR-056 で廃止予定）                                                                           |
 | skill  | `startproject`               | マルチエージェント協調で新規開発を開始（ADR-056 で廃止予定）                                                   |
 | skill  | `task-state`                 | Plans.md の作成・更新                                                                                          |
-| skill  | `order`                      | 対話の結論を発注書（Plans.md / Issue）に書き出す（ADR-056）                                                    |
 | skill  | `design`                     | 要件定義・設計ドキュメント作成                                                                                 |
 | skill  | `explain-visually`           | 計画・差分・PR/Issue を図解 HTML にして説明                                                                    |
 | rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                                                                             |
 | rule   | `coding-principles`          | コード品質の共通ルール                                                                                         |
 | rule   | `task-memory-usage`          | Plans.md によるタスク管理ルール                                                                                |
-| rule   | `development-workflow`       | 発注書と実行エンジンの使い分け（ADR-056）                                                                      |
 | rule   | `context-sharing`            | CLI 間コンテキスト共有ルール                                                                                   |
 | config | `task-memory.yaml`           | Plans.md のパス・マーカー定義                                                                                  |
 
@@ -246,6 +244,7 @@ GitHub Issue の登録・開発フロー・PR 作成を含む Git/GitHub ワー�
 | skill  | `issue-fix`                 | 計画→実装→テスト→レビューの開発フロー                                                |
 | skill  | `pr-create`                 | Pull Request の作成                                                                  |
 | skill  | `review-respond`            | PR の bot レビュー指摘への自動対応（検出→修正→返信→resolve）                         |
+| skill  | `order`                     | 対話の結論を発注書（Plans.md / Issue）に書き出す（ADR-056）                          |
 | script | `pr_review_threads.py`      | PR の unresolved bot レビュー指摘の検出・取得・返信・resolve（`/review-respond` 用） |
 | config | `sandbox-requirements.json` | sandbox 設定（`gh` コマンドの除外）                                                  |
 

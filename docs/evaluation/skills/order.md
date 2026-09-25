@@ -50,6 +50,7 @@ Constraints / Open Questions + Phase ごとの Acceptance Criteria と Tasks）�
 - [ ] EV-08（正常 / must）: 出力先は Plans.md か Issue のどちらか 1 か所。Plans.md は `task-memory-usage` の v2 書式で Project + Phase を 1 回で書く — 根拠: ADR-056 §決定 1「発注書は 1 エンジン 1 か所」 / 検証: 実行観察
 - [ ] EV-09（異常 / must）: Issue 化（`--to issue` / `--from-plans`）の前に Open Questions が残っていれば解消をユーザーに求め、解消できない項目が残る場合は Issue 化せず Plans.md に留める — 根拠: ADR-056 §決定 3 / 検証: 実行観察
 - [ ] EV-10（正常 / must）: `--from-plans` は Plans.md の Project を Issue 本文に変換したうえで、その Project を Plans.archive.md に「#N へ引き渡し」として移し、Plans.md に残さない — 根拠: ADR-056 §決定 1「エンジンをまたぐときは片方だけ残す」 / 検証: 実行観察
+- [ ] EV-12（正常 / must）: `--from-issue N --to plans` は Issue 本文を Plans.md の Project に変換し、Issue に引き渡しコメントを付けて close する（Issue と Plans.md の両方を正本にしない）。`--from-plans` / `--from-issue` は Step 0〜2 を行わず引き渡しだけを実行する — 根拠: ADR-056 §決定 1「逆方向も同様に変換して片方だけ残す」 / 検証: 実行観察
 - [ ] EV-11（正常 / should）: 完了報告で、書き先と次に使うエンジンのコマンド（`/goal` はそのまま、`/loop-issue N`、`takt add '#N'`、`/handoff`）をエンジンごとに 1 行ずつ案内する — 根拠: development-workflow.md / 検証: 実行観察
 
 ## 4. 検証方法

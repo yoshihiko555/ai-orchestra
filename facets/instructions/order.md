@@ -12,7 +12,11 @@
 /order --to plans               # Plans.md（/goal・Codex 直接 向け）
 /order --to issue               # GitHub Issue（/loop-issue・TAKT 向け）
 /order --from-plans "{Project 名}" --to issue   # Plans.md の Project を Issue に引き渡す
+/order --from-issue {N} --to plans           # Issue を Plans.md の Project に引き渡す
 ```
+
+`--from-plans` / `--from-issue` は引き渡しモードで、Step 0〜2 を行わず Step 3 だけを実行する（Issue や Project を
+二重に作らない）。それ以外は通常モード（Step 0〜2）。
 
 ## Workflow
 
@@ -56,12 +60,22 @@
 
 AC は対話で確定した内容を転記し、どちらの出力先でも聞き直さない。
 
-### Step 3: Plans.md から Issue へ引き渡す（`--from-plans`）
+### Step 3: エンジンをまたぐ引き渡し（`--from-plans` / `--from-issue`）
+
+**Plans.md → Issue（`--from-plans`）**
 
 1. Plans.md の指定 Project を読み、Step 2 の issue と同じ写し方で Issue を作る（Open Questions のゲートも同じ）
 2. その Project セクション（+ 区切り線 `---`）を Plans.md から取り除き、`.claude/Plans.archive.md` に追記する。
    形は SessionStart の自動アーカイブに合わせる（ファイル新規作成時は先頭に `# Archived Plans`、見出しは
    `## Archived: {YYYY-MM-DD}` に `（#{N} へ引き渡し）` を付記、本文の後に `---`）。状態を二重に持たない
+
+**Issue → Plans.md（`--from-issue`）**
+
+1. `gh issue view {N}` で本文を読み、逆の写し方で Plans.md の Project にする（`## タスク内容` の冒頭 → Goal、
+   `### 前提` → Context / Constraints、`### 作業項目` → Tasks、`## 完了条件` → AC、`### 対象外` → Out of Scope、
+   `### 未決事項` → Open Questions。見出しが無い Issue は本文全体を Goal と Tasks に振り分け、AC が無ければ
+   Step 0 と同じくユーザーに確認する）
+2. Issue に「Plans.md へ引き渡し（{worktree の相対パス}）」とコメントして close する（発注書を片方だけ残す）
 
 ### Step 4: 報告
 
