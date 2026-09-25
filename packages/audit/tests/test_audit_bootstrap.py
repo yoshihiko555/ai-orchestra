@@ -60,7 +60,7 @@ def test_main_prints_one_line_notice_for_moved_local_keys(
 def test_main_notice_for_moved_base_keys_says_not_loaded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """配布 base に旧キーが残っている場合は「読み込まれない」と案内し、読み替えを約束しない。"""
+    """配布 base に旧キーが残っている場合は「読み込まれない」と案内する。"""
     config_dir = tmp_path / ".claude" / "config" / "audit"
     config_dir.mkdir(parents=True)
     (config_dir / "audit-flags.json").write_text(
@@ -73,14 +73,15 @@ def test_main_notice_for_moved_base_keys_says_not_loaded(
 
     output_lines = capsys.readouterr().out.splitlines()
     assert len(output_lines) == 1
-    assert "audit-flags.json の features.quality_gate は読み込まれません" in output_lines[0]
-    assert "読み替えて動作します" not in output_lines[0]
+    assert "audit-flags.json" in output_lines[0]
+    assert "features.quality_gate" in output_lines[0]
+    assert "読み込まれません" in output_lines[0]
 
 
 def test_main_notice_mentions_both_files_in_one_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """local と base の両方に旧キーがあっても案内は 1 行で、文言はファイル種別ごとに分かれる。"""
+    """local と base の両方に旧キーがあっても案内は 1 行にまとまる。"""
     config_dir = tmp_path / ".claude" / "config" / "audit"
     config_dir.mkdir(parents=True)
     (config_dir / "audit-flags.local.json").write_text(
@@ -95,15 +96,14 @@ def test_main_notice_mentions_both_files_in_one_line(
 
     output_lines = capsys.readouterr().out.splitlines()
     assert len(output_lines) == 1
-    assert (
-        "audit-flags.local.json の features.quality_gate は 0.4.x の間は読み替えて動作します"
-        in output_lines[0]
-    )
-    assert "audit-flags.json の paths.state_dir は読み込まれません" in output_lines[0]
+    assert "audit-flags.local.json" in output_lines[0]
+    assert "audit-flags.json" in output_lines[0]
+    assert "features.quality_gate" in output_lines[0]
+    assert "paths.state_dir" in output_lines[0]
 
 
 def test_find_moved_quality_gates_keys_ignores_non_dict_feature_values(tmp_path: Path) -> None:
-    """読み替え側が無視する非 dict 値は検出もしない（案内と挙動の不一致を避ける）。"""
+    """非 dict 値は誤検出防止のため無視し、案内対象にしない。"""
     config_dir = tmp_path / ".claude" / "config" / "audit"
     config_dir.mkdir(parents=True)
     (config_dir / "audit-flags.local.json").write_text(

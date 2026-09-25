@@ -170,7 +170,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | script | `analyze-cli-usage.py`         | CLI 利用パターン分析                                                      |
 | module | `event_logger.py`              | 統一イベントログ書き込み / トレース state 管理                            |
 | config | `delegation-policy.json`       | ルーティングポリシー                                                      |
-| config | `audit-flags.json`             | 監査・品質ゲート系の機能フラグ                                            |
+| config | `audit-flags.json`             | 監査系の機能フラグ（route_audit / kpi_scorecard）                         |
 
 ### スクリプト実行
 

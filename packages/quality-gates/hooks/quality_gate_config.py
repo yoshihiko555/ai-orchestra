@@ -47,32 +47,12 @@ else:
     if str(_fallback_core_hooks) not in sys.path:
         sys.path.insert(0, str(_fallback_core_hooks))
 
-# NOTE: `_find_local_config_path` / `_read_config_file` は hook_common の private 名だが、
-# base / legacy local / new local の 3 層を個別に読む必要があり `load_package_config`
-# （base+local を丸ごと merge して返す）では表現できないため直接使う
-# （evaluation-set-checker.py に前例あり。hook_common 側を変える際はここも追従する）。
-from hook_common import (  # noqa: E402
-    _find_local_config_path,
-    _read_config_file,
-    deep_merge,
-    find_package_config,
-    resolve_path_within,
-)
+from hook_common import load_package_config, resolve_path_within  # noqa: E402
 from log_common import find_project_root  # noqa: E402
 
-# Issue #153 で quality-gates パッケージへ移した設定の正本。
+# Issue #153 で quality-gates 所有に分離。旧 audit-flags.local.json は読まない。
 QUALITY_GATES_CONFIG_PACKAGE = "quality-gates"
 QUALITY_GATES_CONFIG_FILENAME = "quality-gates.json"
-LEGACY_CONFIG_PACKAGE = "audit"
-LEGACY_CONFIG_FILENAME = "audit-flags.json"
-
-# audit-flags.json から quality-gates.json へ移動したキー（deprecation 期間中の読み替え対象）
-LEGACY_FEATURE_KEYS: tuple[str, ...] = (
-    "quality_gate",
-    "context_optimization",
-    "evaluation_set_check",
-)
-LEGACY_PATH_KEYS: tuple[str, ...] = ("state_dir",)
 
 # features.quality_gate.enabled が config に無い場合のデフォルト値。
 # quality-gates.json のベース値 (enabled: true) に合わせることで、
@@ -96,91 +76,11 @@ DEFAULT_TEST_GATE_STATE: dict = {
 DEFAULT_STATE_DIR = os.path.join(".claude", "state")
 
 
-def _local_config_filename(filename: str) -> str:
-    """`name.json` → `name.local.json`（hook_common の .local 命名規約と同じ）。"""
-    name, ext = os.path.splitext(filename)
-    return f"{name}.local{ext}"
-
-
-def extract_legacy_quality_gates_sections(config: dict) -> dict:
-    """旧 audit config から quality-gates 所有キーだけを取り出す。
-
-    Issue #153 のパッケージ所有権分離後も 0.4.x の deprecation 期間中だけ
-    ``audit-flags.local.json`` を読み替えるため、dict 形式の移動済みキーに限定する。
-    """
-    features = config.get("features")
-    extracted_features = {
-        key: copy.deepcopy(features[key])
-        for key in LEGACY_FEATURE_KEYS
-        if isinstance(features, dict) and isinstance(features.get(key), dict)
-    }
-
-    paths = config.get("paths")
-    extracted_paths = {
-        key: copy.deepcopy(paths[key])
-        for key in LEGACY_PATH_KEYS
-        if isinstance(paths, dict) and isinstance(paths.get(key), str)
-    }
-
-    extracted: dict = {}
-    if extracted_features:
-        extracted["features"] = extracted_features
-    if extracted_paths:
-        extracted["paths"] = extracted_paths
-    return extracted
-
-
-def load_legacy_local_overrides(project_dir: str) -> dict:
-    """旧 audit の local-only 設定から移動済みキーを読み替える。
-
-    Issue #153 の所有権分離に伴う 0.4.x deprecation 対応であり、配布済み base や
-    ``$AI_ORCHESTRA_DIR`` 側は読まず、プロジェクトの ``.local.json`` だけを読む。
-    """
-    legacy_local_path = os.path.join(
-        project_dir,
-        ".claude",
-        "config",
-        LEGACY_CONFIG_PACKAGE,
-        _local_config_filename(LEGACY_CONFIG_FILENAME),
-    )
-    legacy_config = _read_config_file(legacy_local_path)
-    return extract_legacy_quality_gates_sections(legacy_config)
-
-
 def load_quality_gates_config(project_dir: str) -> dict:
-    """quality-gates の実効 config を優先順位どおりに構成する。
-
-    Issue #153 の所有権分離後も 0.4.x の deprecation 期間中は旧
-    ``audit-flags.local.json`` だけを読み替え、新 ``.local.json`` を最後に適用する。
-    """
-    base_path = find_package_config(
-        QUALITY_GATES_CONFIG_PACKAGE,
-        QUALITY_GATES_CONFIG_FILENAME,
-        project_dir,
+    """quality-gates の base と local override を読み込む。"""
+    return load_package_config(
+        QUALITY_GATES_CONFIG_PACKAGE, QUALITY_GATES_CONFIG_FILENAME, project_dir
     )
-    base = _read_config_file(base_path)
-    legacy = load_legacy_local_overrides(project_dir)
-
-    if base_path:
-        local_path = _find_local_config_path(
-            QUALITY_GATES_CONFIG_PACKAGE,
-            QUALITY_GATES_CONFIG_FILENAME,
-            project_dir,
-            base_path,
-        )
-    else:
-        # base 未配布（sync 前）でも project の .local.json だけは尊重する。
-        # load_package_config は base 不在で即 {} を返すが、ここでは legacy / local を
-        # 読み続ける（契約が異なるので load_package_config に寄せないこと）。
-        local_path = os.path.join(
-            project_dir,
-            ".claude",
-            "config",
-            QUALITY_GATES_CONFIG_PACKAGE,
-            _local_config_filename(QUALITY_GATES_CONFIG_FILENAME),
-        )
-    local = _read_config_file(local_path)
-    return deep_merge(deep_merge(base, legacy), local)
 
 
 def _sanitize_state_filename(filename: str) -> str:

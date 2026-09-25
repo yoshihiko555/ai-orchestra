@@ -6,7 +6,7 @@
 **最終レビュー日**: 2026-07-03（EV-11/12/19/21/22/24 は同日の裁定で仕様確定）
 **情報源**: docs/reference/packages.md（quality-gates セクション）, .claude/rules/skill-review-policy.md, .claude/config/quality-gates/quality-gates.json, packages/quality-gates/manifest.json, packages/quality-gates/hooks/\*.py（docstring・実装）, `packages/quality-gates/README.md`（Issue #134 で新規作成。EV-24 参照）, 実装 `packages/quality-gates/hooks/evaluation-set-checker.py` および `packages/quality-gates/tests/test_evaluation_set_checker.py`（Issue #123: hook 実体はコードベースに着地済み）
 
-> Issue #153（config 分離。ADR-20260926-055）で `.claude/config/audit/audit-flags.json` を `.claude/config/quality-gates/quality-gates.json` に読み替えた。EV-32/EV-33 は新規追加で人間レビュー未実施（最終レビュー日は更新していない）。
+> Issue #153（config 分離。ADR-20260926-055）で `.claude/config/audit/audit-flags.json` の該当キーを `.claude/config/quality-gates/quality-gates.json` に分離した。EV-32/EV-33 は新規追加で人間レビュー未実施（最終レビュー日は更新していない）。
 
 ## 1. 責務定義
 
@@ -58,8 +58,8 @@ quality-gates は実装後の品質チェックを自動化する hook 群と、
 - [ ] EV-29（境界 / should）: 同一 session_id かつ同一パッケージへの通知は `.claude/state/evaluation-set-checker.json` に記録され、以後同一セッション内では重複通知しない。パッケージを特定できない場合は `unknown:<相対ファイルパス>` をキーとしたファイル単位の dedup となり、特定不能な別ファイルはそれぞれ再通知される — 根拠: Issue #123 仕様
 - [ ] EV-30（正常 / must）: 編集対象が `packages/<pkg>/tests/`・`tests/unit/`・`tests/e2e/` のいずれにも該当しないファイルの場合、`evaluation-set-checker.py` は突合案内・警告を一切出力しない（PostToolUse: Edit|Write で発火するが非テストファイルには反応しない） — 根拠: Issue #123 仕様
 - [ ] EV-31（境界 / must）: `check-context-optimization.py` の grep/rg/find 向け Bash 案内は、すべてのセッションで専用の Grep/Glob ツールが利用可能とは仮定せず、専用ツールが無い場合も `-c` / `-l` / `-maxdepth` / `head -n N` で出力を絞り込める Bash のみの代替手段を必ず含む。ただし `rg --files`（ファイル列挙モード）は `-c`/`-l` を付けると `path` が検索パターン扱いになり誤動作するため、`-c`/`-l` を案内せず Glob / `head -n N` / `wc -l` のみを案内する — 根拠: Issue #463 — 自動テスト: `packages/quality-gates/tests/test_check_context_optimization.py::test_check_bash_grep_advice_does_not_require_grep_tool`, `packages/quality-gates/tests/test_check_context_optimization.py::test_check_bash_find_advice_does_not_require_glob_tool`, `packages/quality-gates/tests/test_check_context_optimization.py::test_check_bash_rg_files_suggests_glob_not_grep_style`
-- [ ] EV-32（正常 / must）: `.claude/config/audit/audit-flags.local.json` にのみ `quality_gate` / `context_optimization` / `evaluation_set_check` / `paths.state_dir` の上書きがある場合（`quality-gates.local.json` は無い）も、`load_quality_gates_config` が deprecated 読み替えを行い、従来どおり効く — 根拠: Issue #153 / ADR-20260926-055 — 自動テスト: `packages/quality-gates/tests/test_quality_gate_config.py`
-- [ ] EV-33（正常 / should）: `quality-gates.local.json` と `audit-flags.local.json` の両方に同じキーの上書きがある場合、`quality-gates.local.json` 側が優先される — 根拠: Issue #153 / ADR-20260926-055 — 自動テスト: `packages/quality-gates/tests/test_quality_gate_config.py`
+- [ ] EV-32（正常 / must）: 旧 `audit-flags.local.json` にのみ quality_gate 系の上書きがあっても `load_quality_gates_config` はそれを読まず、`quality-gates.json` base の値が効く — 根拠: Issue #153 / ADR-20260926-055 — 自動テスト: `packages/quality-gates/tests/test_quality_gate_config.py::test_load_quality_gates_config_ignores_legacy_audit_local`
+- [ ] EV-33（正常 / must）: `quality-gates.local.json` の上書きが base より優先される — 根拠: Issue #153 / ADR-20260926-055 — 自動テスト: `packages/quality-gates/tests/test_quality_gate_config.py::test_load_quality_gates_config_applies_local_override`
 
 ## 4. 類型別観点
 
