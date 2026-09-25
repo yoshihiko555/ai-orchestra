@@ -81,11 +81,12 @@ Read `.claude/config/agent-routing/cli-tools.yaml` (and `.local.yaml` if present
 
 Key agents used in TDD:
 
-| Phase           | Agent                                      | Config Key                  | Typical Routing |
-| --------------- | ------------------------------------------ | --------------------------- | --------------- |
-| Test writing    | `tester`                                   | `agents.tester.tool`        | codex           |
-| Implementation  | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool`    | codex           |
-| Refactor review | `code-reviewer`                            | `agents.code-reviewer.tool` | claude-direct   |
+| Phase                      | Agent                                      | Config Key                  |
+| -------------------------- | ------------------------------------------ | --------------------------- |
+| Test writing               | `tester`                                   | `agents.tester.tool`        |
+| Implementation             | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool`    |
+| Refactor (apply)           | `$IMPL_AGENT` (same as Implementation)     | `agents.<lang-dev>.tool`    |
+| Refactor review (optional) | `code-reviewer`                            | `agents.code-reviewer.tool` |
 
 Select the implementation agent based on `$LANG`:
 
@@ -94,7 +95,7 @@ Select the implementation agent based on `$LANG`:
 - Go → `backend-go-dev`
 - Other → `general-purpose`
 
-**Routing enforcement rule**: If `agents.<name>.tool` is `codex`, the work MUST be delegated to a subagent that executes via Codex CLI. Do NOT write code directly with Edit/Write when the config says `codex`. If `codex.enabled: false`, fall back to `claude-direct` (subagent without Codex).
+**Routing enforcement rule**: Delegate each phase with `Task(subagent_type="{agent}", prompt="...")` regardless of the `agents.<name>.tool` value. Do NOT write CLI names, sandbox modes, or model names in the prompt: the hook appends `[Resolved Routing]` (tool / sandbox / model, merged from `cli-tools.yaml` and `.local.yaml`) to the subagent prompt and the agent definition follows it. The orchestrator must not write test or implementation code itself in a delegated phase. If the `[Resolved Routing]` for a writing phase (Red / Green / Refactor) cannot edit files (tool `antigravity`, or `codex` with sandbox `read-only`), stop and report the misconfiguration to the user (implementation agents need `codex` + `workspace-write` or `claude-direct` in `cli-tools.yaml` / `.local.yaml`); do not work around it by editing in the orchestrator.
 
 ---
 
@@ -167,16 +168,21 @@ Confirm the test PASSES and report the result.
 
 After Green, assess whether refactoring is needed. If the code is already clean, skip to the next test.
 
-If refactoring is needed, the approach depends on `agents.code-reviewer.tool`:
-
-- **claude-direct**: Review and refactor inline (no subagent needed)
-- **codex**: Delegate refactoring to a subagent via Codex
+If refactoring is needed, delegate it to the implementation agent (the same `$IMPL_AGENT` as
+Step 2: it has Edit/Write and a `workspace-write` sandbox, unlike `code-reviewer`, whose agent
+definition has no Edit/Write tools). The hook's `[Resolved Routing]` decides the tool; do not write CLI names in the prompt:
 
 ```
-# Review what to refactor
-# Then apply changes while ensuring tests still pass:
-$TEST_CMD {test file}
+Task(subagent_type="$IMPL_AGENT", prompt="""
+Refactor {file} without changing behavior: remove duplication, improve naming and structure
+introduced while making the tests pass. Do not add features.
+Tests: $TEST_CMD {test file} must stay green. Report what you changed and the test result.
+""")
 ```
+
+If you want an independent opinion on what to refactor first, ask `code-reviewer` (read-only)
+and pass its list to `$IMPL_AGENT`. Do not refactor inline in the orchestrator. After the
+subagent returns, re-run `$TEST_CMD {test file}` yourself to confirm the tests still pass.
 
 Refactoring targets:
 
@@ -224,7 +230,7 @@ Target: 80%+ line coverage on the new module.
 
 - [x] {test1}: {description}
 - [x] {test2}: {description}
-      ...
+- [x] ...（残りのテストケース）
 
 ### Coverage
 

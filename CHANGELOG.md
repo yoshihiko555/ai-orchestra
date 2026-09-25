@@ -9,13 +9,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **BREAKING** **`core` / `codex-suggestions`: 指示書を `AGENTS.md` の 1 本にし、`CLAUDE.md` の配布をやめた**: Claude Code（2.1.277 以降が必要）・Codex CLI・Antigravity CLI が同じ `AGENTS.md` を読む。`AGENTS.md` はプロジェクト固有の記述欄と末尾の `ai-orchestra` 管理ブロックからなり、管理ブロックは `orchex context sync` / `install` / `init` の実行時にだけ最新化される（SessionStart の自動同期では更新されない）。移行: `context sync` で旧生成物（生成マーカー入り）の `CLAUDE.md` は削除され、`AGENTS.md` は新しいテンプレートに置き換わる（元ファイルは `.claude/state/legacy-context/` に退避）ので、プロジェクト固有の記述を git 履歴から記述欄へ移す。手書きの `CLAUDE.md` は警告して残すので、内容を `AGENTS.md` に移して削除する（残っていると Claude Code は `AGENTS.md` を読まない）。
+- **`tdd`: すべてのフェーズをサブエージェント委譲に統一（ADR-056）**: `agents.<name>.tool` が `claude-direct` でもオーケストレーターがインラインで実装・リファクタしなくなった。Red / Green / Refactor はそれぞれ `tester` / `$IMPL_AGENT` への `Task` 委譲で行い、実行ツールは hook の `[Resolved Routing]` が決める。
+- **`AGENTS.md` で Codex / Antigravity の役割を固定しなくなった（ADR-056）**: 「担当外（Claude Code が実行）」と Antigravity 側の担当表を外し、Codex は呼び出し方と依頼内容で 3 つの実行モードを切り替える（相談: `codex exec` read-only で分析のみ / 委譲実装: Claude Code の実装エージェントからの `codex exec` workspace-write で委譲範囲を編集、commit なし / 発注書実装: 引き継ぎファイル・TAKT・直接起動で発注書の範囲を編集・テスト）。状態の更新先は発注書の形で決まる（引き継ぎファイルなら Plans.md、TAKT なら TAKT のレポート）。実行先の決定は `cli-tools.yaml` のルーティングに一本化。既存導入先は `orchex context sync` で `AGENTS.md` の管理ブロックに反映される。
 - **BREAKING** **`quality-gates` / `audit`: quality-gates の機能フラグを `audit-flags.json` から分離（Issue #153）**: quality-gates の設定は `.claude/config/quality-gates/quality-gates.json` / `quality-gates.local.json` に移った。`audit-flags.local.json` に書いていた `quality_gate` / `context_optimization` / `evaluation_set_check` / `paths.state_dir` は読まれなくなるので `quality-gates.local.json` へ移す（SessionStart に案内が出る）。
 - **`agent-routing`: Antigravity の既定モデルを `gemini-3.8-flash-high` に変更**: `cli-tools.yaml` の `antigravity.model` の既定値を `gemini-3.1-pro-high` から `gemini-3.8-flash-high` に変えた。従来のモデルを使い続ける場合は `cli-tools.local.yaml` で `antigravity.model: gemini-3.1-pro-high` を指定する。
 - **`agent-routing`: `cli-tools.yaml` の debugger の sandbox 既定値を `read-only` に変更**: `agents.debugger.sandbox` が `workspace-write` のまま残っていたのを、Edit を持たない分析役に合わせて `read-only` にした。`.local.yaml` で debugger の tool を `codex` に切り替えている場合の sandbox 指定が変わる。tool の既定値（`claude-direct`）は変わらない。
 - **`agent-routing`: `cli-tools.yaml` の `antigravity.model_allowlist` を現行の `agy models` に合わせて更新**: Gemini 3.6 / 3.7 / 3.8 Flash を追加し、`agy models` に表示されなくなった Gemini 3.5 Flash、接尾辞なしの `gemini-3.1-pro`、名前が変わった Claude 4.6 系の旧スラッグ（`claude-4.6-sonnet-thinking` / `claude-4.6-opus-thinking`）を外した。`antigravity.model` にこれらを指定している場合は警告が出るので、`agy models` に表示される名前（例: `claude-sonnet-4-6`）に変更する。
+- **`handoff`: 引き継ぎファイルの Codex 向け指示を強化**: base ブランチ上なら feature ブランチを先に作る、パス単位でステージし `git add -A` を使わない、`.claude/Plans.md` / `.claude/handoffs/` をステージしない、Acceptance Criteria は verify / judge を確認した後にだけチェックする、を明記。起動コマンドには `cli-tools.yaml` の model / sandbox を適用し、`codex.enabled: false` なら案内しない。
+
+### Deprecated
+
+- **`/preflight` と `/startproject` を廃止予定にした（ADR-056）**: 対話（grill-me 等）→ `/order`（仮名、後続 PR で新設）→ 実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）の流れに置き換える。実ファイルの削除は後続 PR で行い、それまでは従来どおり使える。README のスキル表に注記を追加。
 
 ### Fixed
 
+- **`handoff`: 案内していた Codex の起動コマンドが動かなかった**: `codex -c <file>` は config 上書き用で引き継ぎファイルを渡せない。`codex --model <model> --sandbox <implementation sandbox> "$(cat '<file>')"`（`cli-tools.yaml` の実効値）で新規セッションのプロンプトとして渡す案内に直した。
 - **`codex-suggestions`: プロジェクト外のファイルへの書き込みで `[Codex Suggestion]` が出なくなった**: scratchpad やメモリなどプロジェクト外への Write/Edit でも、内容の長さやパス中の `config` だけで提案が出ていた。プロジェクトルート（`CLAUDE_PROJECT_DIR` → `cwd`）の外を指すパスは対象外にした。
 - **`agent-routing` / `core`: `.local.yaml` のルーティング上書きがサブエージェントに効かないことがある問題を修正（Issue #453）**: サブエージェント起動前に hook が base と `.local.yaml` をマージした設定から tool / sandbox / model を解決し、`[Resolved Routing]` として渡すようにした。`codex.flags` に `--full-auto` や `--sandbox` など sandbox を上書きするフラグがある場合や、sandbox が `read-only` / `workspace-write` 以外の場合は Codex を使わない。
 - **`core`: `explain-visually` の `template.html` を prettier で整形しても図が描画されるようになった**: 整形で inline script の中身が変わり、CSP のハッシュと一致しなくなって Mermaid の描画とページ高さの報告がブロックされていた。script 2 本を `prettier-ignore` で整形対象から外した。整形済みの template.html をコミットしているプロジェクトは、次回 sync 後の template.html をコミットし直す。
