@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`core`: Plans.md v2 — Project 直下に発注書の節（Goal / Context / Out of Scope / Constraints / Open Questions）を書けるようにした（ADR-056）**: SessionStart のサマリーに Goal の先頭 1 行と Open Questions の件数が加わり、節内の行はタスクとして数えない。`orchex init` の雛形と `/task-state init` は v2 形式を生成し、`add-phase` は `--ac` で合意済みの受け入れ条件を受け取る。`/handoff` の引き継ぎファイルに `## Order`（Goal / Context / Constraints）が入り、Codex の起動例を `codex "$(cat <file>)"` に直した。既存形式の Plans.md はそのまま動く。
+
 ### Changed
 
 - **`quality-gates` / `audit`: quality-gates の機能フラグを `audit-flags.json` から分離（Issue #153）**: `quality_gate` / `context_optimization` / `evaluation_set_check` の設定と上書きは `.claude/config/quality-gates/quality-gates.json` / `quality-gates.local.json` で行うようになった。既存プロジェクトの `audit-flags.local.json` に残る旧設定は 0.4.x の間はそのまま効き、SessionStart 時に移行案内が 1 行出る。
