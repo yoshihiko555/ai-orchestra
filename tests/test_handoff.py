@@ -11,7 +11,9 @@ from facets.scripts.handoff import (
     filter_sensitive_lines,
     find_project_root,
     parse_decisions,
+    parse_order_sections,
     parse_tasks,
+    render_order_markdown,
 )
 
 # ---------------------------------------------------------------------------
@@ -58,6 +60,109 @@ class TestParseTasks:
         tasks = parse_tasks(content)
         assert len(tasks["blocked"]) == 1
         assert tasks["blocked"][0]["reason"] is None
+
+    def test_skips_cc_marker_inside_order_context(self) -> None:
+        content = (
+            "## Project: Test\n"
+            "#### Context\n"
+            "- `cc:TODO` context note\n"
+            "### Phase 1: Build `cc:TODO`\n"
+            "#### Tasks\n"
+            "- `cc:TODO` Real task\n"
+        )
+
+        tasks = parse_tasks(content)
+
+        assert tasks["TODO"] == [{"task": "Real task", "reason": None}]
+
+
+# ---------------------------------------------------------------------------
+# order sections
+# ---------------------------------------------------------------------------
+
+
+class TestParseOrderSections:
+    def test_extracts_goal_context_and_constraints_bullets_verbatim(self) -> None:
+        content = (
+            "## Project: Test\n"
+            "#### Goal\n"
+            "- Ship v2\n"
+            "- [ ] Keep checkbox text\n"
+            "#### Context\n"
+            "- ADR-001\n"
+            "#### Out of Scope\n"
+            "- Do not extract this\n"
+            "#### Constraints\n"
+            "- Python 3.12\n"
+            "#### Open Questions\n"
+            "- Do not extract this either\n"
+            "### Phase 1: Build `cc:TODO`\n"
+        )
+
+        orders = parse_order_sections(content)
+
+        assert orders == {
+            "Test": {
+                "goal": ["Ship v2", "[ ] Keep checkbox text"],
+                "context": ["ADR-001"],
+                "constraints": ["Python 3.12"],
+            }
+        }
+
+    def test_project_without_order_sections_has_empty_project_order(self) -> None:
+        content = "## Project: Legacy\n### Phase 1: Build `cc:TODO`\n"
+
+        assert parse_order_sections(content) == {"Legacy": {}}
+
+    def test_empty_goal_section_omits_goal_key(self) -> None:
+        content = (
+            "## Project: Empty\n"
+            "#### Goal\n"
+            "\n"
+            "#### Context\n"
+            "- Existing context\n"
+            "### Phase 1: Build `cc:TODO`\n"
+        )
+
+        assert parse_order_sections(content) == {"Empty": {"context": ["Existing context"]}}
+
+    def test_skips_placeholder_order_bullets(self) -> None:
+        content = (
+            "## Project: Scaffolded\n"
+            "#### Goal\n"
+            "- {目的。何のために、誰の何が変わるか}\n"
+            "#### Context\n"
+            "- {背景。なぜ今これをやるか}\n"
+            "- Existing context\n"
+            "### Phase 1: Build `cc:TODO`\n"
+        )
+
+        orders = parse_order_sections(content)
+
+        assert orders == {"Scaffolded": {"context": ["Existing context"]}}
+
+
+class TestRenderOrderMarkdown:
+    def test_renders_present_sections_in_fixed_order(self) -> None:
+        orders = {
+            "Beta": {
+                "constraints": ["Python 3.12"],
+                "goal": ["Ship v2"],
+            },
+            "Empty": {},
+        }
+
+        markdown = render_order_markdown(orders)
+
+        assert markdown == (
+            "## Order\n\n### Beta\n\n#### Goal\n\n- Ship v2\n\n#### Constraints\n\n- Python 3.12"
+        )
+        assert "#### Context" not in markdown
+        assert "### Empty" not in markdown
+
+    def test_returns_empty_string_for_empty_or_all_empty_orders(self) -> None:
+        assert render_order_markdown({}) == ""
+        assert render_order_markdown({"Empty": {}}) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -177,4 +282,46 @@ class TestCollectHandoffData:
         assert len(data["tasks"]["TODO"]) == 1
         assert data["tasks"]["WIP"][0]["task"] == "Task A"
         assert len(data["decisions"]) == 1
+        assert data["order"] == {"Test": {}}
+        assert data["order_markdown"] == ""
         assert "timestamp" in data
+
+    def test_collects_order_sections_and_markdown(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        plans = claude_dir / "Plans.md"
+        plans.write_text(
+            "# Plans\n\n"
+            "## Project: Test\n\n"
+            "#### Goal\n"
+            "- Ship v2\n\n"
+            "#### Context\n"
+            "- ADR-001\n\n"
+            "#### Constraints\n"
+            "- Python 3.12\n\n"
+            "### Phase 1: Setup `cc:WIP`\n\n"
+            "#### Tasks\n"
+            "- `cc:WIP` Task A\n",
+            encoding="utf-8",
+        )
+
+        with patch("facets.scripts.handoff.run_git", return_value=None):
+            data = collect_handoff_data(tmp_path)
+
+        assert data["order"] == {
+            "Test": {
+                "goal": ["Ship v2"],
+                "context": ["ADR-001"],
+                "constraints": ["Python 3.12"],
+            }
+        }
+        assert data["order_markdown"] == (
+            "## Order\n\n"
+            "### Test\n\n"
+            "#### Goal\n\n"
+            "- Ship v2\n\n"
+            "#### Context\n\n"
+            "- ADR-001\n\n"
+            "#### Constraints\n\n"
+            "- Python 3.12"
+        )

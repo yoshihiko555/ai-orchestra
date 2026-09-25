@@ -2,6 +2,26 @@
 
 ## Project: {project-name}
 
+#### Goal
+
+- {目的。何のために、誰の何が変わるか}
+
+#### Context
+
+- {参照する設計書 / Issue / ADR、確定している事実}
+
+#### Out of Scope
+
+- {やらないこと}
+
+#### Constraints
+
+- {制約。技術・期限・互換性など}
+
+#### Open Questions
+
+- {未決事項。決まったら Decisions へ移して消す}
+
 ### Phase 1: Setup `cc:TODO`
 
 <!-- Optional: once this phase's Acceptance Criteria are agreed, add a

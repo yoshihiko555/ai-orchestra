@@ -29,6 +29,18 @@ MARKER_TO_STATE = {
     "cc:blocked": "blocked",
 }
 BLOCKED_REASON_PATTERN = re.compile(r"—\s*理由:\s*(.+)$")
+ORDER_SECTION_HEADINGS = {
+    "#### Goal",
+    "#### Context",
+    "#### Out of Scope",
+    "#### Constraints",
+    "#### Open Questions",
+}
+HANDOFF_ORDER_SECTIONS = (
+    ("goal", "#### Goal"),
+    ("context", "#### Context"),
+    ("constraints", "#### Constraints"),
+)
 
 # Sensitive file patterns to exclude from diff
 SENSITIVE_PATTERNS = {".env", "credentials", "secret", ".pem", ".key"}
@@ -58,6 +70,111 @@ def run_git(args: list[str], cwd: Path) -> str | None:
         return None
 
 
+def _order_section_line_indices(lines: list[str]) -> set[int]:
+    """Return body line indices for pre-Phase order sections under Projects."""
+    indices: set[int] = set()
+    in_project = False
+    phase_started = False
+    in_order_section = False
+
+    for line_index, line in enumerate(lines):
+        stripped = line.strip()
+
+        if stripped.startswith("## "):
+            in_project = stripped.startswith("## Project:")
+            phase_started = False
+            in_order_section = False
+            continue
+
+        if not in_project:
+            continue
+
+        if stripped.startswith("### "):
+            phase_started = True
+            in_order_section = False
+            continue
+
+        if stripped.startswith("#### "):
+            in_order_section = not phase_started and stripped in ORDER_SECTION_HEADINGS
+            continue
+
+        if in_order_section:
+            indices.add(line_index)
+
+    return indices
+
+
+def parse_order_sections(content: str) -> dict[str, dict[str, list[str]]]:
+    """Extract Goal, Context, and Constraints bullets for each Project."""
+    lines = content.splitlines()
+    order_lines = _order_section_line_indices(lines)
+    heading_to_key = {heading: key for key, heading in HANDOFF_ORDER_SECTIONS}
+    orders: dict[str, dict[str, list[str]]] = {}
+    current_project: str | None = None
+    phase_started = False
+    current_section: str | None = None
+
+    for line_index, line in enumerate(lines):
+        stripped = line.strip()
+
+        if stripped.startswith("## "):
+            if stripped.startswith("## Project:"):
+                current_project = stripped.split("## Project:", 1)[1].strip()
+                orders[current_project] = {}
+                phase_started = False
+            else:
+                current_project = None
+            current_section = None
+            continue
+
+        if current_project is None:
+            continue
+
+        if stripped.startswith("### "):
+            phase_started = True
+            current_section = None
+            continue
+
+        if stripped.startswith("#### "):
+            current_section = heading_to_key.get(stripped) if not phase_started else None
+            continue
+
+        if line_index not in order_lines or current_section is None:
+            continue
+
+        bullet_line = line.lstrip()
+        if not bullet_line.startswith("- "):
+            continue
+        bullet_text = bullet_line[2:]
+        if bullet_text.strip() and not bullet_text.strip().startswith("{"):
+            orders[current_project].setdefault(current_section, []).append(bullet_text)
+
+    return orders
+
+
+def render_order_markdown(orders: dict[str, dict[str, list[str]]]) -> str:
+    """Render extracted order data as a Markdown fragment."""
+    projects = [
+        (project_name, sections)
+        for project_name, sections in orders.items()
+        if any(sections.get(key) for key, _heading in HANDOFF_ORDER_SECTIONS)
+    ]
+    if not projects:
+        return ""
+
+    lines = ["## Order"]
+    for project_name, sections in projects:
+        lines.extend(["", f"### {project_name}"])
+        for key, heading in HANDOFF_ORDER_SECTIONS:
+            bullets = sections.get(key)
+            if not bullets:
+                continue
+            lines.extend(["", heading, ""])
+            lines.extend(f"- {bullet}" for bullet in bullets)
+
+    return "\n".join(lines)
+
+
 def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
     """Parse Plans.md content and extract tasks by state."""
     tasks: dict[str, list[dict[str, str | None]]] = {
@@ -66,9 +183,13 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
         "blocked": [],
     }
 
-    for line in content.splitlines():
+    lines = content.splitlines()
+    order_lines = _order_section_line_indices(lines)
+    for line_index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped.startswith("- "):
+            continue
+        if line_index in order_lines:
             continue
 
         match = MARKER_PATTERN.search(stripped)
@@ -179,6 +300,7 @@ def collect_handoff_data(project_dir: Path) -> dict:
     content = plans_path.read_text(encoding="utf-8")
     tasks = parse_tasks(content)
     decisions = parse_decisions(content)
+    orders = parse_order_sections(content)
 
     branch = get_branch(project_dir)
     commits = get_recent_commits(project_dir)
@@ -191,6 +313,8 @@ def collect_handoff_data(project_dir: Path) -> dict:
         "branch": branch,
         "tasks": tasks,
         "decisions": decisions,
+        "order": orders,
+        "order_markdown": render_order_markdown(orders),
         "recent_commits": commits,
         "diff_stat": diff_stat,
         "working_context": working_ctx,

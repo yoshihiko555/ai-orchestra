@@ -24,6 +24,7 @@ python3 .claude/skills/handoff/scripts/handoff.py
 スクリプトが JSON を stdout に出力する。内容:
 
 - Plans.md の WIP/TODO/blocked タスク
+- Plans.md の Project ごとの Goal / Context / Constraints（発注書の節。`order_markdown` として整形済み。無ければ空）
 - 未コミット diff のサマリー（`git diff --stat`）
 - ブランチ名、最近のコミット
 - Decisions セクション
@@ -55,6 +56,22 @@ Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマ�
 ## Conversation Summary
 
 {Step 2 で生成した会話要約}
+
+## Order
+
+### {project name}
+
+#### Goal
+
+- {Goal の行}
+
+#### Context
+
+- {Context の行}
+
+#### Constraints
+
+- {Constraints の行}
 
 ## Current Task State
 
@@ -92,6 +109,9 @@ Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマ�
 You are continuing work that was started in Claude Code.
 Focus on the WIP tasks listed above. The conversation summary
 provides context on what has been done and what remains.
+Treat the Order section as the specification: stay within its Goal,
+read the files listed under Context before changing code, and respect
+every Constraint.
 
 Key files to review:
 
@@ -106,9 +126,10 @@ When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:don
 生成後、以下をユーザーに **日本語で** 表示する:
 
 1. 生成されたファイルのパス
-2. Codex 起動コマンド:
+2. Codex 起動コマンド（引き継ぎファイルを新規セッションのプロンプトとして渡す。`-c` は config 上書き用で
+   ファイルは渡せない）:
    ```
-   codex -c .claude/handoffs/{timestamp}.md
+   codex "$(cat '.claude/handoffs/{timestamp}.md')"
    ```
 3. 引き継ぎ内容のサマリー（WIP タスク数、TODO タスク数）
 

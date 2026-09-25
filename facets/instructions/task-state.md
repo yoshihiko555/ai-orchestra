@@ -16,8 +16,9 @@
 /task-state update "タスク名" --status done
 /task-state update "タスク名" --status blocked --reason "API仕様が未確定"
 
-# フェーズの追加
+# フェーズの追加（合意済みの AC があれば --ac で渡す。聞き直さない）
 /task-state add-phase "Phase 2: 実装" --tasks "API実装" "テスト作成" "ドキュメント"
+/task-state add-phase "Phase 2: 実装" --tasks "API実装" --ac "API が仕様通り — verify: \`pytest tests/test_api.py\`"
 
 # 設計判断の記録
 /task-state decision "REST API ではなく GraphQL を採用（理由: フロントエンドの柔軟性）"
@@ -27,9 +28,10 @@
 
 ### init モード
 
-1. `.claude/Plans.md` が存在しない場合、テンプレートから生成
+1. `.claude/Plans.md` が存在しない場合、テンプレート（発注書の 5 節 Goal / Context / Out of Scope / Constraints / Open Questions 付き）から生成
 2. プロジェクト名は `git` リポジトリ名またはディレクトリ名から自動取得
-3. 既存ファイルがある場合はスキップ（上書きしない）
+3. 5 節は対話で確定した内容で埋める。未確定の点は Open Questions に残す（節ごと空にしない）
+4. 既存ファイルがある場合はスキップ（上書きしない）
 
 ### 表示モード（引数なし）
 
@@ -50,7 +52,8 @@
 3. Acceptance Criteria が決まっている場合は、タスクグループより前に `#### Acceptance Criteria` セクションを追記する
    - 機械検証可能な条件は `— verify: \`コマンド\``、主観的条件は `— judge: 判定基準` を併記する（記法は `task-memory-usage.md` 参照）
    - 登録時は全条件を未チェック `- [ ]` で記載する
-   - `/preflight` 経由で呼ばれた場合は Phase 3 で合意済みの AC をそのまま反映する。直接 `add-phase` を呼ぶ場合は AC の有無をユーザーに確認する
+   - `--ac` で合意済みの AC を渡された場合はそのまま反映し、聞き直さない。渡されない場合のみ AC の有無をユーザーに確認する
+4. タスク行は `{何をするか} — 対象: \`{ファイル}\` / 確認: {方法}` の形にする（確認は省略可）
 
 ### decision モード
 
@@ -81,6 +84,27 @@ codd:
 # Plans
 
 ## Project: my-app
+
+#### Goal
+
+- 商品を注文できる MVP を出す（Phase 2 まで）
+
+#### Context
+
+- 設計書: docs/architecture/system-architecture.md、docs/api/API-001.md
+- 確定事実: 認証 API は実装済み
+
+#### Out of Scope
+
+- 決済の本番接続（契約待ち、ユーザー確定）
+
+#### Constraints
+
+- 既存の `users` テーブルは変更しない
+
+#### Open Questions
+
+- 注文キャンセルの期限を設けるか
 
 ### Phase 1: 設計 `cc:done`
 
@@ -133,6 +157,7 @@ codd:
 
 - Plans.md は `.claude/Plans.md` に配置する
 - 手動編集も可能（フォーマットに従うこと）
-- git にコミットしてチーム間で共有することを推奨
+- Plans.md はローカル管理（`.gitignore`）。共有が必要な作業は Issue を発注書にする（`task-memory-usage.md` ルール参照）
+- 発注書の 5 節（Goal / Context / Out of Scope / Constraints / Open Questions）には `cc:` マーカーを書かない。タスクは Phase 配下の `#### Tasks` にだけ書く
 - 状態マーカーはバッククォートで囲む: `` `cc:WIP` ``
 - 先頭の `codd:` フロントマターは SessionStart の自動アーカイブでも保持される（`## Project:` 境界の外側のため）

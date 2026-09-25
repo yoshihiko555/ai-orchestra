@@ -44,6 +44,13 @@ MARKER_STATE_MAP = {
     "blocked": "blocked",
 }
 BLOCKED_REASON_PATTERN = re.compile(r"—\s*理由:\s*(.+)$")
+ORDER_SECTION_HEADINGS = {
+    "#### Goal",
+    "#### Context",
+    "#### Out of Scope",
+    "#### Constraints",
+    "#### Open Questions",
+}
 
 
 def resolve_markers(config: dict) -> dict[str, str]:
@@ -83,6 +90,95 @@ def build_marker_parser(
 
 
 DEFAULT_MARKER_PATTERN, DEFAULT_MARKER_TO_STATE = build_marker_parser(DEFAULT_MARKERS)
+
+
+def order_section_line_indices(lines: list[str]) -> set[int]:
+    """Project 直下の order セクションに属する本文行番号を返す。"""
+    indices: set[int] = set()
+    in_project = False
+    phase_started = False
+    in_order_section = False
+
+    for line_index, line in enumerate(lines):
+        stripped = line.strip()
+
+        if stripped.startswith("## "):
+            in_project = stripped.startswith("## Project:")
+            phase_started = False
+            in_order_section = False
+            continue
+
+        if not in_project:
+            continue
+
+        if stripped.startswith("### "):
+            phase_started = True
+            in_order_section = False
+            continue
+
+        if stripped.startswith("#### "):
+            in_order_section = not phase_started and stripped in ORDER_SECTION_HEADINGS
+            continue
+
+        if in_order_section:
+            indices.add(line_index)
+
+    return indices
+
+
+def parse_orders(content: str) -> dict[str, dict]:
+    """Plans.md の Project ごとに Goal と Open Questions を抽出する。"""
+    lines = content.splitlines()
+    order_lines = order_section_line_indices(lines)
+    orders: dict[str, dict] = {}
+    current_project: str | None = None
+    phase_started = False
+    current_section: str | None = None
+
+    for line_index, line in enumerate(lines):
+        stripped = line.strip()
+
+        if stripped.startswith("## "):
+            if stripped.startswith("## Project:"):
+                current_project = stripped.split("## Project:", 1)[1].strip()
+                orders[current_project] = {"goal": None, "open_questions": 0}
+                phase_started = False
+            else:
+                current_project = None
+            current_section = None
+            continue
+
+        if current_project is None:
+            continue
+
+        if stripped.startswith("### "):
+            phase_started = True
+            current_section = None
+            continue
+
+        if stripped.startswith("#### "):
+            current_section = (
+                stripped if not phase_started and stripped in ORDER_SECTION_HEADINGS else None
+            )
+            continue
+
+        if line_index not in order_lines:
+            continue
+
+        project_order = orders[current_project]
+        if current_section == "#### Goal" and project_order["goal"] is None and stripped:
+            goal = stripped[2:].strip() if stripped.startswith("- ") else stripped
+            if re.match(r"^\[[ xX]\]\s+", goal):
+                goal = goal[3:].strip()
+            if not goal.startswith("{"):
+                project_order["goal"] = goal
+        elif current_section == "#### Open Questions" and stripped.startswith("- "):
+            question = stripped[2:].strip()
+            normalized = question.rstrip(".。").casefold()
+            if not question.startswith("{") and normalized not in {"なし", "none", "n/a"}:
+                project_order["open_questions"] += 1
+
+    return orders
 
 
 def read_hook_input() -> dict:
@@ -167,8 +263,10 @@ def parse_tasks(
         "blocked": [],
     }
 
+    lines = content.splitlines()
+    order_lines = order_section_line_indices(lines)
     in_ac_section = False
-    for line in content.splitlines():
+    for line_index, line in enumerate(lines):
         stripped = line.strip()
 
         if stripped == AC_SECTION_HEADING:
@@ -179,6 +277,9 @@ def parse_tasks(
             continue
 
         if not stripped.startswith("- "):
+            continue
+
+        if line_index in order_lines:
             continue
 
         if in_ac_section and classify_checkbox_line(stripped) is not None:
@@ -213,7 +314,12 @@ def parse_tasks(
     return tasks
 
 
-def format_summary(tasks: dict[str, list[dict[str, str | None]]], max_display: int | None) -> str:
+def format_summary(
+    tasks: dict[str, list[dict[str, str | None]]],
+    max_display: int | None,
+    *,
+    orders: dict[str, dict] | None = None,
+) -> str:
     """タスク状態のサマリーをフォーマットする。"""
     parts: list[str] = []
 
@@ -225,6 +331,27 @@ def format_summary(tasks: dict[str, list[dict[str, str | None]]], max_display: i
         if count > 0:
             stats.append(f"{state}: {count}")
     parts.append(f"[task-memory] {total} tasks ({', '.join(stats)})")
+
+    if orders:
+        goals = [
+            (project_name, project_order.get("goal"))
+            for project_name, project_order in orders.items()
+            if project_order.get("goal") is not None
+        ]
+        for project_name, goal in goals:
+            label = f"Goal ({project_name})" if len(goals) > 1 else "Goal"
+            parts.append(f"  {label}: {goal}")
+
+        open_questions = [
+            (project_name, project_order.get("open_questions", 0))
+            for project_name, project_order in orders.items()
+            if project_order.get("open_questions", 0) > 0
+        ]
+        for project_name, count in open_questions:
+            label = (
+                f"Open Questions ({project_name})" if len(open_questions) > 1 else "Open Questions"
+            )
+            parts.append(f"  {label}: {count}")
 
     if max_display is None:
         shown_wip = tasks["WIP"]
@@ -552,6 +679,7 @@ def main() -> None:
     if not content.strip():
         return
 
+    orders = parse_orders(content)
     tasks = parse_tasks(content, marker_pattern, marker_to_state)
 
     # 1 つもタスクがなければ何も出力しない
@@ -570,7 +698,7 @@ def main() -> None:
         max_display = configured_max_display
     else:
         max_display = 20
-    summary = format_summary(tasks, max_display)
+    summary = format_summary(tasks, max_display, orders=orders)
     print(summary)
 
 
