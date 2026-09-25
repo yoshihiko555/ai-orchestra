@@ -81,11 +81,11 @@ Read `.claude/config/agent-routing/cli-tools.yaml` (and `.local.yaml` if present
 
 Key agents used in TDD:
 
-| Phase           | Agent                                      | Config Key                  | Typical Routing |
-| --------------- | ------------------------------------------ | --------------------------- | --------------- |
-| Test writing    | `tester`                                   | `agents.tester.tool`        | codex           |
-| Implementation  | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool`    | codex           |
-| Refactor review | `code-reviewer`                            | `agents.code-reviewer.tool` | claude-direct   |
+| Phase           | Agent                                      | Config Key                  |
+| --------------- | ------------------------------------------ | --------------------------- |
+| Test writing    | `tester`                                   | `agents.tester.tool`        |
+| Implementation  | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool`    |
+| Refactor review | `code-reviewer`                            | `agents.code-reviewer.tool` |
 
 Select the implementation agent based on `$LANG`:
 
@@ -94,7 +94,7 @@ Select the implementation agent based on `$LANG`:
 - Go → `backend-go-dev`
 - Other → `general-purpose`
 
-**Routing enforcement rule**: If `agents.<name>.tool` is `codex`, the work MUST be delegated to a subagent that executes via Codex CLI. Do NOT write code directly with Edit/Write when the config says `codex`. If `codex.enabled: false`, fall back to `claude-direct` (subagent without Codex).
+**Routing enforcement rule**: Delegate each phase with `Task(subagent_type="{agent}", prompt="...")` regardless of the `agents.<name>.tool` value. Do NOT write CLI names, sandbox modes, or model names in the prompt: the hook appends `[Resolved Routing]` (tool / sandbox / model, merged from `cli-tools.yaml` and `.local.yaml`) to the subagent prompt and the agent definition follows it. The orchestrator must not write test or implementation code itself in a delegated phase.
 
 ---
 
