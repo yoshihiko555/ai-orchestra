@@ -81,14 +81,6 @@ Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マー�
 python3 .claude/skills/handoff/scripts/handoff.py
 ```
 
-続けて base branch を resolver で解決し、出力（1 行）を Step 3 の `**Base branch**` に転記する（PR Standards
-Policy の "Base Branch Resolution"。変数に入れず表示させる。Bash 呼び出しをまたいで変数は残らないため）:
-
-```bash
-: "${AI_ORCHESTRA_DIR:?AI_ORCHESTRA_DIR is not set}"
-python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_branch.py"
-```
-
 スクリプトが JSON を stdout に出力する。内容:
 
 - Plans.md の WIP/TODO/blocked タスク
@@ -118,8 +110,7 @@ Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマ�
 
 **Generated**: {YYYY-MM-DD HH:MM:SS UTC}
 **Branch**: {branch_name}
-**Base branch**: {Step 1 の resolver 出力}
-**Project**: {project directory}
+**Project**: {project directory (absolute path)}
 
 ## Conversation Summary
 
@@ -168,17 +159,17 @@ Key files to review:
 - {other relevant files from working context}
 
 Never commit on an integration branch. Before the first commit, run
-`git branch --show-current`: if it prints nothing (detached HEAD), or the Base branch
-above, or the remote default branch (`git symbolic-ref --short refs/remotes/origin/HEAD`;
-strip the `origin/` prefix before comparing), create a feature branch first
-(`git switch -c <type>/<short-name>`).
+`git branch --show-current`: if it prints nothing (detached HEAD) or one of
+main / master / develop / staging / stage or the repository's default branch, create
+a feature branch first (`git switch -c <type>/<short-name>`).
 When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`.
 When a Phase's Acceptance Criteria are met, check them (`- [ ]` → `- [x]`) only after
 you actually ran the `verify:` command and it passed, or confirmed the `judge:` criterion;
 never check an unverified criterion. Then commit that task's changes with a descriptive
 message. Check `git status --porcelain` first ("Uncommitted Changes" lists tracked
-changes only): commit the paths that belong to the WIP tasks, leave unrelated changes
-unstaged, stage by path (`git add <paths>`), and never use `git add -A`. Do not stage `.claude/Plans.md` or `.claude/handoffs/` (local working
+changes only): stage by path (`git add <paths>`) only what belongs to the WIP tasks,
+never use `git add -A`, and before each commit review `git diff --cached`; if unrelated
+changes are already staged, unstage them (`git restore --staged <path>`) first. Do not stage `.claude/Plans.md` or `.claude/handoffs/` (local working
 files, not part of the change). Do not push; Claude Code creates the PR with
 `/pr-create` from the committed work.
 ```
@@ -191,12 +182,13 @@ files, not part of the change). Do not push; Claude Code creates the PR with
 2. Codex 起動コマンド（引き継ぎファイルを新規セッションのプロンプトとして渡す。`-c` は config 上書き用で
    ファイルは渡せない）。`<codex.model>` と `<codex.sandbox.implementation>` は
    `.claude/config/agent-routing/cli-tools.yaml`（+ `.local.yaml`）の実効値で置換して表示する。
-   実装のための引き継ぎなので、実効値の `codex.enabled` が `false`、または
-   `codex.sandbox.implementation` が `workspace-write` でない場合は起動コマンドを案内せず、
-   設定の見直しか Claude Code での続行を案内する。値の検証と起動コマンドの生成は後続 PR で
-   `handoff.py` に機械化する（ADR-056 §決定 6 の 3）:
+   実装のための引き継ぎなので、実効値の `codex.enabled` が `false`、
+   `codex.sandbox.implementation` が `workspace-write` でない、または `codex.model` が routing hook と
+   同じ安全文字集合 `[A-Za-z0-9_.,:/@+=-]` 以外の文字を含む場合は、起動コマンドを案内せず設定の見直しか
+   Claude Code での続行を案内する。引き継ぎファイルとプロジェクトは絶対パスで書き、`-C` で作業
+   ディレクトリを固定する（この検証と生成は後続 PR で `handoff.py` に機械化する。ADR-056 §決定 6 の 3）:
    ```
-   codex --model '<codex.model>' --sandbox '<codex.sandbox.implementation>' "$(cat '.claude/handoffs/{timestamp}.md')"
+   codex -C '<project absolute path>' --model '<codex.model>' --sandbox '<codex.sandbox.implementation>' "$(cat '<project absolute path>/.claude/handoffs/{timestamp}.md')"
    ```
 3. 引き継ぎ内容のサマリー（WIP タスク数、TODO タスク数）
 
