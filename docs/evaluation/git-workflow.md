@@ -3,7 +3,7 @@
 **パッケージ**: `packages/git-workflow`
 **類型**: スキル型（単独）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-04（人間レビュー完了・指摘なし。評価観点の変更なし。テストギャップは Issue #132 で追跡）／EV-20〜EV-29（`pr_review_threads.py` 追加分、2026-07-14）は実装前の先行作成につき未レビュー（人間レビュー待ち）／EV-33〜EV-35（`issue-create` の受け入れ条件必須化、2026-07-23）は未レビュー（人間レビュー待ち）
+**最終レビュー日**: 2026-07-04（人間レビュー完了・指摘なし。評価観点の変更なし。テストギャップは Issue #132 で追跡）／EV-20〜EV-29（`pr_review_threads.py` 追加分、2026-07-14）は実装前の先行作成につき未レビュー（人間レビュー待ち）／EV-33〜EV-35（`issue-create` の受け入れ条件必須化、2026-07-23）は未レビュー（人間レビュー待ち）／EV-18（ルーティングを hook 注入に委ねる形へ改訂、2026-09-25）は未レビュー（人間レビュー待ち）
 **情報源**: docs/reference/packages.md, packages/git-workflow/manifest.json, facets/instructions/issue-create.md, facets/instructions/issue-fix.md, facets/instructions/pr-create.md, facets/policies/pr-standards.md, packages/git-workflow/scripts/resolve_base_branch.py, packages/git-workflow/config/sandbox-requirements.json, `.claude/Plans.md`（Project: review-respond スキル、Phase 2「pr_review_threads.py」の仕様・Decisions）, packages/loop-harness/lib/pr_review_wait.py（`verify_origin`/`classify_severity`/`_parse_reviewer_allowlist` の再利用元・fail-closed 挙動の踏襲元）
 
 > **類型分類について**: タスク開始時の想定は「主: スキル型 + 副: hook 型」だったが、`packages/git-workflow/manifest.json` の `"hooks": {}` は空であり、本パッケージに hook コンポーネントは存在しない。よって類型は **スキル型（単独）** に修正した。`scripts/resolve_base_branch.py` は独立 CLI ではなく 3 スキルが共通利用する内部ユーティリティであり、CLI ツール型（README 定義: 「lib + scripts で提供されるコマンド」）の要件である独立コマンド性を満たさないため副類型としない。
@@ -81,7 +81,7 @@ git-workflow パッケージは、GitHub Issue の作成（`issue-create`）、I
 - [ ] EV-17（境界 / must）（対話規約）: 3 スキルとも重要な意思決定点（Issue 種類・タイトルの不足確認、受け入れ条件のヒアリング、Issue 作成前プレビュー確認、実装計画の承認、PR 作成前プレビュー確認、既存 PR がある場合の分岐、レビュー High 指摘対応）で `AskUserQuestion` を使用し、確認なしに Issue 作成・コミット・PR 作成・ブランチ作成分岐といった破壊的操作を進めない — 根拠: facets/instructions/issue-create.md（Step 1, Step 3, Step 4）, facets/instructions/issue-fix.md（Phase 1-4, Phase 4-4, Phase 4-6）, facets/instructions/pr-create.md（Step 1-3, Step 3）, facets/compositions/skills/*.yaml（`policies: dialog-rules` 参照）
 - N/A: 非対話完結性 — git-workflow の 3 スキルは Codex/Antigravity CLI を直接呼び出さない（`gh`/`git`/`python3 resolve_base_branch.py` の呼び出しのみ）。`issue-fix` Phase 2-2 の `Task(subagent_type=...)` によるエージェント委譲はあるが、外部 CLI の stdin 封じ・タイムアウト制御はその委譲先エージェントと `cli-tools.yaml` 側の責務であり、本パッケージの対象コンポーネントではない
 - N/A: フォールバック — 上記と同じ理由で、Codex/Antigravity 不能時の claude-direct フォールバックは本パッケージの責務範囲外
-- [ ] EV-18（正常 / should）（ルーティング尊重）: `issue-fix` Phase 2-2 で変更が 3 箇所以上の場合、implementation agent への `Task` プロンプトに「`cli-tools.yaml` の設定に従い実装すること」という指示を含め、エージェント側のルーティング設定を尊重させる — 根拠: facets/instructions/issue-fix.md（Phase 2-2）
+- [ ] EV-18（正常 / should）（ルーティング尊重）: `issue-fix` Phase 2-2 で変更が 3 箇所以上の場合、implementation agent への `Task` プロンプトに実行ツール（Codex CLI 等）や sandbox を書かず、ルーティングは hook が注入する `[Resolved Routing]` とエージェント定義に委ねる（prompt 側の指定が `cli-tools.local.yaml` の上書きと食い違わないようにするため。#453） — 根拠: facets/instructions/issue-fix.md（Phase 2-2）, packages/core/hooks/inject-shared-context.py
 - [ ] EV-19（境界 / should）（成果物規約）: `issue-fix` が新規作成するブランチ名は `{prefix}issue-{番号}-{slug}`（`slug` は Issue タイトルから生成する英語 kebab-case、最大 30 文字）の命名規則に従う — 根拠: facets/instructions/issue-fix.md（Phase 2-1 フォールバック）
 
 ## 5. テストレビュー判断基準（パッケージ固有）
