@@ -1,24 +1,20 @@
 ---
 name: design
 description:
-  'Interactive design skill for software projects — covers requirements
+  "Interactive design skill for software projects — covers requirements
   definition,
 
   basic design, and detailed design through dialogue with the user.
 
   Use this skill when the user wants to define requirements, design architecture,
 
-  plan screens/API/database, or any pre-implementation design work.
+  plan screens/API/database, or otherwise decide what to build before implementation
 
-  Trigger on: "設計", "要件定義", "基本設計", "詳細設計", "画面設計", "API設計",
-
-  "アーキテクチャ", "design", "requirements", "system design",
-
-  or when the user discusses what to build before implementation.
+  (設計・要件定義・アーキテクチャ検討など、実装前に何を作るかを決める作業).
 
   This skill produces design documents that feed into /preflight and /startproject.
 
-  '
+  "
 ---
 
 # Dialog Rules Policy
