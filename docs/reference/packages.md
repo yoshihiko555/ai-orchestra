@@ -61,7 +61,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | hook   | `set-plan-gate.py`           | PostToolUse(Agent/Task): プランゲートを設定                      |
 | hook   | `check-plan-gate.py`         | PreToolUse(Agent/Task): プランゲートの確認                       |
 | hook   | `clear-plan-gate.py`         | UserPromptSubmit: プランゲートのクリア                           |
-| hook   | `inject-shared-context.py`   | PreToolUse(Agent/Task): サブエージェントに共有コンテキストを注入 |
+| hook   | `inject-shared-context.py`   | PreToolUse(Agent/Task): サブエージェントに解決済みルーティング（`[Resolved Routing]`）と共有コンテキストを注入 |
 | hook   | `capture-task-result.py`     | PostToolUse(Agent/Task): サブエージェント結果を記録              |
 | hook   | `update-working-context.py`  | PostToolUse(Edit/Write): 変更ファイルを working-context に追記   |
 | hook   | `cleanup-session-context.py` | SessionEnd: セッションコンテキストをクリーンアップ               |

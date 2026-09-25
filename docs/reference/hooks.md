@@ -53,7 +53,7 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 | `set-plan-gate.py`           | PostToolUse      | Agent/Task | プラン完了後にプランゲートを設定                                 |
 | `check-plan-gate.py`         | PreToolUse       | Agent/Task | プランゲート確認（実装エージェントをブロック）                   |
 | `clear-plan-gate.py`         | UserPromptSubmit | —          | ユーザー入力時にプランゲートをクリア                             |
-| `inject-shared-context.py`   | PreToolUse       | Agent/Task | サブエージェントに共有コンテキストを注入                         |
+| `inject-shared-context.py`   | PreToolUse       | Agent/Task | サブエージェントに解決済みルーティング（`[Resolved Routing]`）と共有コンテキストを注入 |
 | `capture-task-result.py`     | PostToolUse      | Agent/Task | サブエージェント結果を `.claude/context/session/entries/` に記録 |
 | `update-working-context.py`  | PostToolUse      | Edit/Write | 変更ファイルを `working-context.json` に追記                     |
 | `cleanup-session-context.py` | SessionEnd       | —          | `.claude/context/session/` をクリーンアップ                      |

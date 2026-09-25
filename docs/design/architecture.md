@@ -381,7 +381,7 @@ codex:
   sandbox:
     analysis: read-only
     implementation: workspace-write
-  flags: --full-auto
+  flags: ""
 
 antigravity:
   enabled: true

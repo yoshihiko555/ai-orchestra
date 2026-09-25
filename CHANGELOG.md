@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`agent-routing`: `cli-tools.yaml` の debugger の sandbox 既定値を `read-only` に変更**: `agents.debugger.sandbox` が `workspace-write` のまま残っていたのを、Edit を持たない分析役に合わせて `read-only` にした。`.local.yaml` で debugger の tool を `codex` に切り替えている場合の sandbox 指定が変わる。tool の既定値（`claude-direct`）は変わらない。
 
+### Fixed
+
+- **`agent-routing` / `core`: `.local.yaml` のルーティング上書きがサブエージェントに効かないことがある問題を修正（Issue #453）**: サブエージェント起動前に hook が base と `.local.yaml` をマージした設定から tool / sandbox / model を解決し、`[Resolved Routing]` として渡すようにした。`codex.flags` に `--full-auto` や `--sandbox` など sandbox を上書きするフラグがある場合や、sandbox が `read-only` / `workspace-write` 以外の場合は Codex を使わない。
+
 ## [0.3.4] - 2026-09-25
 
 ### Added

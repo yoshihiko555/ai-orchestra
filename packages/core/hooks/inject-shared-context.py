@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""PreToolUse(Task) hook: サブエージェント起動前に共有コンテキストを prompt に注入する。
+"""PreToolUse(Task) hook: 起動前の prompt に routing と共有コンテキストを注入する。
 
 処理フロー:
 1. stdin から PreToolUse JSON を読み込む
 2. tool_name が "Agent"（または後方互換の "Task"）でなければ何もしない
-3. context_store からセッションエントリーと working-context を取得する
-4. どちらも空なら何もしない
-5. 注入テキストを構築して tool_input.prompt の末尾に追加する
-6. 変更後の tool_input を含む JSON を stdout に出力する
+3. routing は context_store の利用可否と独立して解決する
+4. context_store が利用可能ならセッションエントリーと working-context を取得する
+5. routing と共有コンテキストがどちらも空なら何もしない
+6. 両セクションを結合し、最大 1 つの updatedInput で prompt の末尾に追加する
+7. 変更後の tool_input を含む JSON を stdout に出力する
 """
 
 from __future__ import annotations
@@ -40,6 +41,18 @@ except ImportError:
                 sys.exit(0)
 
         return wrapper
+
+
+try:
+    from hook_common import (
+        has_project_config,
+        load_cli_tools_config,
+        resolve_agent_routing,
+    )
+
+    _ROUTING_AVAILABLE = True
+except ImportError:
+    _ROUTING_AVAILABLE = False
 
 
 try:
@@ -158,16 +171,79 @@ def build_injection_text(
     return f"\n\n[Shared Context]\n{body}"
 
 
+def build_resolved_routing_section(routing: dict, has_local_config: bool = False) -> str:
+    """解決済み routing をサブエージェント向けの固定形式で描画する。"""
+    source = (
+        "cli-tools.yaml + cli-tools.local.yaml (merged)" if has_local_config else "cli-tools.yaml"
+    )
+    lines = [
+        "[Resolved Routing]",
+        f"Resolved by hook from {source}. "
+        "Follow these values; do not re-read the config files to decide tool or sandbox. "
+        "Call only the CLIs that have lines below.",
+        f"- agent: {routing['agent']}",
+        f"- tool: {routing['tool']}",
+    ]
+
+    if "codex" in routing:
+        codex = routing["codex"]
+        lines.append(f"- codex.model: {codex['model']}")
+        if "sandbox" in codex:
+            lines.append(f"- codex.sandbox: {codex['sandbox']}")
+        else:
+            lines.append(f"- codex.sandbox.analysis: {codex['sandbox_analysis']}")
+            lines.append(f"- codex.sandbox.implementation: {codex['sandbox_implementation']}")
+        lines.append(f"- codex.flags: {codex['flags'] or '(none)'}")
+        requires_sandbox_disable = "true" if codex["requires_sandbox_disable"] else "false"
+        lines.append(f"- codex.requires_sandbox_disable: {requires_sandbox_disable}")
+
+    if "antigravity" in routing:
+        antigravity = routing["antigravity"]
+        lines.append(f"- antigravity.model: {antigravity['model'] or '(CLI default)'}")
+        lines.append(f"- antigravity.flags: {antigravity['flags'] or '(none)'}")
+        allowlist_warning = antigravity.get("allowlist_warning")
+        if isinstance(allowlist_warning, str) and allowlist_warning:
+            lines.append(f"- WARN: {allowlist_warning}")
+
+    for note in routing.get("notes", []):
+        if isinstance(note, str):
+            lines.append(f"- note: {note}")
+
+    return "\n".join(lines)
+
+
+def build_routing_injection(tool_input: dict, project_dir: str) -> str:
+    """導入済み project の既知エージェント向け routing 注入を構築する。"""
+    agent = tool_input.get("subagent_type")
+    if not isinstance(agent, str) or not agent:
+        agent = "general-purpose"
+
+    if not _ROUTING_AVAILABLE:
+        return ""
+    if not has_project_config("agent-routing", "cli-tools.yaml", project_dir):
+        return ""
+
+    config = load_cli_tools_config(project_dir)
+    agents = config.get("agents")
+    if not isinstance(agents, dict) or agent not in agents:
+        return ""
+
+    routing = resolve_agent_routing(agent, config)
+    local_path = os.path.join(
+        project_dir, ".claude", "config", "agent-routing", "cli-tools.local.yaml"
+    )
+    return build_resolved_routing_section(routing, os.path.isfile(local_path))
+
+
 @safe_hook_execution
 def main() -> None:
     """PreToolUse(Task) hook のエントリポイント。"""
-    if not _CONTEXT_STORE_AVAILABLE:
-        return
-
     try:
         raw = sys.stdin.read()
         data: dict = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
+        return
+    if not isinstance(data, dict):
         return
 
     # Agent ツール以外は何もしない（後方互換のため "Task" も許容）
@@ -179,24 +255,34 @@ def main() -> None:
     if not isinstance(tool_input, dict):
         return
 
-    project_dir = get_project_dir(data)
+    if _CONTEXT_STORE_AVAILABLE:
+        project_dir = get_project_dir(data)
+    else:
+        project_dir = os.environ.get("CLAUDE_PROJECT_DIR") or data.get("cwd") or ""
 
-    entries = read_entries(project_dir)
-    working_ctx = read_working_context(project_dir)
+    injection = ""
+    if _CONTEXT_STORE_AVAILABLE:
+        entries = read_entries(project_dir)
+        working_ctx = read_working_context(project_dir)
+        injection = build_injection_text(entries, working_ctx)
 
-    injection = build_injection_text(entries, working_ctx)
-    if not injection:
+    routing_text = build_routing_injection(tool_input, project_dir)
+    if not injection and not routing_text:
         return
+
+    routing_part = f"\n\n{routing_text}" if routing_text else ""
+    combined = routing_part + injection
 
     # additionalContext: オーケストレーターに表示される
     # updatedInput: サブエージェントの prompt に直接注入される
     original_prompt = tool_input.get("prompt") or ""
-    new_tool_input = {**tool_input, "prompt": original_prompt + injection}
+    new_tool_input = {**tool_input, "prompt": original_prompt + combined}
+    additional_context = combined.strip()
 
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "additionalContext": injection.strip(),
+            "additionalContext": additional_context,
             "updatedInput": new_tool_input,
         }
     }

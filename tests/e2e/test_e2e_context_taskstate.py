@@ -24,6 +24,7 @@ def _run_hook(
 ) -> subprocess.CompletedProcess[str]:
     """hook スクリプトをサブプロセスで実行する。"""
     env = {**os.environ, "AI_ORCHESTRA_DIR": str(REPO_ROOT)}
+    env.pop("CLAUDE_PROJECT_DIR", None)
     if project:
         payload.setdefault("cwd", str(project))
     return subprocess.run(
@@ -43,6 +44,7 @@ def _run_load_task_state(
     """load-task-state.py を SessionStart として実行する。"""
     payload = json.dumps({"cwd": str(project)})
     env = {**os.environ, "AI_ORCHESTRA_DIR": str(REPO_ROOT)}
+    env.pop("CLAUDE_PROJECT_DIR", None)
     return subprocess.run(
         [sys.executable, str(HOOKS_DIR / "load-task-state.py")],
         input=payload,

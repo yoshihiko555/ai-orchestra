@@ -14,6 +14,10 @@
 4. 対象エージェントの `agents.<name>.tool` で実行先を決定する
 5. `tool == codex` のときだけ Codex CLI を呼び出す
 
+サブエージェントとして起動された場合、prompt に `[Resolved Routing]` があれば 1〜4 は hook が
+解決済みなので、その `tool` / `codex.sandbox` / `codex.model` / `codex.flags` をそのまま使う
+（config を読み直して判断を変えない）。ブロックがない場合だけ上記の手順で自分で解決する。
+
 ## ルーティング規則
 
 | 条件                                    | 動作                                             |

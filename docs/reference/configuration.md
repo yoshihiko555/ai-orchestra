@@ -62,8 +62,9 @@ codex:
     # 実装・修正用（ワークスペース内のファイル変更可）
     implementation: workspace-write
 
-  # codex exec に常に付与するフラグ
-  flags: --full-auto
+  # codex exec に常に付与するフラグ（sandbox を無効化・上書きするフラグ
+  # --full-auto / --sandbox / --dangerously-bypass-approvals-and-sandbox 等を書くと Codex は使われない）
+  flags: ""
 
   # sandbox 外での実行が必要か（codex 0.145 系は sandbox 内で app-server 初期化に失敗する。Issue #85）
   requires_sandbox_disable: true
