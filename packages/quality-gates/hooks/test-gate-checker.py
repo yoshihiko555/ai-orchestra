@@ -39,13 +39,13 @@ else:
     if str(_fallback_core_hooks) not in sys.path:
         sys.path.insert(0, str(_fallback_core_hooks))
 
-from hook_common import load_package_config  # noqa: E402
 from log_common import find_project_root  # noqa: E402
 from quality_gate_config import (  # noqa: E402
     DEFAULT_TEST_GATE_STATE,
     get_project_state_key,
     is_quality_gate_enabled,  # noqa: F401 (re-export; kept for external/test callers)
     load_project_scoped_state,
+    load_quality_gates_config,
     resolve_quality_gate_enabled,
     resolve_state_path,
     save_project_scoped_state,
@@ -58,7 +58,7 @@ STATE_FILENAME = "test-gate-checker.json"
 # Code file extensions to track
 CODE_EXTENSIONS = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java"}
 
-# Default thresholds (overridden by audit-flags.json)
+# Default thresholds (overridden by quality-gates.json)
 DEFAULT_FILE_THRESHOLD = 3
 DEFAULT_LINE_THRESHOLD = 100
 
@@ -66,7 +66,7 @@ DEFAULT_LINE_THRESHOLD = 100
 def load_test_gate_state(project_dir: str, config: dict | None = None) -> dict:
     """Load the shared test-gate state from file (scoped to the current project).
 
-    `config` may be an already-loaded audit-flags.json dict (see main()) to
+    `config` may be an already-loaded quality-gates.json dict (see main()) to
     avoid re-reading the config file within the same hook invocation.
     """
     project_key = get_project_state_key(project_dir)
@@ -77,7 +77,7 @@ def load_test_gate_state(project_dir: str, config: dict | None = None) -> dict:
 def save_test_gate_state(project_dir: str, state: dict, config: dict | None = None) -> None:
     """Save the shared test-gate state to file (scoped to the current project).
 
-    `config` may be an already-loaded audit-flags.json dict (see main()) to
+    `config` may be an already-loaded quality-gates.json dict (see main()) to
     avoid re-reading the config file within the same hook invocation.
     """
     project_key = get_project_state_key(project_dir)
@@ -96,8 +96,8 @@ def count_lines(content: str) -> int:
 
 
 def load_thresholds(project_dir: str) -> tuple[int, int]:
-    """Load threshold values from audit-flags.json."""
-    config = load_package_config("audit", "audit-flags.json", project_dir)
+    """Load threshold values from quality-gates.json."""
+    config = load_quality_gates_config(project_dir)
     quality_gate = config.get("features", {}).get("quality_gate", {})
     file_threshold = quality_gate.get("test_file_threshold", DEFAULT_FILE_THRESHOLD)
     line_threshold = quality_gate.get("test_line_threshold", DEFAULT_LINE_THRESHOLD)
@@ -143,11 +143,11 @@ def main() -> None:
         raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
         project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
 
-        # Read audit-flags.json once and reuse it for the enabled check, the
+        # Read quality-gates.json once and reuse it for the enabled check, the
         # threshold lookup, and resolve_state_path()'s paths.state_dir lookup
         # below (avoids re-reading the same config file up to 4x per
         # Edit/Write event; code review: architecture-reviewer, Issue #154).
-        config = load_package_config("audit", "audit-flags.json", project_dir)
+        config = load_quality_gates_config(project_dir)
         quality_gate = config.get("features", {}).get("quality_gate", {})
         if not resolve_quality_gate_enabled(quality_gate):
             sys.exit(0)

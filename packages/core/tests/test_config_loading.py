@@ -120,16 +120,26 @@ class TestRealConfigFiles:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
 
     def test_audit_flags(self) -> None:
-        flags = hook_common.load_package_config("audit", "audit-flags.json", str(REPO_ROOT))
+        # sync 前の配布先ではなく、今回更新する package 同梱 base を検証する。
+        project_without_distributed_config = REPO_ROOT / "packages" / "audit"
+        flags = hook_common.load_package_config(
+            "audit", "audit-flags.json", str(project_without_distributed_config)
+        )
+        assert flags["version"] == 3
         assert "features" in flags
         assert "route_audit" in flags["features"]
         assert isinstance(flags["features"]["route_audit"].get("enabled"), bool)
         # Contract: 具体的なデフォルト値の検証
         assert flags["features"]["route_audit"]["max_excerpt_chars"] == 160
-        # 2026-07-03 人間レビュー裁定（EV-11/12/19）: opt-out 方式へ変更し既定 True
-        assert flags["features"]["quality_gate"]["block_on_failed_test"] is True
-        assert flags["paths"]["state_dir"] == ".claude/state"
         assert flags["paths"]["logs_dir"] == ".claude/logs/audit"
+
+    def test_quality_gates_json(self) -> None:
+        config = hook_common.load_package_config(
+            "quality-gates", "quality-gates.json", str(REPO_ROOT)
+        )
+        assert config["features"]["quality_gate"]["block_on_failed_test"] is True
+        assert config["paths"]["state_dir"] == ".claude/state"
+        assert config["features"]["context_optimization"]["read_line_threshold"] == 200
 
     def test_delegation_policy(self) -> None:
         policy = hook_common.load_package_config("audit", "delegation-policy.json", str(REPO_ROOT))

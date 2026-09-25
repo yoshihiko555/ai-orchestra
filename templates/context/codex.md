@@ -142,10 +142,7 @@ GitHub PR レビュー・コードレビュー依頼の際は、以下の観点�
 ### 報告形式
 
 - 各指摘に重要度ラベルを付ける: **Critical / High / Medium / Low**
-  - Critical: セキュリティ脆弱性、データ損失リスク、本番障害の可能性
-  - High: バグの可能性、設計上の問題、パフォーマンス劣化
-  - Medium: コード品質、可読性、軽微な改善
-  - Low: スタイル、命名、コメント改善
+  <!-- severity-definitions: output-contracts/tiered-review -->
 
 ## Key Principles
 

@@ -50,6 +50,6 @@ facets 由来のスキル群には、フロー単位の評価セット（`docs/e
 
 ## 自動化
 
-テストファイル変更時の突合確認は、quality-gates パッケージの `evaluation-set-checker.py` hook（PostToolUse: Edit|Write）が案内する。有効/無効は `audit-flags.json` の `features.evaluation_set_check.enabled` で切替できる（`.local.json` で上書き可）。
+テストファイル変更時の突合確認は、quality-gates パッケージの `evaluation-set-checker.py` hook（PostToolUse: Edit|Write）が案内する。有効/無効は `quality-gates.json` の `features.evaluation_set_check.enabled` で切替できる（`.local.json` で上書き可）。
 
 hook はあくまで確認を促す案内であり、突合作業自体（マトリクス生成・must 観点のカバレッジ確認・ギャップの Issue 追記）は上記「テスト改修時の手順（MUST）」に従いオーケストレーターが実施する。

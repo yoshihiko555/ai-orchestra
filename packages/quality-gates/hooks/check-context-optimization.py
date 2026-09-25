@@ -40,9 +40,11 @@ _hook_dir = os.path.dirname(os.path.abspath(__file__))
 if _hook_dir not in sys.path:
     sys.path.insert(0, _hook_dir)
 
-from hook_common import load_package_config  # noqa: E402
 from log_common import find_project_root  # noqa: E402
-from quality_gate_config import resolve_quality_gate_enabled  # noqa: E402
+from quality_gate_config import (  # noqa: E402
+    load_quality_gates_config,
+    resolve_quality_gate_enabled,
+)
 
 DEFAULT_READ_LINE_THRESHOLD = 200
 DEFAULT_MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -108,14 +110,14 @@ def _sanitize_for_message(value: str, max_len: int = _MESSAGE_VALUE_MAX_LEN) -> 
 
 
 def _load_settings(project_dir: str) -> dict:
-    """audit-flags.json から context_optimization 設定を取り出す。"""
-    config = load_package_config("audit", "audit-flags.json", project_dir)
+    """quality-gates.json から context_optimization 設定を取り出す。"""
+    config = load_quality_gates_config(project_dir)
     return config.get("features", {}).get("context_optimization", {}) or {}
 
 
 def _load_quality_gate_settings(project_dir: str) -> dict:
-    """audit-flags.json から quality_gate 設定を取り出す。"""
-    config = load_package_config("audit", "audit-flags.json", project_dir)
+    """quality-gates.json から quality_gate 設定を取り出す。"""
+    config = load_quality_gates_config(project_dir)
     return config.get("features", {}).get("quality_gate", {}) or {}
 
 

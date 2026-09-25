@@ -295,6 +295,7 @@ orchex context sync --project /path/to/project --force
 
 # 注意: AGENTS.md は codex-suggestions パッケージがインストール済みの場合のみ配布されます
 #       （Codex CLI / Antigravity CLI 共用。codex.md + antigravity.md のセクション合成）
+#       「報告形式」の重要度の定義は facets/output-contracts/tiered-review.md から生成されます
 # 注意: 旧 .gemini/GEMINI.md（生成物のみ）は context sync 時に自動削除されます
 
 # パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）

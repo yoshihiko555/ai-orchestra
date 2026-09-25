@@ -263,45 +263,98 @@ agents:
 **パス:** `.claude/config/audit/audit-flags.json`
 **パッケージ:** audit
 
-機能フラグの管理。
+機能フラグの管理。Issue #153 で `quality_gate` / `context_optimization` / `evaluation_set_check` の
+機能フラグと `paths.state_dir` を `quality-gates.json`（次節）へ分離し、v3 では audit 固有のフラグ
+（`route_audit` / `kpi_scorecard`）だけが残る。
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "features": {
     "route_audit": {
       "enabled": true,
       "max_excerpt_chars": 160
     },
+    "kpi_scorecard": {
+      "enabled": true,
+      "default_period_days": 7
+    }
+  },
+  "paths": {
+    "logs_dir": ".claude/logs/audit"
+  }
+}
+```
+
+| 機能            | 説明                   | デフォルト |
+| --------------- | ---------------------- | ---------- |
+| `route_audit`   | ルーティング実績の記録 | 有効       |
+| `kpi_scorecard` | KPI スコアカード生成   | 有効       |
+
+**後方互換（0.4.x の間）**: 既存プロジェクトの `audit-flags.local.json` に旧 `quality_gate` /
+`context_optimization` / `evaluation_set_check` / `paths.state_dir` が残っていても、`quality-gates`
+側のローダーが読み替えて動作する（優先順位は次節を参照）。SessionStart 時に `audit-bootstrap.py` が
+該当を検出すると移行案内を 1 行出力する。0.5.0 でこの読み替えの削除を再検討する。
+
+---
+
+## quality-gates.json
+
+**パス:** `.claude/config/quality-gates/quality-gates.json`
+**パッケージ:** quality-gates
+
+quality-gates の機能フラグと状態ディレクトリの管理。Issue #153 で `audit-flags.json` から分離した。
+
+```json
+{
+  "version": 1,
+  "features": {
     "quality_gate": {
       "enabled": true,
       "block_on_failed_test": true,
       "test_file_threshold": 3,
       "test_line_threshold": 100
     },
-    "kpi_scorecard": {
-      "enabled": true,
-      "default_period_days": 7
-    },
     "context_optimization": {
       "enabled": true,
       "read_line_threshold": 200,
       "max_file_size_bytes": 5242880
+    },
+    "evaluation_set_check": {
+      "enabled": true
     }
   },
   "paths": {
-    "state_dir": ".claude/state",
-    "logs_dir": ".claude/logs/audit"
+    "state_dir": ".claude/state"
   }
 }
 ```
 
-| 機能                   | 説明                                           | デフォルト |
-| ---------------------- | ---------------------------------------------- | ---------- |
-| `route_audit`          | ルーティング実績の記録                         | 有効       |
-| `quality_gate`         | `audit` / `quality-gates` 共有の品質ゲート設定 | 有効       |
-| `kpi_scorecard`        | KPI スコアカード生成                           | 有効       |
-| `context_optimization` | 大きすぎる読み込みや `cat` 利用の抑制          | 有効       |
+| 機能                   | 説明                                                     | デフォルト |
+| ---------------------- | -------------------------------------------------------- | ---------- |
+| `quality_gate`         | 品質ゲート（レビュー提案・テスト分析・ブロック等）の設定 | 有効       |
+| `context_optimization` | 大きすぎる読み込みや `cat` 利用の抑制                    | 有効       |
+| `evaluation_set_check` | 評価セット突合案内の有効/無効                            | 有効       |
+
+`.claude/config/quality-gates/quality-gates.local.json`（opt-out 例）:
+
+```json
+{
+  "features": {
+    "quality_gate": {
+      "block_on_failed_test": false
+    }
+  }
+}
+```
+
+**旧 `audit-flags.local.json` からの移行**: 実効値の優先順位（後勝ち）は次のとおり。
+
+1. `quality-gates.json`（base）
+2. `audit-flags.local.json` の該当キー（deprecated 読み替え。0.4.x の間のみ）
+3. `quality-gates.local.json`（最優先）
+
+詳細は `packages/quality-gates/README.md`「設定キー」節を参照。
 
 ---
 
@@ -391,5 +444,6 @@ agents:
 | cli-tools.yaml       | 次回のエージェント呼び出し時（即時）             |
 | cli-tools.local.yaml | 次回のエージェント呼び出し時（即時）             |
 | audit-flags.json     | 次回の hook 発火時（即時）                       |
+| quality-gates.json   | 次回の hook 発火時（即時）                       |
 | task-memory.yaml     | 次回セッション開始時（SessionStart hook）        |
 | ベースファイル全般   | SessionStart 時に `sync-orchestra.py` で自動同期 |

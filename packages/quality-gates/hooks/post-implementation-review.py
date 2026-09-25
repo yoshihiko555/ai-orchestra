@@ -41,11 +41,11 @@ else:
     if str(_fallback_core_hooks) not in sys.path:
         sys.path.insert(0, str(_fallback_core_hooks))
 
-from hook_common import load_package_config  # noqa: E402
 from log_common import find_project_root  # noqa: E402
 from quality_gate_config import (  # noqa: E402
     get_project_state_key,
     load_project_scoped_state,
+    load_quality_gates_config,
     resolve_quality_gate_enabled,
     resolve_state_path,
     save_project_scoped_state,
@@ -132,7 +132,7 @@ def main():
         # .claude/config と state を一貫して参照する。
         raw_project_dir = data.get("cwd", "") or os.environ.get("CLAUDE_PROJECT_DIR", "")
         project_dir = find_project_root(raw_project_dir) if raw_project_dir else find_project_root()
-        config = load_package_config("audit", "audit-flags.json", project_dir)
+        config = load_quality_gates_config(project_dir)
         quality_gate = config.get("features", {}).get("quality_gate", {})
         if not resolve_quality_gate_enabled(quality_gate):
             sys.exit(0)
@@ -165,7 +165,7 @@ def main():
 
             return state
 
-        state_file = Path(resolve_state_path(project_dir, STATE_FILENAME))
+        state_file = Path(resolve_state_path(project_dir, STATE_FILENAME, config=config))
         update_project_scoped_state(state_file, project_key, _mutate, _DEFAULT_IMPL_REVIEW_STATE)
 
         if suggestion["triggered"]:

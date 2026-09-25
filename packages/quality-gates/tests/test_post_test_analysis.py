@@ -536,7 +536,7 @@ def test_main_blocks_by_default_when_config_lacks_block_key(
     """config に block_on_failed_test キーが無い実運用相当でも既定でブロックする。"""
     monkeypatch.setattr(
         post_test_analysis,
-        "load_package_config",
+        "load_quality_gates_config",
         lambda *_args: {"features": {"quality_gate": {"enabled": True}}},
     )
     _make_stdin(
@@ -561,7 +561,7 @@ def test_main_still_blocks_when_audit_log_write_fails(
     維持することを end-to-end で確認する。"""
     monkeypatch.setattr(
         post_test_analysis,
-        "load_package_config",
+        "load_quality_gates_config",
         lambda *_args: {"features": {"quality_gate": {"enabled": True}}},
     )
 
@@ -597,7 +597,7 @@ def test_main_no_op_when_quality_gate_disabled(
     """
     monkeypatch.setattr(
         post_test_analysis,
-        "load_package_config",
+        "load_quality_gates_config",
         lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
     )
     _make_stdin(
@@ -630,11 +630,11 @@ def test_main_normalizes_subdirectory_before_disabled_config_lookup(
     subdirectory.mkdir(parents=True)
     config_calls = []
 
-    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
-        config_calls.append((package_name, filename, project_dir))
+    def _load_config(project_dir: str) -> dict:
+        config_calls.append(project_dir)
         return {"features": {"quality_gate": {"enabled": False}}}
 
-    monkeypatch.setattr(post_test_analysis, "load_package_config", _load_config)
+    monkeypatch.setattr(post_test_analysis, "load_quality_gates_config", _load_config)
     _make_stdin(
         monkeypatch,
         {
@@ -648,7 +648,7 @@ def test_main_normalizes_subdirectory_before_disabled_config_lookup(
     with pytest.raises(SystemExit, match="0"):
         post_test_analysis.main()
 
-    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert config_calls == [str(repo_root)]
     assert capsys.readouterr().out == ""
     state_file = repo_root / ".claude" / "state" / post_test_analysis.STATE_FILENAME
     assert not state_file.exists()
@@ -682,12 +682,15 @@ def test_main_masks_secrets_in_debug_suggestion(
     """additionalContext の Codex 提案は失敗出力中の秘匿情報をマスクしてから出す。"""
     monkeypatch.setattr(
         post_test_analysis,
+        "load_quality_gates_config",
+        lambda _project_dir: {
+            "features": {"quality_gate": {"enabled": True, "block_on_failed_test": False}}
+        },
+    )
+    monkeypatch.setattr(
+        post_test_analysis,
         "load_package_config",
-        lambda *args: (
-            {"features": {"quality_gate": {"enabled": True, "block_on_failed_test": False}}}
-            if args[0] == "audit"
-            else {"codex": {"model": "gpt-test", "sandbox": {"analysis": "read-only"}}}
-        ),
+        lambda *_args: {"codex": {"model": "gpt-test", "sandbox": {"analysis": "read-only"}}},
     )
     secret_line = "FAILED test_example.py::test_case api_key=sk-1234567890abcdefghijklmno"
     _make_stdin(

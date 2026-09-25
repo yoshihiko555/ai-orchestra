@@ -370,7 +370,7 @@ def test_collect_tampering_findings_no_op_when_quality_gate_disabled(
     """quality_gate.enabled=false のときは検知・状態記録を含む全動作を行わない。"""
     monkeypatch.setattr(
         test_tampering_detector,
-        "load_package_config",
+        "load_quality_gates_config",
         lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
     )
 
@@ -402,11 +402,11 @@ def test_collect_tampering_findings_normalizes_subdirectory_before_config_lookup
     subdirectory.mkdir(parents=True)
     config_calls = []
 
-    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
-        config_calls.append((package_name, filename, project_dir))
+    def _load_config(project_dir: str) -> dict:
+        config_calls.append(project_dir)
         return {"features": {"quality_gate": {"enabled": False}}}
 
-    monkeypatch.setattr(test_tampering_detector, "load_package_config", _load_config)
+    monkeypatch.setattr(test_tampering_detector, "load_quality_gates_config", _load_config)
     payload = {
         "tool_name": "Write",
         "cwd": str(subdirectory),
@@ -416,7 +416,7 @@ def test_collect_tampering_findings_normalizes_subdirectory_before_config_lookup
     findings = test_tampering_detector.collect_tampering_findings(payload)
 
     assert findings == []
-    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert config_calls == [str(repo_root)]
     state_file = repo_root / ".claude" / "state" / test_tampering_detector.STATE_FILENAME
     assert not state_file.exists()
 

@@ -311,7 +311,7 @@ def test_main_no_op_when_quality_gate_disabled(
     monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
     monkeypatch.setattr(
         lint_on_save,
-        "load_package_config",
+        "load_quality_gates_config",
         lambda *_args: {"features": {"quality_gate": {"enabled": False}}},
     )
     called = {"ran": False}
@@ -333,7 +333,7 @@ def test_main_no_op_when_quality_gate_disabled(
 def test_main_normalizes_subdirectory_cwd_before_loading_config(monkeypatch) -> None:
     """Claude Code がリポジトリのサブディレクトリ（例: packages/foo）から
     起動された場合でも、project_dir を .claude/ を持つ最寄りの親へ正規化
-    してから audit-flags.json を読み込むことを確認する（Issue #134 レビュー
+    してから quality-gates.json を読み込むことを確認する（Issue #134 レビュー
     指摘: 従来は data.cwd がそのまま渡され、プロジェクト固有の設定・
     ローカル上書きが見つからなくなっていた）。"""
     payload = {
@@ -346,11 +346,11 @@ def test_main_normalizes_subdirectory_cwd_before_loading_config(monkeypatch) -> 
 
     captured: dict[str, str] = {}
 
-    def _fake_load_package_config(_package, _filename, project_dir):  # type: ignore[no-untyped-def]
+    def _fake_load_quality_gates_config(project_dir):  # type: ignore[no-untyped-def]
         captured["project_dir"] = project_dir
         return {"features": {"quality_gate": {"enabled": False}}}
 
-    monkeypatch.setattr(lint_on_save, "load_package_config", _fake_load_package_config)
+    monkeypatch.setattr(lint_on_save, "load_quality_gates_config", _fake_load_quality_gates_config)
 
     with pytest.raises(SystemExit) as exc_info:
         lint_on_save.main()
@@ -373,7 +373,7 @@ def test_main_masks_secrets_in_lint_output(monkeypatch, capsys: pytest.CaptureFi
     monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
     monkeypatch.setattr(
         lint_on_save,
-        "load_package_config",
+        "load_quality_gates_config",
         lambda *_args: {"features": {"quality_gate": {"enabled": True}}},
     )
     monkeypatch.setattr(
@@ -416,7 +416,7 @@ def test_main_fails_open_on_unexpected_exception(
     def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(lint_on_save, "load_package_config", _raise)
+    monkeypatch.setattr(lint_on_save, "load_quality_gates_config", _raise)
 
     with pytest.raises(SystemExit) as exc_info:
         lint_on_save.main()

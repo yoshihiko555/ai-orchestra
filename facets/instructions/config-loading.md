@@ -43,11 +43,12 @@ codex:
 
 ## 対象ファイル
 
-| ファイル                 | パッケージ    | 用途                                         |
-| ------------------------ | ------------- | -------------------------------------------- |
-| `cli-tools.yaml`         | agent-routing | CLI ツールのモデル名・サンドボックス・フラグ |
-| `delegation-policy.json` | audit         | キーワードベースのルーティング設定           |
-| `audit-flags.json`       | audit         | 機能フラグ（route_audit, quality_gate 等）   |
+| ファイル                 | パッケージ    | 用途                                                                                        |
+| ------------------------ | ------------- | ------------------------------------------------------------------------------------------- |
+| `cli-tools.yaml`         | agent-routing | CLI ツールのモデル名・サンドボックス・フラグ                                                |
+| `delegation-policy.json` | audit         | キーワードベースのルーティング設定                                                          |
+| `audit-flags.json`       | audit         | 機能フラグ（route_audit, kpi_scorecard 等）                                                 |
+| `quality-gates.json`     | quality-gates | 機能フラグ（quality_gate, context_optimization, evaluation_set_check 等）・状態ディレクトリ |
 
 ## 配置構造
 

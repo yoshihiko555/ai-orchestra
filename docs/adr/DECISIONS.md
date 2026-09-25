@@ -11,60 +11,61 @@ AI Orchestra プロジェクトの意思決定記録。
 
 ## 一覧
 
-| #                | タイトル                                                                                | ステータス | 日付       |
-| ---------------- | --------------------------------------------------------------------------------------- | ---------- | ---------- |
-| ADR-20260216-001 | docs ディレクトリのカテゴリ分類と ADR 導入                                              | accepted   | 2026-02-16 |
-| ADR-20260219-002 | startproject 実装フェーズの明示化と Codex 例外の厳格化                                  | accepted   | 2026-02-19 |
-| ADR-20260223-003 | Codex CLI 実装委譲のデッドロック解消と Implementation Method 強制                       | accepted   | 2026-02-23 |
-| ADR-20260223-004 | task-memory サマリー表示仕様の明確化と marker 設定の堅牢化                              | accepted   | 2026-02-23 |
-| ADR-20260223-005 | Codex/Gemini 運用記述の config-driven 統一                                              | accepted   | 2026-02-23 |
-| ADR-20260302-006 | cocoindex v2: mcp-proxy による MCP 共有化とポート自動導出                               | superseded | 2026-03-02 |
-| ADR-20260307-007 | cocoindex proxy モードのデフォルト設定維持（stdio）                                     | superseded | 2026-03-07 |
-| ADR-20260308-008 | サブエージェント model の config-driven 自動パッチ                                      | accepted   | 2026-03-08 |
-| ADR-20260313-009 | CLI 間コンテキスト共有のファイルベース設計                                              | accepted   | 2026-03-13 |
-| ADR-20260315-010 | Faceted Prompting によるスキル・ルールのファセット分解と自動生成                        | accepted   | 2026-03-15 |
-| ADR-20260322-011 | manifest-SSOT アーキテクチャ（facets 正本化・パッケージ skills 廃止）                   | accepted   | 2026-03-22 |
-| ADR-20260322-012 | facet build 完全委譲（rules 廃止・knowledge/scripts 層導入）                            | accepted   | 2026-03-22 |
-| ADR-20260409-013 | PR 作成スキル追加と issue-workflow パッケージの git-workflow への改名                   | accepted   | 2026-04-09 |
-| ADR-20260412-014 | quality-gates に独立したテスト改ざん検出 Hook を追加                                    | accepted   | 2026-04-12 |
-| ADR-20260414-015 | agent-routing の未分類リサーチ入力は researcher 基点で解決する                          | accepted   | 2026-04-14 |
-| ADR-20260419-016 | quality gate の判定は quality-gates が担い、audit は記録と集計に限定する                | accepted   | 2026-04-19 |
-| ADR-20260421-017 | cocoindex proxy 起動は proxy-only とし、state file と reconnect 通知で扱う              | superseded | 2026-04-21 |
-| ADR-20260423-018 | cocoindex proxy 停止は supervisor の idle shutdown で扱う                               | superseded | 2026-04-23 |
-| ADR-20260513-019 | スキル/ルールは必ずパッケージに登録する（孤立 composition の禁止）                      | accepted   | 2026-05-13 |
-| ADR-20260513-020 | stage → main リリースフローを squash merge + 並列 PR 方式に確定する                     | superseded | 2026-05-13 |
-| ADR-20260513-021 | stage → main リリースフローを直列方式に変更する（ADR-020 supersede）                    | superseded | 2026-05-13 |
-| ADR-20260520-022 | stage ブランチを廃止し、検証をインライン環境変数の一時上書きで行う（ADR-021 supersede） | accepted   | 2026-06-05 |
-| ADR-20260605-023 | Codex 組み込み image_gen による画像生成サブエージェントの追加                           | accepted   | 2026-06-05 |
-| ADR-20260612-024 | Gemini CLI を Anti-Gravity CLI（agy）に完全置き換える                                   | accepted   | 2026-06-12 |
-| ADR-20260612-025 | 失敗ログ記録基盤 fail-logs の新設と失敗検知ロジックの共通化                             | accepted   | 2026-06-12 |
-| ADR-20260624-026 | CODD 整合性レイヤーの新設（思想借用・独立パッケージ・essential 化）                     | accepted   | 2026-06-24 |
-| ADR-20260630-027 | fail-logs 活用フェーズ — SessionStart で再発失敗シグネチャを注入する                    | accepted   | 2026-06-30 |
-| ADR-20260701-028 | スキル自己改善ループの設計判断（二層構成・二軸評価・反映先の塩梅）                       | accepted   | 2026-07-01 |
-| ADR-20260703-029 | 評価セット（docs/evaluation/）の導入 — あるべき状態の自然言語定義でテストを判定する     | accepted   | 2026-07-03 |
-| ADR-20260705-030 | Codex Review Gate による PR required status check の導入                                | accepted   | 2026-07-05 |
-| ADR-20260706-031 | ループエンジニアリング基盤（loop-harness）の導入とコア共有型制御モデルの採用            | accepted   | 2026-07-06 |
-| ADR-20260706-032 | メタハーネス機構の導入（population ベースのハーネス最適化基盤）                        | accepted   | 2026-07-06 |
-| ADR-20260711-033 | meta-harness scenario runnerをSRTでOS隔離する                                          | superseded | 2026-07-11 |
-| ADR-20260711-034 | scenario資格情報を候補プロセスから分離できるまでfail-closedにする                     | superseded | 2026-07-11 |
-| ADR-20260712-035 | scenario 実行基盤を Docker コンテナ + ephemeral credential broker へ移行する           | accepted   | 2026-07-12 |
-| ADR-20260712-036 | Maker 選定を実装可能ロールへ限定し初回結果を state に固定する                          | accepted   | 2026-07-12 |
-| ADR-20260712-037 | PR レビュー指摘を action-scoped snapshot でプロセス境界を越えて受け渡す                | accepted   | 2026-07-12 |
-| ADR-20260714-038 | 固定 CLI の beta allowlist と最小 request envelope を broker で強制する                 | accepted   | 2026-07-14 |
-| ADR-20260715-039 | loop-harness LP-2（Maker/Checker）の実行基盤を Docker 完全隔離へ移行する               | accepted   | 2026-07-15 |
-| ADR-20260715-040 | 共有 facet の変更を cross-skill 回帰バッチで hard gate する                           | accepted   | 2026-07-15 |
-| ADR-20260716-041 | routing config patch を human 登録候補に限定して解放する                              | accepted   | 2026-07-16 |
-| ADR-20260717-042 | proposer へ routing config patch を段階解放する                                       | accepted   | 2026-07-17 |
-| ADR-20260718-043 | Docker action の cleanup 失敗と実行取消を安全停止として扱う                          | accepted   | 2026-07-18 |
-| ADR-20260720-044 | 予算 latch を frontier 回帰判定で評価不能として中立化する                            | accepted   | 2026-07-20 |
-| ADR-20260726-045 | 永続イメージライフサイクルの脅威モデル再評価と異常系 stale cleanup の追加            | proposed   | 2026-07-26 |
-| ADR-20260728-046 | 蓄積型ログの root worktree 解決と配置規約                                              | accepted   | 2026-07-28 |
-| ADR-20260802-047 | agent-routing e2e テストを実効 config 追従の 2 階層構成にする                          | accepted   | 2026-08-02 |
-| ADR-20260814-048 | 品質軸の飽和は own suite の行動ベースシナリオ + gate/graded critical 分離で解消する（支配ルールは変更しない） | accepted   | 2026-08-14 |
+| #                | タイトル                                                                                                                          | ステータス | 日付       |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------- | ---------- |
+| ADR-20260216-001 | docs ディレクトリのカテゴリ分類と ADR 導入                                                                                        | accepted   | 2026-02-16 |
+| ADR-20260219-002 | startproject 実装フェーズの明示化と Codex 例外の厳格化                                                                            | accepted   | 2026-02-19 |
+| ADR-20260223-003 | Codex CLI 実装委譲のデッドロック解消と Implementation Method 強制                                                                 | accepted   | 2026-02-23 |
+| ADR-20260223-004 | task-memory サマリー表示仕様の明確化と marker 設定の堅牢化                                                                        | accepted   | 2026-02-23 |
+| ADR-20260223-005 | Codex/Gemini 運用記述の config-driven 統一                                                                                        | accepted   | 2026-02-23 |
+| ADR-20260302-006 | cocoindex v2: mcp-proxy による MCP 共有化とポート自動導出                                                                         | superseded | 2026-03-02 |
+| ADR-20260307-007 | cocoindex proxy モードのデフォルト設定維持（stdio）                                                                               | superseded | 2026-03-07 |
+| ADR-20260308-008 | サブエージェント model の config-driven 自動パッチ                                                                                | accepted   | 2026-03-08 |
+| ADR-20260313-009 | CLI 間コンテキスト共有のファイルベース設計                                                                                        | accepted   | 2026-03-13 |
+| ADR-20260315-010 | Faceted Prompting によるスキル・ルールのファセット分解と自動生成                                                                  | accepted   | 2026-03-15 |
+| ADR-20260322-011 | manifest-SSOT アーキテクチャ（facets 正本化・パッケージ skills 廃止）                                                             | accepted   | 2026-03-22 |
+| ADR-20260322-012 | facet build 完全委譲（rules 廃止・knowledge/scripts 層導入）                                                                      | accepted   | 2026-03-22 |
+| ADR-20260409-013 | PR 作成スキル追加と issue-workflow パッケージの git-workflow への改名                                                             | accepted   | 2026-04-09 |
+| ADR-20260412-014 | quality-gates に独立したテスト改ざん検出 Hook を追加                                                                              | accepted   | 2026-04-12 |
+| ADR-20260414-015 | agent-routing の未分類リサーチ入力は researcher 基点で解決する                                                                    | accepted   | 2026-04-14 |
+| ADR-20260419-016 | quality gate の判定は quality-gates が担い、audit は記録と集計に限定する                                                          | accepted   | 2026-04-19 |
+| ADR-20260421-017 | cocoindex proxy 起動は proxy-only とし、state file と reconnect 通知で扱う                                                        | superseded | 2026-04-21 |
+| ADR-20260423-018 | cocoindex proxy 停止は supervisor の idle shutdown で扱う                                                                         | superseded | 2026-04-23 |
+| ADR-20260513-019 | スキル/ルールは必ずパッケージに登録する（孤立 composition の禁止）                                                                | accepted   | 2026-05-13 |
+| ADR-20260513-020 | stage → main リリースフローを squash merge + 並列 PR 方式に確定する                                                               | superseded | 2026-05-13 |
+| ADR-20260513-021 | stage → main リリースフローを直列方式に変更する（ADR-020 supersede）                                                              | superseded | 2026-05-13 |
+| ADR-20260520-022 | stage ブランチを廃止し、検証をインライン環境変数の一時上書きで行う（ADR-021 supersede）                                           | accepted   | 2026-06-05 |
+| ADR-20260605-023 | Codex 組み込み image_gen による画像生成サブエージェントの追加                                                                     | accepted   | 2026-06-05 |
+| ADR-20260612-024 | Gemini CLI を Anti-Gravity CLI（agy）に完全置き換える                                                                             | accepted   | 2026-06-12 |
+| ADR-20260612-025 | 失敗ログ記録基盤 fail-logs の新設と失敗検知ロジックの共通化                                                                       | accepted   | 2026-06-12 |
+| ADR-20260624-026 | CODD 整合性レイヤーの新設（思想借用・独立パッケージ・essential 化）                                                               | accepted   | 2026-06-24 |
+| ADR-20260630-027 | fail-logs 活用フェーズ — SessionStart で再発失敗シグネチャを注入する                                                              | accepted   | 2026-06-30 |
+| ADR-20260701-028 | スキル自己改善ループの設計判断（二層構成・二軸評価・反映先の塩梅）                                                                | accepted   | 2026-07-01 |
+| ADR-20260703-029 | 評価セット（docs/evaluation/）の導入 — あるべき状態の自然言語定義でテストを判定する                                               | accepted   | 2026-07-03 |
+| ADR-20260705-030 | Codex Review Gate による PR required status check の導入                                                                          | accepted   | 2026-07-05 |
+| ADR-20260706-031 | ループエンジニアリング基盤（loop-harness）の導入とコア共有型制御モデルの採用                                                      | accepted   | 2026-07-06 |
+| ADR-20260706-032 | メタハーネス機構の導入（population ベースのハーネス最適化基盤）                                                                   | accepted   | 2026-07-06 |
+| ADR-20260711-033 | meta-harness scenario runnerをSRTでOS隔離する                                                                                     | superseded | 2026-07-11 |
+| ADR-20260711-034 | scenario資格情報を候補プロセスから分離できるまでfail-closedにする                                                                 | superseded | 2026-07-11 |
+| ADR-20260712-035 | scenario 実行基盤を Docker コンテナ + ephemeral credential broker へ移行する                                                      | accepted   | 2026-07-12 |
+| ADR-20260712-036 | Maker 選定を実装可能ロールへ限定し初回結果を state に固定する                                                                     | accepted   | 2026-07-12 |
+| ADR-20260712-037 | PR レビュー指摘を action-scoped snapshot でプロセス境界を越えて受け渡す                                                           | accepted   | 2026-07-12 |
+| ADR-20260714-038 | 固定 CLI の beta allowlist と最小 request envelope を broker で強制する                                                           | accepted   | 2026-07-14 |
+| ADR-20260715-039 | loop-harness LP-2（Maker/Checker）の実行基盤を Docker 完全隔離へ移行する                                                          | accepted   | 2026-07-15 |
+| ADR-20260715-040 | 共有 facet の変更を cross-skill 回帰バッチで hard gate する                                                                       | accepted   | 2026-07-15 |
+| ADR-20260716-041 | routing config patch を human 登録候補に限定して解放する                                                                          | accepted   | 2026-07-16 |
+| ADR-20260717-042 | proposer へ routing config patch を段階解放する                                                                                   | accepted   | 2026-07-17 |
+| ADR-20260718-043 | Docker action の cleanup 失敗と実行取消を安全停止として扱う                                                                       | accepted   | 2026-07-18 |
+| ADR-20260720-044 | 予算 latch を frontier 回帰判定で評価不能として中立化する                                                                         | accepted   | 2026-07-20 |
+| ADR-20260726-045 | 永続イメージライフサイクルの脅威モデル再評価と異常系 stale cleanup の追加                                                         | proposed   | 2026-07-26 |
+| ADR-20260728-046 | 蓄積型ログの root worktree 解決と配置規約                                                                                         | accepted   | 2026-07-28 |
+| ADR-20260802-047 | agent-routing e2e テストを実効 config 追従の 2 階層構成にする                                                                     | accepted   | 2026-08-02 |
+| ADR-20260814-048 | 品質軸の飽和は own suite の行動ベースシナリオ + gate/graded critical 分離で解消する（支配ルールは変更しない）                     | accepted   | 2026-08-14 |
 | ADR-20260814-049 | routing-config は検証専用 target と位置づけ、適応度関数の分解能は skill target の loop 運転で実証する（ADR-048 の部分 supersede） | accepted   | 2026-08-14 |
-| ADR-20260814-050 | skill target の品質分解能を gate/graded 分離（独立 graded リスト + penalty 非採点）で実現する | accepted   | 2026-08-14 |
+| ADR-20260814-050 | skill target の品質分解能を gate/graded 分離（独立 graded リスト + penalty 非採点）で実現する                                     | accepted   | 2026-08-14 |
 | ADR-20260817-051 | frontier コスト軸をキャッシュ中立コスト（cache_neutral_cost_usd）へ切替え、5 分 TTL ephemeral cache の偽 dominance 勾配を除去する | accepted   | 2026-08-17 |
-| ADR-20260817-052 | claude-harness suite を測定軸ベースで拡充し、ハーネス全体の自己改善を実測可能にする    | accepted   | 2026-08-17 |
-| ADR-20260906-053 | LP-2 Docker Checker の実行環境と観測性を実運用値に合わせる                              | accepted   | 2026-09-06 |
-| ADR-20260924-054 | cocoindex パッケージの配布を終了し、実測で効果が確認できない意味検索は導入しない       | accepted   | 2026-09-24 |
+| ADR-20260817-052 | claude-harness suite を測定軸ベースで拡充し、ハーネス全体の自己改善を実測可能にする                                               | accepted   | 2026-08-17 |
+| ADR-20260906-053 | LP-2 Docker Checker の実行環境と観測性を実運用値に合わせる                                                                        | accepted   | 2026-09-06 |
+| ADR-20260924-054 | cocoindex パッケージの配布を終了し、実測で効果が確認できない意味検索は導入しない                                                  | accepted   | 2026-09-24 |
+| ADR-20260926-055 | 機能フラグは所有パッケージの config に置き、quality-gates のフラグを audit-flags.json から分離する（ADR-016 の部分 supersede）    | accepted   | 2026-09-26 |
 | ADR-20260926-056 | 開発プロセスを「対話 → 発注書 → 4 実行エンジン」に組み直し、Plans.md を発注書として拡張する | accepted   | 2026-09-26 |
