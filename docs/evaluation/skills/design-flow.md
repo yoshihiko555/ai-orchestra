@@ -59,7 +59,7 @@ EV-14〜EV-17 は `/preflight` の廃止に伴い廃止。設計成果物の取�
 
 ### /startproject: 設計書の参照と突合（廃止: ADR-20260926-056）
 
-EV-18〜EV-21 は `/startproject` の廃止に伴い廃止。発注書に設計書パスを含める観点（旧 EV-19）は `order.md` へ、spec-reviewer による突合（旧 EV-20）は `review.md`（`/review spec`）へ移す。番号は再利用しない。
+EV-18〜EV-21 は `/startproject` の廃止に伴い廃止。発注書に設計書パスを含める観点（旧 EV-19）は `order.md` へ、spec-reviewer による突合（旧 EV-20）は `review.md` の EV-24 へ移管済み。番号は再利用しない。
 
 - [x] ~~EV-18（正常 / must）: Phase 2 で既存設計書を読み込み、設計書に記載済みの項目は再質問せず差分に絞って質問する — 根拠: facets/instructions/startproject.md / 検証: 実行観察~~
 - [x] ~~EV-19（正常 / must）: Phase 6 の実装委譲プロンプトに対応する設計書パス（API-001.md 等）を含め、実装エージェントに実装前の読み込みを指示する — 根拠: facets/instructions/startproject.md / 検証: PR レビュー~~
