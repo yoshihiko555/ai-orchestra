@@ -19,7 +19,13 @@ if _orchestra_dir:
     if _core_hooks not in sys.path:
         sys.path.insert(0, _core_hooks)
 
-from hook_common import get_field, read_hook_input, safe_hook_execution, write_json  # noqa: E402
+from hook_common import (  # noqa: E402
+    get_field,
+    is_async_launch,
+    read_hook_input,
+    safe_hook_execution,
+    write_json,
+)
 
 # plan gate を設定するエージェント（subagent_type の完全一致のみ）
 PLAN_AGENTS: set[str] = {"plan", "planner"}
@@ -57,6 +63,13 @@ def main() -> None:
     tool_response = data.get("tool_response")
     if tool_response is None or tool_response == "":
         sys.exit(0)
+
+    # バックグラウンド起動時の起動メタデータ（async 起動）では計画がまだ
+    # 存在しないため、gate を立てない（error/exit_code を持たず両ガードを
+    # 素通りしてしまうため独立して判定する）
+    if is_async_launch(tool_response):
+        sys.exit(0)
+
     if isinstance(tool_response, dict):
         if tool_response.get("error"):
             sys.exit(0)

@@ -20,6 +20,28 @@ def test_is_plan_agent_task_false_for_missing_fields() -> None:
     assert not check_codex_after_plan.is_plan_agent_task({"subagent_type": "code-reviewer"})
 
 
+def test_is_plan_agent_task_false_for_plan_substring_in_prompt() -> None:
+    assert not check_codex_after_plan.is_plan_agent_task(
+        {"subagent_type": "general-purpose", "prompt": "Plans.md を更新して"}
+    )
+    assert not check_codex_after_plan.is_plan_agent_task(
+        {
+            "subagent_type": "general-purpose",
+            "prompt": "give an explanation of airplane routes",
+        }
+    )
+    assert not check_codex_after_plan.is_plan_agent_task(
+        {"subagent_type": "backend-python-dev", "prompt": "計画: 認証機能"}
+    )
+
+
+def test_is_plan_agent_task_true_for_subagent_type_only() -> None:
+    assert check_codex_after_plan.is_plan_agent_task({"subagent_type": "Plan", "prompt": ""})
+    assert check_codex_after_plan.is_plan_agent_task(
+        {"subagent_type": "planner", "prompt": "何でも"}
+    )
+
+
 # --- main (stdout/exit-code integration) ---
 
 
@@ -59,6 +81,22 @@ def test_main_outputs_suggestion_for_plan_task(monkeypatch) -> None:
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "[Codex Review Suggestion]" in context
     assert "Architecture alignment" in context
+
+
+def test_main_skips_async_launch_response(monkeypatch) -> None:
+    monkeypatch.setattr(check_codex_after_plan, "has_project_config", lambda *_: True)
+    data = {
+        "tool_name": "Task",
+        "tool_input": {"subagent_type": "planner", "prompt": "計画: 認証機能"},
+        "tool_response": {
+            "isAsync": True,
+            "status": "async_launched",
+            "agentId": "abc123",
+        },
+    }
+    stdout, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+    assert stdout == ""
 
 
 def test_main_skips_non_task_tool() -> None:
@@ -188,6 +226,25 @@ def test_main_outputs_suggestion_when_codex_explicitly_enabled(monkeypatch) -> N
     assert "[Codex Review Suggestion]" in output["hookSpecificOutput"]["additionalContext"]
 
 
+def test_main_skips_plan_substring_prompt(monkeypatch) -> None:
+    monkeypatch.setattr(check_codex_after_plan, "has_project_config", lambda *_: True)
+    monkeypatch.setattr(
+        check_codex_after_plan, "load_package_config", lambda *_: {"codex": {"enabled": True}}
+    )
+    data = {
+        "tool_name": "Task",
+        "tool_input": {
+            "subagent_type": "general-purpose",
+            "prompt": "Plans.md を更新して",
+        },
+        "tool_response": {"result": "Done"},
+        "cwd": "/project",
+    }
+    stdout, exit_code = _run_main_with_stdin(data)
+    assert exit_code == 0
+    assert stdout == ""
+
+
 # --- EV-15: package fallback config を project opt-in 扱いしない
 # (Issue #129 PR #247 レビュー指摘の回帰テスト) ---
 
@@ -249,7 +306,7 @@ def test_is_plan_agent_task_is_fast_for_many_calls() -> None:
     start = time.monotonic()
     for _ in range(2000):
         check_codex_after_plan.is_plan_agent_task(
-            {"subagent_type": "general-purpose", "prompt": "計画: 認証機能"}
+            {"subagent_type": "planner", "prompt": "計画: 認証機能"}
         )
     elapsed = time.monotonic() - start
     assert elapsed < 1.0

@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`agent-routing`: `cli-tools.yaml` の debugger の sandbox 既定値を `read-only` に変更**: `agents.debugger.sandbox` が `workspace-write` のまま残っていたのを、Edit を持たない分析役に合わせて `read-only` にした。`.local.yaml` で debugger の tool を `codex` に切り替えている場合の sandbox 指定が変わる。tool の既定値（`claude-direct`）は変わらない。
 
+### Fixed
+
+- **hooks の誤注入・誤提案を修正**: バックグラウンド起動したサブエージェントの起動情報が後続サブエージェントに注入される、プロジェクト外のファイルが変更ファイルとして記録される、バックグラウンドタスクの完了通知に `[Agent Routing]` が出る、`Plans.md` を含むだけのプロンプトで `[Codex Review Suggestion]` が出るに加え、planner のバックグラウンド起動で plan gate が立つ・完了通知で plan gate が解除される、の計 6 件（#452）
+
 ## [0.3.4] - 2026-09-25
 
 ### Added

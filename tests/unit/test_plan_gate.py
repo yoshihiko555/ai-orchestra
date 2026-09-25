@@ -254,6 +254,25 @@ class TestSetPlanGateMain:
         with pytest.raises(SystemExit, match="0"):
             set_gate.main()
 
+    def test_async_launch_response_exits_0(self, monkeypatch, tmp_path):
+        """バックグラウンド起動時の起動メタデータ（async 起動）では gate を設定しない。"""
+        _make_stdin(
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "planner"},
+                "tool_response": {
+                    "isAsync": True,
+                    "status": "async_launched",
+                    "agentId": "abc123",
+                },
+                "cwd": str(tmp_path),
+            },
+            monkeypatch,
+        )
+        with pytest.raises(SystemExit, match="0"):
+            set_gate.main()
+        assert not (tmp_path / ".claude" / "state" / "plan-gate.json").exists()
+
     def test_successful_plan_sets_gate(self, monkeypatch, tmp_path, capsys):
         """正常な plan 完了後に gate ファイルを作成する。"""
         _make_stdin(
@@ -321,6 +340,31 @@ class TestClearPlanGateMain:
             clear_gate.main()
 
         assert not gate_path.exists()
+
+    def test_task_notification_prompt_keeps_gate(self, monkeypatch, tmp_path):
+        """バックグラウンドタスクの完了通知はユーザーの確認ではないため gate を解除しない。"""
+        state_dir = tmp_path / ".claude" / "state"
+        state_dir.mkdir(parents=True)
+        gate_path = state_dir / "plan-gate.json"
+        gate_path.write_text(json.dumps({"pending": True, "agent": "planner"}), encoding="utf-8")
+
+        _make_stdin(
+            {
+                "cwd": str(tmp_path),
+                "prompt": (
+                    "<task-notification>\n"
+                    "<task-id>x</task-id>\n"
+                    "<status>completed</status>\n"
+                    "<summary>調査が完了しました</summary>\n"
+                    "</task-notification>"
+                ),
+            },
+            monkeypatch,
+        )
+        with pytest.raises(SystemExit, match="0"):
+            clear_gate.main()
+
+        assert gate_path.exists()
 
     def test_no_cwd_exits_0(self, monkeypatch):
         """cwd がない場合、exit(0)。"""

@@ -48,6 +48,7 @@
 - 各エントリーの summary は 200 文字にトランケート
 - modified_files は最新 20 件まで表示
 - `.claude/` 配下のファイル変更は working-context に記録しない
+- プロジェクト外（別リポジトリ・scratchpad 等）のファイル変更は working-context に記録しない
 
 ## セッション間記憶
 

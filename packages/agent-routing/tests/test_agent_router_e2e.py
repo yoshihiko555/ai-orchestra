@@ -102,6 +102,17 @@ def _write_cli_tools_yaml(project_dir: Path, base: dict, *, local: dict | None =
 # ---------------------------------------------------------------------------
 
 
+class TestFixtureTaskNotification:
+    def test_task_notification_prompt_produces_no_output(self, tmp_path: Path) -> None:
+        _write_cli_tools_yaml(tmp_path, {"agents": {"planner": {"tool": "codex"}}})
+        prompt = """<task-notification>
+<task-id>x</task-id>
+<status>completed</status>
+<summary>調査が完了しました。次の steps を plan してください</summary>
+</task-notification>"""
+        assert _run_hook(prompt, cwd=str(tmp_path)) == {}
+
+
 class TestFixtureCliSuggestionByTool:
     """fixture config の tool 値ごとに CLI 提案マーカーが正しく出ることを検証する。
 

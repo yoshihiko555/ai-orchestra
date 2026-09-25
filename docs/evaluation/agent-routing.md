@@ -3,7 +3,7 @@
 **パッケージ**: `packages/agent-routing`
 **類型**: 主: hook 型、副: 設定・エージェント定義の配布（README.md の 3 類型のうちどれにも完全一致しないため、共通チェックリストの「配布ライフサイクル」「後方互換性」で代替評価する。詳細は 4 節参照）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-04（Issue #124 対応: 検証方法（manual/policy review）の明示、EV-11/EV-22/EV-26 の検証状態更新、4節 N/A 理由の具体化を実施。観点数・優先度は変更なし）
+**最終レビュー日**: 2026-09-25（Issue #452: EV-27 を新設。`agent-router.py` がバックグラウンドタスク完了通知（`<task-notification>`）に `[Agent Routing]` を提案しないことを追加。前回レビュー 2026-07-04: Issue #124 対応: 検証方法（manual/policy review）の明示、EV-11/EV-22/EV-26 の検証状態更新、4節 N/A 理由の具体化を実施。観点数・優先度は変更なし）
 **情報源**: docs/reference/packages.md（agent-routing セクション）, .claude/rules/agent-routing-policy.md, .claude/rules/codex-delegation.md, .claude/rules/antigravity-delegation.md, .claude/rules/config-loading.md
 **補助参照（構成要素の列挙のみ）**: packages/agent-routing/manifest.json, packages/agent-routing/{hooks,agents,config}/ 配下のファイル名一覧
 
@@ -52,6 +52,7 @@
 - [x] EV-20（境界 / should）: 旧 `gemini.model` の値は引き継がれず無視され、`antigravity.model` を明示的に設定する必要がある — 根拠: .claude/rules/antigravity-delegation.md「旧 gemini 設定からの移行」表 — 自動テスト: `normalize_cli_tools_config()` が旧 `gemini.model` / `flags` を antigravity へ引き継がないことを検証する `test_legacy_gemini_model_flags_not_carried_over`（`TestNormalizeCliToolsConfig`、`packages/core/tests/test_hook_common.py`、Issue #347）
 - [ ] EV-21（境界 / should）: 「明らかに 1 行で完結する CLI 呼び出し」または「ユーザーが明示的に直接実行を指示した場合」に限り、hook の提案を経ずオーケストレーターが直接実行してよい（例外規定） — 根拠: .claude/rules/agent-routing-policy.md 例外 — 検証方法: manual/policy review（直接実行の例外規定はオーケストレーター裁量）
 - [ ] EV-22（境界 / should）: Codex の実行は分析用途（`sandbox.analysis` = read-only）と実装用途（`sandbox.implementation` = workspace-write）で sandbox モードを使い分ける — 根拠: .claude/rules/codex-delegation.md Sandbox モード表 — **自動テスト範囲の限定**: hook（`agent-router.py`）は提案文に `sandbox.analysis` のみを表示し、`sandbox.implementation` との使い分け自体はオーケストレーター運用（.claude/rules/codex-delegation.md）でのみ定義される。自動テストで検証できるのは「hook が analysis のみ表示すること」に限られ、分析/実装の使い分けの実行判断自体は検証方法: manual/policy review
+- [ ] EV-27（境界 / must）: `agent-router.py` は `<task-notification>` で始まる UserPromptSubmit（バックグラウンドタスク完了通知。ユーザー入力ではない）に対して `[Agent Routing]` 提案を出力しない（判定は `hook_common.is_task_notification` に集約） — 根拠: agent-routing-policy.md（提案はユーザーの依頼に対するもの）, Issue #452 — 自動テスト: `packages/agent-routing/tests/test_agent_router.py -k notification` および `test_agent_router_e2e.py`
 
 ## 4. 類型別観点
 
