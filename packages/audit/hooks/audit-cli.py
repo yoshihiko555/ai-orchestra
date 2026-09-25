@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import re
+import stat
 import sys
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
@@ -65,6 +66,29 @@ CODEX_PROMPT_FILE_ARG_RE = re.compile(
     r'codex\s+exec\b.*?"\$\(cat\s+"\$\{?(\w+)\}?"\)"',
     re.DOTALL | re.IGNORECASE,
 )
+
+# codex exec 呼び出しが PROMPT_FILE をリテラル絶対パスで渡す形式
+# （`"$(cat '<絶対パス>')"` / `"$(cat "<絶対パス>")"`）。書き出し（heredoc）と
+# `codex exec` が別々の Bash 呼び出しになるケース（`.claude/rules/codex-delegation.md`
+# の「prompt の shell-safe 渡し」参照）では、同一コマンド文字列内に heredoc 本文が
+# 存在しないため、`CODEX_PROMPT_FILE_ARG_RE`（`"$VAR"` 形式）では抽出できない。
+# シングルクォート形式はエスケープ不要（パス自体にシングルクォートは含まれない
+# 前提）。ダブルクォート形式は `$` / バッククォートを含むパスを除外する
+# （それらはシェル展開・コマンド置換の対象であり、リテラルパスとは区別できない
+# ため、変数形式 `CODEX_PROMPT_FILE_ARG_RE` 側に処理を譲る）。
+CODEX_PROMPT_FILE_PATH_ARG_RE = re.compile(
+    r"codex\s+exec\b.*?\"\$\(cat\s+(?:'([^'\n]+)'|\"([^\"$`\n]+)\")\)\"",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# `_read_codex_prompt_file` が読み込みを許可するファイル名の prefix。
+# `mktemp "${TMPDIR:-/tmp}/codex-prompt.XXXXXX"` の命名規約に従う一時ファイルに限定し、
+# hook がコマンド文字列中の任意パスを読んで監査ログへ書き写すことを防ぐ。
+CODEX_PROMPT_FILE_BASENAME_PREFIX = "codex-prompt."
+
+# `_read_codex_prompt_file` が読み込みを許可するファイルサイズの上限（1 MiB）。
+# 暴走・巨大ファイルの読み込みによるメモリ膨張・ログ肥大化を防ぐ。
+CODEX_PROMPT_FILE_MAX_BYTES = 1024 * 1024
 
 # テレメトリ用の prompt 上限文字数（暴走・巨大 heredoc 本文からの防御。KPI/調査用途では
 # 全文である必要はなく、上限超過分は切り詰める）
@@ -495,21 +519,76 @@ def _extract_heredoc_content(command: str, var_name: str) -> str | None:
     return None
 
 
+def _read_codex_prompt_file(path: str) -> str | None:
+    """PROMPT_FILE のリテラル絶対パスから prompt 本文を安全に読み込む。
+
+    書き出し（heredoc）と `codex exec` が別々の Bash 呼び出しになる形式
+    （`"$(cat '<絶対パス>')"`）では、prompt 抽出をコマンド文字列の静的解析だけで
+    完結できない（heredoc 本文が別の Bash 呼び出しにあり、同一 command 文字列内に
+    存在しないため）。そのため実ファイルを読むが、hook がコマンド中の任意パスを
+    読んで監査ログへ書き写すリスクを避けるため、以下を **すべて** 満たす場合に
+    限って読み込む。いずれか一つでも満たさない、または I/O エラーが起きた場合は
+    安全側へ倒し `None` を返す（呼び出し側はレガシーの引用符ベース抽出へは
+    フォールバックしない。`$(cat ...)` という文字列そのものを prompt として
+    記録してしまう不具合の再発を避けるため）。
+
+    - 絶対パスであること
+    - basename が `CODEX_PROMPT_FILE_BASENAME_PREFIX`（`codex-prompt.`）で
+      始まること（`mktemp "${TMPDIR:-/tmp}/codex-prompt.XXXXXX"` の命名規約に
+      従う一時ファイルのみを許可する）
+    - `os.lstat` で通常ファイルと判定できること（symlink 経由で任意ファイルを
+      指すのを防ぐため、symlink の場合は対象にしない）
+    - サイズが `CODEX_PROMPT_FILE_MAX_BYTES` 以下であること
+
+    Args:
+        path: `$(cat '...')` / `$(cat "...")` から取り出したリテラルパス。
+
+    Returns:
+        ファイル内容（utf-8、デコード不能なバイト列は `errors="replace"` で置換）。
+        条件を満たさない、または読み込みに失敗した場合は None。
+    """
+    if not os.path.isabs(path):
+        return None
+    if not os.path.basename(path).startswith(CODEX_PROMPT_FILE_BASENAME_PREFIX):
+        return None
+    try:
+        file_stat = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(file_stat.st_mode):
+        return None
+    if file_stat.st_size > CODEX_PROMPT_FILE_MAX_BYTES:
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as prompt_file:
+            content = prompt_file.read()
+    except OSError:
+        return None
+    return content or None
+
+
 def extract_codex_prompt(command: str) -> str | None:
     """codex exec コマンドからプロンプトを抽出する。
 
-    直接埋め込み形式（`codex exec ... "prompt"`）と、PROMPT_FILE 形式
-    （`PROMPT_FILE=$(mktemp); cat > "$PROMPT_FILE" <<'X' ... X; codex exec ... "$(cat "$PROMPT_FILE")"`）
-    の両方に対応する。
+    直接埋め込み形式（`codex exec ... "prompt"`）、PROMPT_FILE 形式（同一 Bash
+    呼び出し内で heredoc 書き込みと `codex exec` を行う
+    `PROMPT_FILE=$(mktemp); cat > "$PROMPT_FILE" <<'X' ... X; codex exec ... "$(cat "$PROMPT_FILE")"`）、
+    および PROMPT_FILE をリテラル絶対パスで渡す形式（書き出しと `codex exec` が
+    別々の Bash 呼び出しになる `codex exec ... "$(cat '<絶対パス>')"`）の
+    いずれにも対応する。
 
     検出済み `codex exec` 呼び出しのコマンド区間（`_exec_command_segment`）に
     限定して抽出を行う。区間を限定しない場合、同一 Bash 呼び出し内に後続の
     無関係なコマンド・quoted な値（例: 別の `"$(cat "$VAR")"`）があると、
     そちらを誤って実際のプロンプトとして抽出してしまう。
 
-    PROMPT_FILE 形式の変数名特定はコマンド区間に対して行うが、heredoc 本文
-    自体の抽出（`_extract_heredoc_content`）は元の command 全体に対して行う
-    （heredoc は codex exec 呼び出しより前の行にあるため）。
+    PROMPT_FILE 形式（`"$VAR"`）の変数名特定はコマンド区間に対して行うが、
+    heredoc 本文自体の抽出（`_extract_heredoc_content`）は元の command 全体に
+    対して行う（heredoc は codex exec 呼び出しより前の行にあるため）。
+
+    リテラル絶対パス形式（`"$(cat '<絶対パス>')"`）は、heredoc が別の Bash
+    呼び出しに存在し command 文字列内から本文を復元できないため、
+    `_read_codex_prompt_file` で実ファイルを読み込む。
 
     Args:
         command: Bash コマンド文字列。
@@ -525,11 +604,19 @@ def extract_codex_prompt(command: str) -> str | None:
 
     prompt_file_match = CODEX_PROMPT_FILE_ARG_RE.search(segment)
     if prompt_file_match:
-        # PROMPT_FILE 形式と判定した場合、legacy の引用符ベース抽出には委ねない。
-        # `"$(cat "$VAR")"` は入れ子の引用符を含むため、legacy パターンに通すと
-        # `$(cat` や `)` のような無意味な断片を誤抽出してしまう
+        # PROMPT_FILE 形式（`"$VAR"`）と判定した場合、legacy の引用符ベース抽出には
+        # 委ねない。`"$(cat "$VAR")"` は入れ子の引用符を含むため、legacy パターンに
+        # 通すと `$(cat` や `)` のような無意味な断片を誤抽出してしまう
         # （このメソッドが解決しようとしている元の不具合そのもの）。
         return _extract_heredoc_content(command, prompt_file_match.group(1))
+
+    path_match = CODEX_PROMPT_FILE_PATH_ARG_RE.search(segment)
+    if path_match:
+        # リテラル絶対パス形式と判定した場合も、legacy の引用符ベース抽出には
+        # 委ねない。読めなければ None を返し、`$(cat '...')` の文字列そのものを
+        # prompt として記録しない。
+        literal_path = path_match.group(1) or path_match.group(2) or ""
+        return _read_codex_prompt_file(literal_path)
 
     patterns = [
         r'codex\s+exec\s+.*?--full-auto\s+"([^"]+)"',

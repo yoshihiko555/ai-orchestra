@@ -59,8 +59,12 @@
 >    `&&` / `;` / `|` 等で連結しない（インジェクション発生時の被害拡大を防ぐため）
 > 4. **prompt の shell-safe 渡し**: Issue 本文・README・ログ等の信頼できない文字列を prompt に
 >    含める場合は、シェル文字列へ直接埋め込まず一時ファイルへ書き出して
->    `"$(cat "$PROMPT_FILE")"` として渡す（`$(...)` やバッククォートがホスト側シェルで
->    評価されるのを防ぐ。コマンド置換の結果は再評価されない）
+>    `"$(cat '<書き出したファイルの絶対パス>')"` として渡す（`$(...)` やバッククォートがホスト側
+>    シェルで評価されるのを防ぐ。コマンド置換の結果は再評価されない）。書き出しは sandbox を
+>    外さない**別の Bash 呼び出し**で行い（条件 3 のため `codex exec` と同じ呼び出しに入れない）、
+>    `mktemp` には `"${TMPDIR:-/tmp}/codex-prompt.XXXXXX"` のようにテンプレートを渡す（引数なしの
+>    `mktemp` は sandbox 内で失敗する）。シェル変数は呼び出しをまたいで残らないため、表示した
+>    絶対パスを `codex exec` の呼び出しに文字列で書く。
 >
 > 条件を満たして sandbox を無効化した場合も、`--sandbox read-only` / `workspace-write` による
 > codex 側の保護は維持される。
@@ -69,35 +73,51 @@
 
 ```
 Task(subagent_type="general-purpose", prompt="""
-Resolve target agent/tool from cli-tools.yaml first.
+Resolve target agent/tool from cli-tools.yaml first. If the prompt already contains a
+`[Resolved Routing]` block, follow it instead (do not re-read the config files).
 
 If route resolves to codex, write the question to a temp file first and pass it
 via command substitution (never interpolate untrusted text into the shell string):
 
-PROMPT_FILE=$(mktemp)
+1) Bash (keep the sandbox on):
+PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/codex-prompt.XXXXXX")
 cat > "$PROMPT_FILE" <<'PROMPT'
 {question}
 PROMPT
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
+echo "$PROMPT_FILE"
+
+2) Bash (disable the sandbox only when the codex-delegation conditions allow it; run `codex exec`
+   alone; write the printed path literally because shell variables do not survive
+   between Bash calls):
+codex exec --model <codex.model> --sandbox <codex.sandbox> <codex.flags> "$(cat '<printed path>')" < /dev/null 2>/dev/null
 
 Return concise summary (recommendation + rationale).
 """)
 ```
 
+`<codex.sandbox>` は `[Resolved Routing]` の `codex.sandbox`。エージェントに sandbox の固定値がない場合、
+ブロックには `codex.sandbox` の代わりに `codex.sandbox.analysis` / `codex.sandbox.implementation` が
+出るので、用途に合う方（相談・分析なら analysis、実装なら implementation）を使う。ブロック自体が
+ない場合だけ、config から `agents.<name>.sandbox` → `codex.sandbox.analysis` の順で解決する。
+
 ### 直接呼び出し（短い質問）
 
 ```bash
-# prompt は一時ファイルへ書き出してから渡す（シェル文字列への直接埋め込み禁止）
-PROMPT_FILE=$(mktemp)
+# 1 回目（sandbox 内のまま）: 書き出して絶対パスを表示
+PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/codex-prompt.XXXXXX")
 cat > "$PROMPT_FILE" <<'PROMPT'
 {question または task}
 PROMPT
+echo "$PROMPT_FILE"
+```
 
+```bash
+# 2 回目（`codex exec` 単体。表示されたパスを文字列で書く）
 # analysis
-codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags> "$(cat '<表示されたパス>')" < /dev/null 2>/dev/null
 
 # implementation
-codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "$(cat "$PROMPT_FILE")" < /dev/null 2>/dev/null
+codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex.flags> "$(cat '<表示されたパス>')" < /dev/null 2>/dev/null
 ```
 
 ## Non-Interactive 実行（MUST）
