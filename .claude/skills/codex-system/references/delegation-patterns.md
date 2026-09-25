@@ -91,7 +91,9 @@ codex exec \
    Output format: Label each finding Critical / High / Medium / Low." < /dev/null 2>/dev/null
 ```
 
-## 委譲しないケース
+## 委譲しないケース（`tool: auto` のときの目安）
+
+`cli-tools.yaml` で `tool: codex` などのルートが明示されている場合は、下表よりそのルートを優先する。
 
 | ケース                   | 理由                    |
 | ------------------------ | ----------------------- |
