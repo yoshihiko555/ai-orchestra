@@ -101,8 +101,11 @@ IMPORTANT: Do not ask any clarifying questions.
 ## 呼び出し方法
 
 > **Bash サンドボックスの制約**
-> Antigravity CLI は認証 + macOS システム API を使用するため、sandbox 内では動作しない場合がある。
-> ただし `sandbox.excludedCommands` に `agy` が設定済みなら sandbox 内でも実行可能。
+> `agy` は sandbox 内で実行する（`sandbox.excludedCommands` に `agy` を入れても、現行の Claude Code では
+> sandbox の外に出ない）。認証と推論の通信先（`daily-cloudcode-pa.googleapis.com` / `www.googleapis.com` /
+> `antigravity-unleash.goog` / `lh3.googleusercontent.com`）が sandbox のネットワーク許可に無いと、
+> `Eligibility check failed: ... Forbidden` で exit 1 になる。その場合は通信先を許可して再実行するか、
+> claude-direct にフォールバックする。
 
 ### サブエージェント経由（推奨）
 
