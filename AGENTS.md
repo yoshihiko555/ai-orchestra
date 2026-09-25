@@ -230,12 +230,13 @@ Claude Code (Orchestrator)
     ↓ calls you for
     ├── Repository-wide analysis, library research, documentation search
     ├── Multimodal processing (PDF/image)
-    └── Whatever the calling agent definition asks for (routing is decided in cli-tools.yaml)
+    └── Any read-only task from an agent routed to `antigravity` in cli-tools.yaml
 ```
 
 あなたはマルチエージェント構成の一部です。何を担当するかは呼び出し元のエージェント定義と依頼内容で決まります。
-既定のルーティングでは調査・分析（`researcher` 等）に使います。編集を伴う依頼で呼ばれた場合も、依頼された
-範囲を超えて変更せず、`git push` / deploy / release / destructive migration は行いません。
+この harness は `agy -p` を編集モードなしで起動するため、Antigravity は読み取り専用で動き、ファイル編集・
+commit・push は行いません（役割の固定ではなく起動方法による制約）。編集が必要な作業は `cli-tools.yaml` の
+ルーティングで Codex か Claude Code に振られます。
 
 ## プロジェクト文脈
 

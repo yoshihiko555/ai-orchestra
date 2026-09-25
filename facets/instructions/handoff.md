@@ -26,6 +26,7 @@ python3 .claude/skills/handoff/scripts/handoff.py
 - Plans.md の WIP/TODO/blocked タスク
 - 未コミット diff のサマリー（`git diff --stat`）
 - ブランチ名、最近のコミット
+- base branch（`packages/git-workflow/scripts/resolve_base_branch.py` で解決。Codex がブランチ判定に使う）
 - Decisions セクション
 
 ### Step 2: 会話要約の生成
@@ -50,6 +51,7 @@ Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマ�
 
 **Generated**: {YYYY-MM-DD HH:MM:SS UTC}
 **Branch**: {branch_name}
+**Base branch**: {Step 1 で resolve_base_branch.py が解決した base}
 **Project**: {project directory}
 
 ## Conversation Summary
@@ -98,19 +100,20 @@ Key files to review:
 - .claude/Plans.md — Full task state (update markers as you complete tasks)
 - {other relevant files from working context}
 
-Before the first commit, check the current branch: if it is the base branch
-(main / master / develop / staging / stage), create a feature branch first
-(`git switch -c <type>/<short-name>`); never commit to the base branch.
+Before the first commit, compare the current branch with the Base branch above.
+If they are the same, or `git branch --show-current` prints nothing (detached HEAD),
+create a feature branch first (`git switch -c <type>/<short-name>`); never commit
+to the base branch.
 When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`.
 When a Phase's Acceptance Criteria are met, check them (`- [ ]` → `- [x]`) only after
 you actually ran the `verify:` command and it passed, or confirmed the `judge:` criterion;
 never check an unverified criterion. Then commit that task's changes with a descriptive
-message. Stage only the files
-you changed for that task (`git add <paths>`); never use `git add -A`. Do not stage
-`.claude/Plans.md` or `.claude/handoffs/` (local working files, not part of the change).
-Changes that were already in the working tree when you started belong to the previous
-session: leave them unstaged unless the task tells you to include them. Do not push;
-Claude Code creates the PR with `/pr-create` from the committed work.
+message. The changes listed under "Uncommitted Changes" are the in-progress work you
+are continuing: include them in the commit of the task they belong to. Stage by path
+(`git add <paths>`), review `git diff --cached` before each commit, and never use
+`git add -A`. Do not stage `.claude/Plans.md` or `.claude/handoffs/` (local working
+files, not part of the change). Do not push; Claude Code creates the PR with
+`/pr-create` from the committed work.
 ```
 
 ### Step 4: ユーザーへの案内
@@ -120,7 +123,9 @@ Claude Code creates the PR with `/pr-create` from the committed work.
 1. 生成されたファイルのパス
 2. Codex 起動コマンド（引き継ぎファイルを新規セッションのプロンプトとして渡す。`-c` は config 上書き用で
    ファイルは渡せない）。`<codex.model>` と `<codex.sandbox.implementation>` は
-   `.claude/config/agent-routing/cli-tools.yaml`（+ `.local.yaml`）の実効値で置換して表示する:
+   `.claude/config/agent-routing/cli-tools.yaml`（+ `.local.yaml`）の実効値で置換して表示する。
+   実効値の `codex.enabled` が `false` なら起動コマンドは案内せず、Claude Code で続行するよう案内する。
+   sandbox は `read-only` / `workspace-write` 以外の値なら案内しない（`codex-delegation` の fail-closed と同じ）:
    ```
    codex --model <codex.model> --sandbox <codex.sandbox.implementation> "$(cat '.claude/handoffs/{timestamp}.md')"
    ```
