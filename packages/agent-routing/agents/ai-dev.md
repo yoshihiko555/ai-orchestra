@@ -110,11 +110,11 @@ You implement AI features:
 ## Coding Standards
 
 ```python
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from typing import AsyncIterator
 
 class LLMService:
-    def __init__(self, client: Anthropic):
+    def __init__(self, client: AsyncAnthropic):
         self.client = client
 
     async def generate(
