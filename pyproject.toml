@@ -34,16 +34,18 @@ packages = ["ai_orchestra"]
 "presets.json" = "ai_orchestra/presets.json"
 
 [tool.hatch.build.targets.sdist]
+# 先頭の / でリポジトリ直下に固定する（gitignore 形式のため、無いと .claude/skills/*/scripts/ 等の
+# 同名パスにも一致する）
 include = [
-    "ai_orchestra/",
-    "packages/",
-    "templates/",
-    "scripts/",
-    "facets/",
-    "presets.json",
-    "README.md",
-    "CLAUDE.md",
-    "pyproject.toml",
+    "/ai_orchestra/",
+    "/packages/",
+    "/templates/",
+    "/scripts/",
+    "/facets/",
+    "/presets.json",
+    "/README.md",
+    "/CLAUDE.md",
+    "/pyproject.toml",
 ]
 
 [tool.hatch.version]
