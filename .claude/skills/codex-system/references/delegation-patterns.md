@@ -1,37 +1,8 @@
 # 委譲パターン詳細
 
-## 委譲判断フローチャート
+## 委譲判断
 
-```
-タスク受信
-    │
-    ▼
-┌─────────────────────────┐
-│ 明示的な Codex 指示？    │
-└───────────┬─────────────┘
-    ┌───────┴───────┐
-    │ Yes          │ No
-    ▼              ▼
-  委譲        ┌─────────────────────────┐
-              │ 複雑度チェック           │
-              └───────────┬─────────────┘
-              ┌───────────┴───────────┐
-              │ Yes                   │ No
-              ▼                       ▼
-            委譲              ┌─────────────────────────┐
-                              │ 失敗チェック（2回以上）  │
-                              └───────────┬─────────────┘
-                              ┌───────────┴───────────┐
-                              │ Yes                   │ No
-                              ▼                       ▼
-                            委譲              ┌─────────────────────────┐
-                                              │ 品質・セキュリティ要件  │
-                                              └───────────┬─────────────┘
-                                              ┌───────────┴───────────┐
-                                              │ Yes                   │ No
-                                              ▼                       ▼
-                                            委譲              Claude Code で実行
-```
+委譲先は `cli-tools.yaml` の `agents.<target>.tool` の解決結果で決まる。`tool: auto` のときの目安は codex-delegation ルールのヒューリスティクス表に従う。
 
 ## パターン別実行例
 
@@ -117,11 +88,7 @@ codex exec \
    - Secure password handling
    - Session management issues
 
-   Output format:
-   - CRITICAL: Must fix immediately
-   - HIGH: Fix before release
-   - MEDIUM: Address in next sprint
-   - LOW: Tech debt" < /dev/null 2>/dev/null
+   Output format: Label each finding Critical / High / Medium / Low." < /dev/null 2>/dev/null
 ```
 
 ## 委譲しないケース

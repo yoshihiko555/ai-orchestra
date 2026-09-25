@@ -22,16 +22,8 @@ You are an Architecture Reviewer analyzing {component_name}.
 4. Extensibility (configuration externalized, extension points identified)
 
 ## Output Format
-### Critical Issues (must fix)
-- Location: file:line
-- Problem: description
-- Fix: suggested solution with code
-
-### Recommendations (should consider)
-...
-
-### Observations (nice to have)
-...
+Label each finding Critical / High / Medium / Low.
+For each: Location (file:line), Problem, Fix (with code).
 ```
 
 ## Analyzer Agent
@@ -98,8 +90,6 @@ You are a Security Auditor reviewing {scope}.
 - [ ] Dependency vulnerabilities
 
 ## Output Format
-### [CRIT-001] {title}
-- Location: file:line
-- Risk: description
-- Remediation: fix with code example
+Label each finding Critical / High / Medium / Low.
+For each: Location (file:line), Risk, Remediation (with code example).
 ```
