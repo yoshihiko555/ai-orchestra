@@ -161,7 +161,7 @@ GitHub PR レビュー・コードレビュー依頼の際は、以下の観点�
 - 各指摘に重要度ラベルを付ける: **Critical / High / Medium / Low**
   - Critical: セキュリティ脆弱性、データ損失リスク、本番障害の可能性
   - High: バグの可能性、設計上の問題、パフォーマンス劣化
-  - Medium: 保守性への将来コストが見込まれる問題
+  - Medium: コード品質、可読性、軽微な改善
   - Low: スタイル、命名、コメント改善
 
 ## Key Principles
@@ -243,7 +243,7 @@ Claude Code (Orchestrator)
 
 - **Large context**: Analyze entire repositories at once
 - **Google Search grounding**: Latest docs, best practices, solutions
-- **Multi-model**: Gemini 3.5 Flash / 3.1 Pro などをタスクに応じて切替
+- **Multi-model**: `antigravity.model_allowlist` に登録されたモデルをタスクに応じて切替
 - **Fast exploration**: Quick understanding of large codebases
 
 ## 担当外（他エージェントが担当）

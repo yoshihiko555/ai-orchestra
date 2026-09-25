@@ -29,7 +29,7 @@ Claude Code (Orchestrator)
 
 - **Large context**: Analyze entire repositories at once
 - **Google Search grounding**: Latest docs, best practices, solutions
-- **Multi-model**: Gemini 3.5 Flash / 3.1 Pro などをタスクに応じて切替
+- **Multi-model**: `antigravity.model_allowlist` に登録されたモデルをタスクに応じて切替
 - **Fast exploration**: Quick understanding of large codebases
 
 ## 担当外（他エージェントが担当）

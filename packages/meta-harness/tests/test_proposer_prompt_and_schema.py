@@ -307,6 +307,7 @@ class TestProposerPrompt:
         config_at_commit = yaml.safe_load(config_bytes.decode("utf-8"))
         debugger_tool = config_at_commit["agents"]["debugger"]["tool"]
         antigravity_model = config_at_commit["antigravity"]["model"]
+        model_allowlist = " | ".join(config_at_commit["antigravity"]["model_allowlist"])
         prompt = proposer.render_proposer_prompt(
             view_dir=tmp_path / "view",
             frontier_doc=None,
@@ -322,7 +323,7 @@ class TestProposerPrompt:
         assert f"agents.debugger.tool = {debugger_tool}" in prompt
         assert "allowed values: antigravity | auto | claude-direct | codex" in prompt
         assert "antigravity.model" in prompt
-        assert "allowed values from model_allowlist: gemini-3.1-pro" in prompt
+        assert f"allowed values from model_allowlist: {model_allowlist}" in prompt
         assert f"current value: {antigravity_model}" in prompt
         assert "codex.model" not in prompt
         assert "config_patch のみ" in prompt

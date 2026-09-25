@@ -61,7 +61,7 @@ README.md（インデックス）生成・完了
 | -------------------- | --------------------------------------------------------- |
 | 引数なし             | リポジトリルート（`git rev-parse --show-toplevel`）を対象 |
 | 相対パス `src/foo`   | リポジトリルートからの相対パスとして解決                  |
-| 絶対パス `/abs/path` | そのまま使用。リポジトリ外の場合はエラーとして中止        |
+| 絶対パス `/abs/path` | そのまま使用。リポジトリ外の場合は下記ガードに従う        |
 
 **ガード**: 解決したパスがリポジトリルート以下に含まれることを確認すること。リポジトリ外のパスが指定された場合は AskUserQuestion でユーザーに確認し、続行しない。
 
@@ -307,7 +307,7 @@ If antigravity.enabled == false, derive equivalent analysis using Read/Grep/Glob
 and note that fallback mode is active.
 
 Save full output to: .claude/docs/reverse/{YYYY-MM-DD}_{target-slug}/features.md
-Return a concise 5-7 bullet summary.
+Return a concise summary.
 """)
 ```
 
