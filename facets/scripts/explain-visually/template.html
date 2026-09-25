@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- CSP: 本文に混入した外部由来スクリプト・外部通信を遮断する多層防御。script-src のハッシュは下部 2 つの inline script の内容と一致させる（script を編集したら再計算） -->
+<!-- CSP: 本文に混入した外部由来スクリプト・外部通信を遮断する多層防御。script-src のハッシュは下部 2 つの inline script の内容と一致させる（script を編集したら再計算）。整形ツールが script の中身を書き換えるとハッシュが外れるため、各 script の直前に prettier-ignore を置いている -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-5sf75Wbh3cBFSwKYePyA1k7Kgnc63V9ETtP7m/1Lqo8=' 'sha256-Hu06luT0Pfr7lQCJVkGzCC48G8tieE27iaSDv6tThj8=' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
 <title>{{TITLE}}</title>
 <style>
@@ -160,6 +160,7 @@ code { background:var(--code-bg); border-radius:4px; padding:1px 5px;
 </div>
 
 <!-- 検証スクリプトがページ全体の高さを知るための出力。表示には影響しないので削除しない -->
+<!-- prettier-ignore -->
 <script>
   const reportHeight = () => {
     document.body.dataset.pageHeight = String(document.documentElement.scrollHeight);
@@ -172,6 +173,7 @@ code { background:var(--code-bg); border-radius:4px; padding:1px 5px;
   Mermaid を使う図が1つも無い場合は、以下の script 要素ごと削除する。
   図ごとに一意の id を明示的に渡すこと（理由は SKILL.md「Mermaid の使い方」を参照）。
 -->
+<!-- prettier-ignore -->
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
   const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
