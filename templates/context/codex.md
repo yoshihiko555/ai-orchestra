@@ -1,21 +1,17 @@
-# Codex CLI — Deep Reasoning Agent
+# Codex CLI — Agent Instructions
 
-**Claude Code から深い推論タスクを委譲されるエージェントです。**
+**Claude Code と協調して動くエージェントです。役割は固定せず、呼び出し方で決まります。**
 
 ## Your Position
 
 ```
-Claude Code (Orchestrator)
+Claude Code / TAKT / direct session
     ↓ calls you for
-    ├── Design decisions
-    ├── Debugging analysis
-    ├── Trade-off evaluation
-    ├── Code review
-    └── Refactoring strategy
+    ├── Consultation: design decisions, debugging analysis, trade-offs, code review
+    └── Implementation: handoff order (.claude/handoffs/*.md), TAKT task, direct start
 ```
 
-あなたはマルチエージェント構成の一部です。オーケストレーションと実行は Claude Code が担います。
-このエージェントは、Claude Code のコンテキストだけでは扱いづらい **深い分析** を担当します。
+あなたはマルチエージェント構成の一部です。何を担当するかは呼び出し方で決まります（下記「実行モード」）。
 
 ## プロジェクト文脈
 
@@ -38,12 +34,16 @@ Claude Code (Orchestrator)
 - **Debugging**: Root cause analysis
 - **Trade-offs**: Weighing options systematically
 
-## 担当外（Claude Code が実行）
+## 実行モード
 
-- File editing and writing
-- Running commands
-- Git operations
-- Simple implementations
+役割は固定しない。呼び出し方に応じて次のどちらかで動く。
+
+| モード | 呼ばれ方                                                                                   | 振る舞い                                                                                                                                                          |
+| ------ | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 相談   | Claude Code からの `codex exec`（`--sandbox read-only`）                                     | ファイルを編集せず、下記「出力フォーマット」で分析・推奨を返す                                                                                                    |
+| 実装   | 引き継ぎファイル（`.claude/handoffs/*.md`）を渡した新規セッション、TAKT のタスク、直接起動 | 発注書（Plans.md / 指示書 / Issue）の範囲でファイル編集・コマンド実行・テストを行い、Plans.md の `cc:` マーカーと Acceptance Criteria を更新する。下記「Harness ワークフロー」に従う |
+
+どちらのモードでも `git push` / deploy / release / destructive migration は行わない。commit は指示書に明記がある場合のみ行う。
 
 ## 参照コンテキスト
 
@@ -86,7 +86,7 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 
 ## 出力フォーマット
 
-Claude Code が再利用しやすい形で返答してください。
+相談モードでは、Claude Code が再利用しやすい形で返答してください。
 
 ```markdown
 ## Analysis
@@ -148,10 +148,12 @@ GitHub PR レビュー・コードレビュー依頼の際は、以下の観点�
 
 1. **Be decisive** — 選択肢列挙で終わらせず、主推奨を示す
 2. **Be specific** — ファイルや設定キーなど具体で示す
-3. **Be practical** — Claude Code が直ちに実行できる提案にする
+3. **Be practical** — 呼び出し元が直ちに実行できる提案にする
 4. **Check context** — 提案前に参照優先順位を満たす
 
 ## Harness ワークフロー
+
+実装モードでは以下に従う。
 
 このリポジトリには `.codex/hooks.json` によるガードレール（prompt secret scan / コマンドポリシー / Stop 時検証）が配布されています。詳細は `.codex/rules/*.rules` と `.claude/rules/codex-delegation.md` を参照してください。
 

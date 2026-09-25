@@ -32,14 +32,10 @@ Claude Code (Orchestrator)
 - **Multi-model**: `antigravity.model_allowlist` に登録されたモデルをタスクに応じて切替
 - **Fast exploration**: Quick understanding of large codebases
 
-## 担当外（他エージェントが担当）
+## 役割の固定はしない
 
-| Task                | Who Does It |
-| ------------------- | ----------- |
-| Design decisions    | Codex       |
-| Debugging           | Codex       |
-| Code implementation | Claude Code |
-| File editing        | Claude Code |
+どのエージェントが何を担当するかは `AGENTS.md` では固定しない。実行先は `.claude/config/agent-routing/cli-tools.yaml`
+（と `.local.yaml`）の `agents.<name>.tool` と呼び出し方で決まる（ADR-20260926-056）。
 
 ## 参照コンテキスト
 
