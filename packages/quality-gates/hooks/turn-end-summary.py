@@ -37,7 +37,8 @@ if _orchestra_dir:
         sys.path.insert(0, _audit_hooks)
 
 try:
-    from hook_common import load_package_config, read_hook_input, safe_hook_execution
+    from hook_common import read_hook_input, safe_hook_execution
+    from quality_gate_config import load_quality_gates_config, resolve_quality_gate_enabled
 except ImportError:  # pragma: no cover - core 未導入時のフォールバック
     import functools
 
@@ -47,10 +48,11 @@ except ImportError:  # pragma: no cover - core 未導入時のフォールバッ
         except (json.JSONDecodeError, ValueError):
             return {}
 
-    def load_package_config(  # type: ignore[misc]
-        _package_name: str, _filename: str, _project_dir: str
-    ) -> dict:
+    def load_quality_gates_config(_project_dir: str) -> dict:  # type: ignore[misc]
         return {}
+
+    def resolve_quality_gate_enabled(quality_gate: dict) -> bool:  # type: ignore[misc]
+        return bool(quality_gate.get("enabled", True))
 
     def safe_hook_execution(func: Callable[[], None]) -> Callable[[], None]:  # type: ignore[misc]
         @functools.wraps(func)
@@ -63,8 +65,6 @@ except ImportError:  # pragma: no cover - core 未導入時のフォールバッ
 
         return wrapper
 
-
-from quality_gate_config import resolve_quality_gate_enabled  # noqa: E402
 
 try:
     from context_store import get_project_dir, read_working_context
@@ -248,7 +248,7 @@ def main() -> None:
     # EV-21: quality_gate.enabled=false のときは audit イベント記録・
     # systemMessage 出力を含む全動作を行わない（他の quality-gates hook と
     # 同じ no-op パターン）。
-    config = load_package_config("audit", "audit-flags.json", project_dir)
+    config = load_quality_gates_config(project_dir)
     quality_gate = config.get("features", {}).get("quality_gate", {})
     if not resolve_quality_gate_enabled(quality_gate):
         return

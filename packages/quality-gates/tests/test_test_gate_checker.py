@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from io import StringIO
+from pathlib import Path
 
 import pytest
 
@@ -227,7 +228,7 @@ def test_build_warning_message_with_test_history() -> None:
 
 def test_respects_enabled_flag(tmp_path, monkeypatch) -> None:
     """When enabled=false in config, quality gate should be disabled."""
-    config_dir = tmp_path / ".claude" / "config" / "audit"
+    config_dir = tmp_path / ".claude" / "config" / "quality-gates"
     config_dir.mkdir(parents=True)
     config = {
         "features": {
@@ -238,7 +239,7 @@ def test_respects_enabled_flag(tmp_path, monkeypatch) -> None:
             }
         }
     }
-    with open(config_dir / "audit-flags.json", "w") as f:
+    with open(config_dir / "quality-gates.json", "w") as f:
         json.dump(config, f)
 
     assert not test_gate_checker.is_quality_gate_enabled(str(tmp_path))
@@ -246,7 +247,7 @@ def test_respects_enabled_flag(tmp_path, monkeypatch) -> None:
 
 def test_enabled_when_flag_true(tmp_path) -> None:
     """When enabled=true in config, quality gate should be enabled."""
-    config_dir = tmp_path / ".claude" / "config" / "audit"
+    config_dir = tmp_path / ".claude" / "config" / "quality-gates"
     config_dir.mkdir(parents=True)
     config = {
         "features": {
@@ -257,7 +258,7 @@ def test_enabled_when_flag_true(tmp_path) -> None:
             }
         }
     }
-    with open(config_dir / "audit-flags.json", "w") as f:
+    with open(config_dir / "quality-gates.json", "w") as f:
         json.dump(config, f)
 
     assert test_gate_checker.is_quality_gate_enabled(str(tmp_path))
@@ -280,7 +281,7 @@ def test_main_fails_open_on_unexpected_exception(monkeypatch, tmp_path, capsys) 
     def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(test_gate_checker, "load_package_config", _raise)
+    monkeypatch.setattr(test_gate_checker, "load_quality_gates_config", _raise)
 
     with pytest.raises(SystemExit) as exc_info:
         test_gate_checker.main()
@@ -296,9 +297,9 @@ def test_enabled_defaults_to_true_when_key_missing(tmp_path) -> None:
     """When quality_gate config exists but lacks an `enabled` key, default to True.
 
     This keeps the default symmetric with post-test-analysis.py's blocking check,
-    matching audit-flags.json's base value (enabled: true).
+    matching quality-gates.json's base value (enabled: true).
     """
-    config_dir = tmp_path / ".claude" / "config" / "audit"
+    config_dir = tmp_path / ".claude" / "config" / "quality-gates"
     config_dir.mkdir(parents=True)
     config = {
         "features": {
@@ -308,7 +309,7 @@ def test_enabled_defaults_to_true_when_key_missing(tmp_path) -> None:
             }
         }
     }
-    with open(config_dir / "audit-flags.json", "w") as f:
+    with open(config_dir / "quality-gates.json", "w") as f:
         json.dump(config, f)
 
     assert test_gate_checker.is_quality_gate_enabled(str(tmp_path))
@@ -324,8 +325,8 @@ def test_main_normalizes_subdirectory_before_disabled_config_lookup(
     subdirectory.mkdir(parents=True)
     config_calls = []
 
-    def _load_config(package_name: str, filename: str, project_dir: str) -> dict:
-        config_calls.append((package_name, filename, project_dir))
+    def _load_config(project_dir: str) -> dict:
+        config_calls.append(project_dir)
         return {"features": {"quality_gate": {"enabled": False}}}
 
     def _fail_if_state_loaded(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -337,17 +338,48 @@ def test_main_normalizes_subdirectory_before_disabled_config_lookup(
         "tool_input": {"file_path": "src/main.py", "content": "print(1)\n"},
     }
     monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
-    monkeypatch.setattr(test_gate_checker, "load_package_config", _load_config)
+    monkeypatch.setattr(test_gate_checker, "load_quality_gates_config", _load_config)
     monkeypatch.setattr(test_gate_checker, "load_test_gate_state", _fail_if_state_loaded)
 
     with pytest.raises(SystemExit) as exc_info:
         test_gate_checker.main()
 
     assert exc_info.value.code == 0
-    assert config_calls == [("audit", "audit-flags.json", str(repo_root))]
+    assert config_calls == [str(repo_root)]
     assert capsys.readouterr().out == ""
     state_file = repo_root / ".claude" / "state" / test_gate_checker.STATE_FILENAME
     assert not state_file.exists()
+
+
+def test_main_honors_legacy_local_disabled_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """0.4.x では旧 audit local の disabled 設定でも hook が no-op になる。"""
+    config_dir = tmp_path / ".claude" / "config" / "audit"
+    config_dir.mkdir(parents=True)
+    (config_dir / "audit-flags.local.json").write_text(
+        json.dumps({"features": {"quality_gate": {"enabled": False}}}),
+        encoding="utf-8",
+    )
+
+    def _fail_if_state_loaded(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        pytest.fail("state must not be loaded when the legacy local config disables the gate")
+
+    payload = {
+        "tool_name": "Write",
+        "cwd": str(tmp_path),
+        "tool_input": {"file_path": "src/main.py", "content": "print(1)\n"},
+    }
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    monkeypatch.setattr(test_gate_checker, "load_test_gate_state", _fail_if_state_loaded)
+
+    with pytest.raises(SystemExit) as exc_info:
+        test_gate_checker.main()
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------

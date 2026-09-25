@@ -55,29 +55,29 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 ### コンポーネント
 
-| 種別   | 名前                         | 説明                                                             |
-| ------ | ---------------------------- | ---------------------------------------------------------------- |
-| hook   | `load-task-state.py`         | SessionStart: Plans.md からタスク状態を読み込みサマリーを出力    |
-| hook   | `set-plan-gate.py`           | PostToolUse(Agent/Task): プランゲートを設定                      |
-| hook   | `check-plan-gate.py`         | PreToolUse(Agent/Task): プランゲートの確認                       |
-| hook   | `clear-plan-gate.py`         | UserPromptSubmit: プランゲートのクリア                           |
+| 種別   | 名前                         | 説明                                                                                                           |
+| ------ | ---------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| hook   | `load-task-state.py`         | SessionStart: Plans.md からタスク状態を読み込みサマリーを出力                                                  |
+| hook   | `set-plan-gate.py`           | PostToolUse(Agent/Task): プランゲートを設定                                                                    |
+| hook   | `check-plan-gate.py`         | PreToolUse(Agent/Task): プランゲートの確認                                                                     |
+| hook   | `clear-plan-gate.py`         | UserPromptSubmit: プランゲートのクリア                                                                         |
 | hook   | `inject-shared-context.py`   | PreToolUse(Agent/Task): サブエージェントに解決済みルーティング（`[Resolved Routing]`）と共有コンテキストを注入 |
-| hook   | `capture-task-result.py`     | PostToolUse(Agent/Task): サブエージェント結果を記録              |
-| hook   | `update-working-context.py`  | PostToolUse(Edit/Write): 変更ファイルを working-context に追記   |
-| hook   | `cleanup-session-context.py` | SessionEnd: セッションコンテキストをクリーンアップ               |
-| util   | `hook_common.py`             | 全 hook 共通ユーティリティ（config 読み込み、JSON 操作等）       |
-| util   | `log_common.py`              | ログ関連ユーティリティ                                           |
-| util   | `context_store.py`           | コンテキスト共有ストア                                           |
-| skill  | `preflight`                  | 実装計画の策定                                                   |
-| skill  | `startproject`               | マルチエージェント協調で新規開発を開始                           |
-| skill  | `task-state`                 | Plans.md の作成・更新                                            |
-| skill  | `design`                     | 要件定義・設計ドキュメント作成                                   |
-| skill  | `explain-visually`           | 計画・差分・PR/Issue を図解 HTML にして説明                      |
-| rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                               |
-| rule   | `coding-principles`          | コード品質の共通ルール                                           |
-| rule   | `task-memory-usage`          | Plans.md によるタスク管理ルール                                  |
-| rule   | `context-sharing`            | CLI 間コンテキスト共有ルール                                     |
-| config | `task-memory.yaml`           | Plans.md のパス・マーカー定義                                    |
+| hook   | `capture-task-result.py`     | PostToolUse(Agent/Task): サブエージェント結果を記録                                                            |
+| hook   | `update-working-context.py`  | PostToolUse(Edit/Write): 変更ファイルを working-context に追記                                                 |
+| hook   | `cleanup-session-context.py` | SessionEnd: セッションコンテキストをクリーンアップ                                                             |
+| util   | `hook_common.py`             | 全 hook 共通ユーティリティ（config 読み込み、JSON 操作等）                                                     |
+| util   | `log_common.py`              | ログ関連ユーティリティ                                                                                         |
+| util   | `context_store.py`           | コンテキスト共有ストア                                                                                         |
+| skill  | `preflight`                  | 実装計画の策定                                                                                                 |
+| skill  | `startproject`               | マルチエージェント協調で新規開発を開始                                                                         |
+| skill  | `task-state`                 | Plans.md の作成・更新                                                                                          |
+| skill  | `design`                     | 要件定義・設計ドキュメント作成                                                                                 |
+| skill  | `explain-visually`           | 計画・差分・PR/Issue を図解 HTML にして説明                                                                    |
+| rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                                                                             |
+| rule   | `coding-principles`          | コード品質の共通ルール                                                                                         |
+| rule   | `task-memory-usage`          | Plans.md によるタスク管理ルール                                                                                |
+| rule   | `context-sharing`            | CLI 間コンテキスト共有ルール                                                                                   |
+| config | `task-memory.yaml`           | Plans.md のパス・マーカー定義                                                                                  |
 
 ---
 
@@ -123,22 +123,24 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 ### コンポーネント
 
-| 種別  | 名前                            | 説明                                                                     |
-| ----- | ------------------------------- | ------------------------------------------------------------------------ |
-| hook  | `check-context-optimization.py` | PreToolUse(Read/Grep/Bash): 大きすぎる読み込みや `cat` 利用を抑制        |
-| hook  | `post-implementation-review.py` | PostToolUse(Edit/Write): 一定量の変更後にレビューを提案                  |
-| hook  | `post-test-analysis.py`         | PostToolUse(Bash): テスト実行後に結果を分析し `quality_gate` を記録      |
-| hook  | `lint-on-save.py`               | PostToolUse(Edit/Write): ファイル種別ごとの自動 lint / format 実行       |
-| hook  | `test-tampering-detector.py`    | PostToolUse(Edit/Write/Bash): skip 追加やテスト削除を検知                |
-| hook  | `test-gate-checker.py`          | PostToolUse(Edit/Write): テスト品質ゲートチェック                        |
-| hook  | `turn-end-summary.py`           | Stop: working-context / Plans.md から次ターン向け `systemMessage` を生成 |
-| skill | `review`                        | マルチエージェントコードレビュー（スマート選定）                         |
-| skill | `tdd`                           | テスト駆動開発ワークフロー                                               |
-| skill | `design-tracker`                | 設計記録                                                                 |
-| skill | `release-readiness`             | リリース前最終チェック                                                   |
-| skill | `code-comments`                 | コード・テスト・コミットログ・コードコメントの書き分け                   |
-| skill | `code-naming`                   | 識別子（変数・関数・クラス等）の命名                                     |
-| rule  | `skill-review-policy`           | レビュー系スキルのポリシー                                               |
+| 種別   | 名前                            | 説明                                                                     |
+| ------ | ------------------------------- | ------------------------------------------------------------------------ |
+| hook   | `check-context-optimization.py` | PreToolUse(Read/Grep/Bash): 大きすぎる読み込みや `cat` 利用を抑制        |
+| hook   | `post-implementation-review.py` | PostToolUse(Edit/Write): 一定量の変更後にレビューを提案                  |
+| hook   | `post-test-analysis.py`         | PostToolUse(Bash): テスト実行後に結果を分析し `quality_gate` を記録      |
+| hook   | `lint-on-save.py`               | PostToolUse(Edit/Write): ファイル種別ごとの自動 lint / format 実行       |
+| hook   | `test-tampering-detector.py`    | PostToolUse(Edit/Write/Bash): skip 追加やテスト削除を検知                |
+| hook   | `test-gate-checker.py`          | PostToolUse(Edit/Write): テスト品質ゲートチェック                        |
+| hook   | `turn-end-summary.py`           | Stop: working-context / Plans.md から次ターン向け `systemMessage` を生成 |
+| skill  | `review`                        | マルチエージェントコードレビュー（スマート選定）                         |
+| skill  | `tdd`                           | テスト駆動開発ワークフロー                                               |
+| skill  | `design-tracker`                | 設計記録                                                                 |
+| skill  | `release-readiness`             | リリース前最終チェック                                                   |
+| skill  | `code-comments`                 | コード・テスト・コミットログ・コードコメントの書き分け                   |
+| skill  | `code-naming`                   | 識別子（変数・関数・クラス等）の命名                                     |
+| rule   | `skill-review-policy`           | レビュー系スキルのポリシー                                               |
+| config | `quality-gates.json`            | 機能フラグ・状態ディレクトリ（Issue #153 で `audit` から分離）           |
+| config | `evaluation-set-mapping.yaml`   | 評価セット ID → テストパス glob の明示マッピング                         |
 
 ---
 
