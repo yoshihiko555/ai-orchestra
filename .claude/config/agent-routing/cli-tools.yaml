@@ -62,7 +62,7 @@ antigravity:
     - gpt-oss-120b-medium
   # agy コマンドに常に付与するフラグ（不要なら空文字）
   flags: ""
-  # sandbox 内で実行可能（sandbox.excludedCommands に agy 追加が前提）
+  # sandbox 内で実行する（excludedCommands の除外は効かない。通信先の許可が必要: antigravity-delegation 参照）
   requires_sandbox_disable: false
 
 # (移行メモ) 旧 gemini: キーは廃止。.local.yaml に残る gemini: 上書きは

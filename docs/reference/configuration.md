@@ -101,7 +101,7 @@ antigravity:
   # agy コマンドに常に付与するフラグ
   flags: ""
 
-  # sandbox 内で実行可能か（sandbox.excludedCommands に agy 追加が前提）
+  # sandbox 内で実行する（通信先の許可が必要: antigravity-delegation 参照）
   requires_sandbox_disable: false
 ```
 
