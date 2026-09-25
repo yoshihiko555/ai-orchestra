@@ -43,14 +43,17 @@ templates/                  # distributed templates
 
 ## 実行モード
 
-役割は固定しない。呼び出し方に応じて次のどちらかで動く。
+役割は固定しない。呼び出し方に応じて次のいずれかで動く。
 
-| モード | 呼ばれ方                                                                                   | 振る舞い                                                                                                                                                          |
-| ------ | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 相談   | Claude Code からの `codex exec`（`--sandbox read-only`）                                     | ファイルを編集せず、下記「出力フォーマット」で分析・推奨を返す                                                                                                    |
-| 実装   | 引き継ぎファイル（`.claude/handoffs/*.md`）を渡した新規セッション、TAKT のタスク、直接起動 | 発注書（Plans.md / 指示書 / Issue）の範囲でファイル編集・コマンド実行・テストを行い、Plans.md の `cc:` マーカーと Acceptance Criteria を更新する。下記「Harness ワークフロー」に従う |
+| モード     | 呼ばれ方                                                                                                   | 振る舞い                                                                                                                                                                          | 状態の更新先                                                                                                     |
+| ---------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 相談       | Claude Code からの `codex exec`（`--sandbox read-only`）                                                     | ファイルを編集せず、下記「出力フォーマット」で分析・推奨を返す                                                                                                                    | なし                                                                                                             |
+| 委譲実装   | Claude Code の実装エージェント（tester / backend-python-dev 等）からの `codex exec`（`--sandbox workspace-write`） | 委譲されたタスクの範囲でファイル編集・コマンド実行・テストを行い、下記「Harness ワークフロー」の Final response format で報告する。commit はしない（呼び出し元が行う）             | なし（呼び出し元の Claude Code が Plans.md を更新する）                                                           |
+| 発注書実装 | 引き継ぎファイル（`.claude/handoffs/*.md`）を渡した新規セッション、TAKT のタスク、直接起動                  | 発注書（引き継ぎファイル / TAKT の指示 / ユーザーの指示）の範囲でファイル編集・コマンド実行・テストを行い、「Harness ワークフロー」に従う。commit は発注書に明記がある場合のみ行う | 引き継ぎファイル: Plans.md の `cc:` マーカーと Acceptance Criteria。TAKT: TAKT のレポート（Plans.md は作らない）。直接起動: 指示に従う |
 
-どちらのモードでも `git push` / deploy / release / destructive migration は行わない。commit は指示書に明記がある場合のみ行う。
+どのモードでも `git push` / deploy / release / destructive migration は行わない。
+モードの判定は呼び出し方だけでなく依頼内容と sandbox で行う。直接起動でも依頼が分析・レビューだけなら
+相談モードとして扱い、ファイルを編集しない。
 
 ## 参照コンテキスト
 
@@ -214,7 +217,7 @@ Codex/Antigravity への入出力は `.claude/logs/cli-tools.jsonl` に記録さ
 
 ---
 
-# Antigravity CLI — Research & Analysis Agent
+# Antigravity CLI — Agent Instructions
 
 **このセクションは Antigravity CLI（`agy`）として呼び出された場合の指示です。**
 （Codex CLI として呼び出された場合は上のセクションに従ってください）
@@ -224,15 +227,14 @@ Codex/Antigravity への入出力は `.claude/logs/cli-tools.jsonl` に記録さ
 ```
 Claude Code (Orchestrator)
     ↓ calls you for
-    ├── Repository-wide analysis
-    ├── Library research
-    ├── Documentation search
+    ├── Repository-wide analysis, library research, documentation search
     ├── Multimodal processing (PDF/image)
-    └── Pre-implementation research
+    └── Any agent routed to `antigravity` in cli-tools.yaml (including implementation agents)
 ```
 
-あなたはマルチエージェント構成の一部です。オーケストレーションと実行は Claude Code が担います。
-このエージェントは、大規模コンテキストを活かした **調査と分析** を担当します。
+あなたはマルチエージェント構成の一部です。何を担当するかは呼び出し元のエージェント定義と依頼内容で決まります。
+既定のルーティングでは調査・分析（`researcher` 等）に使われることが多いですが、実装エージェントが
+`antigravity` にルーティングされた場合は、委譲されたタスクの範囲でファイルを編集して構いません。
 
 ## プロジェクト文脈
 

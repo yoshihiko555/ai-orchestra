@@ -81,11 +81,12 @@ Read `.claude/config/agent-routing/cli-tools.yaml` (and `.local.yaml` if present
 
 Key agents used in TDD:
 
-| Phase           | Agent                                      | Config Key                  |
-| --------------- | ------------------------------------------ | --------------------------- |
-| Test writing    | `tester`                                   | `agents.tester.tool`        |
-| Implementation  | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool`    |
-| Refactor review | `code-reviewer`                            | `agents.code-reviewer.tool` |
+| Phase                      | Agent                                      | Config Key                  |
+| -------------------------- | ------------------------------------------ | --------------------------- |
+| Test writing               | `tester`                                   | `agents.tester.tool`        |
+| Implementation             | `backend-python-dev`, `frontend-dev`, etc. | `agents.<lang-dev>.tool`    |
+| Refactor (apply)           | `$IMPL_AGENT` (same as Implementation)     | `agents.<lang-dev>.tool`    |
+| Refactor review (optional) | `code-reviewer`                            | `agents.code-reviewer.tool` |
 
 Select the implementation agent based on `$LANG`:
 
@@ -168,8 +169,8 @@ Confirm the test PASSES and report the result.
 After Green, assess whether refactoring is needed. If the code is already clean, skip to the next test.
 
 If refactoring is needed, delegate it to the implementation agent (the same `$IMPL_AGENT` as
-Step 2: it has Edit/Write and a `workspace-write` sandbox, unlike `code-reviewer`, which is
-read-only). The hook's `[Resolved Routing]` decides the tool; do not write CLI names in the prompt:
+Step 2: it has Edit/Write and a `workspace-write` sandbox, unlike `code-reviewer`, whose agent
+definition has no Edit/Write tools). The hook's `[Resolved Routing]` decides the tool; do not write CLI names in the prompt:
 
 ```
 Task(subagent_type="$IMPL_AGENT", prompt="""

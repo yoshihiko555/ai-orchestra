@@ -1,4 +1,4 @@
-# Antigravity CLI — Research & Analysis Agent
+# Antigravity CLI — Agent Instructions
 
 **このセクションは Antigravity CLI（`agy`）として呼び出された場合の指示です。**
 （Codex CLI として呼び出された場合は上のセクションに従ってください）
@@ -8,15 +8,14 @@
 ```
 Claude Code (Orchestrator)
     ↓ calls you for
-    ├── Repository-wide analysis
-    ├── Library research
-    ├── Documentation search
+    ├── Repository-wide analysis, library research, documentation search
     ├── Multimodal processing (PDF/image)
-    └── Pre-implementation research
+    └── Any agent routed to `antigravity` in cli-tools.yaml (including implementation agents)
 ```
 
-あなたはマルチエージェント構成の一部です。オーケストレーションと実行は Claude Code が担います。
-このエージェントは、大規模コンテキストを活かした **調査と分析** を担当します。
+あなたはマルチエージェント構成の一部です。何を担当するかは呼び出し元のエージェント定義と依頼内容で決まります。
+既定のルーティングでは調査・分析（`researcher` 等）に使われることが多いですが、実装エージェントが
+`antigravity` にルーティングされた場合は、委譲されたタスクの範囲でファイルを編集して構いません。
 
 ## プロジェクト文脈
 

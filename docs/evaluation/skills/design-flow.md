@@ -3,7 +3,7 @@
 **対象スキル群**: `design` と、その下流の発注書スキル `/order`（仮名。ADR-20260926-056 で新設予定）。`preflight` / `startproject` は同 ADR で廃止（正本: `facets/instructions/design.md`, `facets/knowledge/design-review.md` ほか knowledge 6 本）
 **単位**: スキルフロー（設計 → タスク分解 → 実装の一連の振る舞い）
 **作成日**: 2026-07-04
-**最終レビュー日**: 2026-09-26（ADR-20260926-056: `preflight` / `startproject` の廃止に伴い EV-14〜EV-21 を廃止し、フロー横断 EV-22・EV-23 を `/order` 前提に改訂。`/order` 自体の観点は `docs/evaluation/skills/order.md` に新設予定）
+**最終レビュー日**: 2026-09-26（ADR-20260926-056: `preflight` / `startproject` の廃止決定に伴い EV-14〜EV-21 を廃止予定（実ファイル削除まで有効）とし移管先を明記。フロー横断 EV-22・EV-23 を `/order` 前提に改訂。`/order` 自体の観点は `docs/evaluation/skills/order.md` に新設予定）
 **情報源**: docs/adr/ADR-20260926-056.md, facets/instructions/design.md, facets/knowledge/design-review.md, .claude/rules/skill-review-policy.md, .claude/rules/codd-frontmatter-policy.md, PR #144
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
@@ -12,7 +12,7 @@
 
 ## 1. フロー責務定義
 
-`/design` が対話で要件定義・基本設計・詳細設計を進めて `docs/` 配下に設計書（codd フロントマター付き）を出力し、設計品質を二段品質ゲート（セルフチェック + 自動レビュー）で担保するフロー。設計書は下流の発注書スキル `/order`（仮名）が Context として参照し、実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）へ渡す。旧 `/preflight`（設計要否判定とタスク分解）と `/startproject`（設計書を参照した実装と突合）は ADR-20260926-056 で廃止された。
+`/design` が対話で要件定義・基本設計・詳細設計を進めて `docs/` 配下に設計書（codd フロントマター付き）を出力し、設計品質を二段品質ゲート（セルフチェック + 自動レビュー）で担保するフロー。設計書は下流の発注書スキル `/order`（仮名）が Context として参照し、実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）へ渡す。旧 `/preflight`（設計要否判定とタスク分解）と `/startproject`（設計書を参照した実装と突合）は ADR-20260926-056 で廃止が決定した（実ファイルの削除は同 ADR §決定 6 の 5 で行う）。
 
 ### Non-Goals
 
@@ -28,7 +28,7 @@
 | 2        | design Phase 1-3       | 対話 + 上流成果物       | `docs/` 配下の設計書（codd フロントマター付き）+ 各フェーズ末の品質ゲート通過 |
 | 3        | `/order`（仮名）       | 対話の結論 + 設計成果物 | 発注書（Goal / Context / Out of Scope / Constraints / Open Questions + Phase の AC + Tasks）を Plans.md か Issue に 1 回だけ書く。Context に設計書パスを載せる |
 | 4        | 実行エンジン           | 発注書                  | 設計書を参照した実装（エンジン側の責務。本評価セットの対象外）                |
-| 5        | `/review spec`         | 実装 diff + 設計書      | spec-reviewer による実装と設計書の突合（`docs/evaluation/skills/review.md` の責務） |
+| 5        | `/review`              | 実装 diff + 設計書      | Phase 1 で spec-reviewer を必須選定し、実装と設計書を突合（`docs/evaluation/skills/review.md` EV-24 の責務） |
 
 ## 3. 評価観点
 
@@ -48,27 +48,27 @@
 - [ ] EV-12（境界 / should）: Stage 2 の省略はユーザーの明示指示がある場合のみ許可し、省略した旨を記録する — 根拠: facets/instructions/design.md Tips / 検証: 実行観察
 - [ ] EV-13（正常 / must）: 拡張トラック成果物（security-design / test-design / design-system）を生成した場合、生成フェーズのレビュー対象に含める — 根拠: facets/knowledge/design-review.md / 検証: PR レビュー
 
-### /preflight: 設計要否判定と設計成果物の取り込み（廃止: ADR-20260926-056）
+### /preflight: 設計要否判定と設計成果物の取り込み（廃止予定: ADR-20260926-056）
 
-EV-14〜EV-17 は `/preflight` の廃止に伴い廃止。設計成果物の取り込み（旧 EV-15）と「迷えば設計側に倒す」（旧 EV-17）の観点は `docs/evaluation/skills/order.md` へ移す。番号は再利用しない。
+EV-14〜EV-17 は `/preflight` の廃止決定（ADR-056）に伴い廃止予定。実ファイルを削除する PR（同 ADR §決定 6 の 5）で無効化するまでは有効で、それまでの `/preflight` 改修はこれらと突合する。移管先は `docs/evaluation/skills/order.md`（ADR-056 §決定 6 の 4 で新設）: 設計要否の判定と `/design` の提案（旧 EV-14）、設計成果物の取り込み（旧 EV-15）、「迷えば設計側に倒す」（旧 EV-17）。旧 EV-16（軽量設計メモを Decisions に記録）は Plans.md v2 の Decisions 運用に吸収する。番号は再利用しない。
 
-- [x] ~~EV-14（正常 / must）: Phase 1 完了時に設計要否を 3 段階（設計不要 / 軽量設計メモ / フル設計）で判定し、フル設計の場合は AskUserQuestion で `/design` の先行実施を提案する — 根拠: facets/instructions/preflight.md / 検証: 実行観察~~
-- [x] ~~EV-15（正常 / must）: Phase 2 で `docs/` 配下の設計成果物と `.claude/docs/impact-analysis/` が存在すれば読み込み、タスク分解の入力にする。今回の変更が設計書と矛盾する場合はユーザーに指摘する — 根拠: facets/instructions/preflight.md / 検証: 実行観察~~
-- [x] ~~EV-16（正常 / should）: 軽量設計メモ判定時、設計判断を `Plans.md` の Decisions に記録して続行する — 根拠: facets/instructions/preflight.md / 検証: 実行観察~~
-- [x] ~~EV-17（境界 / should）: 設計要否の判定に迷う場合は一つ上のレベル（より設計側）に倒す — 根拠: facets/instructions/preflight.md / 検証: config-analyze~~
+- [ ] EV-14（正常 / must）: Phase 1 完了時に設計要否を 3 段階（設計不要 / 軽量設計メモ / フル設計）で判定し、フル設計の場合は AskUserQuestion で `/design` の先行実施を提案する — 根拠: facets/instructions/preflight.md / 検証: 実行観察
+- [ ] EV-15（正常 / must）: Phase 2 で `docs/` 配下の設計成果物と `.claude/docs/impact-analysis/` が存在すれば読み込み、タスク分解の入力にする。今回の変更が設計書と矛盾する場合はユーザーに指摘する — 根拠: facets/instructions/preflight.md / 検証: 実行観察
+- [ ] EV-16（正常 / should）: 軽量設計メモ判定時、設計判断を `Plans.md` の Decisions に記録して続行する — 根拠: facets/instructions/preflight.md / 検証: 実行観察
+- [ ] EV-17（境界 / should）: 設計要否の判定に迷う場合は一つ上のレベル（より設計側）に倒す — 根拠: facets/instructions/preflight.md / 検証: config-analyze
 
-### /startproject: 設計書の参照と突合（廃止: ADR-20260926-056）
+### /startproject: 設計書の参照と突合（廃止予定: ADR-20260926-056）
 
-EV-18〜EV-21 は `/startproject` の廃止に伴い廃止。発注書に設計書パスを含める観点（旧 EV-19）は `order.md` へ、spec-reviewer による突合（旧 EV-20）は `review.md` の EV-24 へ移管済み。番号は再利用しない。
+EV-18〜EV-21 は `/startproject` の廃止決定（ADR-056）に伴い廃止予定。実ファイルを削除する PR で無効化するまでは有効。設計書に記載済みの項目を再質問しない（旧 EV-18）と発注書に設計書パスを含める（旧 EV-19）は `order.md`（同上）へ、spec-reviewer による突合（旧 EV-20）は `review.md` の EV-24 へ移管済み、実装計画と設計書の整合確認（旧 EV-21、should）は `/order` の Context 作成時の確認として `order.md` へ。番号は再利用しない。
 
-- [x] ~~EV-18（正常 / must）: Phase 2 で既存設計書を読み込み、設計書に記載済みの項目は再質問せず差分に絞って質問する — 根拠: facets/instructions/startproject.md / 検証: 実行観察~~
-- [x] ~~EV-19（正常 / must）: Phase 6 の実装委譲プロンプトに対応する設計書パス（API-001.md 等）を含め、実装エージェントに実装前の読み込みを指示する — 根拠: facets/instructions/startproject.md / 検証: PR レビュー~~
-- [x] ~~EV-20（正常 / must）: Phase 7 で設計書が存在する場合、`spec-reviewer` で実装と設計書を突合し、承認されていない逸脱を指摘する — 根拠: facets/instructions/startproject.md / 検証: 実行観察~~
-- [x] ~~EV-21（正常 / should）: Phase 3 の設計レビューで、実装計画と承認済み設計書の整合を確認し、逸脱には設計書更新の要否を添える — 根拠: facets/instructions/startproject.md / 検証: PR レビュー~~
+- [ ] EV-18（正常 / must）: Phase 2 で既存設計書を読み込み、設計書に記載済みの項目は再質問せず差分に絞って質問する — 根拠: facets/instructions/startproject.md / 検証: 実行観察
+- [ ] EV-19（正常 / must）: Phase 6 の実装委譲プロンプトに対応する設計書パス（API-001.md 等）を含め、実装エージェントに実装前の読み込みを指示する — 根拠: facets/instructions/startproject.md / 検証: PR レビュー
+- [ ] EV-20（正常 / must）: Phase 7 で設計書が存在する場合、`spec-reviewer` で実装と設計書を突合し、承認されていない逸脱を指摘する — 根拠: facets/instructions/startproject.md / 検証: 実行観察
+- [ ] EV-21（正常 / should）: Phase 3 の設計レビューで、実装計画と承認済み設計書の整合を確認し、逸脱には設計書更新の要否を添える — 根拠: facets/instructions/startproject.md / 検証: PR レビュー
 
 ### フロー横断
 
-- [ ] EV-22（正常 / must）: `/design` 先行・対話（grill-me 等）起点のどちらの入り方でも、設計成果物（`docs/`）が `/order`（仮名）の Context として発注書に載り、実行エンジンの入力として機能する — 根拠: ADR-20260926-056 §決定 1・3, facets/instructions/design.md「他スキルとの関係」 / 検証: 実行観察
+- [ ] EV-22（正常 / must）: `/design` 先行・対話（grill-me 等）起点のどちらの入り方でも、設計成果物（`docs/`）が `/order`（仮名）の Context として発注書に載り、実行エンジンの入力として機能する — 根拠: ADR-20260926-056 §決定 1・3（`design.md`「他スキルとの関係」は旧フローのままで、§決定 6 の 5 で追従する） / 検証: 実行観察
 - [ ] EV-23（境界 / must）: 設計書が存在しないプロジェクトでも `/order` と各実行エンジンはエラーなく動作する（設計連携はオプショナル。Context の設計書参照は「存在すれば載せる」） — 根拠: ADR-20260926-056 §決定 3 / 検証: 実行観察
 
 ## 4. 検証方法

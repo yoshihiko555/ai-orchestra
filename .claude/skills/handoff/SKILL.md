@@ -158,7 +158,10 @@ Key files to review:
 - .claude/Plans.md — Full task state (update markers as you complete tasks)
 - {other relevant files from working context}
 
-When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`.
+When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`,
+then commit that task's changes (including Plans.md is not needed; it is gitignored)
+with a descriptive message. Do not push; Claude Code creates the PR with `/pr-create`
+from the committed work.
 ```
 
 ### Step 4: ユーザーへの案内
