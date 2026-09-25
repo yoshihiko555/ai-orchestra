@@ -25,13 +25,13 @@ Constraints / Open Questions + Phase ごとの Acceptance Criteria と Tasks）�
 
 ## 2. 期待するフローと成果物
 
-| ステップ | スキル / フェーズ | 入力                         | 期待する成果物・振る舞い                                                                        |
-| -------- | ----------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- |
-| 1        | order Step 0      | 会話の結論、`docs/` の設計書 | 内容モデル 7 節が埋まった発注書案。設計書があれば Context に参照、矛盾があれば指摘              |
-| 2        | order Step 1      | 発注書案                     | AskUserQuestion で 1 回提示（承認 / 修正 / 中止）。修正は発注書への差分編集                     |
-| 3        | order Step 2      | 承認済み発注書、出力先       | Plans.md v2（Project + Phase + AC + Tasks）か Issue（AC 確定済み経路）に 1 回で書く             |
-| 4        | order Step 3      | Plans.md の既存 Project      | `--from-plans`: Issue 化し、Plans.md 側の Project を Plans.archive.md に「#N へ引き渡し」で移す |
-| 5        | order Step 4      | 書き先                       | 次に使うエンジンのコマンドを 1 行で案内                                                         |
+| ステップ | スキル / フェーズ | 入力                                 | 期待する成果物・振る舞い                                                                                                                                              |
+| -------- | ----------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | order Step 0      | 会話の結論、`docs/` の設計書         | 内容モデル 7 節が埋まった発注書案。設計書があれば Context に参照、矛盾があれば指摘                                                                                    |
+| 2        | order Step 1      | 発注書案                             | AskUserQuestion で 1 回提示（承認 / 修正 / 中止）。修正は発注書への差分編集                                                                                           |
+| 3        | order Step 2      | 承認済み発注書、出力先               | Plans.md v2（Project + Phase + AC + Tasks）か Issue（AC 確定済み経路）に 1 回で書く                                                                                   |
+| 4        | order Step 3      | Plans.md の既存 Project / 既存 Issue | `--from-plans`: Issue 化し、Plans.md 側の Project を Plans.archive.md に「#N へ引き渡し」で移す。`--from-issue`: Project 化し、Issue に引き渡しコメントを付けて close |
+| 5        | order Step 4      | 書き先                               | 次に使うエンジンのコマンドを 1 行で案内                                                                                                                               |
 
 ## 3. 評価観点
 
