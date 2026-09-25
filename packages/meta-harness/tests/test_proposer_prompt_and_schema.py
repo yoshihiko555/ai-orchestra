@@ -224,7 +224,7 @@ class TestProposerPrompt:
         assert "focus runs（優先分析対象）: run-focus-a, run-focus-b" in prompt
         assert "valid based_on_runs candidates: run-valid-a, run-valid-b, run-valid-c" in prompt
         assert "focus candidate: cand-focus" in prompt
-        assert "cand_id（`cand-` で始まる ID）は based_on_runs に絶対に入れない" in prompt
+        assert "`cand-` で始まる cand_id は run ではないので含めない" in prompt
         assert "run_id を推測・合成・変形しない" in prompt
         assert "cand-frontier" in prompt
         assert "quality_mean=87.500" in prompt

@@ -37,8 +37,7 @@ $analysis_final_step
 - 出力 payload: $proposal_payload_constraint
 - 1 仮説・最小差分に限定する
 - 共有 facet の変更は影響 skill の回帰コストと hard gate を伴うため、仮説を満たす最小の blast radius を優先する
-- based_on_runs には valid based_on_runs candidates に表示された run_id のみを列挙する
-- cand_id（`cand-` で始まる ID）は based_on_runs に絶対に入れない
+- based_on_runs には valid based_on_runs candidates に表示された run_id のみを列挙する（`cand-` で始まる cand_id は run ではないので含めない）
 - focus runs が `(none)` でない場合は優先的に分析し、根拠にした run_id を based_on_runs に入れる
 - run_id を推測・合成・変形しない。表示済みの run_id をそのままコピーする
 - 変更合計は $max_overlay_bytes バイト以内
