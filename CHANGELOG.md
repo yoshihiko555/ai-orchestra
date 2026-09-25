@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`agent-routing`: `cli-tools.yaml` の debugger の sandbox 既定値を `read-only` に変更**: `agents.debugger.sandbox` が `workspace-write` のまま残っていたのを、Edit を持たない分析役に合わせて `read-only` にした。`.local.yaml` で debugger の tool を `codex` に切り替えている場合の sandbox 指定が変わる。tool の既定値（`claude-direct`）は変わらない。
+
 ## [0.3.4] - 2026-09-25
 
 ### Added

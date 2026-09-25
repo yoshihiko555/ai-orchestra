@@ -34,7 +34,7 @@ sandbox 無効化の必須条件（fail-closed。1 つでも満たさない場�
 
 ## Implementation Method（必須）
 
-**このエージェントのデフォルト tool は `codex`。実装は Codex CLI 経由で行うこと。**
+**実行ツールは `cli-tools.yaml` の `agents.<agent-name>.tool` を正とする。**
 
 ### 実行手順
 
@@ -42,7 +42,7 @@ sandbox 無効化の必須条件（fail-closed。1 つでも満たさない場�
 2. `agents.<agent-name>.tool` の値を確認する
 3. tool の値に応じて実行:
 
-### tool = "codex" の場合（デフォルト） — Codex CLI で実装
+### tool = "codex" の場合 — Codex CLI で実装
 
 ```bash
 # エラー時は claude-direct にフォールバック
@@ -68,7 +68,7 @@ agy -p "{task}" --model <antigravity.model> 2>/dev/null
 ### フォールバック
 
 - `codex.enabled: false` または Codex CLI 実行エラー時: claude-direct として処理する
-- 設定ファイル未検出時のデフォルト: codex (model: gpt-5.6-sol, sandbox: workspace-write, flags: --full-auto)
+- 設定ファイル未検出時: codex（sandbox: workspace-write。model / flags は指定せず CLI の既定値を使う）
 
 ## Role
 

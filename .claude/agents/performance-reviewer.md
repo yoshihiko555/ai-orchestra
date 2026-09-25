@@ -1,6 +1,6 @@
 ---
 name: performance-reviewer
-description: Performance review agent using Codex CLI for computational complexity, I/O optimization, and performance bottleneck detection.
+description: Performance review agent for computational complexity, I/O optimization, and performance bottleneck detection.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---

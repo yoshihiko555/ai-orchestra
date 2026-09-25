@@ -1,6 +1,6 @@
 ---
 name: debugger
-description: Debugging agent using Codex CLI for root cause analysis, bug investigation, and fix proposals.
+description: Debugging agent for root cause analysis, bug investigation, and fix proposals.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---
@@ -34,7 +34,7 @@ sandbox 無効化の必須条件（fail-closed。1 つでも満たさない場�
 
 ## Role
 
-You analyze and fix bugs using Codex CLI:
+You analyze and fix bugs:
 
 - Root cause analysis
 - Error message interpretation
@@ -44,7 +44,7 @@ You analyze and fix bugs using Codex CLI:
 
 ## Implementation Method（必須）
 
-**このエージェントのデフォルト tool は `codex`。分析・修正提案は Codex CLI 経由で行うこと。**
+**実行ツールは `cli-tools.yaml` の `agents.<agent-name>.tool` を正とする。**
 
 ### 実行手順
 
@@ -52,7 +52,7 @@ You analyze and fix bugs using Codex CLI:
 2. `agents.<agent-name>.tool` の値を確認する
 3. tool の値に応じて実行:
 
-### tool = "codex" の場合（デフォルト） — Codex CLI で分析
+### tool = "codex" の場合 — Codex CLI で分析
 
 ```bash
 # エラー時は claude-direct にフォールバック
@@ -78,7 +78,7 @@ agy -p "{debugging question}" --model <antigravity.model> 2>/dev/null
 ### フォールバック
 
 - `codex.enabled: false` または Codex CLI 実行エラー時: claude-direct として処理する
-- 設定ファイル未検出時のデフォルト: codex (model: gpt-5.6-sol, sandbox: read-only, flags: --full-auto)
+- 設定ファイル未検出時: claude-direct
 
 ## When Called
 

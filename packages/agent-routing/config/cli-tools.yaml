@@ -126,6 +126,10 @@ agents:
     tool: claude-direct
   ux-reviewer:
     tool: claude-direct
+  # debugger は分析役（Edit を持たない）。tool を codex に切り替えた場合も read-only で呼ぶ
+  debugger:
+    tool: claude-direct
+    sandbox: read-only
 
   # --- 実装・開発系（Codex CLI）---
   ai-dev:
@@ -136,9 +140,6 @@ agents:
     sandbox: workspace-write
   backend-python-dev:
     tool: codex
-    sandbox: workspace-write
-  debugger:
-    tool: claude-direct
     sandbox: workspace-write
   frontend-dev:
     tool: codex

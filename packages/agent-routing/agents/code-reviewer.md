@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Code review agent using Codex CLI for readability, maintainability, and bug detection.
+description: Code review agent for readability, maintainability, and bug detection.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---
