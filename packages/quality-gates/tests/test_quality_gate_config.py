@@ -34,52 +34,44 @@ def test_load_quality_gates_config_uses_project_base(
     assert config["features"]["quality_gate"]["enabled"] is False
 
 
-def test_load_quality_gates_config_reads_local_without_base(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """base 未配布（sync 前）でも project の quality-gates.local.json を尊重する。"""
-    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
-    local_path = tmp_path / ".claude" / "config" / "quality-gates" / "quality-gates.local.json"
-    _write_json(local_path, {"features": {"quality_gate": {"block_on_failed_test": False}}})
-
-    config = quality_gate_config.load_quality_gates_config(str(tmp_path))
-
-    assert config["features"]["quality_gate"]["block_on_failed_test"] is False
-
-
-def test_load_quality_gates_config_reads_legacy_local_override(
+def test_load_quality_gates_config_ignores_legacy_audit_local(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
+    base_path = tmp_path / ".claude" / "config" / "quality-gates" / "quality-gates.json"
     legacy_path = tmp_path / ".claude" / "config" / "audit" / "audit-flags.local.json"
     _write_json(
-        legacy_path,
-        {"features": {"quality_gate": {"block_on_failed_test": False}}},
-    )
-
-    config = quality_gate_config.load_quality_gates_config(str(tmp_path))
-
-    assert config["features"]["quality_gate"]["block_on_failed_test"] is False
-
-
-def test_new_local_override_wins_over_legacy_local(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
-    legacy_path = tmp_path / ".claude" / "config" / "audit" / "audit-flags.local.json"
-    new_local_path = tmp_path / ".claude" / "config" / "quality-gates" / "quality-gates.local.json"
-    _write_json(
-        legacy_path,
-        {"features": {"quality_gate": {"block_on_failed_test": False}}},
-    )
-    _write_json(
-        new_local_path,
+        base_path,
         {"features": {"quality_gate": {"block_on_failed_test": True}}},
+    )
+    _write_json(
+        legacy_path,
+        {"features": {"quality_gate": {"block_on_failed_test": False}}},
     )
 
     config = quality_gate_config.load_quality_gates_config(str(tmp_path))
 
     assert config["features"]["quality_gate"]["block_on_failed_test"] is True
+
+
+def test_load_quality_gates_config_applies_local_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+    base_path = tmp_path / ".claude" / "config" / "quality-gates" / "quality-gates.json"
+    local_path = tmp_path / ".claude" / "config" / "quality-gates" / "quality-gates.local.json"
+    _write_json(
+        base_path,
+        {"features": {"quality_gate": {"block_on_failed_test": True}}},
+    )
+    _write_json(
+        local_path,
+        {"features": {"quality_gate": {"block_on_failed_test": False}}},
+    )
+
+    config = quality_gate_config.load_quality_gates_config(str(tmp_path))
+
+    assert config["features"]["quality_gate"]["block_on_failed_test"] is False
 
 
 def test_load_quality_gates_config_falls_back_to_packaged_base(
@@ -93,55 +85,18 @@ def test_load_quality_gates_config_falls_back_to_packaged_base(
     assert config["paths"]["state_dir"] == ".claude/state"
 
 
-def test_resolve_state_path_uses_legacy_local_state_dir(
+def test_resolve_state_path_uses_local_state_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """quality-gates.local.json の paths.state_dir 上書きが状態ファイルの解決先に効く。"""
     monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
-    legacy_path = tmp_path / ".claude" / "config" / "audit" / "audit-flags.local.json"
-    _write_json(legacy_path, {"paths": {"state_dir": ".claude/legacy-state"}})
+    (tmp_path / ".claude").mkdir()
+    local_path = tmp_path / ".claude" / "config" / "quality-gates" / "quality-gates.local.json"
+    _write_json(local_path, {"paths": {"state_dir": ".claude/custom-state"}})
 
     resolved = quality_gate_config.resolve_state_path(str(tmp_path), "state.json")
 
-    assert resolved == str(tmp_path / ".claude" / "legacy-state" / "state.json")
-
-
-def test_extract_legacy_sections_excludes_audit_owned_keys() -> None:
-    extracted = quality_gate_config.extract_legacy_quality_gates_sections(
-        {
-            "features": {
-                "quality_gate": {"enabled": False},
-                "route_audit": {"enabled": False},
-            },
-            "paths": {
-                "state_dir": ".claude/custom-state",
-                "logs_dir": ".claude/custom-logs",
-            },
-        }
-    )
-
-    assert extracted == {
-        "features": {"quality_gate": {"enabled": False}},
-        "paths": {"state_dir": ".claude/custom-state"},
-    }
-
-
-def test_legacy_project_base_is_not_read_through(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
-    legacy_base_path = tmp_path / ".claude" / "config" / "audit" / "audit-flags.json"
-    _write_json(
-        legacy_base_path,
-        {
-            "features": {"quality_gate": {"enabled": False}},
-            "paths": {"state_dir": ".claude/ignored-state"},
-        },
-    )
-
-    config = quality_gate_config.load_quality_gates_config(str(tmp_path))
-
-    assert config["features"]["quality_gate"]["enabled"] is True
-    assert config["paths"]["state_dir"] == ".claude/state"
+    assert resolved == str(tmp_path / ".claude" / "custom-state" / "state.json")
 
 
 # ---------------------------------------------------------------------------

@@ -159,7 +159,7 @@ orchex run audit analyze-cli-usage -- --days 30
 | `kpi_scorecard.enabled`             | `true`     | KPI スコアカード集計の有効/無効 |
 | `kpi_scorecard.default_period_days` | `7`        | KPI 集計のデフォルト期間（日）  |
 
-`quality_gate` / `context_optimization` / `evaluation_set_check` の機能フラグと `paths.state_dir` は、Issue #153 で `quality-gates` パッケージが所有する `.claude/config/quality-gates/quality-gates.json` へ移りました（`audit` のコードはこれらを読みません）。プロジェクト固有の上書きは `.claude/config/quality-gates/quality-gates.local.json` で行います。既存プロジェクトの `.claude/config/audit/audit-flags.local.json` に残るこれらのキーは、0.4.x の間は読み替えてそのまま動作します（詳細・優先順位は `packages/quality-gates/README.md` を参照）。
+`quality_gate` / `context_optimization` / `evaluation_set_check` の機能フラグと `paths.state_dir` は、Issue #153 で `quality-gates` パッケージが所有する `.claude/config/quality-gates/quality-gates.json` へ移りました（`audit` のコードはこれらを読みません）。プロジェクト固有の上書きは `.claude/config/quality-gates/quality-gates.local.json` で行います。既存プロジェクトの `.claude/config/audit/audit-flags.local.json` に残るこれらのキーは読まれない（SessionStart 時に移行案内が出る。詳細・優先順位は `packages/quality-gates/README.md` を参照）。
 
 opt-out 例（`block_on_failed_test` を解除する場合）は `packages/quality-gates/README.md`「設定キー」節を参照してください。
 

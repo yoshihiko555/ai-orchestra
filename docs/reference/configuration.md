@@ -291,10 +291,10 @@ agents:
 | `route_audit`   | ルーティング実績の記録 | 有効       |
 | `kpi_scorecard` | KPI スコアカード生成   | 有効       |
 
-**後方互換（0.4.x の間）**: 既存プロジェクトの `audit-flags.local.json` に旧 `quality_gate` /
-`context_optimization` / `evaluation_set_check` / `paths.state_dir` が残っていても、`quality-gates`
-側のローダーが読み替えて動作する（優先順位は次節を参照）。SessionStart 時に `audit-bootstrap.py` が
-該当を検出すると移行案内を 1 行出力する。0.5.0 でこの読み替えの削除を再検討する。
+**移行**: 既存プロジェクトの `audit-flags.local.json` に旧 `quality_gate` / `context_optimization` /
+`evaluation_set_check` / `paths.state_dir` が残っていても、`quality-gates` 側のローダーはこれを読まない。
+SessionStart 時に `audit-bootstrap.py` が該当を検出すると移行案内を 1 行出力するので、
+`.claude/config/quality-gates/quality-gates.local.json` へ移す。
 
 ---
 
@@ -351,10 +351,10 @@ quality-gates の機能フラグと状態ディレクトリの管理。Issue #15
 **旧 `audit-flags.local.json` からの移行**: 実効値の優先順位（後勝ち）は次のとおり。
 
 1. `quality-gates.json`（base）
-2. `audit-flags.local.json` の該当キー（deprecated 読み替え。0.4.x の間のみ）
-3. `quality-gates.local.json`（最優先）
+2. `quality-gates.local.json`（最優先）
 
-詳細は `packages/quality-gates/README.md`「設定キー」節を参照。
+`audit-flags.local.json` に残る旧キーは読まれない。詳細は `packages/quality-gates/README.md`
+「設定キー」節を参照。
 
 ---
 
