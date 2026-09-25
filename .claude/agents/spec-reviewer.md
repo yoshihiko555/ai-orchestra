@@ -1,6 +1,6 @@
 ---
 name: spec-reviewer
-description: Specification compliance review agent using Codex CLI for checking implementation against design documents and specifications.
+description: Specification compliance review agent for checking implementation against design documents and specifications.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---

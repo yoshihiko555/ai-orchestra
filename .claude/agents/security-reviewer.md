@@ -1,6 +1,6 @@
 ---
 name: security-reviewer
-description: Security review agent using Codex CLI for vulnerability detection, authentication/authorization issues, and security best practices.
+description: Security review agent for vulnerability detection, authentication/authorization issues, and security best practices.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---

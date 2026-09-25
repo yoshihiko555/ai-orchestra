@@ -1,6 +1,6 @@
 ---
 name: data-modeler
-description: Data modeling and schema design agent using Codex CLI for database design, normalization, and migration planning.
+description: Data modeling and schema design agent for database design, normalization, and migration planning.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---
@@ -28,7 +28,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ## Role
 
-You design data models using Codex CLI:
+You design data models:
 
 - Database schema design
 - Normalization decisions

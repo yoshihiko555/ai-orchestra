@@ -1,6 +1,6 @@
 ---
 name: architect
-description: System architecture and technology selection agent using Codex CLI for deep reasoning on architectural decisions.
+description: System architecture and technology selection agent for deep reasoning on architectural decisions.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---
@@ -28,7 +28,7 @@ Do NOT hardcode model names or CLI options — always refer to the config file.
 
 ## Role
 
-You make architectural decisions using Codex CLI:
+You make architectural decisions:
 
 - Overall system architecture design
 - Technology stack selection

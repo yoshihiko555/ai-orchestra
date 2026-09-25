@@ -1,6 +1,6 @@
 ---
 name: architecture-reviewer
-description: Architecture review agent using Codex CLI for evaluating architectural decisions, extensibility, and technical debt.
+description: Architecture review agent for evaluating architectural decisions, extensibility, and technical debt.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---
