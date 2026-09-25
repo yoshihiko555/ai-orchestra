@@ -3,7 +3,7 @@
 
 # AI Orchestra
 
-**概要**: Claude Code + Codex CLI + Gemini CLI の協調実行を管理する Python 製オーケストレーション基盤。
+**概要**: Claude Code + Codex CLI + Antigravity CLI の協調実行を管理する Python 製オーケストレーション基盤。
 
 ---
 
@@ -30,19 +30,24 @@
 # 開発依存込みでインストール
 pip install -e ".[dev]"
 
-# テスト
-pytest -q
-pytest -q tests/test_orchestra_manager_context.py
+# テスト（CI と同じ範囲）
+pytest -q tests/unit/
+pytest -q tests/e2e/
+pytest -q packages/<package>/tests
 
 # Lint / Format
 ruff check .
 ruff format --check .
 
-# コンテキストテンプレート管理
+# 生成物の再生成（facets/ や templates/context/ を変更したら実行し、生成物もコミットする）
+python scripts/orchestra-manager.py facet build --project .
+python scripts/orchestra-manager.py facet build --target codex --project .
 python scripts/orchestra-manager.py context build
 python scripts/orchestra-manager.py context check
-python scripts/orchestra-manager.py context sync --project .
 ```
+
+- worktree（`.worktrees/<name>`）では各コマンドの先頭に `AI_ORCHESTRA_DIR="$PWD"` を付ける（シェルの `AI_ORCHESTRA_DIR` が root チェックアウトを指しているため）
+- CI は再生成後に `git diff --exit-code` を実行し、生成物のコミット漏れを検出する
 
 ---
 

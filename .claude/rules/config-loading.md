@@ -22,7 +22,6 @@ codex:
   sandbox:
     analysis: read-only
     implementation: workspace-write
-  flags: --full-auto
 
 antigravity:
   model: gemini-3.1-pro-high

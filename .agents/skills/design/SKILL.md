@@ -233,7 +233,7 @@ Phase 0 は **必ず `researcher` サブエージェント経由で実施する*
 
 - 大量のコード読み込み結果でメインコンテキストを消費させない
 - 調査内容を要約形式で受け取り、後続フェーズで参照しやすくする
-- `cli-tools.yaml` の `agents.researcher.tool` 設定に従って実行ツール（Gemini 等）が決まる
+- `cli-tools.yaml` の `agents.researcher.tool` 設定に従って実行ツール（Antigravity 等）が決まる
 
 依頼テンプレート:
 

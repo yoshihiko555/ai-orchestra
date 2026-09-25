@@ -64,7 +64,7 @@ Codex の行動指針は `AGENTS.md` 連鎖から読み込まれます。
 ├── agents/                                      # Agent definitions
 ├── rules/                                       # Project policies
 ├── docs/DESIGN.md                               # Architecture decisions
-└── logs/cli-tools.jsonl                         # Past Codex/Gemini interactions
+└── logs/cli-tools.jsonl                         # Past Codex/Antigravity interactions
 ```
 
 ## 参照優先順位
@@ -190,5 +190,5 @@ GitHub PR レビュー・コードレビュー依頼の際は、以下の観点�
 
 ## CLI Logs
 
-Codex/Gemini への入出力は `.claude/logs/cli-tools.jsonl` に記録されています。
+Codex/Antigravity への入出力は `.claude/logs/cli-tools.jsonl` に記録されています。
 過去の相談内容を確認する場合は、このログを参照してください。

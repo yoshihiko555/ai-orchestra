@@ -25,7 +25,7 @@ Claude Code (Orchestrator)
 このリポジトリ `ai-orchestra` は、以下を再利用可能にするオーケストレーション基盤です。
 
 - Claude Code subagent workflows
-- Codex/Gemini CLI delegation and logging
+- Codex/Antigravity CLI delegation and logging
 - Package-based setup and sync via `orchex`
 
 主要なコード配置:
@@ -71,7 +71,7 @@ Codex の行動指針は `AGENTS.md` 連鎖から読み込まれます。
 ├── agents/                                      # Agent definitions
 ├── rules/                                       # Project policies
 ├── docs/DESIGN.md                               # Architecture decisions
-└── logs/cli-tools.jsonl                         # Past Codex/Gemini interactions
+└── logs/cli-tools.jsonl                         # Past Codex/Antigravity interactions
 ```
 
 ## 参照優先順位
