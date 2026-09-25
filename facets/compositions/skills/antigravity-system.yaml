@@ -6,8 +6,7 @@ frontmatter:
   name: antigravity-system
   description: |
     PROACTIVELY consult Antigravity CLI for research and large codebase comprehension.
-    Antigravity excels at: large context windows, Google Search grounding,
-    and repository-wide understanding.
+    Antigravity excels at: Google Search grounding and repository-wide understanding.
     Use for pre-implementation research, documentation analysis, and codebase exploration.
     Explicit triggers: "research", "investigate", "agy", "antigravity", "understand codebase".
   metadata:

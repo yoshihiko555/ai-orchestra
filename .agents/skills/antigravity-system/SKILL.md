@@ -4,9 +4,7 @@ description:
   'PROACTIVELY consult Antigravity CLI for research and large codebase
   comprehension.
 
-  Antigravity excels at: large context windows, Google Search grounding,
-
-  and repository-wide understanding.
+  Antigravity excels at: Google Search grounding and repository-wide understanding.
 
   Use for pre-implementation research, documentation analysis, and codebase exploration.
 
@@ -63,7 +61,7 @@ Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マー�
 
 # Antigravity System — Research Specialist
 
-**Antigravity CLI (`agy`) is your research specialist with a large context window.**
+**Antigravity CLI (`agy`) is your research specialist.**
 
 > **詳細ルール**: `.claude/rules/antigravity-delegation.md`
 
@@ -218,9 +216,8 @@ See: `references/lib-research-task.md`
 
 ## Why Antigravity?
 
-- **Large context window**: Entire repositories at once
 - **Google Search grounding**: Latest information and docs
-- **Multiple models**: Gemini 3.5 Flash / 3.1 Pro / Claude 4.6 / GPT-OSS switching
+- **Multiple models**: Switch among the models in `antigravity.model_allowlist`
 - **Fast exploration**: Quick overview before deep work
 - **Shared context**: Results saved for Claude/Codex
 

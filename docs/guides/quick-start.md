@@ -144,7 +144,7 @@ AI Orchestra の設定はレイヤード構成で管理されている。ベー�
 codex:
   model: o3-pro
 antigravity:
-  model: gemini-3.5-flash-high
+  model: gemini-3.8-flash-high
 ```
 
 ### Codex / Antigravity を無効化

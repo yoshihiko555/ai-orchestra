@@ -17,6 +17,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = REPO_ROOT / "packages" / "meta-harness" / "schemas"
 
 _DEFAULT_OVERLAY_CONFIG = mh.DEFAULTS
+# 実 config の allowlist から取る。値を固定すると allowlist の更新でテストが壊れる
+_ALLOWLISTED_ANTIGRAVITY_MODEL = sorted(mh._load_antigravity_model_allowlist(SCHEMA_DIR))[0]
 
 
 class TestValidateOverlayAccepts:
@@ -197,7 +199,7 @@ class TestValidateConfigPatch:
         ("key_path", "value"),
         [
             ("agents.debugger.tool", "auto"),
-            ("antigravity.model", "gemini-3.1-pro"),
+            ("antigravity.model", _ALLOWLISTED_ANTIGRAVITY_MODEL),
         ],
     )
     def test_proposer_allowed_key_kinds_are_accepted(self, key_path: str, value: str) -> None:
@@ -255,7 +257,7 @@ class TestValidateConfigPatch:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "antigravity.model",
-                "value": "gemini-3.1-pro",
+                "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
             },
         ]
 
@@ -280,7 +282,7 @@ class TestValidateConfigPatch:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "antigravity.model",
-                "value": "gemini-3.1-pro",
+                "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
             },
         ]
 
@@ -373,7 +375,7 @@ class TestValidateConfigPatch:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "antigravity.model",
-                    "value": "gemini-3.1-pro",
+                    "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,
@@ -566,7 +568,7 @@ class TestValidateConfigPatch:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "antigravity.model",
-                    "value": "gemini-3.1-pro",
+                    "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,
@@ -662,7 +664,7 @@ class TestValidateConfigPatch:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "antigravity.model",
-                    "value": "gemini-3.1-pro",
+                    "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,

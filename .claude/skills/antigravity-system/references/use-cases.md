@@ -18,7 +18,7 @@ Include:
 IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> 2>/dev/null
 
 # Framework-specific research
-agy -p "Research FastAPI authentication patterns in 2025.
+agy -p "Research the latest FastAPI authentication patterns.
 Focus on:
 - JWT vs session-based auth
 - Dependency injection patterns
@@ -60,7 +60,7 @@ agy -p "Find and summarize the latest React 19 features and migration guide from
 IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> 2>/dev/null
 
 # Compare libraries
-agy -p "Compare these Python HTTP clients in 2025:
+agy -p "Compare these Python HTTP clients:
 - httpx vs aiohttp vs requests
 - Performance benchmarks
 - Feature comparison
