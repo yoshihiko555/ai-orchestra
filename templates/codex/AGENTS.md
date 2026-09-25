@@ -297,9 +297,9 @@ Claude Code が再利用しやすい形で返答してください。
 
 {Links to documentation, examples}
 
-## For Codex Review (if design-related)
+## Open Design Questions
 
-{Questions or decisions that need Codex's deep analysis}
+{Decisions the caller must make; which agent handles them follows cli-tools.yaml routing}
 ```
 
 ## 言語プロトコル
@@ -315,7 +315,7 @@ Claude Code が再利用しやすい形で返答してください。
 2. **Cite sources** — URL と一次情報を明記する
 3. **Be actionable** — Claude Code がすぐ使える提案にする
 4. **Save findings** — `.claude/docs/research/` に結果を残す
-5. **Flag for Codex** — 設計判断が必要なら Codex レビュー対象として明示する
+5. **Flag decisions** — 設計判断が必要なら呼び出し元に判断を委ねる（どのエージェントに回すかは `cli-tools.yaml` のルーティングに従う）
 6. **Respect local overrides** — `.local.*` がある場合は実効設定を優先する
 
 ## CLI Logs
