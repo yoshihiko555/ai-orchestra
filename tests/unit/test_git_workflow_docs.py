@@ -397,8 +397,8 @@ def test_issue_fix_critical_review_findings_require_returning_to_phase2() -> Non
 def test_issue_fix_review_is_delegated_to_review_skill() -> None:
     """EV-14 (must): Phase 4 のレビューは `/review` に委譲し、Critical 判定はその結果で行う（ADR-056）。"""
     phase4 = ISSUE_FIX[ISSUE_FIX.index("### Phase 4: レビュー") :]
-    assert "Skill ツールで `/review`（引数なし。スマート選定）を実行する。" in phase4
-    assert phase4.index("Skill ツールで `/review`") < phase4.index(
+    assert "`/review`（引数なし。スマート選定）を実行する。" in phase4
+    assert phase4.index("`/review`（引数なし。スマート選定）を実行する。") < phase4.index(
         "**Critical**: Phase 2 に戻り修正する（必須）"
     )
 

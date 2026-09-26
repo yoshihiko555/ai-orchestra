@@ -457,18 +457,20 @@ NG の場合は Phase 2 に戻って修正する。
 
 レビューは `/review` スキルに委ねる。レビュアーの選定、設計書との突合、指摘の検証は `/review` の手順に従う。
 
+**委譲先スキルの呼び出し方**（4-1 の `/review`、4-4 の `/pr-create`）: Claude Code では Skill ツールで呼ぶ。Skill ツールの無い CLI（Codex CLI 等）では、このスキルと同じ skills ディレクトリにある委譲先の `SKILL.md`（例: `.agents/skills/review/SKILL.md`）を読み、その手順どおりに実行する。
+
 #### 4-1. `/review` の実行
 
-Skill ツールで `/review`（引数なし。スマート選定）を実行する。`.md` のみの変更の扱い（原則スキップ、仕様書・API ドキュメントは `spec-reviewer`）も `/review` に従う。
+`/review`（引数なし。スマート選定）を実行する。`.md` のみの変更の扱い（原則スキップ、仕様書・API ドキュメントは `spec-reviewer`）も `/review` に従う。
 
 `/review` が使えない環境（quality-gates パッケージ未導入）では、`code-reviewer` をサブエージェントで起動し、`git diff --stat` と `git diff` を渡して Tiered Output 形式（Critical / High / Medium / Low）で報告させる（`skill-review-policy` ルールがあれば、そのパスパターンで専門レビュアーを 1 名まで足す）。
 
 #### 4-2. 指摘対応
 
-`/review` の Review Summary（`review.auto_fix` が有効なら Final Report）の結果で判断する:
+`/review` が最後に出力した Review Summary（Phase 4 の Tiered Output。`review.auto_fix` が有効ならループ最終回のもの）で判断する。auto_fix 有効時の Final Report は件数の推移しか持たないため、High の内容は Review Summary から拾う:
 
-- **Critical**: Phase 2 に戻り修正する（必須）。auto_fix 有効時は、自動修正の後も残った Critical が対象
-- **High**: ユーザーに AskUserQuestion で対応を確認
+- **Critical**: Phase 2 に戻り修正する（必須）。auto_fix 有効時は、自動修正の後も残った Critical（Final Report が FAILED / NEEDS_REVIEW）が対象
+- **High**: ユーザーに AskUserQuestion で対応を確認（Final Report が PASSED でも High が残っていれば確認する）
 - **指摘なし / Medium 以下のみ**: 次のステップに進む
 
 `/review` の Auto-Fix がコードを変更した場合（Final Report に修正の記録がある場合）は、4-3 に進む前に Phase 3 に戻り、テストと受け入れ条件の verify をやり直す。
@@ -500,7 +502,7 @@ AskUserQuestion で次のアクションを選択:
 
 ##### PR 作成時
 
-Skill ツールで `/pr-create --issue {番号}` を実行する。base branch の解決、PR テンプレート、タイトルとラベル、`Closes #{番号}` の付与、push は `/pr-create` の手順に従う（`--issue` 付きの呼び出しでは作成前のプレビュー確認を省略する。同じブランチに既存 PR がある場合の確認は `/pr-create` 側で行う）。4-2 のレビュー結果を本文に残す場合は `--reviewers "{レビュアー}: {結果の要約}"` を付ける。
+`/pr-create --issue {番号}` を実行する。base branch の解決、PR テンプレート、タイトルとラベル、`Closes #{番号}` の付与、push は `/pr-create` の手順に従う（`--issue` 付きの呼び出しでは作成前のプレビュー確認を省略する。同じブランチに既存 PR がある場合の確認は `/pr-create` 側で行う）。4-2 のレビュー結果を本文に残す場合は `--reviewers "{レビュアー}: {結果の要約}"` を付ける。
 
 ## 注意事項
 
