@@ -73,8 +73,8 @@ ai-orchestra/
 │
 ├── templates/                 # 配布テンプレート
 │   ├── context/               # 正本（手編集するソース）
-│   ├── project/               # 生成物 → CLAUDE.md
-│   └── codex/                 # 生成物 → AGENTS.md（codex.md + antigravity.md 合成）
+│   ├── project/               # 生成物 → AGENTS.md（agents.md + orchestra.md の管理ブロック）
+│   └── codex/                 # .codex/ 初期配置（config.toml, skills/）
 │
 ├── tests/                     # ユニットテスト（27ファイル）
 ├── .claude/                   # 同期後の実行コンテキスト
@@ -338,18 +338,19 @@ instruction: codex-system # facets/instructions/codex-system.md を参照
 ### 7.1 正本と生成物の関係
 
 ```
-templates/context/claude.md  (正本・手編集)
-templates/context/shared.md  (共通フラグメント)
+templates/context/agents.md     (正本・手編集: プロジェクト固有の記述欄のひな形)
+templates/context/orchestra.md  (正本・手編集: ai-orchestra 管理ブロックの本文)
         ↓  orchex context build
-templates/project/CLAUDE.md  (生成物・直接編集禁止)
+templates/project/AGENTS.md     (生成物・直接編集禁止)
         ↓  orchex context sync --project <path>
-<project>/CLAUDE.md          (配布先)
+<project>/AGENTS.md             (配布先。初回は全体を作成し、以降は管理ブロックだけを最新化)
 ```
 
-| 正本                                          | 生成先テンプレート            | プロジェクト配置先 |
-| --------------------------------------------- | ----------------------------- | ------------------ |
-| `context/claude.md`                           | `templates/project/CLAUDE.md` | `CLAUDE.md`        |
-| `context/codex.md` + `context/antigravity.md` | `templates/codex/AGENTS.md`   | `AGENTS.md`        |
+| 正本                                         | 生成先テンプレート            | プロジェクト配置先 |
+| -------------------------------------------- | ----------------------------- | ------------------ |
+| `context/agents.md` + `context/orchestra.md` | `templates/project/AGENTS.md` | `AGENTS.md`        |
+
+指示書は `AGENTS.md` の 1 本で、Claude Code（2.1.277 以降。`CLAUDE.md` が無いときに `AGENTS.md` を読む）・Codex CLI・Antigravity CLI が共通で読む。`CLAUDE.md` は配布しない。
 
 ---
 
@@ -431,8 +432,7 @@ agents:
 
 ```
 <project>/
-├── CLAUDE.md                       # テンプレートから同期
-├── AGENTS.md                       # テンプレートから同期
+├── AGENTS.md                       # テンプレートから作成（管理ブロックは同期で最新化）
 ├── .claude/
 │   ├── orchestra.json              # インストール済みパッケージ・同期状態
 │   ├── settings.local.json         # hook 登録（自動管理）

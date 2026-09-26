@@ -1195,7 +1195,7 @@ providers/
 
 ```bash
 cp -R templates/codex/.codex ./
-cp templates/codex/AGENTS.md ./AGENTS.md
+cp templates/project/AGENTS.md ./AGENTS.md
 ```
 
 ### 13.2 Phase 2: Repo-local script
