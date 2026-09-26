@@ -469,9 +469,9 @@ NG の場合は Phase 2 に戻って修正する。
 
 `/review` が最後に出力した Review Summary（Phase 4 の Tiered Output。`review.auto_fix` が有効ならループ最終回のもの）で判断する。auto_fix 有効時の Final Report は件数の推移しか持たないため、High の内容は Review Summary から拾う:
 
-- **Critical**: Phase 2 に戻り修正する（必須）。auto_fix 有効時は、自動修正の後も残った Critical（Final Report が FAILED / NEEDS_REVIEW）が対象
+- **Critical**: Phase 2 に戻り修正する（必須）。auto_fix 有効時は、自動修正の後も残った Critical（Final Report が FAILED）が対象。指摘検証で `uncertain` のまま残った Critical と `NEEDS_REVIEW` の指摘は、AskUserQuestion で修正するか受け入れるかを確認してから進む
 - **High**: ユーザーに AskUserQuestion で対応を確認（Final Report が PASSED でも High が残っていれば確認する）
-- **指摘なし / Medium 以下のみ**: 次のステップに進む
+- **指摘なし / Medium 以下のみ**: 次のステップに進む（`.md` のみの変更で `/review` がレビューをスキップした場合も同じ）
 
 `/review` の Auto-Fix がコードを変更した場合（Final Report に修正の記録がある場合）は、4-3 に進む前に Phase 3 に戻り、テストと受け入れ条件の verify をやり直す。
 

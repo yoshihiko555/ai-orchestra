@@ -394,6 +394,14 @@ def test_issue_fix_critical_review_findings_require_returning_to_phase2() -> Non
     assert "**Critical**: Phase 2 に戻り修正する（必須）" in ISSUE_FIX
 
 
+def test_issue_fix_reverifies_before_commit_when_review_autofix_changed_code() -> None:
+    """EV-14 (must): `/review` の Auto-Fix がコードを変えたら、4-3 のコミットより前に Phase 3 をやり直す。"""
+    reverify_idx = ISSUE_FIX.index(
+        "4-3 に進む前に Phase 3 に戻り、テストと受け入れ条件の verify をやり直す"
+    )
+    assert reverify_idx < ISSUE_FIX.index("#### 4-3. コミット")
+
+
 def test_issue_fix_review_is_delegated_to_review_skill() -> None:
     """EV-14 (must): Phase 4 のレビューは `/review` に委譲し、Critical 判定はその結果で行う（ADR-056）。"""
     phase4 = ISSUE_FIX[ISSUE_FIX.index("### Phase 4: レビュー") :]
