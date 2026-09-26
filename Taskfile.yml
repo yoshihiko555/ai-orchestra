@@ -14,6 +14,9 @@ includes:
     flatten: true
     vars:
       ORCHESTRA_DIR: "{{.ORCHESTRA_DIR}}"
+  model:
+    taskfile: ./taskfiles/model.yml
+    flatten: true
   rel:
     # ADR-022: stage 廃止により main 直 PR + 直タグ方式（STAGE_BRANCH は渡さない）
     taskfile: ~/ghq/github.com/yoshihiko555/.github/taskfiles/release.yml
