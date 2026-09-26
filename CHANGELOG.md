@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Codex の既定モデルを `gpt-6-sol` に更新**: エージェントルーティング、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。meta-harness の `codex.model_allowlist` も `gpt-6-sol` に置き換えた。
 - **BREAKING** **`core` / `codex-suggestions`: 指示書を `AGENTS.md` の 1 本にし、`CLAUDE.md` の配布をやめた**: Claude Code（2.1.277 以降が必要）・Codex CLI・Antigravity CLI が同じ `AGENTS.md` を読む。`AGENTS.md` はプロジェクト固有の記述欄と末尾の `ai-orchestra` 管理ブロックからなり、管理ブロックは `orchex context sync` / `install` / `init` の実行時にだけ最新化される（SessionStart の自動同期では更新されない）。移行: `context sync` で旧生成物（生成マーカー入り）の `CLAUDE.md` は削除され、`AGENTS.md` は新しいテンプレートに置き換わる（元ファイルは `.claude/state/legacy-context/` に退避）ので、プロジェクト固有の記述を git 履歴から記述欄へ移す。手書きの `CLAUDE.md` は警告して残すので、内容を `AGENTS.md` に移して削除する（残っていると Claude Code は `AGENTS.md` を読まない）。
 - **`tdd`: すべてのフェーズをサブエージェント委譲に統一（ADR-056）**: `agents.<name>.tool` が `claude-direct` でもオーケストレーターがインラインで実装・リファクタしなくなった。Red / Green / Refactor はそれぞれ `tester` / `$IMPL_AGENT` への `Task` 委譲で行い、実行ツールは hook の `[Resolved Routing]` が決める。
 - **`AGENTS.md` で Codex / Antigravity の役割を固定しなくなった（ADR-056）**: 「担当外（Claude Code が実行）」と Antigravity 側の担当表を外し、Codex は呼び出し方と依頼内容で 3 つの実行モードを切り替える（相談: `codex exec` read-only で分析のみ / 委譲実装: Claude Code の実装エージェントからの `codex exec` workspace-write で委譲範囲を編集、commit なし / 発注書実装: 引き継ぎファイル・TAKT・直接起動で発注書の範囲を編集・テスト）。状態の更新先は発注書の形で決まる（引き継ぎファイルなら Plans.md、TAKT なら TAKT のレポート）。実行先の決定は `cli-tools.yaml` のルーティングに一本化。既存導入先は `orchex context sync` で `AGENTS.md` の管理ブロックに反映される。

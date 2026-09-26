@@ -1938,9 +1938,10 @@ def test_routing_impact_recomputation_applies_parent_against_promotion_base(
 
 def test_routing_config_structural_verification_aborts_before_writes(tmp_path: Path) -> None:
     worktree, original = _prepare_routing_config_worktree(tmp_path)
+    current_model = _routing_config_value(original, "codex.model")
     duplicate = original.decode("utf-8").replace(
-        "  model: gpt-5.6-sol\n",
-        "  model: gpt-5.6-sol\n  model: duplicate\n",
+        f"  model: {current_model}\n",
+        f"  model: {current_model}\n  model: duplicate\n",
         1,
     )
     for relative_path in (
