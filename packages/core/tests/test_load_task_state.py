@@ -188,7 +188,9 @@ def test_main_uses_unlimited_when_configured_max_display_is_zero(tmp_path, monke
     monkeypatch.setattr(
         load_task_state,
         "format_summary",
-        lambda _tasks, max_display: called.update({"max_display": max_display}) or "summary",
+        lambda _tasks, max_display, **_kwargs: (
+            called.update({"max_display": max_display}) or "summary"
+        ),
     )
     printed: list[str] = []
     monkeypatch.setattr("builtins.print", lambda message: printed.append(message))
@@ -197,6 +199,41 @@ def test_main_uses_unlimited_when_configured_max_display_is_zero(tmp_path, monke
 
     assert called["max_display"] is None
     assert printed == ["summary"]
+
+
+def test_main_prints_summary_when_only_orders_exist_and_no_tasks(tmp_path, monkeypatch) -> None:
+    plans_path = tmp_path / ".claude" / "Plans.md"
+    plans_path.parent.mkdir(parents=True)
+    plans_path.write_text(
+        """# Plans
+
+## Project: HeadingOnly
+
+#### Goal
+- Ship it later
+
+### Phase 1: Setup `cc:TODO`
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(load_task_state, "read_hook_input", lambda: {"cwd": str(tmp_path)})
+    monkeypatch.setattr(
+        load_task_state,
+        "load_config",
+        lambda _project_dir: {
+            "plans_file": ".claude/Plans.md",
+            "show_summary_on_start": True,
+            "max_display_tasks": 20,
+        },
+    )
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda message: printed.append(message))
+
+    load_task_state.main()
+
+    assert printed
+    assert "Goal: Ship it later" in printed[0]
 
 
 def test_main_falls_back_to_default_max_display_for_invalid_value(tmp_path, monkeypatch) -> None:
@@ -229,7 +266,9 @@ def test_main_falls_back_to_default_max_display_for_invalid_value(tmp_path, monk
     monkeypatch.setattr(
         load_task_state,
         "format_summary",
-        lambda _tasks, max_display: called.update({"max_display": max_display}) or "summary",
+        lambda _tasks, max_display, **_kwargs: (
+            called.update({"max_display": max_display}) or "summary"
+        ),
     )
     monkeypatch.setattr("builtins.print", lambda _message: None)
 
@@ -274,7 +313,9 @@ def test_main_treats_string_zero_max_display_as_unlimited(tmp_path, monkeypatch)
     monkeypatch.setattr(
         load_task_state,
         "format_summary",
-        lambda _tasks, max_display: called.update({"max_display": max_display}) or "summary",
+        lambda _tasks, max_display, **_kwargs: (
+            called.update({"max_display": max_display}) or "summary"
+        ),
     )
     monkeypatch.setattr("builtins.print", lambda _message: None)
 
@@ -307,7 +348,9 @@ def test_main_passes_custom_marker_mapping_to_parse_tasks(tmp_path, monkeypatch)
         return {"WIP": [], "TODO": [{"task": "task", "reason": None}], "done": [], "blocked": []}
 
     monkeypatch.setattr(load_task_state, "parse_tasks", fake_parse_tasks)
-    monkeypatch.setattr(load_task_state, "format_summary", lambda _tasks, _max: "summary")
+    monkeypatch.setattr(
+        load_task_state, "format_summary", lambda _tasks, _max, **_kwargs: "summary"
+    )
     monkeypatch.setattr("builtins.print", lambda _message: None)
 
     load_task_state.main()
@@ -558,6 +601,47 @@ def test_detect_completed_projects_legacy_format_without_acceptance_criteria() -
     assert incomplete == []
 
 
+def test_detect_completed_projects_ignores_fenced_headings_and_tasks() -> None:
+    content = (
+        "## Project: Real\n\n"
+        "#### Context\n\n"
+        "```\n"
+        "## Project: Fake\n"
+        "### Phase 1: Ghost `cc:done`\n"
+        "- `cc:done` ghost task\n"
+        "```\n\n"
+        "### Phase 1: Actual `cc:WIP`\n\n"
+        "- `cc:WIP` actual task\n"
+    )
+    completed = load_task_state.detect_completed_projects(
+        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
+    )
+    assert completed == []
+
+
+def test_parse_tasks_nested_fence_requires_matching_char_and_length() -> None:
+    content = "````markdown\n```\n- `cc:WIP` fake nested task\n```\n````\n\n- `cc:WIP` real task\n"
+    tasks = load_task_state.parse_tasks(content)
+    assert tasks["WIP"] == [{"task": "real task", "reason": None}]
+
+
+def test_structural_exclusions_frontmatter_closing_requires_unindented_delimiter() -> None:
+    lines = [
+        "---",
+        "owner: |",
+        "  team: infra",
+        "  ---",
+        "- `cc:WIP` bogus inside frontmatter",
+        "---",
+        "- `cc:WIP` real task",
+    ]
+
+    excluded = load_task_state.structural_exclusions(lines)
+
+    assert {0, 1, 2, 3, 4, 5}.issubset(excluded)
+    assert 6 not in excluded
+
+
 def test_main_falls_back_to_default_markers_when_duplicates_exist(tmp_path, monkeypatch) -> None:
     plans_path = tmp_path / ".claude" / "Plans.md"
     plans_path.parent.mkdir(parents=True)
@@ -587,9 +671,467 @@ def test_main_falls_back_to_default_markers_when_duplicates_exist(tmp_path, monk
         return {"WIP": [], "TODO": [{"task": "task", "reason": None}], "done": [], "blocked": []}
 
     monkeypatch.setattr(load_task_state, "parse_tasks", fake_parse_tasks)
-    monkeypatch.setattr(load_task_state, "format_summary", lambda _tasks, _max: "summary")
+    monkeypatch.setattr(
+        load_task_state, "format_summary", lambda _tasks, _max, **_kwargs: "summary"
+    )
     monkeypatch.setattr("builtins.print", lambda _message, **_kwargs: None)
 
     load_task_state.main()
 
     assert captured["marker_to_state"] == load_task_state.DEFAULT_MARKER_TO_STATE
+
+
+def test_parse_orders_and_summary_include_single_project_order() -> None:
+    content = """# Plans
+
+## Project: Launch
+
+#### Goal
+
+- Ship v2
+
+#### Open Questions
+
+- Which region launches first?
+- Is migration downtime acceptable?
+
+### Phase 1: Setup `cc:WIP`
+
+#### Tasks
+
+- `cc:WIP` Do the thing
+"""
+
+    orders = load_task_state.parse_orders(content)
+    tasks = load_task_state.parse_tasks(content)
+    summary = load_task_state.format_summary(tasks, 20, orders=orders)
+
+    assert orders == [{"name": "Launch", "goal": "Ship v2", "open_questions": 2}]
+    assert summary.splitlines()[:4] == [
+        "[task-memory] 1 tasks (WIP: 1)",
+        "  Goal: Ship v2",
+        "  Open Questions: 2",
+        "  WIP:",
+    ]
+
+
+def test_summary_qualifies_order_labels_for_multiple_projects() -> None:
+    content = """# Plans
+
+## Project: Alpha
+
+#### Goal
+- Ship Alpha
+
+#### Open Questions
+- Alpha question?
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` Alpha task
+
+## Project: Beta
+
+#### Goal
+- Ship Beta
+
+#### Open Questions
+- Beta question one?
+- Beta question two?
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` Beta task
+"""
+
+    orders = load_task_state.parse_orders(content)
+    summary = load_task_state.format_summary(
+        load_task_state.parse_tasks(content), 20, orders=orders
+    )
+
+    assert orders == [
+        {"name": "Alpha", "goal": "Ship Alpha", "open_questions": 1},
+        {"name": "Beta", "goal": "Ship Beta", "open_questions": 2},
+    ]
+    assert summary.splitlines()[1:5] == [
+        "  Goal (Alpha): Ship Alpha",
+        "  Goal (Beta): Ship Beta",
+        "  Open Questions (Alpha): 1",
+        "  Open Questions (Beta): 2",
+    ]
+
+
+def test_summary_qualifies_goal_label_even_when_only_one_project_has_a_goal() -> None:
+    content = """# Plans
+
+## Project: Alpha
+
+#### Goal
+- Ship Alpha
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` Alpha task
+
+## Project: Beta
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` Beta task
+"""
+
+    orders = load_task_state.parse_orders(content)
+    summary = load_task_state.format_summary(
+        load_task_state.parse_tasks(content), 20, orders=orders
+    )
+
+    assert "  Goal (Alpha): Ship Alpha" in summary.splitlines()
+    assert "  Goal: Ship Alpha" not in summary.splitlines()
+
+
+def test_parse_orders_preserves_duplicate_project_names_as_separate_entries() -> None:
+    content = """# Plans
+
+## Project: Dup
+
+#### Goal
+- First goal
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` task one
+
+## Project: Dup
+
+#### Goal
+- Second goal
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` task two
+"""
+
+    orders = load_task_state.parse_orders(content)
+
+    assert orders == [
+        {"name": "Dup", "goal": "First goal", "open_questions": 0},
+        {"name": "Dup", "goal": "Second goal", "open_questions": 0},
+    ]
+    summary = load_task_state.format_summary(
+        load_task_state.parse_tasks(content), 20, orders=orders
+    )
+    assert "  Goal (Dup): First goal" in summary.splitlines()
+    assert "  Goal (Dup): Second goal" in summary.splitlines()
+
+
+def test_parse_orders_ignores_none_open_question_bullets() -> None:
+    content = """# Plans
+
+## Project: Settled
+
+#### Open Questions
+- なし
+- N/A.
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` Start work
+"""
+
+    orders = load_task_state.parse_orders(content)
+    summary = load_task_state.format_summary(
+        load_task_state.parse_tasks(content), 20, orders=orders
+    )
+
+    assert orders == [{"name": "Settled", "goal": None, "open_questions": 0}]
+    assert "Open Questions" not in summary
+
+
+def test_parse_orders_open_questions_counts_only_top_level_bullets() -> None:
+    content = (
+        "## Project: Test\n\n"
+        "#### Open Questions\n"
+        "- Top level question one\n"
+        "  - Nested sub-question\n"
+        "- Top level question two\n"
+    )
+    orders = load_task_state.parse_orders(content)
+    assert orders == [{"name": "Test", "goal": None, "open_questions": 2}]
+
+
+def test_parse_orders_ignores_leading_frontmatter() -> None:
+    content = (
+        "---\n"
+        "## Project: FrontmatterGhost\n"
+        "#### Goal\n"
+        "- Ghost goal\n"
+        "---\n"
+        "\n"
+        "## Project: Real\n"
+        "#### Goal\n"
+        "- Real goal\n"
+    )
+    orders = load_task_state.parse_orders(content)
+    assert orders == [{"name": "Real", "goal": "Real goal", "open_questions": 0}]
+
+
+def test_parse_orders_goal_skips_html_comment_lines() -> None:
+    content = (
+        "## Project: Single\n\n"
+        "#### Goal\n"
+        "<!-- fill this in later -->\n"
+        "- Actual goal text\n\n"
+        "## Project: Multi\n\n"
+        "#### Goal\n"
+        "<!--\n"
+        "multi\n"
+        "line\n"
+        "comment\n"
+        "-->\n"
+        "- Actual goal 2\n"
+    )
+    orders = load_task_state.parse_orders(content)
+    assert orders == [
+        {"name": "Single", "goal": "Actual goal text", "open_questions": 0},
+        {"name": "Multi", "goal": "Actual goal 2", "open_questions": 0},
+    ]
+
+
+def test_html_comment_heading_does_not_hijack_current_section() -> None:
+    content = (
+        "## Project: Test\n"
+        "#### Context\n"
+        "<!--\n"
+        "#### Goal\n"
+        "-->\n"
+        "- Real context note\n"
+        "### Phase 1: Build `cc:TODO`\n"
+    )
+
+    orders = load_task_state.parse_orders(content)
+
+    assert orders == [{"name": "Test", "goal": None, "open_questions": 0}]
+
+
+def test_parse_orders_skips_placeholder_goal_and_open_question_bullets() -> None:
+    content = """# Plans
+
+## Project: Placeholder Only
+
+#### Goal
+- {目的。何のために、誰の何が変わるか}
+
+#### Open Questions
+- {未決事項。決まったら Decisions へ移して消す}
+- Should X happen?
+
+## Project: Real Goal
+
+#### Goal
+- {目的。何のために、誰の何が変わるか}
+- Ship the real change
+"""
+
+    orders = load_task_state.parse_orders(content)
+    summary = load_task_state.format_summary(
+        load_task_state.parse_tasks(content), 20, orders=orders
+    )
+
+    assert orders[0] == {"name": "Placeholder Only", "goal": None, "open_questions": 1}
+    assert orders[1]["goal"] == "Ship the real change"
+    assert "{目的" not in summary
+
+
+def test_parse_tasks_skips_cc_marker_inside_order_context() -> None:
+    content = """# Plans
+
+## Project: Test
+
+#### Context
+- `cc:TODO` some context note
+
+### Phase 1: Build `cc:TODO`
+#### Tasks
+- `cc:TODO` Real task
+"""
+
+    tasks = load_task_state.parse_tasks(content)
+
+    assert tasks["TODO"] == [{"task": "Real task", "reason": None}]
+
+
+def test_fenced_code_block_inside_order_section_is_not_treated_as_structure() -> None:
+    content = """# Plans
+
+## Project: Test
+
+#### Context
+
+```
+### Phase 9: Fake `cc:WIP`
+#### Tasks
+- `cc:TODO` fake task
+```
+
+- Real context note
+
+#### Open Questions
+
+- Real question?
+
+### Phase 1: Build `cc:TODO`
+
+#### Tasks
+
+- `cc:TODO` Real task
+"""
+
+    orders = load_task_state.parse_orders(content)
+    tasks = load_task_state.parse_tasks(content)
+
+    assert orders == [{"name": "Test", "goal": None, "open_questions": 1}]
+    assert tasks["TODO"] == [{"task": "Real task", "reason": None}]
+    assert tasks["WIP"] == []
+
+
+def test_legacy_plans_remain_byte_for_byte_compatible() -> None:
+    content = """# Plans
+
+## Project: Legacy
+
+### Phase 1: Setup `cc:WIP`
+
+#### Tasks
+
+- `cc:WIP` Do the thing
+- `cc:TODO` Do next thing
+- `cc:blocked` Blocked thing — 理由: waiting
+"""
+    expected_tasks = {
+        "WIP": [{"task": "Do the thing", "reason": None}],
+        "TODO": [{"task": "Do next thing", "reason": None}],
+        "done": [],
+        "blocked": [{"task": "Blocked thing", "reason": "waiting"}],
+    }
+    expected_summary = (
+        "[task-memory] 3 tasks (WIP: 1, TODO: 1, blocked: 1)\n"
+        "  WIP:\n"
+        "    - Do the thing\n"
+        "  Next TODO:\n"
+        "    - Do next thing\n"
+        "  Blocked:\n"
+        "    - Blocked thing (理由: waiting)"
+    )
+
+    tasks = load_task_state.parse_tasks(content)
+    orders = load_task_state.parse_orders(content)
+
+    assert tasks == expected_tasks
+    assert load_task_state.format_summary(tasks, 20) == expected_summary
+    assert orders == [{"name": "Legacy", "goal": None, "open_questions": 0}]
+    assert load_task_state.format_summary(
+        tasks, 20, orders=orders
+    ) == load_task_state.format_summary(tasks, 20)
+
+
+def test_archive_preserves_order_sections_for_completed_project(tmp_path) -> None:
+    plans_path = tmp_path / "Plans.md"
+    archive_path = tmp_path / "Plans.archive.md"
+    content = """# Plans
+
+## Project: Complete
+
+#### Goal
+- Preserve this goal
+
+#### Context
+- Preserve this context
+
+### Phase 1: Done
+#### Tasks
+- `cc:done` Finished task
+
+---
+
+## Project: Active
+
+### Phase 1: Work `cc:TODO`
+#### Tasks
+- `cc:TODO` Pending task
+"""
+    plans_path.write_text(content, encoding="utf-8")
+
+    completed = load_task_state.detect_completed_projects(
+        content,
+        load_task_state.DEFAULT_MARKER_PATTERN,
+        load_task_state.DEFAULT_MARKER_TO_STATE,
+    )
+    updated = load_task_state.archive_projects(plans_path, archive_path, completed, content)
+
+    assert [project["name"] for project in completed] == ["Complete"]
+    archive_text = archive_path.read_text(encoding="utf-8")
+    assert "#### Goal\n- Preserve this goal" in archive_text
+    assert "#### Context\n- Preserve this context" in archive_text
+    assert "Preserve this goal" not in updated
+    assert "Preserve this context" not in updated
+    assert "## Project: Active" in updated
+
+
+def test_frontmatter_is_inert_and_survives_archiving(tmp_path) -> None:
+    frontmatter = """---
+codd:
+  node_id: "plan:test"
+  kind: plan
+  status: active
+---
+"""
+    body = """# Plans
+
+## Project: Test
+
+#### Goal
+- Ship safely
+
+#### Open Questions
+- None.
+
+### Phase 1: Done
+#### Tasks
+- `cc:done` Finished task
+"""
+    plain_content = body
+    frontmatter_content = f"{frontmatter}\n{body}"
+
+    assert load_task_state.parse_tasks(frontmatter_content) == load_task_state.parse_tasks(
+        plain_content
+    )
+    assert load_task_state.parse_orders(frontmatter_content) == load_task_state.parse_orders(
+        plain_content
+    )
+
+    plain_completed = load_task_state.detect_completed_projects(
+        plain_content,
+        load_task_state.DEFAULT_MARKER_PATTERN,
+        load_task_state.DEFAULT_MARKER_TO_STATE,
+    )
+    frontmatter_completed = load_task_state.detect_completed_projects(
+        frontmatter_content,
+        load_task_state.DEFAULT_MARKER_PATTERN,
+        load_task_state.DEFAULT_MARKER_TO_STATE,
+    )
+    assert [project["name"] for project in frontmatter_completed] == [
+        project["name"] for project in plain_completed
+    ]
+    assert [project["content"] for project in frontmatter_completed] == [
+        project["content"] for project in plain_completed
+    ]
+
+    plans_path = tmp_path / "Plans.md"
+    archive_path = tmp_path / "Plans.archive.md"
+    plans_path.write_text(frontmatter_content, encoding="utf-8")
+    updated = load_task_state.archive_projects(
+        plans_path, archive_path, frontmatter_completed, frontmatter_content
+    )
+    plans_path.write_text(updated, encoding="utf-8")
+
+    assert plans_path.read_text(encoding="utf-8").startswith(f"{frontmatter}\n# Plans")

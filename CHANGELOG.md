@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`core`: Plans.md v2 — Project 直下に発注書の節（Goal / Context / Out of Scope / Constraints / Open Questions）を書けるようにした（ADR-056）**: SessionStart のサマリーに Goal の先頭 1 行と Open Questions の件数が加わり、節内の行はタスクとして数えない。`orchex init` の雛形と `/task-state init` は v2 形式を生成し、`add-phase` は `--ac` で合意済みの受け入れ条件を受け取る。`/handoff` の引き継ぎファイルに `## Order`（Goal / Context / Constraints）が入り、Codex の起動例を `codex "$(cat <file>)"` に直した。既存形式の Plans.md はそのまま動く。
+
 ### Changed
 
 - **BREAKING** **`core` / `codex-suggestions`: 指示書を `AGENTS.md` の 1 本にし、`CLAUDE.md` の配布をやめた**: Claude Code（2.1.277 以降が必要）・Codex CLI・Antigravity CLI が同じ `AGENTS.md` を読む。`AGENTS.md` はプロジェクト固有の記述欄と末尾の `ai-orchestra` 管理ブロックからなり、管理ブロックは `orchex context sync` / `install` / `init` の実行時にだけ最新化される（SessionStart の自動同期では更新されない）。移行: `context sync` で旧生成物（生成マーカー入り）の `CLAUDE.md` は削除され、`AGENTS.md` は新しいテンプレートに置き換わる（元ファイルは `.claude/state/legacy-context/` に退避）ので、プロジェクト固有の記述を git 履歴から記述欄へ移す。手書きの `CLAUDE.md` は警告して残すので、内容を `AGENTS.md` に移して削除する（残っていると Claude Code は `AGENTS.md` を読まない）。

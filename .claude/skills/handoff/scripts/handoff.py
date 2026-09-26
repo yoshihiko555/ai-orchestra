@@ -29,6 +29,113 @@ MARKER_TO_STATE = {
     "cc:blocked": "blocked",
 }
 BLOCKED_REASON_PATTERN = re.compile(r"—\s*理由:\s*(.+)$")
+_AC_CHECKBOX_PATTERN = re.compile(r"^- \[([ xX])\]")
+AC_SECTION_HEADING = "#### Acceptance Criteria"
+ORDER_SECTION_HEADINGS = {
+    "#### Goal",
+    "#### Context",
+    "#### Out of Scope",
+    "#### Constraints",
+    "#### Open Questions",
+}
+HANDOFF_ORDER_SECTIONS = (
+    ("goal", "#### Goal"),
+    ("context", "#### Context"),
+    ("constraints", "#### Constraints"),
+)
+
+_FENCE_OPEN_PATTERN = re.compile(r"^(`{3,}|~{3,})")
+_FENCE_CLOSE_PATTERN = re.compile(r"^(`{3,}|~{3,})\s*$")
+_HTML_COMMENT_START = "<!--"
+_HTML_COMMENT_END = "-->"
+_HTML_COMMENT_ONLY_PATTERN = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
+
+
+def structural_exclusions(lines: list[str]) -> set[int]:
+    """Plans.md の構造解析（見出し / cc: マーカー行判定）から除外すべき行番号を返す。
+
+    以下の 3 つの関心事を一箇所にまとめ、ファイル内の全パーサが同じ判定に従うようにする:
+    - 先頭の YAML frontmatter（先頭行が '---' で始まり、次に現れる、インデントのない
+      単独 '---' 行まで）。閉じ側は raw line が '---' と完全一致する行でのみ終端する
+      （strip() 一致にすると、YAML ブロックスカラー内のインデントされた '---' で
+      誤って閉じてしまうため）。
+    - フェンス付きコードブロック。フェンスは ` または ~ を3文字以上並べた行で開始し、
+      「同じ文字」かつ「開始時の文字数以上の文字数」を持つ単独行でのみ閉じる
+      （CommonMark に準拠したセマンティクス）。これにより、四連バッククォートの中に
+      三連バッククォートが入れ子で登場しても、内側のフェンスで外側が誤って閉じない。
+    - HTML コメント（`html_comment_line_indices` 参照）。複数行スパンのコメント内に
+      見出しに見える文字列（例: '#### Context'）が現れても、見出し/箇条書き判定より
+      前にコメント行として除外することで、パーサの状態機械が誤って遷移しないようにする。
+    """
+    excluded: set[int] = set()
+
+    start = 0
+    if lines and lines[0].strip() == "---":
+        closing = None
+        for i in range(1, len(lines)):
+            if lines[i] == "---":
+                closing = i
+                break
+        if closing is not None:
+            excluded.update(range(0, closing + 1))
+            start = closing + 1
+
+    fence_char: str | None = None
+    fence_len = 0
+    for i in range(start, len(lines)):
+        stripped = lines[i].strip()
+
+        if fence_char is not None:
+            excluded.add(i)
+            close_match = _FENCE_CLOSE_PATTERN.match(stripped)
+            if (
+                close_match
+                and stripped[:1] == fence_char
+                and len(close_match.group(1)) >= fence_len
+            ):
+                fence_char = None
+                fence_len = 0
+            continue
+
+        open_match = _FENCE_OPEN_PATTERN.match(stripped)
+        if open_match:
+            excluded.add(i)
+            fence_char = stripped[0]
+            fence_len = len(open_match.group(1))
+
+    excluded |= html_comment_line_indices(lines)
+    return excluded
+
+
+def html_comment_line_indices(lines: list[str]) -> set[int]:
+    """HTML コメント（<!-- ... -->）だけで構成される行の番号を返す（複数行スパン対応）。
+
+    行が（strip 後）'<!--' で始まる場合にのみコメントスパンを開始する。
+    箇条書き本文の中に現れるインラインコメント（例: '- <!-- memo -->'）は
+    `is_html_comment_only` で呼び出し側が個別に判定する。
+    """
+    excluded: set[int] = set()
+    in_comment = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if in_comment:
+            excluded.add(i)
+            if _HTML_COMMENT_END in stripped:
+                in_comment = False
+            continue
+        if not stripped.startswith(_HTML_COMMENT_START):
+            continue
+        excluded.add(i)
+        if _HTML_COMMENT_END not in stripped[len(_HTML_COMMENT_START) :]:
+            in_comment = True
+    return excluded
+
+
+def is_html_comment_only(text: str) -> bool:
+    """text（先頭の '- ' 等を除去済み）が HTML コメントのみで構成されるか判定する。"""
+    stripped = text.strip()
+    return bool(stripped) and bool(_HTML_COMMENT_ONLY_PATTERN.match(stripped))
+
 
 # Sensitive file patterns to exclude from diff
 SENSITIVE_PATTERNS = {".env", "credentials", "secret", ".pem", ".key"}
@@ -58,17 +165,245 @@ def run_git(args: list[str], cwd: Path) -> str | None:
         return None
 
 
+def _order_section_line_indices(lines: list[str]) -> set[int]:
+    """Return body line indices for pre-Phase order sections under Projects."""
+    excluded = structural_exclusions(lines)
+    indices: set[int] = set()
+    in_project = False
+    phase_started = False
+    in_order_section = False
+
+    for line_index, line in enumerate(lines):
+        if line_index in excluded:
+            if in_order_section:
+                indices.add(line_index)
+            continue
+
+        stripped = line.strip()
+
+        if stripped.startswith("## "):
+            in_project = stripped.startswith("## Project:")
+            phase_started = False
+            in_order_section = False
+            continue
+
+        if not in_project:
+            continue
+
+        if stripped.startswith("### "):
+            phase_started = True
+            in_order_section = False
+            continue
+
+        if stripped.startswith("#### "):
+            in_order_section = not phase_started and stripped in ORDER_SECTION_HEADINGS
+            continue
+
+        if in_order_section:
+            indices.add(line_index)
+
+    return indices
+
+
+def parse_order_sections(content: str) -> list[dict[str, list[str] | str]]:
+    """Extract Goal, Context, and Constraints bullets for each Project."""
+    lines = content.splitlines()
+    excluded = structural_exclusions(lines)
+    order_lines = _order_section_line_indices(lines)
+    heading_to_key = {heading: key for key, heading in HANDOFF_ORDER_SECTIONS}
+    orders: list[dict[str, list[str] | str]] = []
+    current_entry: dict[str, list[str] | str] | None = None
+    phase_started = False
+    current_section: str | None = None
+    last_bullet_list: list[str] | None = None
+
+    for line_index, line in enumerate(lines):
+        if line_index in excluded:
+            last_bullet_list = None
+            continue
+
+        stripped = line.strip()
+
+        if stripped.startswith("## "):
+            if stripped.startswith("## Project:"):
+                project_name = stripped.split("## Project:", 1)[1].strip()
+                current_entry = {"name": project_name}
+                orders.append(current_entry)
+                phase_started = False
+            else:
+                current_entry = None
+            current_section = None
+            last_bullet_list = None
+            continue
+
+        if current_entry is None:
+            continue
+
+        if stripped.startswith("### "):
+            phase_started = True
+            current_section = None
+            last_bullet_list = None
+            continue
+
+        if stripped.startswith("#### "):
+            current_section = heading_to_key.get(stripped) if not phase_started else None
+            last_bullet_list = None
+            continue
+
+        if line_index not in order_lines or current_section is None:
+            last_bullet_list = None
+            continue
+
+        bullet_line = line.lstrip()
+        is_indented = line != bullet_line
+        is_bullet = bullet_line.startswith("- ")
+
+        if is_bullet:
+            bullet_text = bullet_line[2:]
+            if (
+                bullet_text.strip()
+                and not bullet_text.strip().startswith("{")
+                and not is_html_comment_only(bullet_text)
+            ):
+                bullets = current_entry.setdefault(current_section, [])
+                if isinstance(bullets, list):
+                    bullets.append(bullet_text)
+                    last_bullet_list = bullets
+            else:
+                last_bullet_list = None
+            continue
+
+        if last_bullet_list is not None and is_indented and bullet_line.strip():
+            last_bullet_list[-1] = f"{last_bullet_list[-1]} {bullet_line.strip()}"
+            continue
+
+        last_bullet_list = None
+
+    return orders
+
+
+STATE_TO_MARKER = {"WIP": "cc:WIP", "TODO": "cc:TODO", "blocked": "cc:blocked"}
+
+
+def attach_tasks_to_orders(
+    orders: list[dict], tasks: dict[str, list[dict[str, str | None]]]
+) -> None:
+    """Group flat `tasks` (from `parse_tasks`, which carries a "project_index" field
+    per item — the 0-based ordinal of the enclosing `## Project:` heading in document
+    order) by that ordinal and attach them to the order entry at the same list
+    position in `orders` (mutates `orders` in place).
+
+    Matching by position (rather than by the "project" name field) keeps duplicate
+    `## Project: <same name>` sections independent: `parse_order_sections` appends
+    exactly one entry per `## Project:` heading in document order, so `orders[i]`
+    always corresponds to `project_index == i`, even when two headings share a name.
+
+    Each entry that has at least one task gets `entry["tasks"] = {"WIP": [...],
+    "TODO": [...], "blocked": [...]}`. Task dicts inside `entry["tasks"]` omit the
+    now-redundant "project"/"project_index" keys (implied by the surrounding order
+    entry) and keep only `{"task": str, "reason": str | None}`.
+
+    Tasks whose `project_index` is `None` (not under any `## Project:` heading) are
+    not attached anywhere here — they remain visible via the flat top-level `tasks`
+    dict.
+    """
+    by_index: dict[int, dict[str, list[dict[str, str | None]]]] = {}
+    for state, items in tasks.items():
+        for item in items:
+            project_index = item.get("project_index")
+            if project_index is None:
+                continue
+            bucket = by_index.setdefault(project_index, {"WIP": [], "TODO": [], "blocked": []})
+            bucket[state].append({"task": item["task"], "reason": item["reason"]})
+
+    for index, entry in enumerate(orders):
+        project_tasks = by_index.get(index)
+        if project_tasks and any(project_tasks.values()):
+            entry["tasks"] = project_tasks
+
+
+def _render_task_bullets(project_tasks: dict[str, list[dict[str, str | None]]]) -> list[str]:
+    r"""Render a project's WIP/TODO/blocked tasks as `- \`cc:STATE\` text` bullets."""
+    bullets: list[str] = []
+    for state in ("WIP", "TODO", "blocked"):
+        for item in project_tasks.get(state, []):
+            marker = STATE_TO_MARKER[state]
+            reason = item.get("reason")
+            suffix = f" — 理由: {reason}" if state == "blocked" and reason else ""
+            bullets.append(f"- `{marker}` {item['task']}{suffix}")
+    return bullets
+
+
+def render_order_markdown(orders: list[dict]) -> str:
+    """Render extracted order data (and any attached per-project tasks) as Markdown."""
+    projects = [
+        entry
+        for entry in orders
+        if any(entry.get(key) for key, _heading in HANDOFF_ORDER_SECTIONS) or entry.get("tasks")
+    ]
+    if not projects:
+        return ""
+
+    lines = ["## Order"]
+    for entry in projects:
+        lines.extend(["", f"### {entry['name']}"])
+        for key, heading in HANDOFF_ORDER_SECTIONS:
+            bullets = entry.get(key)
+            if not bullets:
+                continue
+            lines.extend(["", heading, ""])
+            lines.extend(f"- {bullet}" for bullet in bullets)
+
+        task_bullets = _render_task_bullets(entry["tasks"]) if entry.get("tasks") else []
+        if task_bullets:
+            lines.extend(["", "#### Tasks", ""])
+            lines.extend(task_bullets)
+
+    return "\n".join(lines)
+
+
 def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
-    """Parse Plans.md content and extract tasks by state."""
+    """Parse Plans.md content and extract tasks by state.
+
+    Each task dict also carries `project` and its 0-based `project_index`.
+    """
     tasks: dict[str, list[dict[str, str | None]]] = {
         "WIP": [],
         "TODO": [],
         "blocked": [],
     }
 
-    for line in content.splitlines():
+    lines = content.splitlines()
+    excluded = structural_exclusions(lines)
+    order_lines = _order_section_line_indices(lines)
+    in_ac_section = False
+    current_project: str | None = None
+    current_project_index: int | None = None
+    project_ordinal = -1
+
+    for line_index, line in enumerate(lines):
+        if line_index in excluded:
+            continue
+
         stripped = line.strip()
+
+        if stripped.startswith(("## ", "### ", "#### ")):
+            if stripped.startswith("## "):
+                if stripped.startswith("## Project:"):
+                    project_ordinal += 1
+                    current_project = stripped.split("## Project:", 1)[1].strip()
+                    current_project_index = project_ordinal
+                else:
+                    current_project = None
+                    current_project_index = None
+            in_ac_section = stripped == AC_SECTION_HEADING
+            continue
+
         if not stripped.startswith("- "):
+            continue
+        if line_index in order_lines:
+            continue
+        if in_ac_section and _AC_CHECKBOX_PATTERN.match(stripped):
             continue
 
         match = MARKER_PATTERN.search(stripped)
@@ -90,17 +425,28 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
                 task_text = task_text[: reason_match.start()].strip()
 
         if task_text:
-            tasks[state].append({"task": task_text, "reason": reason})
+            tasks[state].append(
+                {
+                    "task": task_text,
+                    "reason": reason,
+                    "project": current_project,
+                    "project_index": current_project_index,
+                }
+            )
 
     return tasks
 
 
 def parse_decisions(content: str) -> list[str]:
     """Extract decisions from Plans.md ## Decisions section."""
+    lines = content.splitlines()
+    excluded = structural_exclusions(lines)
     decisions: list[str] = []
     in_decisions = False
 
-    for line in content.splitlines():
+    for line_index, line in enumerate(lines):
+        if line_index in excluded:
+            continue
         if line.startswith("## Decisions"):
             in_decisions = True
             continue
@@ -179,6 +525,8 @@ def collect_handoff_data(project_dir: Path) -> dict:
     content = plans_path.read_text(encoding="utf-8")
     tasks = parse_tasks(content)
     decisions = parse_decisions(content)
+    orders = parse_order_sections(content)
+    attach_tasks_to_orders(orders, tasks)
 
     branch = get_branch(project_dir)
     commits = get_recent_commits(project_dir)
@@ -191,6 +539,8 @@ def collect_handoff_data(project_dir: Path) -> dict:
         "branch": branch,
         "tasks": tasks,
         "decisions": decisions,
+        "order": orders,
+        "order_markdown": render_order_markdown(orders),
         "recent_commits": commits,
         "diff_stat": diff_stat,
         "working_context": working_ctx,
