@@ -118,7 +118,7 @@ BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_bra
 - **準備済み（`$GIT_DIR` ≠ `$GIT_COMMON_DIR`、または `$BASE` が非空かつ `$CURRENT_BRANCH` ≠ `$BASE`）の場合**:
   - 追加のブランチ作成は **行わない**
   - 現在のブランチをそのまま採用し、「作業ブランチ: `{現在ブランチ}`」と明示報告する
-  - 以降のフェーズ（4-5 コミット / 4-6 PR push）で参照する `{ブランチ名}` は、ここで採用した現在ブランチ（`$CURRENT_BRANCH`）を指す
+  - 以降のフェーズ（4-3 のコミット、4-4 の `/pr-create` による push）は、ここで採用した現在ブランチ（`$CURRENT_BRANCH`）上で行う
   - そのまま 2-2 へ進む
 - **未準備（base 上 かつ 非 worktree）の場合のみ**: 下記フォールバックでブランチを作成する
 
@@ -199,56 +199,25 @@ NG の場合は Phase 2 に戻って修正する。
 
 ### Phase 4: レビュー
 
-`skill-review-policy.md` に基づき、変更内容に応じた実質的なレビューを実施する。
+レビューは `/review` スキルに委ねる。レビュアーの選定、設計書との突合、指摘の検証は `/review` の手順に従う。
 
-#### 4-1. 変更サマリー作成
+#### 4-1. `/review` の実行
 
-```bash
-git diff --stat
-```
+Skill ツールで `/review`（引数なし。スマート選定）を実行する。`.md` のみの変更の扱い（原則スキップ、仕様書・API ドキュメントは `spec-reviewer`）も `/review` に従う。
 
-変更内容のサマリーを作成する。
+`/review` が使えない環境（quality-gates パッケージ未導入）では、`code-reviewer` をサブエージェントで起動し、`git diff --stat` と `git diff` を渡して Tiered Output 形式（Critical / High / Medium / Low）で報告させる（`skill-review-policy` ルールがあれば、そのパスパターンで専門レビュアーを 1 名まで足す）。
 
-#### 4-2. レビュアー選定
+#### 4-2. 指摘対応
 
-`git diff --stat` の出力からファイルパス一覧を取得し、`skill-review-policy.md` のパスパターンマッピングに基づいてレビュアーを選定する（最大 2 個）。
+`/review` の Review Summary（`review.auto_fix` が有効なら Final Report）の結果で判断する:
 
-**選定手順:**
-
-1. 変更ファイルのパスをパスパターンマッピングに照合
-2. 優先順位（security > code > performance > ux）に基づき最大 2 レビュアーに絞る
-3. コード変更がある限り最低 `code-reviewer` は選定する
-4. ドキュメント（`.md`）のみの変更の場合はレビューをスキップ
-
-#### 4-3. サブエージェントレビュー実行
-
-選定されたレビュアーをサブエージェントとして起動する:
-
-```
-Task(subagent_type="{selected-reviewer}", prompt="""
-以下の変更をレビューしてください:
-
-Issue: #{番号} - {タイトル}
-
-変更ファイル:
-{git diff --stat の結果}
-
-変更内容:
-{git diff の結果}
-
-Tiered Output 形式（Critical / High / Medium / Low）で報告してください。Medium / Low は 1 行サマリで構いません。
-""")
-```
-
-複数レビュアーの場合は並列実行する（`run_in_background=true`）。
-
-#### 4-4. 指摘対応
-
-- **Critical**: Phase 2 に戻り修正する（必須）
+- **Critical**: Phase 2 に戻り修正する（必須）。auto_fix 有効時は、自動修正の後も残った Critical が対象
 - **High**: ユーザーに AskUserQuestion で対応を確認
 - **指摘なし / Medium 以下のみ**: 次のステップに進む
 
-#### 4-5. コミット
+`/review` の Auto-Fix がコードを変更した場合（Final Report に修正の記録がある場合）は、4-3 に進む前に Phase 3 に戻り、テストと受け入れ条件の verify をやり直す。
+
+#### 4-3. コミット
 
 コミットメッセージは日本語で、Issue 参照を含める:
 
@@ -265,33 +234,17 @@ Closes #{番号}"
 - feature → `feat:`
 - task → `chore:`
 
-#### 4-6. 次アクション選択
+#### 4-4. 次アクション選択
 
 AskUserQuestion で次のアクションを選択:
 
-- **PR 作成**: PR Standards Policy に従い Pull Request を作成
+- **PR 作成**: `/pr-create` で Pull Request を作成
 - **追加修正**: Phase 2 に戻る
 - **完了**: 現在の状態で終了
 
 ##### PR 作成時
 
-PR Standards Policy に従い、以下を実行する:
-
-1. PR Standards Policy の "Base Branch Resolution" に従い `$BASE` を解決する（issue-fix では `--base` 引数は持たず、環境変数 `AI_ORCHESTRA_BASE_BRANCH` → 自動推定 → fallback の順で解決される）:
-   ```bash
-   : "${AI_ORCHESTRA_DIR:?AI_ORCHESTRA_DIR is not set}"
-   BASE=$(python3 "$AI_ORCHESTRA_DIR/packages/git-workflow/scripts/resolve_base_branch.py")
-   ```
-2. PR テンプレートを取得する（`.github/PULL_REQUEST_TEMPLATE.md` → フォールバック）
-3. ブランチプレフィックスからタイトルプレフィックスとラベルを決定する
-4. テンプレートの各セクションを埋める（レビュー結果がある場合は Summary に追記）
-5. `Closes #{番号}` を本文冒頭に追加する
-6. Push して PR を作成する:
-
-```bash
-git push -u origin {ブランチ名}
-gh pr create --title "{prefix}: {要約}" --label "{ラベル}" --base "$BASE" --body "{生成された本文}"
-```
+Skill ツールで `/pr-create --issue {番号}` を実行する。base branch の解決、PR テンプレート、タイトルとラベル、`Closes #{番号}` の付与、push は `/pr-create` の手順に従う（`--issue` 付きの呼び出しでは作成前のプレビュー確認を省略する。同じブランチに既存 PR がある場合の確認は `/pr-create` 側で行う）。4-2 のレビュー結果を本文に残す場合は `--reviewers "{レビュアー}: {結果の要約}"` を付ける。
 
 ## 注意事項
 

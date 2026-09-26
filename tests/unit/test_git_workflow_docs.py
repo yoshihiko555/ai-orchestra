@@ -227,12 +227,15 @@ def test_ai_orchestra_dir_guard_passes_when_set(doc_name: str, content: str) -> 
     assert "AFTER_GUARD" in result.stdout
 
 
-def test_issue_fix_has_guard_at_both_branch_prep_and_pr_create_steps() -> None:
-    """EV-03: issue-fix.md は Phase 2-1（ブランチ準備判定）と Phase 4-6（PR 作成）の
-    両方でガードを踏んでから resolver を呼ぶ（片方だけ守られていないドキュメント drift を検出する）。
+def test_issue_fix_guards_resolver_and_delegates_pr_creation() -> None:
+    """EV-03: issue-fix.md は Phase 2-1（ブランチ準備判定）でガードを踏んでから resolver を呼び、
+    PR 作成は `/pr-create` に委譲する（issue-fix 自身は `gh pr create` を実行しない。ADR-056）。
     """
-    guards = _guard_lines(ISSUE_FIX)
-    assert len(guards) >= 2
+    guard_idx = ISSUE_FIX.index(_guard_lines(ISSUE_FIX)[0])
+    resolver_idx = ISSUE_FIX.index("resolve_base_branch.py")
+    assert guard_idx < resolver_idx
+    assert "gh pr create" not in ISSUE_FIX
+    assert "`/pr-create --issue {番号}`" in ISSUE_FIX
 
 
 # ============================================================
@@ -389,6 +392,15 @@ def test_issue_fix_safety_fallback_branch_list_matches_resolver_candidates() -> 
 def test_issue_fix_critical_review_findings_require_returning_to_phase2() -> None:
     """EV-14 (must): レビュー Critical 指摘は必ず Phase 2 に戻って修正する記述を保証する。"""
     assert "**Critical**: Phase 2 に戻り修正する（必須）" in ISSUE_FIX
+
+
+def test_issue_fix_review_is_delegated_to_review_skill() -> None:
+    """EV-14 (must): Phase 4 のレビューは `/review` に委譲し、Critical 判定はその結果で行う（ADR-056）。"""
+    phase4 = ISSUE_FIX[ISSUE_FIX.index("### Phase 4: レビュー") :]
+    assert "Skill ツールで `/review`（引数なし。スマート選定）を実行する。" in phase4
+    assert phase4.index("Skill ツールで `/review`") < phase4.index(
+        "**Critical**: Phase 2 に戻り修正する（必須）"
+    )
 
 
 def test_issue_fix_plan_approval_gate_precedes_phase2() -> None:

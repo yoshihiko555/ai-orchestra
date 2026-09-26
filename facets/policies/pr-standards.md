@@ -1,6 +1,6 @@
 # PR Standards Policy
 
-**Pull Request 作成時に守るべき共通ルール。`pr-create` および `issue-fix` から参照される。**
+**Pull Request 作成時に守るべき共通ルール。`pr-create` と `loop-issue` が PR 作成に使い、`issue-fix` はブランチ準備の base branch 解決とラベル対応に使う（PR 作成自体は `/pr-create` に委譲）。**
 
 ## PR テンプレート
 
