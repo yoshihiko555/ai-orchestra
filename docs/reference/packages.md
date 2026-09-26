@@ -41,7 +41,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 | プリセット  | 含まれるパッケージ                              |
 | ----------- | ----------------------------------------------- |
-| `essential` | core, agent-routing, audit, quality-gates, codd |
+| `essential` | core, agent-routing, audit, quality-gates, codd, git-workflow |
 | `all`       | 全パッケージ                                    |
 
 ---
@@ -68,10 +68,9 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | util   | `hook_common.py`             | 全 hook 共通ユーティリティ（config 読み込み、JSON 操作等）                                                     |
 | util   | `log_common.py`              | ログ関連ユーティリティ                                                                                         |
 | util   | `context_store.py`           | コンテキスト共有ストア                                                                                         |
-| skill  | `preflight`                  | 実装計画の策定（ADR-056 で廃止予定）                                                                           |
-| skill  | `startproject`               | マルチエージェント協調で新規開発を開始（ADR-056 で廃止予定）                                                   |
 | skill  | `task-state`                 | Plans.md の作成・更新                                                                                          |
 | skill  | `design`                     | 要件定義・設計ドキュメント作成                                                                                 |
+| skill  | `handoff`                    | Plans.md の発注書と状態から Codex CLI 向けの引き継ぎファイルを生成                                             |
 | skill  | `explain-visually`           | 計画・差分・PR/Issue を図解 HTML にして説明                                                                    |
 | rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                                                                             |
 | rule   | `coding-principles`          | コード品質の共通ルール                                                                                         |

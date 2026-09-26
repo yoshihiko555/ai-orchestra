@@ -67,13 +67,13 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 
 ### スキルフロー評価セット一覧
 
-| フロー         | ファイル                   | 概要                                                                                                                                        |
-| -------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| design-flow    | `skills/design-flow.md`    | 設計 → 発注書 → 実行エンジンのフロー（design / order。preflight / startproject は ADR-056 で廃止予定（決定済み、実ファイル削除は後続 PR）） |
-| order          | `skills/order.md`          | 対話の結論 → 発注書（Plans.md / Issue）→ 実行エンジンへの引き渡し                                                                           |
-| loop-issue     | `skills/loop-issue.md`     | GitHub Issue 起点で loop-harness の LP-1 を駆動するフロー                                                                                   |
-| review-respond | `skills/review-respond.md` | PR の bot レビュー指摘を検出 → 修正 → 返信/resolve するフロー                                                                               |
-| review         | `skills/review.md`         | `/review` のスマート選定 → 並列レビュー → 集約 → auto-fix ループ（Phase 0-7）                                                               |
+| フロー         | ファイル                   | 概要                                                                                               |
+| -------------- | -------------------------- | -------------------------------------------------------------------------------------------------- |
+| design-flow    | `skills/design-flow.md`    | 設計 → 発注書 → 実行エンジンのフロー（design / order。preflight / startproject は ADR-056 で廃止） |
+| order          | `skills/order.md`          | 対話の結論 → 発注書（Plans.md / Issue）→ 実行エンジンへの引き渡し                                  |
+| loop-issue     | `skills/loop-issue.md`     | GitHub Issue 起点で loop-harness の LP-1 を駆動するフロー                                          |
+| review-respond | `skills/review-respond.md` | PR の bot レビュー指摘を検出 → 修正 → 返信/resolve するフロー                                      |
+| review         | `skills/review.md`         | `/review` のスマート選定 → 並列レビュー → 集約 → auto-fix ループ（Phase 0-7）                      |
 
 ## 共通フォーマット
 
