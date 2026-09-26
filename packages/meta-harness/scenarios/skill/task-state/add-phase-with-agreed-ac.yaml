@@ -1,11 +1,11 @@
 schema_version: "1.0"
 id: add-phase-with-agreed-ac
 target: skill:task-state
-description: Add a new phase carrying a pre-agreed (via /preflight) Acceptance Criteria section without touching any existing content.
+description: Add a new phase carrying a pre-agreed (via /order) Acceptance Criteria section without touching any existing content.
 prompt: |
   /task-state add-phase "Phase 3: リリース準備" --tasks "デプロイ手順書作成" "リリースノート作成"
 
-  This request comes from `/preflight`, which already reached agreement with the user on this
+  This request comes from `/order`, which already reached agreement with the user on this
   new phase's Acceptance Criteria. Add exactly these two conditions to the new phase's
   `#### Acceptance Criteria` section, both left unchecked:
 

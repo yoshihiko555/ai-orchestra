@@ -498,7 +498,7 @@ def assert_add_phase_no_ac(plans_path: Path, *, phase_name: str, tasks: list[str
     may appear anywhere in the inserted block -- and that the insertion region contains nothing
     beyond the phase heading, its single task-group heading, and its tasks
     (`_assert_no_unexpected_content`). This locks the `add-phase` behavior contract for a direct
-    (non-`/preflight`) call with no agreed-upon Acceptance Criteria: the skill must not silently
+    (non-`/order`) call with no agreed-upon Acceptance Criteria: the skill must not silently
     fabricate one, nor smuggle in unrelated content (Issue #297 / PR #326 review rounds 1-2)."""
     inserted_block = _extract_inserted_phase_block(plans_path)
     heading_index, task_line_indices = _assert_new_phase_heading_and_tasks(

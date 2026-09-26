@@ -219,7 +219,7 @@ orchex setup essential --project /path/to/project --dry-run
 
 プリセットは `presets.json` で定義されています:
 
-- **essential** — core, agent-routing, audit, quality-gates, codd
+- **essential** — core, agent-routing, audit, quality-gates, codd, git-workflow
 - **all** — 全パッケージ
 
 > **指示書（AGENTS.md）について**: 指示書は `AGENTS.md` の 1 本で、Claude Code・Codex CLI・Antigravity CLI が共通で読みます（`CLAUDE.md` は配布しません）。Claude Code は **2.1.277 以降**が必要です（`CLAUDE.md` が無いときに `AGENTS.md` を読みます。`/config` の Project instructions を `claude-md` にしている場合や、プロジェクトまたは親ディレクトリに `CLAUDE.md` / `.claude/CLAUDE.md` / `CLAUDE.local.md` がある場合は読まれません）。
@@ -416,24 +416,25 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 
 ### スキル一覧
 
-| スキル                | 用途                                                                          |
-| --------------------- | ----------------------------------------------------------------------------- |
-| `/review`             | コード・セキュリティ・設計レビュー（スマート選定 + 並列実行）                 |
-| `/startproject`       | マルチエージェント協調で新規開発を開始（ADR-056 で廃止予定。`/order` に置換） |
-| `/issue-create`       | GitHub Issue の作成と計画策定                                                 |
-| `/issue-fix`          | Issue ベースの計画→実装→テスト→レビューフロー                                 |
-| `/codex-system`       | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven）                   |
-| `/antigravity-system` | Antigravity CLI（agy）でのリサーチ・マルチモーダル処理                        |
-| `/preflight`          | 実装計画の策定（ADR-056 で廃止予定。対話 + `/order` に置換）                  |
-| `/order`              | 対話の結論を発注書（Plans.md / Issue）に書き出す                              |
-| `/design`             | 設計テンプレート                                                              |
-| `/design-tracker`     | 設計記録                                                                      |
-| `/task-state`         | Plans.md の作成・更新                                                         |
-| `/release-readiness`  | マージ前の最終チェック                                                        |
-| `/tdd`                | テスト駆動開発ワークフロー                                                    |
-| `/code-comments`      | コード・テスト・コミットログ・コードコメントの書き分け                        |
-| `/code-naming`        | 識別子（変数・関数・クラス等）の命名                                          |
-| `/explain-visually`   | 計画・差分・PR/Issue を図解 HTML にして説明                                   |
+| スキル                | 用途                                                          |
+| --------------------- | ------------------------------------------------------------- |
+| `/review`             | コード・セキュリティ・設計レビュー（スマート選定 + 並列実行） |
+| `/issue-create`       | GitHub Issue の作成と計画策定                                 |
+| `/issue-fix`          | Issue ベースの計画→実装→テスト→レビューフロー                 |
+| `/codex-system`       | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven）   |
+| `/antigravity-system` | Antigravity CLI（agy）でのリサーチ・マルチモーダル処理        |
+| `/order`              | 対話の結論を発注書（Plans.md / Issue）に書き出す              |
+| `/design`             | 設計テンプレート                                              |
+| `/design-tracker`     | 設計記録                                                      |
+| `/task-state`         | Plans.md の作成・更新                                         |
+| `/release-readiness`  | マージ前の最終チェック                                        |
+| `/tdd`                | テスト駆動開発ワークフロー                                    |
+| `/code-comments`      | コード・テスト・コミットログ・コードコメントの書き分け        |
+| `/code-naming`        | 識別子（変数・関数・クラス等）の命名                          |
+| `/explain-visually`   | 計画・差分・PR/Issue を図解 HTML にして説明                   |
+
+開発の進め方（対話で決める → `/order` で発注書 → 実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）→ PR）と
+エンジンの使い分けは、git-workflow パッケージの `development-workflow` ルールにまとめている。
 
 ### レビュースキル
 

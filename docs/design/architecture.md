@@ -175,7 +175,7 @@ packages/{name}/
   tests/                # パッケージ単位テスト
 ```
 
-> **Note**: `skills/` `rules/` ディレクトリはパッケージ内には存在しない。スキル（SKILL.md）とルール（.md）は `facet build` で `.claude/skills/` `.claude/rules/` に直接生成される。manifest.json の `skills` `rules` フィールドは composition 名（例: `"preflight"`, `"coding-principles"`）のリストで管理する。
+> **Note**: `skills/` `rules/` ディレクトリはパッケージ内には存在しない。スキル（SKILL.md）とルール（.md）は `facet build` で `.claude/skills/` `.claude/rules/` に直接生成される。manifest.json の `skills` `rules` フィールドは composition 名（例: `"task-state"`, `"coding-principles"`）のリストで管理する。
 
 ### 4.2 パッケージ一覧と依存関係
 

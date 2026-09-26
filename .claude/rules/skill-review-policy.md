@@ -161,7 +161,6 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 このポリシーはレビューフェーズを持つ全スキルに適用される:
 
 - `issue-fix`（Phase 4）
-- `startproject`（Phase 7）
 - その他、レビューフェーズを含むカスタムスキル
 
 ---

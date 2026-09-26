@@ -254,5 +254,5 @@ Target: 80%+ line coverage on the new module.
 
 ### Integration Notes
 
-- After `startproject`, run at least 1 full TDD cycle (Red → Green → Refactor)
+- When implementing a work order from `/order` (Plans.md or Issue), derive the test case list from its Acceptance Criteria
 - When used with `issue-fix`, the test case list should be derived from the issue's acceptance criteria

@@ -3,7 +3,7 @@
 PostToolUse hook: Suggest Codex review after Plan agent execution.
 
 Triggers after Task tool calls with Plan agent to suggest
-Codex review of the generated preflight plan.
+Codex review of the generated plan.
 
 発火条件は暫定仕様（subagent_type のみ）。prompt 部分一致は Plans.md 等で
 誤発火するため廃止。正式な発火条件は Issue #456 で見直す。
@@ -104,8 +104,8 @@ def main():
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
                 "additionalContext": (
-                    "[Codex Review Suggestion] Preflight plan created. "
-                    "Before /startproject, consider Codex review for:\n"
+                    "[Codex Review Suggestion] Plan created. "
+                    "Before implementation, consider Codex review for:\n"
                     "- Architecture alignment\n"
                     "- Potential risks\n"
                     "- Missing considerations\n"

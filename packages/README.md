@@ -34,7 +34,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 - hooks: `load-task-state.py`, `clear-plan-gate.py`, `check-plan-gate.py`, `set-plan-gate.py`, `inject-shared-context.py`, `capture-task-result.py`, `update-working-context.py`, `cleanup-session-context.py`
 - ユーティリティ: `hook_common.py`（全 hook 共通ライブラリ）, `log_common.py`, `context_store.py`
-- skills (facet build): `preflight`, `startproject`, `task-state`, `design`
+- skills (facet build): `task-state`, `design`, `handoff`, `explain-visually`
 - rules (facet build): `config-loading`, `coding-principles`, `task-memory-usage`, `context-sharing`
 - config: `task-memory.yaml`
 - context files (所有):

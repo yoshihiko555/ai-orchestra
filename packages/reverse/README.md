@@ -63,7 +63,7 @@ imports 抽出（依存関係抽出）は言語横断のため、Python スク�
   ↓ （改修や拡張を行う場合）
 /design → 要件定義・基本設計・詳細設計
   ↓
-/preflight → タスク分解
+/order → 発注書（Plans.md / Issue）
   ↓
-/startproject → 実装
+実行エンジン（/goal・Codex 直接・/loop-issue・TAKT）→ 実装
 ```

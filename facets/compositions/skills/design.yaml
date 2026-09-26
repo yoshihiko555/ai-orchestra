@@ -10,7 +10,7 @@ frontmatter:
     Use this skill when the user wants to define requirements, design architecture,
     plan screens/API/database, or otherwise decide what to build before implementation
     (設計・要件定義・アーキテクチャ検討など、実装前に何を作るかを決める作業).
-    This skill produces design documents that feed into /preflight and /startproject.
+    This skill produces design documents that /order references when writing the work order.
 
 policies:
   - dialog-rules

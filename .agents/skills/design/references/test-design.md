@@ -218,12 +218,12 @@ docs/testing/
 └── api-test-plan.md       ← API テスト計画（API がある場合）
 ```
 
-## `/preflight` との連携
+## `/order` との連携
 
-テスト設計の成果物は `/preflight` でのタスク分解に直接活用できる：
+`/order` が自動で参照するのは `docs/requirements/` 〜 `docs/database/` の設計書なので、テスト設計の成果物は発注書を作るときに Context へ明示して渡す。タスク分解と Acceptance Criteria に次のように活用できる：
 
 - `test-strategy.md` → テスト環境構築タスクの根拠
-- `test-plan.md` → 各機能のテストタスクの粒度と優先度
+- `test-plan.md` → 各機能のテストタスクの粒度と優先度、Acceptance Criteria（verify）の候補
 - `api-test-plan.md` → API テストの実装タスク
 
 ## 注意事項

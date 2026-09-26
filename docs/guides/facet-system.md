@@ -79,7 +79,7 @@ facets/
 | ルーティング      | `agent-routing-policy`, `orchestra-usage`, `config-loading`                                                                                            |
 | Codex/Antigravity | `codex-delegation`, `codex-suggestion-compliance`, `codex-system`, `antigravity-delegation`, `antigravity-suggestion-compliance`, `antigravity-system` |
 | 品質              | `review`, `skill-review-policy`, `tdd`, `release-readiness`                                                                                            |
-| 開発フロー        | `startproject`, `issue-create`, `issue-fix`, `preflight`                                                                                               |
+| 開発フロー        | `order`, `development-workflow`, `issue-create`, `issue-fix`, `handoff`                                                                                |
 | 状態管理          | `task-memory-usage`, `task-state`, `context-sharing`                                                                                                   |
 | その他            | `coding-principles` (rule), `design`, `design-tracker`                                                                                                 |
 
@@ -311,6 +311,7 @@ orchex facet build --name my-skill --project .
 | `context-sharing`                   | rule  | core                            | —                                        | —             |
 | `design`                            | skill | core                            | —                                        | —             |
 | `design-tracker`                    | skill | quality-gates                   | —                                        | —             |
+| `development-workflow`              | rule  | git-workflow                    | —                                        | —             |
 | `antigravity-delegation`            | rule  | antigravity-suggestions         | cli-language                             | —             |
 | `antigravity-suggestion-compliance` | rule  | antigravity-suggestions         | —                                        | —             |
 | `antigravity-system`                | skill | antigravity-suggestions         | cli-language                             | —             |
@@ -321,12 +322,11 @@ orchex facet build --name my-skill --project .
 | `issue-fix`                         | skill | git-workflow                    | cli-language, pr-standards               | tiered-review |
 | `pr-create`                         | skill | git-workflow                    | cli-language, dialog-rules, pr-standards | —             |
 | `orchestra-usage`                   | rule  | agent-routing                   | cli-language                             | —             |
-| `preflight`                         | skill | core                            | —                                        | —             |
+| `order`                             | skill | git-workflow                    | dialog-rules                             | —             |
 | `release-readiness`                 | skill | quality-gates                   | —                                        | tiered-review |
 | `review`                            | skill | quality-gates                   | —                                        | tiered-review |
 | `review-respond`                    | skill | git-workflow                    | cli-language                             | —             |
 | `skill-review-policy`               | rule  | quality-gates                   | —                                        | tiered-review |
-| `startproject`                      | skill | core                            | —                                        | —             |
 | `task-memory-usage`                 | rule  | core                            | —                                        | —             |
 | `task-state`                        | skill | core                            | —                                        | —             |
 | `tdd`                               | skill | quality-gates                   | —                                        | —             |
