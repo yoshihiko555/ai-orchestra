@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import difflib
 import hashlib
+import os
 import re
+import shutil
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -39,10 +42,24 @@ def _read_text(path: Path) -> str:
         return stream.read()
 
 
-def _write_text(path: Path, content: str) -> None:
-    """元の改行コードを維持して書く。"""
-    with path.open("w", encoding="utf-8", newline="") as stream:
-        stream.write(content)
+def _write_all(root: Path, changes: dict[Path, tuple[str, str]]) -> None:
+    """全変更の一時ファイルを準備してから置換する。"""
+    prepared: list[tuple[Path, Path]] = []
+    try:
+        for relative, (_, content) in changes.items():
+            target = root / relative
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="", delete=False, dir=target.parent
+            ) as stream:
+                temporary = Path(stream.name)
+                prepared.append((temporary, target))
+                stream.write(content)
+            shutil.copymode(target, temporary)
+        for temporary, target in prepared:
+            os.replace(temporary, target)
+    finally:
+        for temporary, _ in prepared:
+            temporary.unlink(missing_ok=True)
 
 
 def _line_parts(line: str) -> tuple[str, str]:
@@ -70,12 +87,12 @@ def _section_range(lines: list[str], key: str) -> range | None:
     return range(start + 1, end)
 
 
-def _replace_field(lines: list[str], section: str, field: str, old: str, new: str) -> bool:
-    """指定セクション内の現在値だけを置換する。"""
+def _replace_field(lines: list[str], section: str, field: str, new: str) -> bool:
+    """指定セクション内の項目値を置換する。"""
     section_lines = _section_range(lines, section)
     if section_lines is None:
         return False
-    pattern = re.compile(rf"^(\s*){re.escape(field)}:\s*{re.escape(old)}\s*$")
+    pattern = re.compile(rf"^(\s*){re.escape(field)}:\s*.*$")
     for index in section_lines:
         body, ending = _line_parts(lines[index])
         match = pattern.fullmatch(body)
@@ -148,12 +165,13 @@ def _patch_yaml(text: str, tool: str, old: str, new: str, required: bool) -> tup
     lines = text.splitlines(keepends=True)
     section, field = MODEL_KEYS[tool]
     missing: list[str] = []
-    if not _replace_field(lines, section, field, old, new):
+    value = '""' if tool == "antigravity" and new == "" else new
+    if not _replace_field(lines, section, field, value):
         missing.append(f"{section}.{field}")
-    if tool in {"codex", "antigravity"}:
+    if tool == "codex" or (tool == "antigravity" and new != ""):
         if not _patch_allowlist(lines, section, new):
             missing.append(f"{section}.model_allowlist")
-    elif not _patch_comment(lines):
+    elif tool == "claude" and not _patch_comment(lines):
         missing.append("subagent comment")
     if required and any(item != "subagent comment" for item in missing):
         raise ValueError(f"required pattern not found in {SSOT}: {', '.join(missing)}")
@@ -202,6 +220,47 @@ def _patch_hooks_doc(text: str, old: str, new: str) -> str | None:
     return updated if count else None
 
 
+def _patch_claude_doc(text: str, old: str, new: str) -> str | None:
+    """subagent の例示、選択肢コメント、表の既定値を更新する。"""
+    lines = text.splitlines(keepends=True)
+    start = next((i for i, line in enumerate(lines) if re.match(r"^###\s+subagent\b", line)), None)
+    if start is None:
+        return None
+    end = next(
+        (i for i in range(start + 1, len(lines)) if re.match(r"^###\s+", lines[i])), len(lines)
+    )
+    example = re.compile(rf"^(\s*default_model:\s*){re.escape(old)}\s*$")
+    found = False
+    for index in range(start, end):
+        body, ending = _line_parts(lines[index])
+        match = example.fullmatch(body)
+        if match:
+            lines[index] = f"{match.group(1)}{new}{ending}"
+            found = True
+        elif body.strip() == CHOICES_COMMENT:
+            indent = re.match(r"^\s*", body).group()
+            lines[index] = f"{indent}{UPDATED_COMMENT}{ending}"
+            found = True
+        elif body.startswith("| `default_model` |"):
+            cells = body.split("|")
+            if len(cells) >= 5 and cells[3].strip() == f"`{old}`":
+                cells[3] = cells[3].replace(f"`{old}`", f"`{new}`", 1)
+                found = True
+            if len(cells) >= 5 and "inherit" not in cells[4]:
+                choices = "（`sonnet` / `opus` / `haiku` / `inherit`、またはフルモデル ID（例: `claude-sonnet-5`））"
+                updated, count = re.subn(
+                    r"（`sonnet`\s*/\s*`opus`\s*/\s*`haiku`）", choices, cells[4]
+                )
+                if count:
+                    cells[4] = updated
+                    found = True
+                else:
+                    cells[4] = cells[4].rstrip() + f" {choices} "
+                    found = True
+            lines[index] = "|".join(cells) + ending
+    return "".join(lines) if found else None
+
+
 def _optional_patch(
     root: Path,
     relative: Path,
@@ -211,6 +270,9 @@ def _optional_patch(
 ) -> None:
     """任意ファイルの変更案を作り、欠落時は理由を記録する。"""
     path = root / relative
+    if path.is_symlink():
+        skips.append(f"skip: {relative} (target is a symlink)")
+        return
     if not path.is_file():
         skips.append(f"skip: {relative} (file not found)")
         return
@@ -238,10 +300,18 @@ def _load_yaml(path: Path) -> object:
 
 def _validate_model(tool: str, model: str) -> None:
     """シェルや設定に埋め込めないモデル名を拒否する。"""
+    if tool == "antigravity" and model == "":
+        return
     if not MODEL_ID.fullmatch(model):
         raise ValueError(f"invalid model id: {model!r}")
     if tool == "claude" and model not in CLAUDE_ALIASES and not CLAUDE_ID.fullmatch(model):
         raise ValueError(f"invalid claude model id: {model}")
+    try:
+        loaded = yaml.safe_load(model)
+    except yaml.YAMLError as error:
+        raise ValueError(f"invalid model id: {model!r}") from error
+    if not isinstance(loaded, str) or loaded != model:
+        raise ValueError(f"invalid model id: {model!r}")
 
 
 def _show(root: Path) -> None:
@@ -260,15 +330,24 @@ def _show(root: Path) -> None:
             print(f"{section}.{field} (cli-tools.local.yaml override): {values[field]}")
 
 
-def _update(root: Path, tool: str, model: str, dry_run: bool) -> None:
+def _update(
+    root: Path, tool: str, model: str, dry_run: bool, add_to_allowlist: bool = False
+) -> None:
     """変更案をすべて計算してから出力または書き込みを行う。"""
     _validate_model(tool, model)
+    if (root / SSOT).is_symlink():
+        raise ValueError(f"required target is a symlink: {SSOT}")
     before = _read_text(root / SSOT)
     section, field = MODEL_KEYS[tool]
-    old = _model_value(yaml.safe_load(before), section, field)
-    if old == model:
-        print(f"already {model}, no changes made")
-        return
+    data = yaml.safe_load(before)
+    old = _model_value(data, section, field)
+    if tool == "antigravity" and model != "" and not add_to_allowlist:
+        allowlist = data.get("antigravity", {}).get("model_allowlist")
+        if not isinstance(allowlist, list) or model not in allowlist:
+            raise ValueError(
+                f"{model!r} is not in antigravity.model_allowlist; verify with agy models "
+                "and rerun with --add-to-allowlist (task: ADD_ALLOWLIST=1)"
+            )
 
     changes: dict[Path, tuple[str, str]] = {}
     skips: list[str] = []
@@ -290,6 +369,12 @@ def _update(root: Path, tool: str, model: str, dry_run: bool) -> None:
         _add_claude_patches(root, old, model, changes, skips)
     _add_ledger_patch(root, changes, skips)
 
+    if not changes:
+        print(f"already {model}, no changes made")
+        for skipped in skips:
+            print(skipped)
+        return
+
     if dry_run:
         for relative, (original, updated) in changes.items():
             print(
@@ -306,8 +391,8 @@ def _update(root: Path, tool: str, model: str, dry_run: bool) -> None:
         for skipped in skips:
             print(skipped)
         return
-    for relative, (_, updated) in changes.items():
-        _write_text(root / relative, updated)
+    _write_all(root, changes)
+    for relative in changes:
         print(f"changed: {relative}")
     for skipped in skips:
         print(skipped)
@@ -344,8 +429,18 @@ def _patch_ledger(text: str, new_hash: str) -> str | None:
 
 
 def _patch_optional_yaml(text: str, tool: str, old: str, new: str, skips: list[str]) -> str | None:
-    """ミラーの各項目を独立に処理する。"""
+    """ミラーの必須項目が欠けたら変更案を破棄する。"""
     updated, missing = _patch_yaml(text, tool, old, new, required=False)
+    required_missing = [
+        item
+        for item in missing
+        if item != "subagent comment" and (tool == "codex" or not item.endswith("model_allowlist"))
+    ]
+    if required_missing:
+        skips.append(
+            f"skip: {MIRROR} (whole mirror skipped; missing {', '.join(required_missing)})"
+        )
+        return None
     for item in missing:
         skips.append(f"skip: {MIRROR} ({item} pattern not found)")
     return updated
@@ -358,10 +453,10 @@ def _add_codex_patches(
     targets = [
         (
             Path("packages/core/hooks/hook_common.py"),
-            rf'^(DEFAULT_CODEX_MODEL = "){re.escape(old)}"$',
+            r'^(DEFAULT_CODEX_MODEL = ").*"$',
         ),
-        (Path("templates/codex/config.toml"), rf'^(model = "){re.escape(old)}"$'),
-        (Path(".codex/config.toml"), rf'^(model = "){re.escape(old)}"$'),
+        (Path("templates/codex/config.toml"), r'^(model = ").*"$'),
+        (Path(".codex/config.toml"), r'^(model = ").*"$'),
     ]
     for relative, expression in targets:
         _optional_patch(
@@ -386,6 +481,8 @@ def _add_antigravity_patches(
     root: Path, old: str, new: str, changes: dict[Path, tuple[str, str]], skips: list[str]
 ) -> None:
     """Antigravity の文書を変更案に追加する。"""
+    if new == "":
+        return
     _optional_patch(
         root,
         Path("docs/reference/configuration.md"),
@@ -408,9 +505,12 @@ def _add_claude_patches(
     """Claude の例示設定を変更案に追加する。"""
     expression = re.compile(rf"^(\s*default_model:\s*){re.escape(old)}\s*$")
     for relative in (Path("docs/reference/configuration.md"), Path("docs/design/architecture.md")):
-        _optional_patch(
-            root, relative, lambda text: _patch_literal_line(text, expression, new), changes, skips
+        patch = (
+            (lambda text: _patch_claude_doc(text, old, new))
+            if relative == Path("docs/reference/configuration.md")
+            else (lambda text: _patch_literal_line(text, expression, new))
         )
+        _optional_patch(root, relative, patch, changes, skips)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -422,13 +522,21 @@ def main(argv: list[str] | None = None) -> int:
         if name != "show":
             command.add_argument("model")
             command.add_argument("--dry-run", action="store_true")
+            if name == "antigravity":
+                command.add_argument("--add-to-allowlist", action="store_true")
         command.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args(argv)
     try:
         if args.command == "show":
             _show(args.root)
         else:
-            _update(args.root, args.command, args.model, args.dry_run)
+            _update(
+                args.root,
+                args.command,
+                args.model,
+                args.dry_run,
+                getattr(args, "add_to_allowlist", False),
+            )
     except (OSError, ValueError, yaml.YAMLError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

@@ -3,26 +3,37 @@ version: '3'
 tasks:
   model:show:
     desc: 現在の既定モデルを表示
+    env:
+      SET_MODEL_ROOT: '{{.ROOT_DIR}}'
     cmds:
-      - python3 {{.ROOT_DIR}}/scripts/set-model.py show --root {{.ROOT_DIR}}
+      - python3 "$SET_MODEL_ROOT/scripts/set-model.py" show --root "$SET_MODEL_ROOT"
 
   model:codex:
     desc: Codex の既定モデルを変更（MODEL 必須）
     requires:
       vars: [MODEL]
+    env:
+      SET_MODEL_VALUE: '{{.MODEL}}'
+      SET_MODEL_ROOT: '{{.ROOT_DIR}}'
     cmds:
-      - python3 {{.ROOT_DIR}}/scripts/set-model.py codex "{{.MODEL}}" --root {{.ROOT_DIR}}{{if eq .DRY_RUN "1"}} --dry-run{{end}}
+      - python3 "$SET_MODEL_ROOT/scripts/set-model.py" codex "$SET_MODEL_VALUE" --root "$SET_MODEL_ROOT"{{if eq .DRY_RUN "1"}} --dry-run{{end}}
 
   model:antigravity:
     desc: Antigravity の既定モデルを変更（MODEL 必須）
     requires:
       vars: [MODEL]
+    env:
+      SET_MODEL_VALUE: '{{.MODEL}}'
+      SET_MODEL_ROOT: '{{.ROOT_DIR}}'
     cmds:
-      - python3 {{.ROOT_DIR}}/scripts/set-model.py antigravity "{{.MODEL}}" --root {{.ROOT_DIR}}{{if eq .DRY_RUN "1"}} --dry-run{{end}}
+      - python3 "$SET_MODEL_ROOT/scripts/set-model.py" antigravity "$SET_MODEL_VALUE" --root "$SET_MODEL_ROOT"{{if eq .DRY_RUN "1"}} --dry-run{{end}}{{if eq .ADD_ALLOWLIST "1"}} --add-to-allowlist{{end}}
 
   model:claude:
     desc: Claude の既定モデルを変更（MODEL 必須）
     requires:
       vars: [MODEL]
+    env:
+      SET_MODEL_VALUE: '{{.MODEL}}'
+      SET_MODEL_ROOT: '{{.ROOT_DIR}}'
     cmds:
-      - python3 {{.ROOT_DIR}}/scripts/set-model.py claude "{{.MODEL}}" --root {{.ROOT_DIR}}{{if eq .DRY_RUN "1"}} --dry-run{{end}}
+      - python3 "$SET_MODEL_ROOT/scripts/set-model.py" claude "$SET_MODEL_VALUE" --root "$SET_MODEL_ROOT"{{if eq .DRY_RUN "1"}} --dry-run{{end}}
