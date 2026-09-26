@@ -15,6 +15,7 @@ from facets.scripts.handoff import (
     parse_order_sections,
     parse_tasks,
     render_order_markdown,
+    structural_exclusions,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,7 +75,9 @@ class TestParseTasks:
 
         tasks = parse_tasks(content)
 
-        assert tasks["TODO"] == [{"task": "Real task", "reason": None, "project": "Test"}]
+        assert tasks["TODO"] == [
+            {"task": "Real task", "reason": None, "project": "Test", "project_index": 0}
+        ]
 
     def test_records_project_name_per_task_without_cross_project_leakage(self) -> None:
         content = (
@@ -88,8 +91,12 @@ class TestParseTasks:
 
         tasks = parse_tasks(content)
 
-        assert tasks["WIP"] == [{"task": "Alpha task", "reason": None, "project": "Alpha"}]
-        assert tasks["TODO"] == [{"task": "Beta task", "reason": None, "project": "Beta"}]
+        assert tasks["WIP"] == [
+            {"task": "Alpha task", "reason": None, "project": "Alpha", "project_index": 0}
+        ]
+        assert tasks["TODO"] == [
+            {"task": "Beta task", "reason": None, "project": "Beta", "project_index": 1}
+        ]
 
     def test_nested_fence_requires_matching_char_and_length(self) -> None:
         content = (
@@ -98,7 +105,42 @@ class TestParseTasks:
 
         tasks = parse_tasks(content)
 
-        assert tasks["WIP"] == [{"task": "real task", "reason": None, "project": None}]
+        assert tasks["WIP"] == [
+            {"task": "real task", "reason": None, "project": None, "project_index": None}
+        ]
+
+    def test_ignores_ac_checkbox_lines_even_with_cc_marker(self) -> None:
+        content = (
+            "## Project: Test\n"
+            "### Phase 1: Build `cc:WIP`\n"
+            "#### Acceptance Criteria\n"
+            "- [ ] `cc:WIP` Condition met\n"
+            "#### Tasks\n"
+            "- `cc:WIP` Real task\n"
+        )
+
+        tasks = parse_tasks(content)
+
+        assert tasks["WIP"] == [
+            {"task": "Real task", "reason": None, "project": "Test", "project_index": 0}
+        ]
+
+
+def test_structural_exclusions_frontmatter_closing_requires_unindented_delimiter() -> None:
+    lines = [
+        "---",
+        "owner: |",
+        "  team: infra",
+        "  ---",
+        "- `cc:WIP` bogus inside frontmatter",
+        "---",
+        "- `cc:WIP` real task",
+    ]
+
+    excluded = structural_exclusions(lines)
+
+    assert {0, 1, 2, 3, 4, 5}.issubset(excluded)
+    assert 6 not in excluded
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +240,21 @@ class TestParseOrderSections:
 
         assert orders == [{"name": "Test", "context": ["Real context note"]}]
 
+    def test_html_comment_heading_does_not_hijack_current_section(self) -> None:
+        content = (
+            "## Project: Test\n"
+            "#### Context\n"
+            "<!--\n"
+            "#### Goal\n"
+            "-->\n"
+            "- Real context note\n"
+            "### Phase 1: Build `cc:TODO`\n"
+        )
+
+        orders = parse_order_sections(content)
+
+        assert orders == [{"name": "Test", "context": ["Real context note"]}]
+
     def test_fenced_code_block_inside_order_section_is_not_treated_as_structure(self) -> None:
         content = (
             "## Project: Test\n"
@@ -217,7 +274,9 @@ class TestParseOrderSections:
         tasks = parse_tasks(content)
 
         assert orders == [{"name": "Test", "context": ["Real context note"]}]
-        assert tasks["TODO"] == [{"task": "Real task", "reason": None, "project": "Test"}]
+        assert tasks["TODO"] == [
+            {"task": "Real task", "reason": None, "project": "Test", "project_index": 0}
+        ]
 
     def test_preserves_duplicate_project_names_as_separate_entries(self) -> None:
         content = (
@@ -262,12 +321,26 @@ class TestParseOrderSections:
 
 
 class TestRenderOrderMarkdown:
-    def test_attaches_tasks_to_matching_order_without_project_key(self) -> None:
+    def test_attaches_tasks_to_matching_order_by_project_index(self) -> None:
         orders = [{"name": "Alpha"}, {"name": "Beta"}]
         tasks = {
-            "WIP": [{"task": "Alpha task", "reason": None, "project": "Alpha"}],
+            "WIP": [
+                {
+                    "task": "Alpha task",
+                    "reason": None,
+                    "project": "Alpha",
+                    "project_index": 0,
+                }
+            ],
             "TODO": [],
-            "blocked": [{"task": "Legacy task", "reason": None, "project": None}],
+            "blocked": [
+                {
+                    "task": "Legacy task",
+                    "reason": None,
+                    "project": None,
+                    "project_index": None,
+                }
+            ],
         }
 
         attach_tasks_to_orders(orders, tasks)
@@ -283,6 +356,25 @@ class TestRenderOrderMarkdown:
             },
             {"name": "Beta"},
         ]
+
+    def test_duplicate_project_sections_keep_tasks_separate(self) -> None:
+        content = (
+            "## Project: app\n"
+            "### Phase 1: Build `cc:WIP`\n"
+            "- `cc:WIP` First section task\n"
+            "## Project: app\n"
+            "### Phase 1: Build `cc:TODO`\n"
+            "- `cc:TODO` Second section task\n"
+        )
+
+        orders = parse_order_sections(content)
+        tasks = parse_tasks(content)
+        attach_tasks_to_orders(orders, tasks)
+
+        assert orders[0]["tasks"]["WIP"] == [{"task": "First section task", "reason": None}]
+        assert orders[0]["tasks"]["TODO"] == []
+        assert orders[1]["tasks"]["WIP"] == []
+        assert orders[1]["tasks"]["TODO"] == [{"task": "Second section task", "reason": None}]
 
     def test_renders_present_sections_in_fixed_order(self) -> None:
         orders = [

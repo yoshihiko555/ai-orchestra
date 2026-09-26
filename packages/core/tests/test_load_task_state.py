@@ -625,6 +625,23 @@ def test_parse_tasks_nested_fence_requires_matching_char_and_length() -> None:
     assert tasks["WIP"] == [{"task": "real task", "reason": None}]
 
 
+def test_structural_exclusions_frontmatter_closing_requires_unindented_delimiter() -> None:
+    lines = [
+        "---",
+        "owner: |",
+        "  team: infra",
+        "  ---",
+        "- `cc:WIP` bogus inside frontmatter",
+        "---",
+        "- `cc:WIP` real task",
+    ]
+
+    excluded = load_task_state.structural_exclusions(lines)
+
+    assert {0, 1, 2, 3, 4, 5}.issubset(excluded)
+    assert 6 not in excluded
+
+
 def test_main_falls_back_to_default_markers_when_duplicates_exist(tmp_path, monkeypatch) -> None:
     plans_path = tmp_path / ".claude" / "Plans.md"
     plans_path.parent.mkdir(parents=True)
@@ -878,6 +895,22 @@ def test_parse_orders_goal_skips_html_comment_lines() -> None:
         {"name": "Single", "goal": "Actual goal text", "open_questions": 0},
         {"name": "Multi", "goal": "Actual goal 2", "open_questions": 0},
     ]
+
+
+def test_html_comment_heading_does_not_hijack_current_section() -> None:
+    content = (
+        "## Project: Test\n"
+        "#### Context\n"
+        "<!--\n"
+        "#### Goal\n"
+        "-->\n"
+        "- Real context note\n"
+        "### Phase 1: Build `cc:TODO`\n"
+    )
+
+    orders = load_task_state.parse_orders(content)
+
+    assert orders == [{"name": "Test", "goal": None, "open_questions": 0}]
 
 
 def test_parse_orders_skips_placeholder_goal_and_open_question_bullets() -> None:
