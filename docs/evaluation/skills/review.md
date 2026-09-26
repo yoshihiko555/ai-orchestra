@@ -17,7 +17,7 @@
 ### Non-Goals
 
 - テストコードの作成（`/tdd` の責務）
-- スキル内レビューフェーズ（issue-fix 等）の選定ロジック（`skill-review-policy` が規定。本フローとは別スキーム）
+- スキル内レビューフェーズの選定ロジック（`skill-review-policy` が規定。本フローとは別スキーム。`issue-fix` Phase 4 は `/review` に委譲し、`/review` が無い環境のフォールバックだけがこのスキームに従う）
 - 指摘検証（Phase 3.5・`finding-verifier`）の `skill-review-policy`（スキル内レビュー）への展開（v1 は `/review` 限定。導入判断は別 Issue）
 - マージ可否の最終判断（`/release-readiness` の責務）
 
