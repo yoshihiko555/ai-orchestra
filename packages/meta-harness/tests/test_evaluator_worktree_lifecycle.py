@@ -25,6 +25,7 @@ hook_common = load_module(
     "packages/core/hooks/hook_common.py",
 )
 _SCHEMA_DIR = Path("packages/meta-harness/schemas").resolve()
+_CONFIGURED_CODEX_MODEL = ev.mh._load_agent_routing_config(_SCHEMA_DIR)["codex"]["model"]
 
 
 _GIT_ENV = {
@@ -978,7 +979,7 @@ class TestRoutingConfigPatchMaterialization:
                     {
                         "file": "agent-routing/cli-tools.yaml",
                         "key_path": "codex.model",
-                        "value": "gpt-5.6-sol",
+                        "value": _CONFIGURED_CODEX_MODEL,
                     },
                     {
                         "file": "agent-routing/cli-tools.yaml",
@@ -1019,12 +1020,12 @@ class TestRoutingConfigPatchMaterialization:
 
         assert yaml.safe_load(local_path.read_text(encoding="utf-8")) == {
             "agents": {"debugger": {"tool": "auto"}},
-            "codex": {"enabled": False, "model": "gpt-5.6-sol"},
+            "codex": {"enabled": False, "model": _CONFIGURED_CODEX_MODEL},
         }
         assert local_path.read_text(encoding="utf-8").startswith("agents:\n")
         merged = hook_common.load_cli_tools_config(str(worktree_dir))
         assert merged["codex"]["enabled"] is False
-        assert merged["codex"]["model"] == "gpt-5.6-sol"
+        assert merged["codex"]["model"] == _CONFIGURED_CODEX_MODEL
         assert "sandbox" in merged["codex"]
         assert merged["agents"]["debugger"]["tool"] == "auto"
         assert not (overlay_dir / ".claude/config/agent-routing/cli-tools.local.yaml").exists()
@@ -1062,7 +1063,7 @@ class TestRoutingConfigPatchMaterialization:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.6-sol",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
         )
@@ -1086,7 +1087,7 @@ class TestRoutingConfigPatchMaterialization:
         assert sentinel.read_text(encoding="utf-8") == "unchanged\n"
         assert old_tmp_path.is_symlink()
         assert yaml.safe_load(local_path.read_text(encoding="utf-8"))["codex"]["model"] == (
-            "gpt-5.6-sol"
+            _CONFIGURED_CODEX_MODEL
         )
 
     def test_symlinked_applied_patch_parent_directory_is_rejected(self, tmp_path: Path) -> None:
@@ -1099,7 +1100,7 @@ class TestRoutingConfigPatchMaterialization:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.6-sol",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
         )
@@ -1130,7 +1131,7 @@ class TestRoutingConfigPatchMaterialization:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.6-sol",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
         )
@@ -1161,7 +1162,7 @@ class TestRoutingConfigPatchMaterialization:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.6-sol",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
         )

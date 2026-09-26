@@ -15,6 +15,7 @@ mh = load_module(
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = REPO_ROOT / "packages" / "meta-harness" / "schemas"
+_CONFIGURED_CODEX_MODEL = mh._load_agent_routing_config(SCHEMA_DIR)["codex"]["model"]
 
 _DEFAULT_OVERLAY_CONFIG = mh.DEFAULTS
 # 実 config の allowlist から取る。値を固定すると allowlist の更新でテストが壊れる
@@ -135,7 +136,7 @@ class TestValidateConfigPatch:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "codex.model",
-                "value": "gpt-5.6-sol",
+                "value": _CONFIGURED_CODEX_MODEL,
             }
         ]
 
@@ -302,7 +303,7 @@ class TestValidateConfigPatch:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "codex.model",
-                "value": "gpt-5.6-sol",
+                "value": _CONFIGURED_CODEX_MODEL,
             }
         ]
 
@@ -346,7 +347,7 @@ class TestValidateConfigPatch:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.6-sol",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
             config,
@@ -584,7 +585,6 @@ class TestValidateConfigPatch:
         loaded = mh._load_agent_routing_config(SCHEMA_DIR)
 
         assert loaded["codex"]["model_allowlist"] == [loaded["codex"]["model"]]
-        assert loaded["codex"]["model_allowlist"] == ["gpt-5.6-sol"]
 
     # EV-81
     def test_allowlisted_codex_model_is_accepted(self) -> None:
@@ -593,7 +593,7 @@ class TestValidateConfigPatch:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.6-sol",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,
@@ -632,7 +632,7 @@ class TestValidateConfigPatch:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.6-sol",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,
@@ -705,7 +705,7 @@ class TestValidateConfigPatch:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.6-sol",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,
@@ -739,7 +739,7 @@ class TestValidateConfigPatch:
                 {
                     "file": "agent-routing/cli-tools.yaml",
                     "key_path": "codex.model",
-                    "value": "gpt-5.6-sol",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,

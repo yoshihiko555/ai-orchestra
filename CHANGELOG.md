@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Codex の既定モデルを `gpt-6-sol` に更新**: エージェントルーティング、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。meta-harness の `codex.model_allowlist` も `gpt-6-sol` に置き換えた。
 - **`essential` プリセットに `git-workflow` を追加（ADR-056）**: `/preflight` / `/startproject` の代わりになる `/order` と `development-workflow` ルールを essential でも使えるようにした。`/issue-create` `/issue-fix` `/pr-create` `/review-respond` も入る。既存の導入先は `orchex install git-workflow` で追加する。
 - **`review`: 設計書があるプロジェクトでは `spec-reviewer` を必ず選ぶ（ADR-056）**: `docs/requirements/` `docs/architecture/` `docs/screens/` `docs/api/` `docs/database/` に設計書があり `.md` 以外を変更したとき、`/review` のスマート選定に `spec-reviewer` を加え、関係する設計書を渡して実装との突合をさせる（廃止した `/startproject` Phase 7 の突合を移した）。
 - **BREAKING** **`core` / `codex-suggestions`: 指示書を `AGENTS.md` の 1 本にし、`CLAUDE.md` の配布をやめた**: Claude Code（2.1.277 以降が必要）・Codex CLI・Antigravity CLI が同じ `AGENTS.md` を読む。`AGENTS.md` はプロジェクト固有の記述欄と末尾の `ai-orchestra` 管理ブロックからなり、管理ブロックは `orchex context sync` / `install` / `init` の実行時にだけ最新化される（SessionStart の自動同期では更新されない）。移行: `context sync` で旧生成物（生成マーカー入り）の `CLAUDE.md` は削除され、`AGENTS.md` は新しいテンプレートに置き換わる（元ファイルは `.claude/state/legacy-context/` に退避）ので、プロジェクト固有の記述を git 履歴から記述欄へ移す。手書きの `CLAUDE.md` は警告して残すので、内容を `AGENTS.md` に移して削除する（残っていると Claude Code は `AGENTS.md` を読まない）。
