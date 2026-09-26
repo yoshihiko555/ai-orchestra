@@ -61,3 +61,8 @@ class TestSetup:
         result = run_session_start(e2e_project, "s1")
         assert result.returncode == 0
         assert "facets built" in result.stdout
+        # ADR-056: essential に git-workflow が入り、/order と development-workflow が生成される。
+        assert (e2e_project / ".claude" / "skills" / "order" / "SKILL.md").is_file()
+        assert (e2e_project / ".claude" / "rules" / "development-workflow.md").is_file()
+        assert not (e2e_project / ".claude" / "skills" / "preflight").exists()
+        assert not (e2e_project / ".claude" / "skills" / "startproject").exists()
