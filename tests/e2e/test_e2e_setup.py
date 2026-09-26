@@ -29,6 +29,8 @@ class TestSetup:
         assert "quality-gates" in pkgs
         # EV-20: codd は essential プリセットに含まれる（presets.json 参照）。
         assert "codd" in pkgs
+        # ADR-056: /order と development-workflow ルールを essential でも使えるようにする。
+        assert "git-workflow" in pkgs
 
     def test_setup_essential_hooks(self, e2e_project: Path) -> None:
         """#20: setup 後に全パッケージの hooks が登録"""
@@ -59,3 +61,8 @@ class TestSetup:
         result = run_session_start(e2e_project, "s1")
         assert result.returncode == 0
         assert "facets built" in result.stdout
+        # ADR-056: essential に git-workflow が入り、/order と development-workflow が生成される。
+        assert (e2e_project / ".claude" / "skills" / "order" / "SKILL.md").is_file()
+        assert (e2e_project / ".claude" / "rules" / "development-workflow.md").is_file()
+        assert not (e2e_project / ".claude" / "skills" / "preflight").exists()
+        assert not (e2e_project / ".claude" / "skills" / "startproject").exists()

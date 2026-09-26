@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`essential` プリセットに `git-workflow` を追加（ADR-056）**: `/preflight` / `/startproject` の代わりになる `/order` と `development-workflow` ルールを essential でも使えるようにした。`/issue-create` `/issue-fix` `/pr-create` `/review-respond` も入る。既存の導入先は `orchex install git-workflow` で追加する。
+- **`review`: 設計書があるプロジェクトでは `spec-reviewer` を必ず選ぶ（ADR-056）**: `docs/requirements/` `docs/architecture/` `docs/screens/` `docs/api/` `docs/database/` に設計書があり `.md` 以外を変更したとき、`/review` のスマート選定に `spec-reviewer` を加え、関係する設計書を渡して実装との突合をさせる（廃止した `/startproject` Phase 7 の突合を移した）。
 - **BREAKING** **`core` / `codex-suggestions`: 指示書を `AGENTS.md` の 1 本にし、`CLAUDE.md` の配布をやめた**: Claude Code（2.1.277 以降が必要）・Codex CLI・Antigravity CLI が同じ `AGENTS.md` を読む。`AGENTS.md` はプロジェクト固有の記述欄と末尾の `ai-orchestra` 管理ブロックからなり、管理ブロックは `orchex context sync` / `install` / `init` の実行時にだけ最新化される（SessionStart の自動同期では更新されない）。移行: `context sync` で旧生成物（生成マーカー入り）の `CLAUDE.md` は削除され、`AGENTS.md` は新しいテンプレートに置き換わる（元ファイルは `.claude/state/legacy-context/` に退避）ので、プロジェクト固有の記述を git 履歴から記述欄へ移す。手書きの `CLAUDE.md` は警告して残すので、内容を `AGENTS.md` に移して削除する（残っていると Claude Code は `AGENTS.md` を読まない）。
 - **`tdd`: すべてのフェーズをサブエージェント委譲に統一（ADR-056）**: `agents.<name>.tool` が `claude-direct` でもオーケストレーターがインラインで実装・リファクタしなくなった。Red / Green / Refactor はそれぞれ `tester` / `$IMPL_AGENT` への `Task` 委譲で行い、実行ツールは hook の `[Resolved Routing]` が決める。
 - **`AGENTS.md` で Codex / Antigravity の役割を固定しなくなった（ADR-056）**: 「担当外（Claude Code が実行）」と Antigravity 側の担当表を外し、Codex は呼び出し方と依頼内容で 3 つの実行モードを切り替える（相談: `codex exec` read-only で分析のみ / 委譲実装: Claude Code の実装エージェントからの `codex exec` workspace-write で委譲範囲を編集、commit なし / 発注書実装: 引き継ぎファイル・TAKT・直接起動で発注書の範囲を編集・テスト）。状態の更新先は発注書の形で決まる（引き継ぎファイルなら Plans.md、TAKT なら TAKT のレポート）。実行先の決定は `cli-tools.yaml` のルーティングに一本化。既存導入先は `orchex context sync` で `AGENTS.md` の管理ブロックに反映される。
@@ -23,9 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`agent-routing`: `cli-tools.yaml` の `antigravity.model_allowlist` を現行の `agy models` に合わせて更新**: Gemini 3.6 / 3.7 / 3.8 Flash を追加し、`agy models` に表示されなくなった Gemini 3.5 Flash、接尾辞なしの `gemini-3.1-pro`、名前が変わった Claude 4.6 系の旧スラッグ（`claude-4.6-sonnet-thinking` / `claude-4.6-opus-thinking`）を外した。`antigravity.model` にこれらを指定している場合は警告が出るので、`agy models` に表示される名前（例: `claude-sonnet-4-6`）に変更する。
 - **`handoff`: 引き継ぎファイルの Codex 向け指示を強化**: base ブランチ上なら feature ブランチを先に作る、パス単位でステージし `git add -A` を使わない、`.claude/Plans.md` / `.claude/handoffs/` をステージしない、Acceptance Criteria は verify / judge を確認した後にだけチェックする、を明記。起動コマンドには `cli-tools.yaml` の model / sandbox を適用し、`codex.enabled: false` なら案内しない。
 
-### Deprecated
+### Removed
 
-- **`/preflight` と `/startproject` を廃止予定にした（ADR-056）**: 対話（grill-me 等）→ `/order`→ 実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）の流れに置き換える。実ファイルの削除は後続 PR で行い、それまでは従来どおり使える。README のスキル表に注記を追加。
+- **BREAKING** **`core`: `/preflight` と `/startproject` を削除した（ADR-056）**: 対話（grill-me 等）→ `/order` → 実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）の流れに置き換える。配布先のスキルは次回の同期（facet build）で消える。代わりの `/order` と `development-workflow` ルールは `git-workflow` パッケージにある（`essential` プリセットに追加。Changed 参照）。`codex-system` スキルの references 5 件（agent-prompts / code-review-task / delegation-patterns / refactoring-task / troubleshooting）も削除した。
 
 ### Fixed
 

@@ -209,6 +209,9 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 
 ## ワークフロー例
 
+開発全体の進め方（対話で決める → `/order` で発注書 → 実行エンジン → PR）は `development-workflow` ルール
+（git-workflow パッケージ）に従う。以下はエージェントを直接呼び出す場合の例。
+
 ### 新機能開発
 
 1. **計画フェーズ**

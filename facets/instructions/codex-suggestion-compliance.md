@@ -49,5 +49,5 @@
 個々の変更が軽微に見えても、以下の場合は Codex（または implementation agent）に委譲すべき：
 
 - **同一タスクで 3 箇所以上の変更**が予想される場合
-- **スキル実行中**（`startproject`, `issue-fix` 等）の実装フェーズでは、原則として implementation agents 経由で実装する
+- **スキル実行中**（`issue-fix`, `tdd` 等）の実装フェーズでは、原則として implementation agents 経由で実装する
 - 「軽微な変更」例外の適用は **単発の修正** に限り、連続的な実装作業には適用しない
