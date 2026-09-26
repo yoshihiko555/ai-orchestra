@@ -21,6 +21,7 @@ cli = load_module(
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_DIR = REPO_ROOT / "packages" / "meta-harness" / "schemas"
+_CONFIGURED_CODEX_MODEL = cli.mh._load_agent_routing_config(SCHEMA_DIR)["codex"]["model"]
 
 
 def _candidates_dir(project: Path) -> Path:
@@ -349,7 +350,7 @@ class TestRegisterConfigPatchValidation:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "codex.model",
-                "value": "gpt-5.6-sol",
+                "value": _CONFIGURED_CODEX_MODEL,
             }
         ]
         (overlay_dir / mh.CONFIG_PATCH_FILENAME).write_text(json.dumps(patch), encoding="utf-8")

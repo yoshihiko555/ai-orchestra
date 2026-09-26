@@ -1,0 +1,28 @@
+version: '3'
+
+tasks:
+  model:show:
+    desc: 現在の既定モデルを表示
+    cmds:
+      - python3 {{.ROOT_DIR}}/scripts/set-model.py show --root {{.ROOT_DIR}}
+
+  model:codex:
+    desc: Codex の既定モデルを変更（MODEL 必須）
+    requires:
+      vars: [MODEL]
+    cmds:
+      - python3 {{.ROOT_DIR}}/scripts/set-model.py codex "{{.MODEL}}" --root {{.ROOT_DIR}}{{if eq .DRY_RUN "1"}} --dry-run{{end}}
+
+  model:antigravity:
+    desc: Antigravity の既定モデルを変更（MODEL 必須）
+    requires:
+      vars: [MODEL]
+    cmds:
+      - python3 {{.ROOT_DIR}}/scripts/set-model.py antigravity "{{.MODEL}}" --root {{.ROOT_DIR}}{{if eq .DRY_RUN "1"}} --dry-run{{end}}
+
+  model:claude:
+    desc: Claude の既定モデルを変更（MODEL 必須）
+    requires:
+      vars: [MODEL]
+    cmds:
+      - python3 {{.ROOT_DIR}}/scripts/set-model.py claude "{{.MODEL}}" --root {{.ROOT_DIR}}{{if eq .DRY_RUN "1"}} --dry-run{{end}}
