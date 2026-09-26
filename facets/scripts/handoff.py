@@ -29,6 +29,8 @@ MARKER_TO_STATE = {
     "cc:blocked": "blocked",
 }
 BLOCKED_REASON_PATTERN = re.compile(r"—\s*理由:\s*(.+)$")
+_AC_CHECKBOX_PATTERN = re.compile(r"^- \[([ xX])\]")
+AC_SECTION_HEADING = "#### Acceptance Criteria"
 ORDER_SECTION_HEADINGS = {
     "#### Goal",
     "#### Context",
@@ -52,12 +54,18 @@ _HTML_COMMENT_ONLY_PATTERN = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
 def structural_exclusions(lines: list[str]) -> set[int]:
     """Plans.md の構造解析（見出し / cc: マーカー行判定）から除外すべき行番号を返す。
 
-    以下の 2 つの関心事を一箇所にまとめ、ファイル内の全パーサが同じ判定に従うようにする:
-    - 先頭の YAML frontmatter（先頭行が '---' で始まり、次に現れる単独 '---' 行まで）。
+    以下の 3 つの関心事を一箇所にまとめ、ファイル内の全パーサが同じ判定に従うようにする:
+    - 先頭の YAML frontmatter（先頭行が '---' で始まり、次に現れる、インデントのない
+      単独 '---' 行まで）。閉じ側は raw line が '---' と完全一致する行でのみ終端する
+      （strip() 一致にすると、YAML ブロックスカラー内のインデントされた '---' で
+      誤って閉じてしまうため）。
     - フェンス付きコードブロック。フェンスは ` または ~ を3文字以上並べた行で開始し、
       「同じ文字」かつ「開始時の文字数以上の文字数」を持つ単独行でのみ閉じる
       （CommonMark に準拠したセマンティクス）。これにより、四連バッククォートの中に
       三連バッククォートが入れ子で登場しても、内側のフェンスで外側が誤って閉じない。
+    - HTML コメント（`html_comment_line_indices` 参照）。複数行スパンのコメント内に
+      見出しに見える文字列（例: '#### Context'）が現れても、見出し/箇条書き判定より
+      前にコメント行として除外することで、パーサの状態機械が誤って遷移しないようにする。
     """
     excluded: set[int] = set()
 
@@ -65,7 +73,7 @@ def structural_exclusions(lines: list[str]) -> set[int]:
     if lines and lines[0].strip() == "---":
         closing = None
         for i in range(1, len(lines)):
-            if lines[i].strip() == "---":
+            if lines[i] == "---":
                 closing = i
                 break
         if closing is not None:
@@ -95,6 +103,7 @@ def structural_exclusions(lines: list[str]) -> set[int]:
             fence_char = stripped[0]
             fence_len = len(open_match.group(1))
 
+    excluded |= html_comment_line_indices(lines)
     return excluded
 
 
@@ -279,32 +288,36 @@ STATE_TO_MARKER = {"WIP": "cc:WIP", "TODO": "cc:TODO", "blocked": "cc:blocked"}
 def attach_tasks_to_orders(
     orders: list[dict], tasks: dict[str, list[dict[str, str | None]]]
 ) -> None:
-    """Group flat `tasks` (from `parse_tasks`, which carries a "project" field per
-    item) by project name and attach them to the matching order entry in `orders`
-    (mutates `orders` in place).
+    """Group flat `tasks` (from `parse_tasks`, which carries a "project_index" field
+    per item — the 0-based ordinal of the enclosing `## Project:` heading in document
+    order) by that ordinal and attach them to the order entry at the same list
+    position in `orders` (mutates `orders` in place).
+
+    Matching by position (rather than by the "project" name field) keeps duplicate
+    `## Project: <same name>` sections independent: `parse_order_sections` appends
+    exactly one entry per `## Project:` heading in document order, so `orders[i]`
+    always corresponds to `project_index == i`, even when two headings share a name.
 
     Each entry that has at least one task gets `entry["tasks"] = {"WIP": [...],
     "TODO": [...], "blocked": [...]}`. Task dicts inside `entry["tasks"]` omit the
-    now-redundant "project" key (it is implied by the surrounding order entry) and
-    keep only `{"task": str, "reason": str | None}`.
+    now-redundant "project"/"project_index" keys (implied by the surrounding order
+    entry) and keep only `{"task": str, "reason": str | None}`.
 
-    Entries in `orders` are matched by `entry["name"] == item["project"]`. Tasks
-    whose `project` is `None` (not under any `## Project:` heading) are not
-    attached anywhere here — `parse_order_sections` never creates a bare
-    `{"name": None}` entry for them, so there is nothing to attach to; they remain
-    visible via the flat top-level `tasks` dict.
+    Tasks whose `project_index` is `None` (not under any `## Project:` heading) are
+    not attached anywhere here — they remain visible via the flat top-level `tasks`
+    dict.
     """
-    by_project: dict[str, dict[str, list[dict[str, str | None]]]] = {}
+    by_index: dict[int, dict[str, list[dict[str, str | None]]]] = {}
     for state, items in tasks.items():
         for item in items:
-            project = item.get("project")
-            if project is None:
+            project_index = item.get("project_index")
+            if project_index is None:
                 continue
-            bucket = by_project.setdefault(project, {"WIP": [], "TODO": [], "blocked": []})
+            bucket = by_index.setdefault(project_index, {"WIP": [], "TODO": [], "blocked": []})
             bucket[state].append({"task": item["task"], "reason": item["reason"]})
 
-    for entry in orders:
-        project_tasks = by_project.get(entry["name"])
+    for index, entry in enumerate(orders):
+        project_tasks = by_index.get(index)
         if project_tasks and any(project_tasks.values()):
             entry["tasks"] = project_tasks
 
@@ -352,9 +365,7 @@ def render_order_markdown(orders: list[dict]) -> str:
 def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
     """Parse Plans.md content and extract tasks by state.
 
-    Each task dict is `{"task": str, "reason": str | None, "project": str | None}`.
-    `project` is the name from the nearest enclosing `## Project:` heading, or `None`
-    if the task is not under any `## Project:` section (legacy flat Plans.md).
+    Each task dict also carries `project` and its 0-based `project_index`.
     """
     tasks: dict[str, list[dict[str, str | None]]] = {
         "WIP": [],
@@ -365,7 +376,10 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
     lines = content.splitlines()
     excluded = structural_exclusions(lines)
     order_lines = _order_section_line_indices(lines)
+    in_ac_section = False
     current_project: str | None = None
+    current_project_index: int | None = None
+    project_ordinal = -1
 
     for line_index, line in enumerate(lines):
         if line_index in excluded:
@@ -373,16 +387,23 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
 
         stripped = line.strip()
 
-        if stripped.startswith("## "):
-            current_project = (
-                stripped.split("## Project:", 1)[1].strip()
-                if stripped.startswith("## Project:")
-                else None
-            )
+        if stripped.startswith(("## ", "### ", "#### ")):
+            if stripped.startswith("## "):
+                if stripped.startswith("## Project:"):
+                    project_ordinal += 1
+                    current_project = stripped.split("## Project:", 1)[1].strip()
+                    current_project_index = project_ordinal
+                else:
+                    current_project = None
+                    current_project_index = None
+            in_ac_section = stripped == AC_SECTION_HEADING
+            continue
 
         if not stripped.startswith("- "):
             continue
         if line_index in order_lines:
+            continue
+        if in_ac_section and _AC_CHECKBOX_PATTERN.match(stripped):
             continue
 
         match = MARKER_PATTERN.search(stripped)
@@ -404,7 +425,14 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
                 task_text = task_text[: reason_match.start()].strip()
 
         if task_text:
-            tasks[state].append({"task": task_text, "reason": reason, "project": current_project})
+            tasks[state].append(
+                {
+                    "task": task_text,
+                    "reason": reason,
+                    "project": current_project,
+                    "project_index": current_project_index,
+                }
+            )
 
     return tasks
 

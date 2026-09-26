@@ -62,12 +62,18 @@ _HTML_COMMENT_ONLY_PATTERN = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
 def structural_exclusions(lines: list[str]) -> set[int]:
     """Plans.md の構造解析（見出し / cc: マーカー行判定）から除外すべき行番号を返す。
 
-    以下の 2 つの関心事を一箇所にまとめ、ファイル内の全パーサが同じ判定に従うようにする:
-    - 先頭の YAML frontmatter（先頭行が '---' で始まり、次に現れる単独 '---' 行まで）。
+    以下の 3 つの関心事を一箇所にまとめ、ファイル内の全パーサが同じ判定に従うようにする:
+    - 先頭の YAML frontmatter（先頭行が '---' で始まり、次に現れる、インデントのない
+      単独 '---' 行まで）。閉じ側は raw line が '---' と完全一致する行でのみ終端する
+      （strip() 一致にすると、YAML ブロックスカラー内のインデントされた '---' で
+      誤って閉じてしまうため）。
     - フェンス付きコードブロック。フェンスは ` または ~ を3文字以上並べた行で開始し、
       「同じ文字」かつ「開始時の文字数以上の文字数」を持つ単独行でのみ閉じる
       （CommonMark に準拠したセマンティクス）。これにより、四連バッククォートの中に
       三連バッククォートが入れ子で登場しても、内側のフェンスで外側が誤って閉じない。
+    - HTML コメント（`html_comment_line_indices` 参照）。複数行スパンのコメント内に
+      見出しに見える文字列（例: '#### Context'）が現れても、見出し/箇条書き判定より
+      前にコメント行として除外することで、パーサの状態機械が誤って遷移しないようにする。
     """
     excluded: set[int] = set()
 
@@ -75,7 +81,7 @@ def structural_exclusions(lines: list[str]) -> set[int]:
     if lines and lines[0].strip() == "---":
         closing = None
         for i in range(1, len(lines)):
-            if lines[i].strip() == "---":
+            if lines[i] == "---":
                 closing = i
                 break
         if closing is not None:
@@ -105,6 +111,7 @@ def structural_exclusions(lines: list[str]) -> set[int]:
             fence_char = stripped[0]
             fence_len = len(open_match.group(1))
 
+    excluded |= html_comment_line_indices(lines)
     return excluded
 
 
@@ -221,7 +228,6 @@ def parse_orders(content: str) -> list[dict]:
     """Plans.md の Project ごとに Goal と Open Questions を抽出する。"""
     lines = content.splitlines()
     excluded = structural_exclusions(lines)
-    comment_lines = html_comment_line_indices(lines)
     order_lines = order_section_line_indices(lines)
     orders: list[dict] = []
     current_entry: dict | None = None
@@ -260,9 +266,6 @@ def parse_orders(content: str) -> list[dict]:
             continue
 
         if line_index not in order_lines:
-            continue
-
-        if line_index in comment_lines:
             continue
 
         if current_section == "#### Goal" and current_entry["goal"] is None and stripped:
