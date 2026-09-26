@@ -1,0 +1,8 @@
+# development-workflow ルールのファセット構成定義
+name: development-workflow
+description: 発注書と実行エンジンの使い分け（ADR-056）
+type: rule
+
+policies: []
+
+instruction: development-workflow

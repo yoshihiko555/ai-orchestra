@@ -1,0 +1,20 @@
+# order スキルのファセット構成定義
+name: order
+description: 対話の結論を発注書（Plans.md / Issue）に書き出す
+
+frontmatter:
+  name: order
+  description: |
+    対話（grill-me 等）で確定した計画を、発注書の内容モデル（Goal / Context /
+    Out of Scope / Constraints / Open Questions + Phase の受け入れ条件と Tasks）に
+    固めて 1 回提示し、承認後に Plans.md か GitHub Issue のどちらか 1 か所に書く。
+    Plans.md の Project を Issue に引き渡すこともできる。
+    「発注書にして」「Plans.md に起こして」「Issue に出して」「計画を固めて」といった
+    依頼や /order で使用する。
+  metadata:
+    short-description: 対話の結論を発注書（Plans.md / Issue）に書き出す
+
+policies:
+  - dialog-rules
+
+instruction: order

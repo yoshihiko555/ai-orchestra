@@ -1,9 +1,9 @@
 # design-flow 評価セット（スキルフロー）
 
-**対象スキル群**: `design` と、その下流の発注書スキル `/order`（仮名。ADR-20260926-056 で新設予定）。`preflight` / `startproject` は同 ADR で廃止予定（決定済み。実ファイル削除は後続 PR。正本: `facets/instructions/design.md`, `facets/knowledge/design-review.md` ほか knowledge 6 本）
+**対象スキル群**: `design` と、その下流の発注書スキル `/order`（ADR-20260926-056 で新設）。`preflight` / `startproject` は同 ADR で廃止予定（決定済み。実ファイル削除は後続 PR。正本: `facets/instructions/design.md`, `facets/knowledge/design-review.md` ほか knowledge 6 本）
 **単位**: スキルフロー（設計 → タスク分解 → 実装の一連の振る舞い）
 **作成日**: 2026-07-04
-**最終レビュー日**: 2026-09-26（ADR-20260926-056: `preflight` / `startproject` の廃止決定に伴い EV-14〜EV-21 を廃止予定（実ファイル削除まで有効）とし移管先を明記。フロー横断 EV-22・EV-23 は旧フロー用のまま有効（廃止予定）とし、新フロー用に EV-25・EV-26 を追加。`/order` 自体の観点は `docs/evaluation/skills/order.md` に新設予定）
+**最終レビュー日**: 2026-09-26（ADR-20260926-056: `preflight` / `startproject` の廃止決定に伴い EV-14〜EV-21 を廃止予定（実ファイル削除まで有効）とし移管先を明記。フロー横断 EV-22・EV-23 は旧フロー用のまま有効（廃止予定）とし、新フロー用に EV-25・EV-26 を追加。`/order` 自体の観点は `docs/evaluation/skills/order.md` に新設済み）
 **情報源**: docs/adr/ADR-20260926-056.md, facets/instructions/design.md, facets/knowledge/design-review.md, .claude/rules/skill-review-policy.md, .claude/rules/codd-frontmatter-policy.md, PR #144
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
@@ -12,7 +12,7 @@
 
 ## 1. フロー責務定義
 
-`/design` が対話で要件定義・基本設計・詳細設計を進めて `docs/` 配下に設計書（codd フロントマター付き）を出力し、設計品質を二段品質ゲート（セルフチェック + 自動レビュー）で担保するフロー。設計書は下流の発注書スキル `/order`（仮名）が Context として参照し、実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）へ渡す。旧 `/preflight`（設計要否判定とタスク分解）と `/startproject`（設計書を参照した実装と突合）は ADR-20260926-056 で廃止予定（決定済み。実ファイルの削除は同 ADR §決定 6 の 5 で行う）。
+`/design` が対話で要件定義・基本設計・詳細設計を進めて `docs/` 配下に設計書（codd フロントマター付き）を出力し、設計品質を二段品質ゲート（セルフチェック + 自動レビュー）で担保するフロー。設計書は下流の発注書スキル `/order`が Context として参照し、実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）へ渡す。旧 `/preflight`（設計要否判定とタスク分解）と `/startproject`（設計書を参照した実装と突合）は ADR-20260926-056 で廃止予定（決定済み。実ファイルの削除は同 ADR §決定 6 の 5 で行う）。
 
 ### Non-Goals
 
@@ -22,13 +22,13 @@
 
 ## 2. 期待するフローと成果物
 
-行 3〜5 は ADR-20260926-056 の新フロー（`/order` 実装後に有効）。旧フロー（`/preflight` Phase 1〜4、`/startproject` Phase 2〜7）の観点は EV-14〜EV-23 を参照。
+行 3〜5 は ADR-20260926-056 の新フロー（`/order` は新設済み。検証は実行観察で開始可）。旧フロー（`/preflight` Phase 1〜4、`/startproject` Phase 2〜7）の観点は EV-14〜EV-23 を参照。
 
 | ステップ | スキル / フェーズ | 入力                    | 期待する成果物・振る舞い                                                                                                                                       |
 | -------- | ----------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1        | design Phase 0    | 既存コード              | `.claude/docs/impact-analysis/{date}_{slug}.md`（researcher 経由）                                                                                             |
 | 2        | design Phase 1-3  | 対話 + 上流成果物       | `docs/` 配下の設計書（codd フロントマター付き）+ 各フェーズ末の品質ゲート通過                                                                                  |
-| 3        | `/order`（仮名）  | 対話の結論 + 設計成果物 | 発注書（Goal / Context / Out of Scope / Constraints / Open Questions + Phase の AC + Tasks）を Plans.md か Issue に 1 回だけ書く。Context に設計書パスを載せる |
+| 3        | `/order`          | 対話の結論 + 設計成果物 | 発注書（Goal / Context / Out of Scope / Constraints / Open Questions + Phase の AC + Tasks）を Plans.md か Issue に 1 回だけ書く。Context に設計書パスを載せる |
 | 4        | 実行エンジン      | 発注書                  | 設計書を参照した実装（エンジン側の責務。本評価セットの対象外）                                                                                                 |
 | 5        | `/review`         | 実装 diff + 設計書      | Phase 1 で spec-reviewer を必須選定し、実装と設計書を突合（`docs/evaluation/skills/review.md` EV-24 の責務）                                                   |
 
@@ -73,16 +73,16 @@ EV-18〜EV-21 は `/startproject` の廃止決定（ADR-056）に伴い廃止予
 - [ ] EV-22（正常 / must、廃止予定: 実ファイル削除まで有効）: `/design` 先行・`/preflight` 起点のどちらの入り方でも、設計成果物（`docs/`）が下流スキルの入力として機能する — 根拠: facets/instructions/design.md「他スキルとの関係」 / 検証: 実行観察
 - [ ] EV-23（境界 / must、廃止予定: 実ファイル削除まで有効）: 設計書が存在しないプロジェクトでも各スキルはエラーなく従来フローで動作する（設計連携はオプショナル） — 根拠: facets/instructions/preflight.md, startproject.md（存在すれば読む、の条件付き記述） / 検証: 実行観察
 
-### フロー横断（新フロー: ADR-20260926-056。`/order` 実装まで検証保留）
+### フロー横断（新フロー: ADR-20260926-056）
 
-- [ ] EV-25（正常 / must）: `/design` 先行・対話（grill-me 等）起点のどちらの入り方でも、設計成果物（`docs/`）が `/order`（仮名）の Context として発注書に載り、実行エンジンの入力として機能する — 根拠: ADR-20260926-056 §決定 1・3 / 検証: 実行観察（`/order` の実装（同 ADR §決定 6 の 4）まで保留）
-- [ ] EV-26（境界 / must）: 設計書が存在しないプロジェクトでも `/order` と各実行エンジンはエラーなく動作する（設計連携はオプショナル。Context の設計書参照は「存在すれば載せる」） — 根拠: ADR-20260926-056 §決定 3 / 検証: 実行観察（同上）
+- [ ] EV-25（正常 / must）: `/design` 先行・対話（grill-me 等）起点のどちらの入り方でも、設計成果物（`docs/`）が `/order`の Context として発注書に載り、実行エンジンの入力として機能する — 根拠: ADR-20260926-056 §決定 1・3 / 検証: 実行観察（`/order` 新設済み。実行観察で検証）
+- [ ] EV-26（境界 / must）: 設計書が存在しないプロジェクトでも `/order` と各実行エンジンはエラーなく動作する（設計連携はオプショナル。Context の設計書参照は「存在すれば載せる」） — 根拠: ADR-20260926-056 §決定 3 / 検証: 実行観察（実行観察で検証）
 
 ## 4. 検証方法
 
 スキルフローは pytest で強制できないため、以下の手段で観点との整合を確認する:
 
-1. **スキル改修 PR のレビュー時**: `facets/instructions/design.md`・`facets/instructions/order.md`（仮名）・`facets/knowledge/*.md` への変更が本評価セットの観点と矛盾しないか突合する。矛盾する仕様変更の場合は、本評価セットを先に更新して人間レビューを経る
+1. **スキル改修 PR のレビュー時**: `facets/instructions/design.md`・`facets/instructions/order.md`・`facets/knowledge/*.md` への変更が本評価セットの観点と矛盾しないか突合する。矛盾する仕様変更の場合は、本評価セットを先に更新して人間レビューを経る
 2. **`/config-analyze`**: スキル指示書のルーブリック評価・トリガーテストで観点の記述漏れを検出する
 3. **実行観察**: 実際のスキル実行（または skill-evolution のテレメトリ / lessons）で観点どおりに振る舞ったかを確認する
 
