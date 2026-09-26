@@ -92,7 +92,7 @@ description:
 実行エンジン（/goal・Codex 直接・/loop-issue・TAKT）→ 実装
 ```
 
-実運用では grill-me 等の対話を起点にし、正式な設計書が要ると判断したときだけ `/design` を呼ぶ流れも標準（`/order` も、設計書が無くアーキテクチャ・API・データモデルに触る発注では `/design` の先行を提案する）。どちらの入り方でも、`/design` の設計書（`docs/requirements/` `docs/architecture/` `docs/screens/` `docs/api/` `docs/database/`）は `/order` が発注書の Context に載せ、実行エンジンの入力になる。拡張トラックの成果物（`docs/testing/` 等）は `/order` の対話で Context に明示する。`/order` と実行エンジンの使い分けは git-workflow パッケージの `/order` スキルと `development-workflow` ルールを参照。
+実運用では grill-me 等の対話を起点にし、正式な設計書が要ると判断したときだけ `/design` を呼ぶ流れも標準（`/order` も、設計書が無くアーキテクチャ・API・データモデルに触る発注では `/design` の先行を提案する）。どちらの入り方でも、`/design` の設計書（`docs/requirements/` `docs/architecture/` `docs/screens/` `docs/api/` `docs/database/`）は `/order` が発注書の Context に載せ、実行エンジンの入力になる。拡張トラックの成果物（`docs/testing/` 等）は `/order` の対話で Context に明示する。`/order` と実行エンジンの使い分けは git-workflow パッケージの `/order` スキルと `development-workflow` ルールを参照。git-workflow を導入していない環境では、`/task-state` で Plans.md に発注書の節（Goal / Context 等）と Phase を書いて `/goal` に渡す。
 
 ## Workflow（俯瞰図）
 

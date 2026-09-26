@@ -132,13 +132,15 @@ metadata:
 3. 変更ファイルのソースコードを収集:
    - **500 行以下**: ファイル全文を Read
    - **500 行超**: 変更ハンク + 前後 30 行のみ（diff から特定）
-4. 収集結果を変数に保持（後続フェーズで注入）
+4. **設計書の収集**: `docs/requirements/` `docs/architecture/` `docs/screens/` `docs/api/` `docs/database/` のいずれかが存在し、変更に `.md` 以外のファイルが含まれる場合、変更ファイルに関係する設計書を集める。変更ファイルのパス・モジュール名・API パス・テーブル名等で上記ディレクトリを検索してヒットした設計書（大きい場合は該当節のみ）と、`docs/architecture/` の概要を対象にする
+5. 収集結果を変数に保持（後続フェーズで注入）
 
 ```
 # 実行例
 diff_stat = git diff --stat の結果
 diff_full = git diff の結果
 file_contexts = 各変更ファイルのソースコード（上記ルールで収集）
+design_docs = 関係する設計書（手順 4。設計書が無いプロジェクトでは空）
 ```
 
 **ドキュメントのみ判定**: `.md` ファイルのみの変更 → 原則レビュースキップ（ユーザーに報告して終了）
@@ -182,6 +184,8 @@ Phase 0 で収集した diff の**追加行（`+` プレフィックス）のみ
 | 仕様整合       | API コントラクト変更, スキーマ変更, OpenAPI/Swagger 定義                                                                                                                                                                                     | + spec-reviewer         |
 
 **選定結果**: Step 2 と Step 3 の union（どちらかでマッチすれば追加、重複は 1 回のみ）
+
+**設計書がある場合**: Phase 0 の手順 4 の条件（設計書ディレクトリがあり、`.md` 以外の変更を含む）を満たすときは、Step 2・3 のシグナルに関係なく `spec-reviewer` を union に加える。Step 4 の優先順位で `spec-reviewer` は `security-reviewer` の次なので、専門枠 2 名に必ず残る。設計書が無いプロジェクトでは従来どおりシグナルがある場合だけ選ぶ
 
 #### Step 4: 上限キャップ
 
@@ -234,6 +238,8 @@ Task(subagent_type="{reviewer}", model="{model_or_omit}", run_in_background=true
 Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 """)
 ```
+
+`spec-reviewer` を起動するときは、`design_docs` があれば `## 設計書` 節として追加で注入し、実装 diff を設計書と突合して承認されていない逸脱（設計書に無い振る舞い、設計書と食い違う API / スキーマ / 画面）を指摘させる。設計書側を更新すべき逸脱は、その旨を添えて報告させる。
 
 **注意**: プロンプトには事前収集コンテキストが含まれるため、サブエージェント内で git diff や Read を再実行する必要はない。
 

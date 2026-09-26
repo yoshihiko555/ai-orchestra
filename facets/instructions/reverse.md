@@ -460,7 +460,7 @@ Phase 5（負債レポート）が完了しました。すべての成果物を�
   ├── todos.json / debt-report.md
 
 リバースエンジニアリング完了です。次のアクションを選択してください。
-- /order でリファクタリングの発注書を作る
+- /order でリファクタリングの発注書を作る（git-workflow 未導入なら /task-state で Plans.md に起こす）
 - /design で設計改善に進む
 - 完了（終了）
 ```
