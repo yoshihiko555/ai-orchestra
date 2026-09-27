@@ -3,7 +3,7 @@
 **パッケージ**: `packages/core`
 **類型**: 主: hook 型、副: 共通ライブラリ
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-09-27（ADR-20260926-056 §決定 6 の 3: `handoff.py` の起動コマンド生成と検証（EV-48）、ブランチ状態と未追跡ファイル（EV-49）を新設。人間レビューは PR で。前回 2026-09-26: Plans.md v2（発注書の節）に対応する EV-41〜EV-47 を新設（EV-46 / 47 と EV-41 / 42 / 45 の補足は PR #484 レビュー対応）。前回 2026-09-25: Issue #452 レビュー指摘対応で EV-39・EV-40 を新設）
+**最終レビュー日**: 2026-09-27（ADR-20260926-056 §決定 6 の 3: `handoff.py` の起動コマンド生成と検証（EV-48）、ブランチ状態と未追跡ファイル（EV-49）を新設。2026-09-27 人間レビュー済み。前回 2026-09-26: Plans.md v2（発注書の節）に対応する EV-41〜EV-47 を新設（EV-46 / 47 と EV-41 / 42 / 45 の補足は PR #484 レビュー対応）。前回 2026-09-25: Issue #452 レビュー指摘対応で EV-39・EV-40 を新設）
 **情報源**: docs/reference/packages.md（core セクション）, docs/design/architecture.md（4.3 / 5 / 9 章）, docs/adr/ADR-20260926-056.md（§決定 2: Plans.md v2）, .claude/rules/task-memory-usage.md, .claude/rules/context-sharing.md, docs/adr/ADR-20260728-046.md（root worktree 解決パターン、EV-26）
 **補助参照（構成要素の列挙のみ）**: packages/core/manifest.json, packages/core/hooks/ 配下のファイル名・docstring 冒頭
 
