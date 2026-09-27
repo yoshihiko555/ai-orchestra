@@ -172,6 +172,7 @@ SessionStart hook が `.claude/Plans.md` を読み込み、以下を実行する
 - Plans.md / Plans.archive.md はローカル管理とし、git にはコミットしない（`.gitignore` に追加する）
 - git worktree で作業する場合は、**作業中の worktree の `.claude/Plans.md` が正本（SSOT）**。root（main チェックアウト）側の Plans.md を worktree の作業から参照・更新しない
 - 計画は worktree ごとに起こし、タスク状態の更新もその worktree 内で完結させる
+- 進行状態は Plans.md に書き、auto-memory には書かない（auto-memory は全 worktree で共有されるため）。記憶の層の分担は `memory-layers` ルールに従う
 
 ### アーカイブ
 
@@ -190,3 +191,5 @@ SessionStart hook が `.claude/Plans.md` を読み込み、以下を実行する
 - 2026-02-21: REST API ではなく GraphQL を採用（理由: フロントエンドの柔軟性）
 - 2026-02-20: PostgreSQL を選定（理由: JSON サポートと拡張性）
 ```
+
+Decisions は全プロジェクトが完了したときにまとめてアーカイブされる（Project 単位では移らない）。タスクが終わった後も参照する判断は ADR にも残す（`memory-layers` ルール参照）。

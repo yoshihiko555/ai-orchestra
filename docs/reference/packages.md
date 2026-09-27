@@ -76,6 +76,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | rule   | `coding-principles`          | コード品質の共通ルール                                                                                         |
 | rule   | `task-memory-usage`          | Plans.md によるタスク管理ルール                                                                                |
 | rule   | `context-sharing`            | CLI 間コンテキスト共有ルール                                                                                   |
+| rule   | `memory-layers`              | 記憶の層（Plans.md / ADR / AGENTS.md / auto-memory / claude-mem）の分担ルール                                  |
 | config | `task-memory.yaml`           | Plans.md のパス・マーカー定義                                                                                  |
 
 ---

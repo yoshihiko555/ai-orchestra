@@ -74,6 +74,7 @@
     "coding-principles",
     "task-memory-usage",
     "context-sharing",
+    "memory-layers",
     "escalation-strategy"
   ],
   "scripts": [],

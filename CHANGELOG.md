@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`core`: `memory-layers` ルールを追加**: 作業中の状態・決定・気づきを Plans.md / ADR / `AGENTS.md` / auto-memory / claude-mem のどこに書くかを定めた。auto-memory には進行状態を書かず、Codex / Antigravity にも必要な知見は手動の棚卸しで `AGENTS.md` の記述欄へ移す。
+
 ### Changed
 
 - **配布する AGENTS.md の作業ルールに過剰実装を防ぐ判断手順を追加**: 書く前に既存コード → 標準ライブラリ → 導入済みの依存の順で探す、依頼や受け入れ条件に必要ない抽象化・依存・ボイラープレートを足さない、など 4 項目。`code-reviewer` のチェックリストにも過剰実装の観点を追加。

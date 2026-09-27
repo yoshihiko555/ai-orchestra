@@ -74,3 +74,4 @@ implementation 用の両方を示す）、`read-only` / `workspace-write` 以外
 ## セッション間記憶
 
 セッション終了時に `session/` はクリーンアップされる。セッション間の記憶永続化は claude-mem に委任する。
+何をどの記憶（Plans.md / ADR / `AGENTS.md` / auto-memory / claude-mem）に書くかは `memory-layers` ルールに従う。
