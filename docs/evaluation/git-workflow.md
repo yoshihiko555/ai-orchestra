@@ -3,7 +3,7 @@
 **パッケージ**: `packages/git-workflow`
 **類型**: スキル型（単独）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-04（人間レビュー完了・指摘なし。評価観点の変更なし。テストギャップは Issue #132 で追跡）／EV-20〜EV-29（`pr_review_threads.py` 追加分、2026-07-14）は実装前の先行作成につき未レビュー（人間レビュー待ち）／EV-33〜EV-35（`issue-create` の受け入れ条件必須化、2026-07-23）は未レビュー（人間レビュー待ち）／EV-18（ルーティングを hook 注入に委ねる形へ改訂、2026-09-25）は未レビュー（人間レビュー待ち）／EV-03 の根拠・EV-14・EV-17 の根拠と `issue-fix` の責務行（ADR-20260926-056: Phase 4 のレビューを `/review`、PR 作成を `/pr-create` へ委譲、2026-09-26）は未レビュー（人間レビュー待ち）
+**最終レビュー日**: 2026-07-04（人間レビュー完了・指摘なし。評価観点の変更なし。テストギャップは Issue #132 で追跡）／EV-20〜EV-29（`pr_review_threads.py` 追加分、2026-07-14）は実装前の先行作成につき未レビュー（人間レビュー待ち）／EV-33〜EV-35（`issue-create` の受け入れ条件必須化、2026-07-23）は未レビュー（人間レビュー待ち）／EV-18（ルーティングを hook 注入に委ねる形へ改訂、2026-09-25）は未レビュー（人間レビュー待ち）／EV-03 の根拠・EV-14・EV-17 の根拠と `issue-fix` の責務行（ADR-20260926-056: Phase 4 のレビューを `/review`、PR 作成を `/pr-create` へ委譲、2026-09-26）は 2026-09-27 に人間レビュー済み
 **情報源**: docs/reference/packages.md, packages/git-workflow/manifest.json, facets/instructions/issue-create.md, facets/instructions/issue-fix.md, facets/instructions/pr-create.md, facets/policies/pr-standards.md, packages/git-workflow/scripts/resolve_base_branch.py, packages/git-workflow/config/sandbox-requirements.json, `.claude/Plans.md`（Project: review-respond スキル、Phase 2「pr_review_threads.py」の仕様・Decisions）, packages/loop-harness/lib/pr_review_wait.py（`verify_origin`/`classify_severity`/`_parse_reviewer_allowlist` の再利用元・fail-closed 挙動の踏襲元）
 
 > **類型分類について**: タスク開始時の想定は「主: スキル型 + 副: hook 型」だったが、`packages/git-workflow/manifest.json` の `"hooks": {}` は空であり、本パッケージに hook コンポーネントは存在しない。よって類型は **スキル型（単独）** に修正した。`scripts/resolve_base_branch.py` は独立 CLI ではなく 3 スキルが共通利用する内部ユーティリティであり、CLI ツール型（README 定義: 「lib + scripts で提供されるコマンド」）の要件である独立コマンド性を満たさないため副類型としない。

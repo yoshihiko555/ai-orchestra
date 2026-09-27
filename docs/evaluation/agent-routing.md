@@ -3,7 +3,7 @@
 **パッケージ**: `packages/agent-routing`
 **類型**: 主: hook 型、副: 設定・エージェント定義の配布（README.md の 3 類型のうちどれにも完全一致しないため、共通チェックリストの「配布ライフサイクル」「後方互換性」で代替評価する。詳細は 4 節参照）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-09-27（EV-31（実装エージェントの書き込めないルーティングでの停止）を新設。ADR-20260926-056 の実装計画 Phase 7。人間レビューは PR で。前回 2026-09-25: Issue #452: EV-27 を新設。`agent-router.py` がバックグラウンドタスク完了通知（`<task-notification>`）に `[Agent Routing]` を提案しないことを追加。前回レビュー 2026-07-04: Issue #124 対応: 検証方法（manual/policy review）の明示、EV-11/EV-22/EV-26 の検証状態更新、4節 N/A 理由の具体化を実施。観点数・優先度は変更なし）
+**最終レビュー日**: 2026-09-27（EV-31（実装エージェントの書き込めないルーティングでの停止）を新設。ADR-20260926-056 の実装計画 Phase 7。2026-09-27 人間レビュー済み。前回 2026-09-25: Issue #452: EV-27 を新設。`agent-router.py` がバックグラウンドタスク完了通知（`<task-notification>`）に `[Agent Routing]` を提案しないことを追加。前回レビュー 2026-07-04: Issue #124 対応: 検証方法（manual/policy review）の明示、EV-11/EV-22/EV-26 の検証状態更新、4節 N/A 理由の具体化を実施。観点数・優先度は変更なし）
 **改訂**: 2026-09-25（Issue #453: ルーティング解決を hook のコード実装＋`[Resolved Routing]` 注入へ移行。EV-04〜09 を更新し EV-28〜30 を新設。人間レビューは PR で実施）
 **情報源**: docs/reference/packages.md（agent-routing セクション）, .claude/rules/agent-routing-policy.md, .claude/rules/codex-delegation.md, .claude/rules/antigravity-delegation.md, .claude/rules/config-loading.md, .claude/rules/context-sharing.md, Issue #453（ルーティング解決のコード化と注入）
 **補助参照（構成要素の列挙のみ）**: packages/agent-routing/manifest.json, packages/agent-routing/{hooks,agents,config}/ 配下のファイル名一覧
