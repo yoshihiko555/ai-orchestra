@@ -2,10 +2,11 @@
 """Collect task state and git info for Codex CLI handoff.
 
 Outputs JSON to stdout with:
-- Plans.md tasks (WIP/TODO/blocked)
+- Plans.md tasks (WIP/TODO/blocked) and the per-Project order sections
 - Decisions from Plans.md
-- Git branch, recent commits, uncommitted diff stat
+- Git branch, branch status, recent commits, uncommitted diff stat, untracked files
 - Working context (modified files)
+- The handoff file path and the Codex launch command (or why it is unavailable)
 
 Usage:
     python3 handoff.py [--project-dir PATH]
@@ -14,7 +15,9 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -139,6 +142,12 @@ def is_html_comment_only(text: str) -> bool:
 
 # Sensitive file patterns to exclude from diff
 SENSITIVE_PATTERNS = {".env", "credentials", "secret", ".pem", ".key"}
+# Same allowed set as hook_common._CODEX_MODEL_SAFE_PATTERN (a test pins the two together).
+CODEX_MODEL_SAFE_PATTERN = re.compile(r"[A-Za-z0-9_.,:/@+=\-]+")
+LAUNCH_SANDBOX = "workspace-write"
+# Same candidates as git-workflow resolve_base_branch.CANDIDATES, plus origin/HEAD at runtime.
+INTEGRATION_BRANCHES = ("staging", "stage", "develop", "main", "master")
+UNTRACKED_LIMIT = 50
 
 
 def find_project_root(start: Path | None = None) -> Path:
@@ -504,6 +513,149 @@ def filter_sensitive_lines(diff_stat: str) -> str:
     return "\n".join(filtered)
 
 
+def is_sensitive_path(path: str) -> bool:
+    """Return True if the path matches one of the sensitive file patterns."""
+    lowered = path.lower()
+    return any(pat in lowered for pat in SENSITIVE_PATTERNS)
+
+
+def get_untracked_files(cwd: Path, limit: int = UNTRACKED_LIMIT) -> tuple[list[str], bool]:
+    """List untracked (not ignored) files, excluding sensitive paths.
+
+    Returns the first ``limit`` paths and whether the list was truncated.
+    """
+    # Read bytes: text mode would translate a CR inside a file name into LF.
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=cwd,
+            capture_output=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return [], False
+    if result.returncode != 0:
+        return [], False
+    names = [os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw]
+    files = [path for path in names if not is_sensitive_path(path)]
+    return files[:limit], len(files) > limit
+
+
+def get_default_branch(cwd: Path) -> str | None:
+    """Return the remote default branch from ``origin/HEAD`` (e.g. ``main``), if known."""
+    ref = run_git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], cwd)
+    if not ref:
+        return None
+    _remote, _, branch = ref.partition("/")
+    return branch or None
+
+
+def get_branch_status(cwd: Path) -> dict[str, str | bool | None]:
+    """Describe the current branch and whether committing on it would hit an integration branch."""
+    if run_git(["rev-parse", "--is-inside-work-tree"], cwd) != "true":
+        return {
+            "git_repository": False,
+            "current": None,
+            "detached": False,
+            "default_branch": None,
+            "on_integration_branch": False,
+        }
+    current = run_git(["branch", "--show-current"], cwd) or None
+    default_branch = get_default_branch(cwd)
+    integration = set(INTEGRATION_BRANCHES)
+    if default_branch:
+        integration.add(default_branch)
+    return {
+        "git_repository": True,
+        "current": current,
+        "detached": current is None,
+        "default_branch": default_branch,
+        "on_integration_branch": current is None or current in integration,
+    }
+
+
+def handoff_file_path(project_dir: Path, now: datetime) -> Path:
+    """Absolute path of the handoff file the skill writes for this run (never an existing file)."""
+    handoffs_dir = project_dir.resolve() / ".claude" / "handoffs"
+    stem = now.strftime("%Y%m%d-%H%M%S")
+    candidate = handoffs_dir / f"{stem}.md"
+    suffix = 2
+    while candidate.exists():
+        candidate = handoffs_dir / f"{stem}-{suffix}.md"
+        suffix += 1
+    return candidate
+
+
+def load_cli_tools(project_dir: Path) -> dict | None:
+    """Load cli-tools.yaml (+ .local.yaml) through hook_common, or None if unavailable."""
+    orchestra_dir = os.environ.get("AI_ORCHESTRA_DIR", "")
+    if not orchestra_dir:
+        return None
+    hooks_dir = str(Path(orchestra_dir) / "packages" / "core" / "hooks")
+    if hooks_dir not in sys.path:
+        sys.path.insert(0, hooks_dir)
+    try:
+        from hook_common import load_cli_tools_config
+
+        if not _local_override_is_readable(project_dir):
+            return None
+        config = load_cli_tools_config(str(project_dir))
+    except Exception:
+        return None
+    return config if isinstance(config, dict) and config else None
+
+
+def _local_override_is_readable(project_dir: Path) -> bool:
+    """False if the project's cli-tools.local.yaml exists but cannot be parsed as a mapping.
+
+    hook_common treats an unreadable override as empty, which would fall back to the base
+    values; the launch command must not be built from base values the user meant to override.
+    """
+    local_path = project_dir / ".claude" / "config" / "agent-routing" / "cli-tools.local.yaml"
+    if not local_path.is_file():
+        return True
+    try:
+        import yaml
+
+        data = yaml.safe_load(local_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return data is None or isinstance(data, dict)
+
+
+def _launch_unavailable(reason: str) -> dict[str, str | bool | None]:
+    return {"available": False, "command": None, "reason": reason}
+
+
+def build_launch(
+    project_dir: Path, handoff_path: Path, config: dict | None
+) -> dict[str, str | bool | None]:
+    """Build the Codex launch command for the handoff file, failing closed on unsafe config.
+
+    ``codex.flags`` is for ``codex exec`` and is intentionally not part of the interactive
+    launch command.
+    """
+    if config is None:
+        return _launch_unavailable("cli-tools.yaml could not be loaded")
+    codex = config.get("codex")
+    if not isinstance(codex, dict) or codex.get("enabled") is not True:
+        return _launch_unavailable("codex.enabled is not true")
+    sandbox_section = codex.get("sandbox")
+    sandbox = sandbox_section.get("implementation") if isinstance(sandbox_section, dict) else None
+    if sandbox != LAUNCH_SANDBOX:
+        return _launch_unavailable(f"codex.sandbox.implementation is not {LAUNCH_SANDBOX}")
+    model = codex.get("model")
+    if not isinstance(model, str) or not CODEX_MODEL_SAFE_PATTERN.fullmatch(model):
+        return _launch_unavailable(
+            "codex.model is missing or contains characters outside the allowed set"
+        )
+    command = (
+        f"codex -C {shlex.quote(str(project_dir))} --model {shlex.quote(model)} "
+        f'--sandbox {shlex.quote(sandbox)} "$(cat {shlex.quote(str(handoff_path))})"'
+    )
+    return {"available": True, "command": command, "reason": None}
+
+
 def load_working_context(project_root: Path) -> dict:
     """Load working-context.json if available."""
     ctx_file = project_root / ".claude" / "context" / "shared" / "working-context.json"
@@ -528,21 +680,29 @@ def collect_handoff_data(project_dir: Path) -> dict:
     orders = parse_order_sections(content)
     attach_tasks_to_orders(orders, tasks)
 
+    now = datetime.now(UTC)
     branch = get_branch(project_dir)
     commits = get_recent_commits(project_dir)
     diff_stat = filter_sensitive_lines(get_diff_stat(project_dir))
+    untracked, untracked_truncated = get_untracked_files(project_dir)
     working_ctx = load_working_context(project_dir)
+    handoff_path = handoff_file_path(project_dir, now)
 
     return {
-        "timestamp": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "project_dir": str(project_dir),
         "branch": branch,
+        "branch_status": get_branch_status(project_dir),
+        "handoff_path": str(handoff_path),
+        "launch": build_launch(project_dir.resolve(), handoff_path, load_cli_tools(project_dir)),
         "tasks": tasks,
         "decisions": decisions,
         "order": orders,
         "order_markdown": render_order_markdown(orders),
         "recent_commits": commits,
         "diff_stat": diff_stat,
+        "untracked_files": untracked,
+        "untracked_truncated": untracked_truncated,
         "working_context": working_ctx,
         "plans_content": content,
     }
