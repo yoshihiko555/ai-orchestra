@@ -2,15 +2,31 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import os
+import shlex
+import subprocess
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Import the module under test
 from facets.scripts.handoff import (
+    CODEX_MODEL_SAFE_PATTERN,
+    INTEGRATION_BRANCHES,
     attach_tasks_to_orders,
+    build_launch,
     collect_handoff_data,
     filter_sensitive_lines,
     find_project_root,
+    get_branch_status,
+    get_untracked_files,
+    handoff_file_path,
+    load_cli_tools,
     parse_decisions,
     parse_order_sections,
     parse_tasks,
@@ -606,3 +622,308 @@ class TestCollectHandoffData:
         assert alpha["tasks"]["TODO"] == []
         assert beta["tasks"]["TODO"] == [{"task": "Beta task", "reason": None}]
         assert beta["tasks"]["WIP"] == []
+
+
+# ---------------------------------------------------------------------------
+# launch command / branch status / untracked files (EV-48 / EV-49)
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+VALID_CODEX = {
+    "enabled": True,
+    "model": "gpt-5.6-sol",
+    "sandbox": {"analysis": "read-only", "implementation": "workspace-write"},
+    "flags": "--search",
+}
+
+
+def _config(**codex_overrides: object) -> dict:
+    return {"codex": {**VALID_CODEX, **codex_overrides}}
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _init_repo(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init", "-q", "-b", "main")
+    (path / "README.md").write_text("x\n", encoding="utf-8")
+    _git(path, "add", "README.md")
+    _git(path, "commit", "-q", "-m", "init")
+    return path
+
+
+class TestBuildLaunch:
+    def test_command_passes_each_value_as_one_argument(self, tmp_path: Path) -> None:
+        project = tmp_path / "my proj's dir"
+        handoff = project / ".claude" / "handoffs" / "20260927-000000.md"
+        handoff.parent.mkdir(parents=True)
+        # Shell metacharacters in the file must reach codex verbatim, not be evaluated.
+        content = "Task: fix it\n$(printf injected) `printf injected` 'single' \"double\""
+        handoff.write_text(content, encoding="utf-8")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fake = bin_dir / "codex"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+
+        launch = build_launch(project, handoff, _config())
+
+        assert launch["available"] is True
+        assert launch["reason"] is None
+        env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+        result = subprocess.run(
+            ["bash", "-c", str(launch["command"])],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(result.stdout) == [
+            "-C",
+            str(project),
+            "--model",
+            "gpt-5.6-sol",
+            "--sandbox",
+            "workspace-write",
+            content,
+        ]
+
+    def test_flags_are_not_part_of_the_launch_command(self, tmp_path: Path) -> None:
+        launch = build_launch(tmp_path, tmp_path / "h.md", _config(flags="--search"))
+        assert "--search" not in str(launch["command"])
+
+    @pytest.mark.parametrize(
+        ("config", "reason_part"),
+        [
+            (None, "could not be loaded"),
+            ({}, "codex.enabled"),
+            ({"codex": "broken"}, "codex.enabled"),
+            (_config(enabled=False), "codex.enabled"),
+            (_config(enabled="true"), "codex.enabled"),
+            ({"codex": {k: v for k, v in VALID_CODEX.items() if k != "enabled"}}, "codex.enabled"),
+            (_config(sandbox={"implementation": "read-only"}), "sandbox"),
+            (_config(sandbox={"implementation": "danger-full-access"}), "sandbox"),
+            (_config(sandbox="workspace-write"), "sandbox"),
+            (_config(model="gpt;touch x"), "codex.model"),
+            (_config(model="gpt 5"), "codex.model"),
+            (_config(model="gpt\n5"), "codex.model"),
+            (_config(model="$(printf x)"), "codex.model"),
+            (_config(model=""), "codex.model"),
+            (_config(model=None), "codex.model"),
+            (_config(model=5), "codex.model"),
+        ],
+    )
+    def test_unsafe_or_disabled_config_produces_no_command(
+        self, tmp_path: Path, config: dict | None, reason_part: str
+    ) -> None:
+        launch = build_launch(tmp_path, tmp_path / "h.md", config)
+        assert launch["available"] is False
+        assert launch["command"] is None
+        assert reason_part in str(launch["reason"])
+
+    def test_model_pattern_matches_routing_hook(self) -> None:
+        hooks_dir = str(REPO_ROOT / "packages" / "core" / "hooks")
+        if hooks_dir not in sys.path:
+            sys.path.insert(0, hooks_dir)
+        import hook_common
+
+        assert CODEX_MODEL_SAFE_PATTERN.pattern == hook_common._CODEX_MODEL_SAFE_PATTERN.pattern
+
+
+class TestLoadCliTools:
+    def test_returns_none_without_orchestra_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("AI_ORCHESTRA_DIR", raising=False)
+        assert load_cli_tools(tmp_path) is None
+
+    def test_local_override_is_applied_and_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
+        config_dir = tmp_path / ".claude" / "config" / "agent-routing"
+        config_dir.mkdir(parents=True)
+        (config_dir / "cli-tools.yaml").write_text(
+            "codex:\n  enabled: true\n  model: gpt-5.6-sol\n"
+            "  sandbox:\n    analysis: read-only\n    implementation: workspace-write\n",
+            encoding="utf-8",
+        )
+        (config_dir / "cli-tools.local.yaml").write_text(
+            "codex:\n  sandbox:\n    implementation: read-only\n", encoding="utf-8"
+        )
+
+        config = load_cli_tools(tmp_path)
+
+        assert config is not None
+        assert config["codex"]["model"] == "gpt-5.6-sol"
+        launch = build_launch(tmp_path, tmp_path / "h.md", config)
+        assert launch["available"] is False
+        assert "sandbox" in str(launch["reason"])
+
+    @pytest.mark.parametrize("local_text", ["codex: [unclosed\n", "- just\n- a list\n"])
+    def test_unreadable_local_override_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_text: str
+    ) -> None:
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
+        config_dir = tmp_path / ".claude" / "config" / "agent-routing"
+        config_dir.mkdir(parents=True)
+        (config_dir / "cli-tools.local.yaml").write_text(local_text, encoding="utf-8")
+
+        assert load_cli_tools(tmp_path) is None
+
+
+class TestBranchStatus:
+    def test_integration_branch_list_matches_base_branch_resolver(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "resolve_base_branch",
+            REPO_ROOT / "packages" / "git-workflow" / "scripts" / "resolve_base_branch.py",
+        )
+        assert spec is not None and spec.loader is not None
+        resolver = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(resolver)
+        assert set(INTEGRATION_BRANCHES) == set(resolver.CANDIDATES)
+
+    def test_main_is_integration_and_feature_branch_is_not(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        assert get_branch_status(repo) == {
+            "git_repository": True,
+            "current": "main",
+            "detached": False,
+            "default_branch": None,
+            "on_integration_branch": True,
+        }
+        _git(repo, "switch", "-q", "-c", "feat/x")
+        assert get_branch_status(repo)["on_integration_branch"] is False
+
+    def test_remote_default_branch_counts_as_integration(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        _git(repo, "update-ref", "refs/remotes/origin/trunk", "HEAD")
+        _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        _git(repo, "switch", "-q", "-c", "trunk")
+
+        status = get_branch_status(repo)
+
+        assert status["default_branch"] == "trunk"
+        assert status["on_integration_branch"] is True
+
+    def test_default_branch_from_a_non_origin_remote_ref(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        _git(repo, "update-ref", "refs/remotes/upstream/trunk", "HEAD")
+        _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/upstream/trunk")
+
+        assert get_branch_status(repo)["default_branch"] == "trunk"
+
+    def test_not_a_repository_is_not_reported_as_detached(self, tmp_path: Path) -> None:
+        plain = tmp_path / "plain"
+        plain.mkdir()
+
+        assert get_branch_status(plain) == {
+            "git_repository": False,
+            "current": None,
+            "detached": False,
+            "default_branch": None,
+            "on_integration_branch": False,
+        }
+
+    def test_detached_head_is_treated_as_integration(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        _git(repo, "switch", "-q", "--detach", "HEAD")
+
+        status = get_branch_status(repo)
+
+        assert status["current"] is None
+        assert status["detached"] is True
+        assert status["on_integration_branch"] is True
+
+
+class TestUntrackedFiles:
+    def test_lists_untracked_excluding_ignored_and_sensitive(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        (repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+        (repo / "ignored.txt").write_text("x", encoding="utf-8")
+        (repo / "a.py").write_text("x", encoding="utf-8")
+        (repo / ".env").write_text("TOKEN=x", encoding="utf-8")
+        (repo / "sub").mkdir()
+        (repo / "sub" / "b file.md").write_text("x", encoding="utf-8")
+        (repo / "sub" / "secret.txt").write_text("x", encoding="utf-8")
+
+        files, truncated = get_untracked_files(repo)
+
+        assert sorted(files) == [".gitignore", "a.py", "sub/b file.md"]
+        assert truncated is False
+
+    def test_carriage_return_in_file_name_is_kept(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        (repo / "weird\rname.txt").write_text("x", encoding="utf-8")
+
+        files, _ = get_untracked_files(repo)
+
+        assert files == ["weird\rname.txt"]
+
+    def test_truncates_over_limit(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        for name in ("a.py", "b.py", "c.py"):
+            (repo / name).write_text("x", encoding="utf-8")
+
+        files, truncated = get_untracked_files(repo, limit=2)
+
+        assert len(files) == 2
+        assert truncated is True
+
+
+class TestCollectHandoffLaunchFields:
+    def test_handoff_path_and_launch_use_the_same_absolute_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / "Plans.md").write_text("# Plans\n", encoding="utf-8")
+
+        with patch("facets.scripts.handoff.run_git", return_value=None):
+            data = collect_handoff_data(tmp_path)
+
+        handoff_path = Path(data["handoff_path"])
+        assert handoff_path.is_absolute()
+        assert handoff_path.parent == tmp_path.resolve() / ".claude" / "handoffs"
+        assert set(data["branch_status"]) == {
+            "git_repository",
+            "current",
+            "detached",
+            "default_branch",
+            "on_integration_branch",
+        }
+        assert data["untracked_files"] == []
+        assert data["untracked_truncated"] is False
+
+    def test_launch_command_reads_the_reported_handoff_path(self, tmp_path: Path) -> None:
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / "Plans.md").write_text("# Plans\n", encoding="utf-8")
+
+        with (
+            patch("facets.scripts.handoff.run_git", return_value=None),
+            patch("facets.scripts.handoff.load_cli_tools", return_value=_config()),
+        ):
+            data = collect_handoff_data(tmp_path)
+
+        assert data["launch"]["available"] is True
+        assert data["launch"]["command"].endswith(f'"$(cat {shlex.quote(data["handoff_path"])})"')
+
+    def test_existing_handoff_file_is_not_reused(self, tmp_path: Path) -> None:
+        now = datetime(2026, 9, 27, 1, 2, 3, tzinfo=UTC)
+        handoffs = tmp_path / ".claude" / "handoffs"
+        handoffs.mkdir(parents=True)
+        (handoffs / "20260927-010203.md").write_text("first", encoding="utf-8")
+
+        path = handoff_file_path(tmp_path, now)
+
+        assert path == tmp_path.resolve() / ".claude" / "handoffs" / "20260927-010203-2.md"

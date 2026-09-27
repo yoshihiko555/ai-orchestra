@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`handoff`: Codex の起動コマンドをスクリプトが生成し、設定が不正なら出さない（ADR-056）**: `handoff.py` が `cli-tools.yaml`（+ `.local.yaml`）から `codex -C <project> --model <m> --sandbox <s> "$(cat <file>)"` を引用込みで組み立てる。`codex.enabled` が true でない、`codex.sandbox.implementation` が `workspace-write` でない、`codex.model` に安全でない文字がある場合はコマンドを出さず理由を示す。引き継ぎファイルの保存先、統合ブランチ上かどうか、未追跡ファイルの一覧も出力に加えた。
 - **`issue-fix`: レビューを `/review`、PR 作成を `/pr-create` に委譲（ADR-056）**: Phase 4 は独自のレビュアー選定をやめて `/review` を実行し、設計書との突合や指摘検証も `/review` と同じになった。Critical は Phase 2 に戻る扱いのまま。PR 作成は `/pr-create --issue N` を呼ぶ。`/review` が無い環境（quality-gates 未導入）では従来どおり `skill-review-policy` のレビュアーで確認する。
 - **Codex の既定モデルを `gpt-6-sol` に更新**: エージェントルーティング、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。meta-harness の `codex.model_allowlist` も `gpt-6-sol` に置き換えた。
 - **`essential` プリセットに `git-workflow` を追加（ADR-056）**: `/preflight` / `/startproject` の代わりになる `/order` と `development-workflow` ルールを essential でも使えるようにした。`/issue-create` `/issue-fix` `/pr-create` `/review-respond` も入る。既存の導入先は `orchex install git-workflow` で追加する。
