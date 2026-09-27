@@ -472,12 +472,12 @@ agents:
 
 ## 12. 設計上の特徴
 
-| 特徴                  | 説明                                                               |
-| --------------------- | ------------------------------------------------------------------ |
-| **Config-Driven**     | CLI 選択・モデル・エージェントの振る舞いを全て YAML で制御         |
-| **Layered Override**  | ベース設定 + `.local.*` で上書き。同期で上書きを破壊しない         |
-| **Faceted Prompting** | ポリシー・指示・出力契約を分離合成。DRY なプロンプト管理           |
-| **Fail-Open Hooks**   | 全 hook が `safe_hook_execution` で例外を吸収。CI/CD を止めない    |
-| **mtime-Based Sync**  | 変更なし時は ~70ms。変更ファイルのみコピー                         |
-| **Package System**    | manifest.json + トポロジカルソートで依存解決                       |
-| **Context Isolation** | セッションデータは ephemeral。セッション間記憶は claude-mem に委任 |
+| 特徴                  | 説明                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| **Config-Driven**     | CLI 選択・モデル・エージェントの振る舞いを全て YAML で制御                                                                      |
+| **Layered Override**  | ベース設定 + `.local.*` で上書き。同期で上書きを破壊しない                                                                      |
+| **Faceted Prompting** | ポリシー・指示・出力契約を分離合成。DRY なプロンプト管理                                                                        |
+| **Fail-Open Hooks**   | 全 hook が `safe_hook_execution` で例外を吸収。CI/CD を止めない                                                                 |
+| **mtime-Based Sync**  | 変更なし時は ~70ms。変更ファイルのみコピー                                                                                      |
+| **Package System**    | manifest.json + トポロジカルソートで依存解決                                                                                    |
+| **Context Isolation** | セッションデータは ephemeral。セッション間記憶は claude-mem に委任。記憶の層の分担は `memory-layers` ルール（ADR-20260927-057） |

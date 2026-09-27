@@ -84,6 +84,11 @@ tests/                       # unit / e2e tests
 - 既存 CLI コマンドと設定キー（特に `.claude/config/**`）の後方互換性を優先する
 - `config-loading` ルールに従い `*.local.*` 上書きを壊さない
 - 仕様変更時は `README.md` と必要なテストを同時更新する
+- 同期対象の `.claude/config/**` や `.claude/agents/*` を変更したら、`.claude/orchestra.json` の `file_hashes` 台帳の該当エントリを実ファイルの sha256 に更新して同じコミットに含める（CI が突合する。config の台帳は sync を再実行しても更新されない。競合を解決したときも実ファイルから計算し直す）。`last_sync` だけの差分はコミットしない
+- 同じ worktree で他のエージェントや CLI が並行して作業している間は、`git checkout` / `git restore` / `git stash` で作業ツリーを戻さない。スコープ外の変更を見つけたら報告だけする（誰の変更か区別できず、戻すと復元できない）
+- Python コードを変えたら、push 前に CI と同じ Python 3.12 でもテストを実行する（例: `uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q tests/unit`）。手元の新しい Python では 3.13 以降にしかない API の混入を検出できない
+- heredoc は `<<'EOF'` のようにクォートする。クォートしないと本文中のバッククォートや `$(...)` がコマンドとして実行される。変数を渡したいときは引数か環境変数で渡す
+- heredoc で流したスクリプトの後に `git add` / `commit` / `push` を続けるときは、スクリプトの終了コードで分岐する（`if python3 - <<'EOF'` で始め、終端の `EOF` は単独の行に置き、その次の行に `then` と git を書いて `fi` で閉じる。または先頭で `set -e` する）。改行で区切っただけでは、スクリプトが失敗しても git が実行される
 
 ---
 

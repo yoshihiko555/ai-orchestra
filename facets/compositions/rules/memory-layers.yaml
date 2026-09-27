@@ -1,0 +1,8 @@
+# memory-layers ルールのファセット構成定義
+name: memory-layers
+description: 記憶の層（Plans.md / ADR / AGENTS.md / auto-memory / claude-mem）の分担ルール
+type: rule
+
+policies: []
+
+instruction: memory-layers
