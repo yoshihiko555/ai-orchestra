@@ -85,9 +85,10 @@ python3 .claude/skills/handoff/scripts/handoff.py
 
 - Plans.md の WIP/TODO/blocked タスク
 - Plans.md の Project ごとの Goal / Context / Constraints と、その Project に属する WIP / TODO / blocked タスク（`order_markdown` として整形済み。Project が複数あってもタスクは所属 Project の下に出る）
-- 未コミット diff のサマリー（`git diff --stat`）
-- ブランチ名、最近のコミット
+- 未コミット diff のサマリー（`git diff --stat`）と未追跡ファイルの一覧（`untracked_files`。機密パターンは除外、50 件を超えたら `untracked_truncated: true`）
+- ブランチ名、最近のコミット、`branch_status`（Git リポジトリか = `git_repository`、detached か、`origin/HEAD` の既定ブランチ、統合ブランチ上か = `on_integration_branch`）
 - Decisions セクション
+- 引き継ぎファイルの保存先 `handoff_path`（絶対パス）と Codex の起動コマンド `launch`（`available` / `command` / `reason`）
 
 ### Step 2: 会話要約の生成
 
@@ -102,7 +103,7 @@ python3 .claude/skills/handoff/scripts/handoff.py
 ### Step 3: 引き継ぎファイル生成
 
 Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマットで
-`.claude/handoffs/{timestamp}.md` に書き出す。
+JSON の `handoff_path` に書き出す（`launch.command` はこのパスを読むので、別の名前にしない）。
 
 **ファイルは英語で記述する**（Codex への指示は英語ルール準拠）。
 
@@ -110,7 +111,7 @@ Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマ�
 # Task Handoff
 
 **Generated**: {YYYY-MM-DD HH:MM:SS UTC}
-**Branch**: {branch_name}
+**Branch**: {branch_name}{on_integration_branch が true なら " (integration branch — create a feature branch before committing)"}
 **Project**: {project directory (absolute path)}
 
 ## Conversation Summary
@@ -161,6 +162,8 @@ Step 1 の JSON + Step 2 の要約を組み合わせて、以下のフォーマ�
 
 {git diff --stat output}
 
+Untracked files: {untracked_files をカンマ区切りで。untracked_truncated が true なら末尾に ", ..."。無ければ "none"}
+
 ### Recent Commits
 
 - {hash} {message}
@@ -206,17 +209,11 @@ files, not part of the change). Do not push; Claude Code creates the PR with
 生成後、以下をユーザーに **日本語で** 表示する:
 
 1. 生成されたファイルのパス
-2. Codex 起動コマンド（引き継ぎファイルを新規セッションのプロンプトとして渡す。`-c` は config 上書き用で
-   ファイルは渡せない）。`<codex.model>` と `<codex.sandbox.implementation>` は
-   `.claude/config/agent-routing/cli-tools.yaml`（+ `.local.yaml`）の実効値で置換して表示する。
-   実装のための引き継ぎなので、実効値の `codex.enabled` が `false`、
-   `codex.sandbox.implementation` が `workspace-write` でない、または `codex.model` が routing hook と
-   同じ安全文字集合 `[A-Za-z0-9_.,:/@+=-]` 以外の文字を含む場合は、起動コマンドを案内せず設定の見直しか
-   Claude Code での続行を案内する。引き継ぎファイルとプロジェクトは絶対パスで書き、`-C` で作業
-   ディレクトリを固定する（この検証と生成は後続 PR で `handoff.py` に機械化する。ADR-056 §決定 6 の 3）:
-   ```
-   codex -C '<project absolute path>' --model '<codex.model>' --sandbox '<codex.sandbox.implementation>' "$(cat '<project absolute path>/.claude/handoffs/{timestamp}.md')"
-   ```
+2. Codex 起動コマンド: `launch.available` が true なら `launch.command` を **そのまま** 表示する（引き継ぎファイルを
+   新規セッションのプロンプトとして渡す形。値の引用は `handoff.py` が済ませているので書き換えない）。false なら
+   コマンドは出さず、`launch.reason` と「`cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled` /
+   `codex.model` / `codex.sandbox.implementation`（`workspace-write` が必要）を見直すか、Claude Code で続行する」旨を
+   案内する。`codex.flags` は `codex exec` 用なので起動コマンドには含まれない
 3. 引き継ぎ内容のサマリー（WIP タスク数、TODO タスク数）
 
 ## オプション
