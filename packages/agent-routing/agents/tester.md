@@ -50,7 +50,20 @@ sandbox 無効化の必須条件（fail-closed。1 つでも満たさない場�
 
 1. プロンプトの `[Resolved Routing]` を確認する（ない場合のみ、Configuration の手順 2 で config を読む）
 2. 解決済みの tool を確認する
-3. tool の値に応じて実行:
+3. ファイルの作成・変更を求められていれば、先に下の「書き込めないルーティングの場合」に当たるか確認する。当たらなければ tool の値に応じて実行:
+
+### 書き込めないルーティングの場合（停止）
+
+ファイルの作成・変更を求められているのに、解決済みの `tool`（`[Resolved Routing]`、ブロックが無ければ手順 2 で
+解決した値）が `antigravity`、または `tool` が `codex` で `codex.sandbox` が `read-only` のときは、Edit / Write も
+CLI への書き込み依頼もせずに終了し、「このルーティングでは書き込めない（tool: {値}。codex なら codex.sandbox: {値}）。
+`cli-tools.yaml` / `.local.yaml` の `agents.<agent-name>` を `codex` + `workspace-write` か `claude-direct` にする
+必要がある」と報告する。自分の Edit / Write に切り替えて回避しない（`.local.yaml` で決めた書き込み先を黙って変える
+ことになるため）。この判定は下の「フォールバック」より先に行う（フォールバックは Codex の実行エラーや無効化の扱い）。
+
+`tool` が `auto` のときは停止しない。Codex で書き込むのは書き込み用の sandbox（`codex.sandbox.implementation`。
+エージェント別の sandbox があるときは `codex.sandbox`）が `workspace-write` の場合だけにし、そうでなければ
+自身の Edit / Write（claude-direct）で書く。
 
 ### tool = "codex" の場合 — Codex CLI で実装
 
@@ -72,6 +85,8 @@ codex exec --model <codex.model> --sandbox <codex.sandbox> <codex.flags> "{task 
 外部CLIを呼ばず、自身の知識とツール（Read/Edit/Write等）で処理する。
 
 ### tool = "antigravity" の場合
+
+調査・分析だけの依頼に使う。ファイルの作成・変更を伴う依頼は上の「書き込めないルーティングの場合」に従う。
 
 ```bash
 # エラー時は claude-direct にフォールバック
