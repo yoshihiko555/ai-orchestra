@@ -80,7 +80,7 @@ facets/
 | Codex/Antigravity | `codex-delegation`, `codex-suggestion-compliance`, `codex-system`, `antigravity-delegation`, `antigravity-suggestion-compliance`, `antigravity-system` |
 | 品質              | `review`, `skill-review-policy`, `tdd`, `release-readiness`                                                                                            |
 | 開発フロー        | `order`, `development-workflow`, `issue-create`, `issue-fix`, `handoff`                                                                                |
-| 状態管理          | `task-memory-usage`, `task-state`, `context-sharing`                                                                                                   |
+| 状態管理          | `task-memory-usage`, `task-state`, `context-sharing`, `memory-layers`                                                                                  |
 | その他            | `coding-principles` (rule), `design`, `design-tracker`                                                                                                 |
 
 ### Knowledge（ナレッジ）
@@ -321,6 +321,7 @@ orchex facet build --name my-skill --project .
 | `issue-create`                      | skill | git-workflow                    | —                                        | —             |
 | `issue-fix`                         | skill | git-workflow                    | cli-language, pr-standards               | tiered-review |
 | `pr-create`                         | skill | git-workflow                    | cli-language, dialog-rules, pr-standards | —             |
+| `memory-layers`                     | rule  | core                            | —                                        | —             |
 | `orchestra-usage`                   | rule  | agent-routing                   | cli-language                             | —             |
 | `order`                             | skill | git-workflow                    | dialog-rules                             | —             |
 | `release-readiness`                 | skill | quality-gates                   | —                                        | tiered-review |
