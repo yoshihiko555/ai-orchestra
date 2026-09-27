@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **配布する AGENTS.md の作業ルールに過剰実装を防ぐ判断手順を追加**: 書く前に既存コード → 標準ライブラリ → 導入済みの依存の順で探す、依頼や受け入れ条件に必要ない抽象化・依存・ボイラープレートを足さない、など 4 項目。`code-reviewer` のチェックリストにも過剰実装の観点を追加。
+
 ## [0.3.5] - 2026-09-27
 
 ### Added

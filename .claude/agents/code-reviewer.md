@@ -74,6 +74,7 @@ agy -p "{code review question}" --model <antigravity.model> 2>/dev/null
 - [ ] Error handling: Appropriate and consistent
 - [ ] Edge cases: Handled properly
 - [ ] Code duplication: Minimized
+- [ ] Over-implementation: No abstractions, new dependencies, or boilerplate beyond what the request and acceptance criteria need; existing code, the standard library, or installed dependencies are reused where behavior stays correct
 - [ ] Comments: Present where needed (not obvious code)
 - [ ] Tests: Adequate coverage
 

@@ -67,7 +67,7 @@
     "config/quality-gates/quality-gates.json",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-09-27T02:51:13.708877+00:00",
+  "last_sync": "2026-09-27T09:22:45.543207+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
@@ -82,7 +82,7 @@
       "agents/auth-designer.md": "105a02485834df45b8c43144c48cb3aeeba6f44c06f0f0ea4f3b7a451726716d",
       "agents/backend-go-dev.md": "e225840c78136102f99f55d7e6b67d53d965a0660845ee8c6c9a888fea254c47",
       "agents/backend-python-dev.md": "f1ade146112f56a91e33f1f97b0556d04a1ce211be58523ebf0846c8bcd71b0e",
-      "agents/code-reviewer.md": "8c3544a64012c13690532a13aecdcf42a022bc90e44988741d4103e566b6bc9b",
+      "agents/code-reviewer.md": "d09b80b81a8da9cdbdb4a944ab5a97b8a2d6a170b19defe422c14962924b7f46",
       "agents/data-modeler.md": "7ea023eb2b83ea66ef2b19833767bcb4e5fc9a135a00609e00e82ffa8df05c82",
       "agents/debugger.md": "bd772d779561b701e3bee73ff78fdfd12cc30b30cc6167c5c350b637a71033da",
       "agents/docs-writer.md": "387b272ccefd506197562f9da9b10de3f360355e2ae8dd07754e5dca8f2d0d95",
