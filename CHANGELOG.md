@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-09-27
+
 ### Added
 
 - **`order` スキルを追加（ADR-056）**: 対話で確定した計画を発注書（Goal / Context / Out of Scope / Constraints / Open Questions + Phase の受け入れ条件と Tasks）に固めて 1 回提示し、承認後に Plans.md か GitHub Issue のどちらか 1 か所に書く。`--from-plans` で Plans.md の Project を Issue に引き渡し、Plans.archive.md に移す。Issue 化の前に Open Questions の解消を求める。
