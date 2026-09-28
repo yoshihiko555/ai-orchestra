@@ -18,100 +18,165 @@ hook は `git ... commit` 呼び出しを検出したあと、この分類結果
   問題を修正する。
 - **後置 `--no-all` で all 判定を解除**: `--all`/`-a` の後に `--no-all` が現れた場合、
   `has_all` を `False` へ戻すようにする（git の `-a, --[no-]all` 仕様準拠）。
+
+**Issue #349（allowlist 化）**: 未知のオプションを個別に無視・パススルーする方式は、
+表の登録漏れや将来の git のオプション追加で、値中の文字を `-a` と誤読するリスクを
+常に抱える（`-amfix` / `-ma` / `-S<keyid>` で実際に発生した）。本モジュールは
+commit tree に影響しないと分かっているオプションだけを allowlist として通し、
+それ以外（未知のオプション・解析できないコマンド）は「再現困難」として安全側に倒す
+（EV-99 / EV-100）。トークナイズは `shlex.shlex` の `punctuation_chars` を使い、
+shell 演算子・改行を空白なしでも区切りとして扱う（EV-101）。
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 
-# `git commit` の候補ツリー再現（Issue #338 反復3）で使う分類用テーブル。
-# 値を取る long option（"=value" 形式でなければ次トークンを値として読み飛ばす）。
-_COMMIT_VALUE_LONG_FLAGS = {
-    "--message",
-    "--file",
-    "--author",
-    "--date",
-    "--template",
-    "--reedit-message",
-    "--reuse-message",
-    "--fixup",
-    "--squash",
-    "--cleanup",
-    "--trailer",
-}
-# 再現困難と明示する long option（`-p`/`-i`/`-o` の long form、および
-# `--pathspec-from-file`。B-2: Issue #338 反復4 bot レビュー対応）。
-_COMMIT_UNSUPPORTED_LONG_FLAGS = {
-    "--patch",
-    "--interactive",
-    "--include",
-    "--only",
-    "--pathspec-from-file",
-}
-# 再現困難な long option のうち、値を取るもの（"=value" 形式でなければ次トークンを
-# 値として読み飛ばす。B-2）。
-_COMMIT_UNSUPPORTED_VALUE_LONG_FLAGS = {"--pathspec-from-file"}
-# 値を取る短縮オプション文字（結合形の途中に現れたら、以降を attached value として
-# 走査を打ち切る。`git commit -h` の値付きオプション: -c/-C/-F/-m/-t（必須値）/-u/-S
-# （`-u[<mode>]` および `-S[<keyid>]` は attached optional value のみ。次トークンは
-# 値として消費しない）。B-1: Issue #338 反復4 bot レビュー Critical 対応。`-S` は
-# 反復7 bot レビュー対応で追加（`-Sabc1234` の keyid 中の `a` を `-a`/`--all` と
-# 誤認しないようにするため）。
-_COMMIT_VALUE_SHORT_CHARS = "cCFmtuS"
-# 上記のうち、attached value が無い（トークン末尾がそのオプション文字）場合に
-# 次トークンを値として読み飛ばす対象（必須値オプションのみ。`-u`/`-S` は optional
-# attached value のみなので対象外 ── 次トークンを誤って消費すると `-u -m msg` の
-# `-m` や `-S -m msg` の `-m` を飲み込んでしまう。`git commit -S abc` の `abc` は
-# keyid ではなく pathspec 扱いになるのが git の挙動）。
-_COMMIT_NEXT_TOKEN_VALUE_SHORT_CHARS = "cCFmt"
+# `git commit` の後続引数トークナイズで区切りとして扱う shell 演算子・改行文字
+# （EV-101）。`shlex.shlex(punctuation_chars=...)` に渡すと、これらの文字は
+# 空白が無くても独立したトークンとして切り出される（例: `x&&echo` -> ['x', '&&', 'echo']）。
+_SHELL_PUNCTUATION_CHARS = "();<>|&\n"
+# bash の行継続（`\` + 改行）。区切りではないため分割前に取り除く（EV-101）。
+_LINE_CONTINUATION = re.compile(r"(?<!\\)\\\n")
+# 空白に続く数字だけの fd 指定（`2>&1` の `2`）。リダイレクトの一部であり引数ではないため、
+# 分割前に取り除いてリダイレクト演算子として扱わせる（EV-101）。
+_FD_REDIRECT_PREFIX = re.compile(r"(?<=\s)\d+(?=[<>])")
+
+# ---------------------------------------------------------------------------
+# 短縮オプション文字の分類テーブル（allowlist）。各集合は互いに素（テストで担保）。
+# ---------------------------------------------------------------------------
+
+# 値を必須で取る短縮オプション（attached value が無ければ次トークンを値として消費）。
+# `-m`/`-F`/`-c`/`-C`/`-t`。
+_SHORT_VALUE_REQUIRED_CHARS = frozenset("mFcCt")
+# attached value のみを取る短縮オプション（次トークンは値として消費しない）。
+# `-u`（`--untracked-files`）/`-S`（`--gpg-sign`）。
+_SHORT_VALUE_OPTIONAL_CHARS = frozenset("uS")
 # `-a`（`--all`）に相当する短縮オプション文字。
-_COMMIT_ALL_SHORT_CHAR = "a"
-# 再現困難と明示する短縮オプション文字（patch / interactive / only）。
-_COMMIT_UNSUPPORTED_SHORT_CHARS = "pio"
-_SHELL_CHAIN_TOKENS = {"&&", "||", ";", "|"}
+_SHORT_ALL_CHAR = "a"
+# 値を取らず commit tree に影響しない短縮オプション（中立）。
+_SHORT_NEUTRAL_CHARS = frozenset("enqsv")
+# 再現困難と明示する短縮オプション（patch / interactive / only）。
+_SHORT_UNSUPPORTED_CHARS = frozenset("pio")
+
+# ---------------------------------------------------------------------------
+# long option の分類テーブル（allowlist）。各集合は互いに素（テストで担保）。
+# ---------------------------------------------------------------------------
+
+# 値を取る long option（"=value" 形式でなければ次トークンを値として読み飛ばす）。
+_LONG_VALUE_FLAGS = frozenset(
+    {
+        "--message",
+        "--file",
+        "--author",
+        "--date",
+        "--template",
+        "--reuse-message",
+        "--reedit-message",
+        "--fixup",
+        "--squash",
+        "--cleanup",
+        "--trailer",
+    }
+)
+# 値を取らず commit tree に影響しない long option（中立）。
+_LONG_NO_VALUE_FLAGS = frozenset(
+    {
+        "--amend",
+        "--edit",
+        "--no-edit",
+        "--verify",
+        "--no-verify",
+        "--signoff",
+        "--no-signoff",
+        "--quiet",
+        "--verbose",
+        "--allow-empty",
+        "--allow-empty-message",
+        "--reset-author",
+        "--no-gpg-sign",
+    }
+)
+# `=value` 形式のときだけ値を取る long option（bare 形は値を取らない。次トークンは
+# 消費しない）。`--gpg-sign keyid` の `keyid` はこのオプションの値ではなく、別の
+# 非オプショントークン（pathspec）として扱われる。
+_LONG_VALUE_ONLY_VIA_EQUALS_FLAGS = frozenset({"--gpg-sign", "--untracked-files"})
+# 再現困難と明示する long option（値を取らないもの）。
+_LONG_UNSUPPORTED_NO_VALUE_FLAGS = frozenset({"--patch", "--interactive", "--include", "--only"})
+# 再現困難と明示する long option のうち、値を取るもの（"=value" 形式でなければ
+# 次トークンを値として読み飛ばす）。
+_LONG_UNSUPPORTED_VALUE_FLAGS = frozenset({"--pathspec-from-file"})
 
 
 def classify_commit_invocation(invocation: str) -> tuple[bool, bool]:
-    """`git ... commit` 呼び出しが `-a`/`--all`、および候補ツリー再現が困難なモード
-    （`-p`/`--patch`/`-i`/`--interactive`/`--include`/`--only`/`--pathspec-from-file`/
-    pathspec 指定）を含むかを判定する（Issue #338 反復3: bot レビュー P1 対応）。
+    """`git ... commit` 呼び出しが `-a`/`--all`、および候補ツリー再現が困難なモードを
+    含むかを allowlist 方式で判定する（Issue #349）。
 
     戻り値は ``(has_all, has_unsupported_reconstruction)``。`has_all` が True かつ
     `has_unsupported_reconstruction` が False のときのみ、呼び出し元は `-a`/`--all`
-    候補ツリーの再現（`_build_commit_all_index_file`）を試みる。パース不能（引用符の
-    不整合等）な場合は安全側で `(False, False)` を返す（再現は試みず、注記も付けない。
-    既存の単純な index 検証にフォールバックする）。
+    候補ツリーの再現（`_build_commit_all_index_file`）を試みる。
+
+    commit tree に影響しないと分かっているオプション（`_SHORT_*`/`_LONG_*` の
+    allowlist）だけを解釈し、それ以外の未知のオプション・pathspec 指定・パース不能な
+    コマンドはすべて `has_unsupported_reconstruction=True` に倒す（EV-99）。読み違いが
+    起きても「候補ツリーを再現せず注記が付く」安全側にのみ倒れる。
+
+    パース不能（引用符の不整合等）、または `commit` トークンを特定できない場合は
+    `(False, True)` を返す（EV-100。黙って通常の index 検証にフォールバックするのでは
+    なく、再現困難として注記する）。`git commit` に続く引数が無い場合は
+    `(False, False)`。
 
     ``invocation`` は `git ... commit` 呼び出しの開始位置（`git`）以降の文字列。
     呼び出し元（hook）が検出用正規表現のマッチ位置で切り出して渡す（Issue #349）。
+    サブコマンドの位置は最初の `commit` トークンとみなす。`git -C commit commit -a` のように
+    グローバルオプションの値が `commit` だと位置を読み違えるが、本来のサブコマンドが
+    pathspec 扱いになり `has_unsupported=True` の安全側に倒れる。
 
-    結合形の短縮オプション（例: `-amfix`、`-ma`）は、値を取る短縮オプション文字
-    （`_COMMIT_VALUE_SHORT_CHARS`）に到達した時点でそれ以降を attached value として
-    扱い、フラグとしての走査を打ち切る（B-1: Issue #338 反復4 bot レビュー Critical
-    対応）。これを行わないと、`-amfix` の value 部分 `"fix"` に含まれる `i` を
-    `-i`（interactive）と誤認して `simulate_commit_all` を無効化したり、`-ma`
-    （`-m` の attached value `"a"`）を独立した `-a` フラグと誤認して未ステージ変更を
-    候補ツリーへ誤って含めてしまう（false positive）。
+    トークナイズは `shlex.shlex` に `punctuation_chars=_SHELL_PUNCTUATION_CHARS` を
+    渡し、shell 演算子（`&&`/`||`/`;`/`|`/`&`/括弧/リダイレクト）と改行を空白が
+    無くても区切りとして扱う（EV-101。例: `git commit -a -m x&&echo y` の `&&` 以降は
+    走査しない）。
     """
+    source = _FD_REDIRECT_PREFIX.sub("", _LINE_CONTINUATION.sub("", invocation))
     try:
-        tokens = shlex.split(invocation)
+        lexer = shlex.shlex(source, posix=True, punctuation_chars=_SHELL_PUNCTUATION_CHARS)
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        # shlex の既定は語中の `#` 以降もコメントとして捨てる（bash は語頭の `#` だけ）。
+        # 捨てると後続の `-a` / `--no-all` を見落とすため無効にし、`#` を含む語は通常の語
+        # として扱う（語頭の `#` で始まるコメントは pathspec 扱いになり安全側に倒れる）。
+        lexer.commenters = ""
+        tokens = list(lexer)
     except ValueError:
-        return False, False
+        return False, True
+
     try:
         commit_at = tokens.index("commit")
     except ValueError:
-        return False, False
+        return False, True
 
     has_all = False
     has_unsupported = False
     seen_pathspec_separator = False
     skip_next_value = False
+
     for token in tokens[commit_at + 1 :]:
-        if token in _SHELL_CHAIN_TOKENS:
-            break
+        # 値待ちを先に消費する。引用符で囲んだ値（`-m ';'`）は shlex 上で演算子と区別できない
+        # ため、演算子判定を先にすると以降のオプション（`--only` 等）を見落とす。未クォートの
+        # 演算子を値として飲み込んでも、後続の語は pathspec になり安全側に倒れる。
         if skip_next_value:
             skip_next_value = False
             continue
+        # shell 演算子・改行トークン（punctuation_chars のみで構成される）の扱い（EV-101）。
+        # リダイレクト（`<` / `>` を含む）はリダイレクト先の 1 語だけを読み飛ばして走査を
+        # 続ける（`git commit -m x 2>&1 -a` の `-a` は git に渡る）。制御演算子（`;` / `&&` /
+        # `||` / `&` / `|` / 括弧 / 改行）に到達したら走査を打ち切る。
+        if token and set(token) <= set(_SHELL_PUNCTUATION_CHARS):
+            if "<" in token or ">" in token:
+                skip_next_value = True
+                continue
+            break
         if token == "--":
             seen_pathspec_separator = True
             continue
@@ -125,26 +190,48 @@ def classify_commit_invocation(invocation: str) -> tuple[bool, bool]:
             has_all = False
             continue
         if token.startswith("--"):
-            name = token.split("=", 1)[0]
-            if name in _COMMIT_UNSUPPORTED_LONG_FLAGS:
+            name, has_equals = token.split("=", 1)[0], "=" in token
+            if name in _LONG_UNSUPPORTED_NO_VALUE_FLAGS:
                 has_unsupported = True
-                if name in _COMMIT_UNSUPPORTED_VALUE_LONG_FLAGS and "=" not in token:
+                continue
+            if name in _LONG_UNSUPPORTED_VALUE_FLAGS:
+                has_unsupported = True
+                if not has_equals:
                     skip_next_value = True
                 continue
-            if name in _COMMIT_VALUE_LONG_FLAGS and "=" not in token:
-                skip_next_value = True
+            if name in _LONG_VALUE_FLAGS:
+                if not has_equals:
+                    skip_next_value = True
+                continue
+            if name in _LONG_NO_VALUE_FLAGS:
+                continue
+            if name in _LONG_VALUE_ONLY_VIA_EQUALS_FLAGS:
+                # bare form（"=" 無し）は値を取らない。次トークンは消費しない ──
+                # 続く非オプショントークンは下の「非オプション = pathspec」に落ちる。
+                continue
+            # 未知の long option。allowlist に無いため再現困難として注記する（EV-99）。
+            has_unsupported = True
             continue
         if token.startswith("-") and len(token) > 1:
             for idx, ch in enumerate(token[1:], start=1):
-                if ch == _COMMIT_ALL_SHORT_CHAR:
+                if ch == _SHORT_ALL_CHAR:
                     has_all = True
-                elif ch in _COMMIT_UNSUPPORTED_SHORT_CHARS:
+                    continue
+                if ch in _SHORT_NEUTRAL_CHARS:
+                    continue
+                if ch in _SHORT_UNSUPPORTED_CHARS:
                     has_unsupported = True
-                if ch in _COMMIT_VALUE_SHORT_CHARS:
+                    continue
+                if ch in _SHORT_VALUE_REQUIRED_CHARS or ch in _SHORT_VALUE_OPTIONAL_CHARS:
                     remainder = token[idx + 1 :]
-                    if not remainder and ch in _COMMIT_NEXT_TOKEN_VALUE_SHORT_CHARS:
+                    if not remainder and ch in _SHORT_VALUE_REQUIRED_CHARS:
                         skip_next_value = True
-                    break  # 以降は attached value。フラグとしては走査しない（B-1）。
+                    break  # 以降は attached value。フラグとしては走査しない。
+                # 未知の短縮オプション文字。allowlist に無いため再現困難として注記し、
+                # 残りは値の可能性があるため走査を打ち切る（`-Kab` の `a` を `-a` と
+                # 誤認しない）。
+                has_unsupported = True
+                break
             continue
         # commit 直後の非オプション引数 = pathspec 指定
         has_unsupported = True
