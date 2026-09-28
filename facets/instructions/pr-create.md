@@ -101,8 +101,10 @@ git diff --numstat "$BASE..HEAD"
 当てはまらない差分では案内しない（毎回出すと読まれなくなる）。案内の文面:
 
 ```
-この変更は規模が大きいか重要な箇所に触れています。仕様を把握できているか確かめるなら `/grasp-view diff` → `/grasp-check diff` を使えます（任意）。
+この変更は規模が大きいか重要な箇所に触れています。仕様を把握できているか確かめるなら `/grasp-view diff --base {$BASE}` → `/grasp-check diff --base {$BASE}` を使えます（任意）。
 ```
+
+`{$BASE}` は Context 収集で解決した `$BASE` の値に置き換えて出す。
 
 ---
 

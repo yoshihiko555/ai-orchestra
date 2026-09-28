@@ -154,7 +154,7 @@ AC は対話で確定した内容を転記し、どちらの出力先でも聞�
 実装前に仕様を把握できているか確かめるなら `/grasp-view {対象}` → `/grasp-check {対象}` を使えます（任意）。
 ```
 
-`{対象}` は Plans.md なら `plan {Project 名}`（`/grasp-view` にはファイルパス `.claude/Plans.md`）、Issue なら `#{N}`。案内は警告だけで、Step 1 の提示・選択肢・書き出しを変えない。
+`{対象}` は Plans.md なら `plan {Project 名}`（`/grasp-view` にはファイルパス `.claude/Plans.md`）、Issue なら `#{N}`。Plans.md に Project が複数あると `/grasp-view` は全体を図解するが、`/grasp-check plan {Project 名}` は対象 Project に関係するカードだけを材料にする。案内は警告だけで、Step 1 の提示・選択肢・書き出しを変えない。
 
 ## 注意事項
 

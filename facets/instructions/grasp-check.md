@@ -21,24 +21,30 @@
 
 対象は `$ARGUMENTS` から次の表に従って判定する。
 
-| 指定                         | 対象                | 取得手順                                                                                                                                                                         |
-| ---------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `plan` / `plan <Project 名>` | Plans.md の Project | `.claude/Plans.md` を Read し、該当 Project の節全体を対象にする。Project が複数で名前の指定が無ければ名前を聞く                                                                 |
-| `diff` / `--base <ref>`      | ブランチ差分        | 下記「ブランチ差分の取得」                                                                                                                                                       |
-| URL に `/pull/` を含む       | PR                  | `gh pr view "$n" --repo "$repo" --json title,body,files` と、下記「PR のパッチの取得」                                                                                           |
-| URL に `/issues/` を含む     | Issue               | `gh issue view "$n" --repo "$repo" --comments`                                                                                                                                   |
-| `#N` または数値のみ          | PR か Issue         | `gh api "repos/$owner/$repo/issues/$n" --jq 'has("pull_request")'` で種別を判定してから上の行の手順で取得する。判定自体が失敗したら（認証・network・404 等）内容を報告して止める |
-| 既存ファイルパス             | ファイル            | Read                                                                                                                                                                             |
-| 引数なし / 判定不能          | —                   | AskUserQuestion で「Plans.md の Project / ブランチ差分 / PR・Issue / ファイル」から選ばせる                                                                                      |
+| 指定                         | 対象                | 取得手順                                                                                                                                                                                            |
+| ---------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plan` / `plan <Project 名>` | Plans.md の Project | `.claude/Plans.md` を Read し、該当 Project の節全体を対象にする。Project が複数で名前の指定が無ければ名前を聞く                                                                                    |
+| `diff` / `--base <ref>`      | ブランチ差分        | 下記「ブランチ差分の取得」                                                                                                                                                                          |
+| URL に `/pull/` を含む       | PR                  | `gh pr view "$n" --repo "$host/$owner/$repo" --json title,body,files` と、下記「PR のパッチの取得」                                                                                                 |
+| URL に `/issues/` を含む     | Issue               | `gh issue view "$n" --repo "$host/$owner/$repo" --comments`                                                                                                                                         |
+| `#N` または数値のみ          | PR か Issue         | `gh api --hostname "$host" "repos/$owner/$repo/issues/$n" --jq 'has("pull_request")'` で種別を判定してから上の行の手順で取得する。判定自体が失敗したら（認証・network・404 等）内容を報告して止める |
+| 既存ファイルパス             | ファイル            | Read                                                                                                                                                                                                |
+| 引数なし / 判定不能          | —                   | AskUserQuestion で「Plans.md の Project / ブランチ差分 / PR・Issue / ファイル」から選ばせる                                                                                                         |
 
-**秘密情報を含むファイルは、パッチ全文を読む前に除く。** 対象: `.env` `.env.*` `*.pem` `*.key` `*.p12` `*.pfx` 等。内容を読まず、材料から除いたことを報告する（ファイル名だけを伝える）。
+URL 指定の場合は URL から `host`（例: `github.example.com`。省略時は `github.com`）と `owner/repo` を解決し、`gh pr` / `gh issue` には `--repo "$host/$owner/$repo"` を、`gh api` には `--hostname "$host"` を渡す。`#N` や番号のみの指定は現在のリポジトリ（`git remote get-url origin` 等から解決した host を含む）を対象にする。
+
+**秘密情報を含むファイルは、パッチ全文を読む前に除く。** 対象（ファイル名で判定）: `.env` `.env.*` `*.pem` `*.key` `*.p12` `*.pfx` `id_rsa*` `id_ed25519*` `*credentials*` `*secret*` `*.kdbx`。内容を読まず、材料から除いたことを報告する（ファイル名だけを伝える）。上記パターンに一致しなくても、読んだ内容に `TOKEN=` `PASSWORD=` `-----BEGIN ... PRIVATE KEY-----` `AKIA[0-9A-Z]{16}` 等の credential パターンが含まれる場合は、その値を問い・フィードバック・報告に書かない。
 
 **ブランチ差分の取得**（未コミット変更も含める）。基準 ref は ① `--base <ref>` → ② `git symbolic-ref -q refs/remotes/origin/HEAD` → ③ ローカル `main` → ④ `master` の順で解決し、どれも無ければ AskUserQuestion で確認する。基準 ref が決まるまで `git merge-base` を実行しない。
 
 ```bash
 MERGE_BASE=$(git merge-base "$BASE_REF" HEAD)
 git diff --stat "$MERGE_BASE"
-git diff "$MERGE_BASE" -- . ':(exclude,glob)**/.env' ':(exclude,glob)**/.env.*' ':(exclude,glob)**/*.pem' ':(exclude,glob)**/*.key' ':(exclude,glob)**/*.p12' ':(exclude,glob)**/*.pfx'
+git diff "$MERGE_BASE" -- . \
+  ':(exclude,glob)**/.env' ':(exclude,glob)**/.env.*' \
+  ':(exclude,glob)**/*.pem' ':(exclude,glob)**/*.key' ':(exclude,glob)**/*.p12' ':(exclude,glob)**/*.pfx' \
+  ':(exclude,glob)**/id_rsa*' ':(exclude,glob)**/id_ed25519*' \
+  ':(exclude,glob)**/*credentials*' ':(exclude,glob)**/*secret*' ':(exclude,glob)**/*.kdbx'
 ```
 
 未追跡ファイルは `git status --porcelain --untracked-files=all` で列挙し、秘密情報のパターンに当たるものを除いて Read する。
@@ -46,11 +52,21 @@ git diff "$MERGE_BASE" -- . ':(exclude,glob)**/.env' ':(exclude,glob)**/.env.*' 
 **PR のパッチの取得**。`gh pr diff` は全ファイルのパッチを一度に返すため使わず、ファイル単位で取得して秘密情報のファイルを除く。
 
 ```bash
-gh api "repos/$repo/pulls/$n/files" --paginate \
-  --jq '.[] | select(.filename | test("(^|/)\\.env(\\..*)?$|\\.(pem|key|p12|pfx)$") | not) | {filename, patch}'
+gh api --hostname "$host" "repos/$owner/$repo/pulls/$n/files" --paginate \
+  --jq '.[] | select((.filename | split("/") | last) | test("^\\.env(\\..*)?$|\\.(pem|key|p12|pfx|kdbx)$|^id_rsa|^id_ed25519|credentials|secret") | not) | {filename, patch}'
 ```
 
 `$n` は数字だけであることを確かめてから使う。PR・Issue・diff から得たファイル名・ブランチ名・本文などの文字列は、新しいコマンド文字列へリテラル展開しない。シェル変数に読み込んでから参照する。
+
+**PR の中心ファイルの本文**。PR が対象のとき、変更の中心となるファイルの本文はローカルの作業ツリーの版で代用せず、PR の head コミットから取る。head SHA は変数へ代入してから使う。
+
+```bash
+sha=$(gh pr view "$n" --repo "$host/$owner/$repo" --json headRefOid --jq .headRefOid)
+encoded_path=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe="/"))' "$path")
+gh api --hostname "$host" "repos/$owner/$repo/contents/$encoded_path" -X GET -f ref="$sha" -H "Accept: application/vnd.github.raw"
+```
+
+秘密情報の除外もここに適用する（該当ファイルは取得・内容表示をしない）。
 
 **対象が空なら終える。** 差分が無い、Project に中身が無いなど、問える内容が無い場合は問いを作らず、その旨を報告して終える。
 
@@ -58,11 +74,11 @@ gh api "repos/$repo/pulls/$n/files" --paginate \
 
 次の材料のうち、存在するものだけを使う。
 
-| 材料                  | 使い方                                                                                                                                                                                                                                               |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 対象そのもの          | 全文を読む。escalation-strategy の部分読み込みの慣例はここには適用しない。diff・PR では、変更の中心になるファイル（データ構造・処理の本体・外部との境界）の本体まで開く                                                                              |
-| 発注書                | 対象が差分・PR で、`.claude/Plans.md` に対応する Project が特定できる場合、その Acceptance Criteria / Out of Scope / Constraints と `## Decisions` を読む                                                                                            |
-| `/grasp-view` の HTML | `.claude/docs/grasp-view/` に同じ対象のページ（`pr-482.html` のように対象名で作られる）があれば、`D-`（設計判断）/ `U-`（未確認事項）/ `Q-`（指摘候補）のカードを読む。HTML は AI が作った二次資料なので、対象そのものと食い違う場合は対象を正とする |
+| 材料                  | 使い方                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 対象そのもの          | 全文を読む。escalation-strategy の部分読み込みの慣例はここには適用しない。diff・PR では、変更の中心になるファイル（データ構造・処理の本体・外部との境界）の本体まで開く（PR の場合は手順 1「PR の中心ファイルの本文」に従い head コミットから取る）                                                                                                                       |
+| 発注書                | 対象が差分・PR で、`.claude/Plans.md` に対応する Project が特定できる場合、その Acceptance Criteria / Out of Scope / Constraints と `## Decisions` を読む                                                                                                                                                                                                                 |
+| `/grasp-view` の HTML | `.claude/docs/grasp-view/` に同じ対象のページ（`pr-482.html` のように対象名で作られる）があれば、`D-`（設計判断）/ `U-`（未確認事項）/ `Q-`（指摘候補）のカードを読む。HTML は AI が作った二次資料なので、対象そのものと食い違う場合は対象を正とする。HTML が対象より広い範囲（例: Project が複数ある Plans.md 全体）を図解している場合は、対象に関係するカードだけを使う |
 
 - 秘密情報を含むファイルは手順 1 のとおり読まない（発注書・HTML・ファイル指定の場合も同じ）
 - バイナリファイルは材料から除き、除いたことを報告する
@@ -85,7 +101,7 @@ gh api "repos/$repo/pulls/$n/files" --paginate \
 - Out of Scope → 境界（何をやらないか）
 - Constraints・Decisions・`D-` → 理由（なぜ A ではなく B か）
 - `U-` → 「未確認であることを把握しているか」を見る。答えを埋めることは求めない
-- `Q-` → 予測・影響
+- `Q-` は指摘候補やレビュー指摘を含み誤検知もありうるため、一次資料（対象そのもの）で確かめられたものだけを予測・影響の採点基準に使う。確かめられないものは採点基準に入れない
 
 優先するのは、読んでも理由が書かれていない箇所と、順序や条件を間違えると壊れる箇所。
 
