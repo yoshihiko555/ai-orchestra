@@ -11,6 +11,7 @@ description:
   or wants to transfer in-progress work to Codex CLI.
 
   '
+argument-hint: "[--message <text>]"
 metadata:
   short-description: Transfer in-progress tasks to Codex CLI via handoff file
 ---

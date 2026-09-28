@@ -5,6 +5,7 @@ description:
   cycle. Use this skill when the user asks to implement something with TDD, write
   tests first, or mentions "tdd", "test-driven", "red green refactor". Also trigger
   when the user says "テスト駆動", "TDDで実装", or wants test-first development.
+argument-hint: <what to implement>
 disable-model-invocation: true
 ---
 

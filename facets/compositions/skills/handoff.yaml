@@ -10,6 +10,7 @@ frontmatter:
     hits rate limits. Use this skill when the user says "handoff", "引き継ぎ",
     "Codex に渡して", "rate limit", "レート制限", "continue in codex",
     or wants to transfer in-progress work to Codex CLI.
+  argument-hint: "[--message <text>]"
   metadata:
     short-description: Transfer in-progress tasks to Codex CLI via handoff file
 

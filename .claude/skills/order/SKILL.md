@@ -14,6 +14,7 @@ description:
   依頼や /order で使用する。
 
   "
+argument-hint: "[--to plans|issue] [--from-plans <project>|--from-issue <N>]"
 metadata:
   short-description: 対話の結論を発注書（Plans.md / Issue）に書き出す
 ---

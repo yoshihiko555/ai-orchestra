@@ -17,6 +17,7 @@ description:
   Trigger: /image-gen <prompt>
 
   "
+argument-hint: <prompt> [--out <path>] [--style <name>|none]
 metadata:
   short-description: Codex image_gen による画像生成
 ---

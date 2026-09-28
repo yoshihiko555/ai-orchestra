@@ -12,6 +12,7 @@ frontmatter:
     `--style <name>` (`--style none` disables styling for one run). Use for quick
     images without reaching for Adobe Firefly etc.
     Trigger: /image-gen <prompt>
+  argument-hint: "<prompt> [--out <path>] [--style <name>|none]"
   metadata:
     short-description: Codex image_gen による画像生成
 

@@ -8,6 +8,7 @@ description:
   トリガー: /loop-issue
 
   "
+argument-hint: <issue-number> | --attach <loop_id> | --resume <loop_id>
 metadata:
   short-description: Issue 消化ループ（伴走型自律反復）
 ---

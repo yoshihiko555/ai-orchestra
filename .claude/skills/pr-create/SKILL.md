@@ -13,6 +13,7 @@ description: "現在のブランチから Pull Request を作成する。
   トリガー: /pr-create
 
   "
+argument-hint: "[--issue <N>] [--base <branch>] [--reviewers <text>]"
 metadata:
   short-description: GitHub PR の作成
 ---

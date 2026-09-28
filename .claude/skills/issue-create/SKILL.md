@@ -8,6 +8,7 @@ description:
   トリガー: /issue-create
 
   "
+argument-hint: "[bug|feature|task] [title]"
 metadata:
   short-description: GitHub Issue の作成
 ---

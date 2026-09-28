@@ -7,6 +7,7 @@ frontmatter:
     GitHub Issue 番号を受け取り、loop-harness（LP-1）で実装→検証→修正の反復ループを駆動する。
     合格後は pr-create 資産で PR を作成し、外部レビュー対応反復まで自動で継続する。
     トリガー: /loop-issue
+  argument-hint: "<issue-number> | --attach <loop_id> | --resume <loop_id>"
   metadata:
     short-description: Issue 消化ループ（伴走型自律反復）
 

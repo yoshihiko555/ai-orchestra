@@ -13,6 +13,7 @@ description:
   "可視化して", "わかりやすく説明", "この差分を説明", "計画を図にして".
 
   '
+argument-hint: "[<PR/Issue URL>|#N|<path>|diff|review] [--base <ref>]"
 metadata:
   short-description: Explain plans, diffs, PRs and docs as diagram-based HTML pages
 disable-model-invocation: true

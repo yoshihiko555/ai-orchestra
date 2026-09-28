@@ -9,6 +9,7 @@ frontmatter:
     GitHub Issue を起点に計画→実装→テスト→レビューの開発フローを実行する。
     Issue の内容を読み取り、コード調査・実装計画の提示・ブランチ作成・コミットまでを行う。
     トリガー: /issue-fix
+  argument-hint: "[issue-number]"
   metadata:
     short-description: Issue 起点の開発フロー
 

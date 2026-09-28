@@ -127,6 +127,8 @@ frontmatter:
   description: |
     Run code reviews using specialized reviewer agents.
     Supports individual or batch review modes with smart reviewer selection.
+  # 引数の補完ヒント（任意）。[ や | を含むのでクォートする（しないと YAML のリストになる）
+  argument-hint: "[all|code|security|performance|spec|architecture|ux|adversarial|impl|design]"
   metadata:
     short-description: Multi-agent code review (smart selection)
 

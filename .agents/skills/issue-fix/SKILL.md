@@ -8,6 +8,7 @@ description:
   トリガー: /issue-fix
 
   "
+argument-hint: "[issue-number]"
 metadata:
   short-description: Issue 起点の開発フロー
 ---
