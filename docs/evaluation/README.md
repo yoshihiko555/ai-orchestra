@@ -74,6 +74,8 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 | loop-issue     | `skills/loop-issue.md`     | GitHub Issue 起点で loop-harness の LP-1 を駆動するフロー                                          |
 | review-respond | `skills/review-respond.md` | PR の bot レビュー指摘を検出 → 修正 → 返信/resolve するフロー                                      |
 | review         | `skills/review.md`         | `/review` のスマート選定 → 並列レビュー → 集約 → auto-fix ループ（Phase 0-7）                      |
+| grasp-view     | `skills/grasp-view.md`     | 計画・差分・PR を図解 HTML にして人間に読ませるフロー（旧 explain-visually）                       |
+| grasp-check    | `skills/grasp-check.md`    | 人間が自分の言葉で説明し、AI が答えを見せずに抜けを指摘して把握度を確かめるフロー                  |
 
 ## 共通フォーマット
 
