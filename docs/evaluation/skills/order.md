@@ -3,8 +3,8 @@
 **対象スキル群**: `order`（正本: `facets/instructions/order.md`）と、その出力先の `issue-create`（AC 確定済み経路）・`task-memory-usage` ルール（Plans.md v2）・配布ルール `development-workflow`
 **単位**: スキルフロー（対話の結論 → 発注書 → 実行エンジンへの引き渡し）
 **作成日**: 2026-09-26
-**最終レビュー日**: 2026-09-26（初版。ADR-20260926-056 §決定 1・3 に基づく先行作成。design-flow の旧 EV-14 / 15 / 17 / 18 / 19 / 21 の移管先）
-**情報源**: docs/adr/ADR-20260926-056.md, facets/instructions/order.md, facets/instructions/development-workflow.md, facets/instructions/issue-create.md, .claude/rules/task-memory-usage.md, docs/evaluation/skills/design-flow.md
+**最終レビュー日**: 2026-09-28（ADR-20260928-058 で引き渡し時のアーカイブを廃止し、EV-10 と引き渡し表の行 4 を「Plans.md から取り除く」に改めた。2026-09-28 人間レビュー済み。前回 2026-09-26: 初版。ADR-20260926-056 §決定 1・3 に基づく先行作成。design-flow の旧 EV-14 / 15 / 17 / 18 / 19 / 21 の移管先）
+**情報源**: docs/adr/ADR-20260926-056.md, docs/adr/ADR-20260928-058.md, facets/instructions/order.md, facets/instructions/development-workflow.md, facets/instructions/issue-create.md, .claude/rules/task-memory-usage.md, docs/evaluation/skills/design-flow.md
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
 > この評価セットは「振る舞い仕様書」として機能し、テストコードとの突合（`evaluation-set-policy`
@@ -25,13 +25,13 @@ Constraints / Open Questions + Phase ごとの Acceptance Criteria と Tasks）�
 
 ## 2. 期待するフローと成果物
 
-| ステップ | スキル / フェーズ | 入力                                 | 期待する成果物・振る舞い                                                                                                                                              |
-| -------- | ----------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1        | order Step 0      | 会話の結論、`docs/` の設計書         | 内容モデル 7 節が埋まった発注書案。設計書があれば Context に参照、矛盾があれば指摘                                                                                    |
-| 2        | order Step 1      | 発注書案                             | AskUserQuestion で 1 回提示（承認 / 修正 / 中止）。修正は発注書への差分編集                                                                                           |
-| 3        | order Step 2      | 承認済み発注書、出力先               | Plans.md v2（Project + Phase + AC + Tasks）か Issue（AC 確定済み経路）に 1 回で書く                                                                                   |
-| 4        | order Step 3      | Plans.md の既存 Project / 既存 Issue | `--from-plans`: Issue 化し、Plans.md 側の Project を Plans.archive.md に「#N へ引き渡し」で移す。`--from-issue`: Project 化し、Issue に引き渡しコメントを付けて close |
-| 5        | order Step 4      | 書き先                               | 次に使うエンジンのコマンドを 1 行で案内                                                                                                                               |
+| ステップ | スキル / フェーズ | 入力                                 | 期待する成果物・振る舞い                                                                                                            |
+| -------- | ----------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | order Step 0      | 会話の結論、`docs/` の設計書         | 内容モデル 7 節が埋まった発注書案。設計書があれば Context に参照、矛盾があれば指摘                                                  |
+| 2        | order Step 1      | 発注書案                             | AskUserQuestion で 1 回提示（承認 / 修正 / 中止）。修正は発注書への差分編集                                                         |
+| 3        | order Step 2      | 承認済み発注書、出力先               | Plans.md v2（Project + Phase + AC + Tasks）か Issue（AC 確定済み経路）に 1 回で書く                                                 |
+| 4        | order Step 3      | Plans.md の既存 Project / 既存 Issue | `--from-plans`: Issue 化し、Plans.md 側の Project を取り除く。`--from-issue`: Project 化し、Issue に引き渡しコメントを付けて close  |
+| 5        | order Step 4      | 書き先                               | 次に使うエンジンのコマンドを 1 行で案内                                                                                             |
 
 ## 3. 評価観点
 
@@ -49,7 +49,7 @@ Constraints / Open Questions + Phase ごとの Acceptance Criteria と Tasks）�
 - [ ] EV-07（正常 / must）: AC は対話で確定した内容を転記し、Plans.md・Issue のどちらに書く場合も聞き直さない（`issue-create` は AC 確定済み経路で呼ぶ） — 根拠: ADR-056 §決定 3 / 検証: 実行観察
 - [ ] EV-08（正常 / must）: 出力先は Plans.md か Issue のどちらか 1 か所。Plans.md は `task-memory-usage` の v2 書式で Project + Phase を 1 回で書く — 根拠: ADR-056 §決定 1「発注書は 1 エンジン 1 か所」 / 検証: 実行観察
 - [ ] EV-09（異常 / must）: Issue 化（`--to issue` / `--from-plans`）の前に Open Questions が残っていれば解消をユーザーに求め、解消できない項目が残る場合は Issue 化せず Plans.md に留める — 根拠: ADR-056 §決定 3 / 検証: 実行観察
-- [ ] EV-10（正常 / must）: `--from-plans` は Plans.md の Project を Issue 本文に変換したうえで、その Project を Plans.archive.md に「#N へ引き渡し」として移し、Plans.md に残さない — 根拠: ADR-056 §決定 1「エンジンをまたぐときは片方だけ残す」 / 検証: 実行観察
+- [ ] EV-10（正常 / must）: `--from-plans` は Plans.md の Project を Issue 本文に変換したうえで、その Project を Plans.md から取り除く — 根拠: ADR-056 §決定 1「エンジンをまたぐときは片方だけ残す」、ADR-20260928-058 / 検証: 実行観察
 - [ ] EV-12（正常 / must）: `--from-issue N --to plans` は Issue 本文を Plans.md の Project に変換し、Issue に引き渡しコメントを付けて close する（Issue と Plans.md の両方を正本にしない）。`--from-plans` / `--from-issue` は Step 0〜2 を行わず引き渡しだけを実行する — 根拠: ADR-056 §決定 1「逆方向も同様に変換して片方だけ残す」 / 検証: 実行観察
 - [ ] EV-11（正常 / should）: 完了報告で、書き先と次に使うエンジンのコマンド（`/goal` はそのまま、`/loop-issue N`、`takt add '#N'`、`/handoff`）をエンジンごとに 1 行ずつ案内する — 根拠: development-workflow.md / 検証: 実行観察
 

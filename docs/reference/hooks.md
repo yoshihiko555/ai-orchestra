@@ -122,8 +122,9 @@ Plans.md からタスク状態を読み込み、セッション開始時にサ�
 1. `.claude/Plans.md` の存在を確認
 2. `task-memory.yaml` から設定を読み込み（マーカー定義等）
 3. 状態マーカー（`cc:TODO` / `cc:WIP` / `cc:done` / `cc:blocked`）を解析
-4. 全フェーズが完了したプロジェクトを `.claude/Plans.archive.md` にアーカイブ
-5. WIP / 次の TODO / blocked タスクをサマリーとして stdout に出力
+4. WIP / 次の TODO / blocked タスクをサマリーとして stdout に出力
+
+Plans.md は読むだけで書き換えない。完了したプロジェクトもそのまま残る（ADR-20260928-058）。
 
 **出力例:**
 

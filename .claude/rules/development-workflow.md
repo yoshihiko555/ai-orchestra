@@ -33,7 +33,7 @@ Issue 起点でセッション内に小さく直すだけなら `/issue-fix`（P
 
 - 発注書は 1 エンジン 1 か所。Plans.md と Issue の両方を正本にしない
 - 状態はエンジンが持つ（表の「状態」列）。Plans.md の Project を Issue に出したら、その Project は
-  `/order --from-plans` で Plans.archive.md に「#N へ引き渡し」として移す
+  `/order --from-plans` で Plans.md から取り除く
 - Open Questions が残る発注書は自律エンジン（/loop-issue・TAKT）へ出さない。`/order` が Issue 化の前に解消を求める
 
 ## 出す

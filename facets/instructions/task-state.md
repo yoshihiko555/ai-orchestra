@@ -160,4 +160,3 @@ codd:
 - Plans.md はローカル管理（`.gitignore`）。共有が必要な作業は Issue を発注書にする（`task-memory-usage.md` ルール参照）
 - 発注書の 5 節（Goal / Context / Out of Scope / Constraints / Open Questions）には `cc:` マーカーを書かない。タスクは Phase 配下の `#### Tasks` にだけ書く
 - 状態マーカーはバッククォートで囲む: `` `cc:WIP` ``
-- 先頭の `codd:` フロントマターは SessionStart の自動アーカイブでも保持される（`## Project:` 境界の外側のため）

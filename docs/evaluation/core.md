@@ -3,13 +3,13 @@
 **パッケージ**: `packages/core`
 **類型**: 主: hook 型、副: 共通ライブラリ
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-09-27（ADR-20260926-056 §決定 6 の 3: `handoff.py` の起動コマンド生成と検証（EV-48）、ブランチ状態と未追跡ファイル（EV-49）を新設。2026-09-27 人間レビュー済み。前回 2026-09-26: Plans.md v2（発注書の節）に対応する EV-41〜EV-47 を新設（EV-46 / 47 と EV-41 / 42 / 45 の補足は PR #484 レビュー対応）。前回 2026-09-25: Issue #452 レビュー指摘対応で EV-39・EV-40 を新設）
-**情報源**: docs/reference/packages.md（core セクション）, docs/design/architecture.md（4.3 / 5 / 9 章）, docs/adr/ADR-20260926-056.md（§決定 2: Plans.md v2）, .claude/rules/task-memory-usage.md, .claude/rules/context-sharing.md, docs/adr/ADR-20260728-046.md（root worktree 解決パターン、EV-26）
+**最終レビュー日**: 2026-09-28（ADR-20260928-058 で自動アーカイブを廃止し、EV-02 / 03 / 18 / 21 / 22 / 23 / 25 / 44 を欠番化、EV-50 を新設、EV-42 / 43 / 45 から自動アーカイブを除いた。2026-09-28 人間レビュー済み。前回 2026-09-27: ADR-20260926-056 §決定 6 の 3: `handoff.py` の起動コマンド生成と検証（EV-48）、ブランチ状態と未追跡ファイル（EV-49）を新設。2026-09-27 人間レビュー済み。前回 2026-09-26: Plans.md v2（発注書の節）に対応する EV-41〜EV-47 を新設（EV-46 / 47 と EV-41 / 42 / 45 の補足は PR #484 レビュー対応）。前回 2026-09-25: Issue #452 レビュー指摘対応で EV-39・EV-40 を新設）
+**情報源**: docs/reference/packages.md（core セクション）, docs/design/architecture.md（4.3 / 5 / 9 章）, docs/adr/ADR-20260926-056.md（§決定 2: Plans.md v2）, .claude/rules/task-memory-usage.md, .claude/rules/context-sharing.md, docs/adr/ADR-20260728-046.md（root worktree 解決パターン、EV-26）, docs/adr/ADR-20260928-058.md（自動アーカイブの廃止、EV-50）
 **補助参照（構成要素の列挙のみ）**: packages/core/manifest.json, packages/core/hooks/ 配下のファイル名・docstring 冒頭
 
 ## 1. 責務定義
 
-core は全パッケージが依存する共通基盤であり、(1) `Plans.md` によるタスク状態管理（状態マーカーの解析・自動アーカイブ・サマリー注入）、(2) plan gate によるサブエージェント実行フロー制御、(3) `.claude/context/` を介した CLI 間・サブエージェント間のコンテキスト共有（作業ファイル・前回結果の集約と注入）、(4) 全 hook が共有する設定読み込み・JSON I/O・ログ出力ユーティリティ（`hook_common.py` / `log_common.py` / `context_store.py`）を提供する。他パッケージに依存せず、他の全パッケージから依存される最下層のパッケージである。
+core は全パッケージが依存する共通基盤であり、(1) `Plans.md` によるタスク状態管理（状態マーカーの解析・サマリー注入。`Plans.md` は読むだけで書き換えない）、(2) plan gate によるサブエージェント実行フロー制御、(3) `.claude/context/` を介した CLI 間・サブエージェント間のコンテキスト共有（作業ファイル・前回結果の集約と注入）、(4) 全 hook が共有する設定読み込み・JSON I/O・ログ出力ユーティリティ（`hook_common.py` / `log_common.py` / `context_store.py`）を提供する。他パッケージに依存せず、他の全パッケージから依存される最下層のパッケージである。
 
 ### Non-Goals
 
@@ -22,7 +22,7 @@ core は全パッケージが依存する共通基盤であり、(1) `Plans.md` 
 
 | 構成要素                                                                         | 入力                                                                                                                    | 期待する出力                                                                                                                                                                                   | 副作用                                                                                                                                                                                                                              |
 | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `load-task-state.py`（SessionStart）                                             | SessionStart イベント JSON、`.claude/Plans.md`                                                                          | WIP タスク一覧 / 次の TODO / blocked タスク一覧のサマリーをコンテキストに注入                                                                                                                  | 全フェーズ `cc:done` のプロジェクトを `.claude/Plans.archive.md` に日付付きで追記し `Plans.md` から除去。`.claude/context/`（session/, shared/）を初期化                                                                            |
+| `load-task-state.py`（SessionStart）                                             | SessionStart イベント JSON、`.claude/Plans.md`                                                                          | WIP タスク一覧 / 次の TODO / blocked タスク一覧のサマリーをコンテキストに注入                                                                                                                  | `.claude/context/`（session/, shared/）を初期化。`Plans.md` は書き換えない                                                                                                                                                          |
 | `set-plan-gate.py`（PostToolUse: Agent\|Task）                                   | PostToolUse イベント JSON                                                                                               | —                                                                                                                                                                                              | プランゲート状態を設定（`tool_response` が async 起動メタデータの場合は設定しない）                                                                                                                                                 |
 | `check-plan-gate.py`（PreToolUse: Agent\|Task）                                  | PreToolUse イベント JSON                                                                                                | ゲート pending 時: exit code 2 でツール呼び出しをブロック                                                                                                                                      | 実装系エージェント呼び出しの中断（core hook 群で唯一 fail-open ではなく意図的にブロックする）                                                                                                                                       |
 | `clear-plan-gate.py`（UserPromptSubmit）                                         | UserPromptSubmit イベント JSON                                                                                          | —                                                                                                                                                                                              | プランゲート状態を解除（`prompt` が `<task-notification>` で始まる場合は解除しない）                                                                                                                                                |
@@ -43,8 +43,8 @@ core は全パッケージが依存する共通基盤であり、(1) `Plans.md` 
 ## 3. 評価観点
 
 - [ ] EV-01（正常 / must）: `load-task-state.py` が SessionStart 時に `Plans.md` の状態マーカー（`cc:TODO`/`cc:WIP`/`cc:done`/`cc:blocked`）を解析し、WIP タスク一覧・次の TODO タスク・blocked タスク一覧をコンテキストに注入する — 根拠: task-memory-usage.md
-- [ ] EV-02（正常 / must）: 全フェーズが `cc:done` のプロジェクトは `Plans.archive.md` に日付付きで追記され、`Plans.md` から該当プロジェクトセクション（区切り線含む）が除去される — 根拠: task-memory-usage.md
-- [ ] EV-03（境界 / should）: Decisions / Notes セクションは**全プロジェクトが完了した場合のみ**アーカイブへ移動し、一部プロジェクトのみ完了時は `Plans.md` に残存する — 根拠: task-memory-usage.md
+- ~~EV-02~~（**欠番**, 2026-09-28 レビュー）: 自動アーカイブの廃止（ADR-20260928-058）に伴い削除。SessionStart は Plans.md を書き換えない（EV-50）
+- ~~EV-03~~（**欠番**, 2026-09-28 レビュー）: 自動アーカイブの廃止（ADR-20260928-058）に伴い削除。SessionStart は Plans.md を書き換えない（EV-50）
 - [ ] EV-04（正常 / should）: `cc:blocked` マーカーには `— 理由: {ブロック理由}` の付記があるものとして解析・表示される — 根拠: task-memory-usage.md
 - [ ] EV-05（正常 / must）: サブエージェント（Agent/Task）完了の PostToolUse でプランゲートが設定される — 根拠: docs/reference/packages.md, architecture.md 5.1
 - [ ] EV-06（異常 / must）: プランゲートが pending の状態で実装系エージェントが呼び出された場合、`check-plan-gate.py` が exit code 2 でツール呼び出しをブロックする — 根拠: architecture.md 5.1 / 5.2
@@ -69,14 +69,15 @@ core は全パッケージが依存する共通基盤であり、(1) `Plans.md` 
 - [ ] EV-39（境界 / must）: `set-plan-gate.py` は `tool_response` が async 起動メタデータ（`isAsync: true` または `status: async_launched`）のとき plan gate を設定しない（判定は `hook_common.is_async_launch` に集約） — 根拠: Issue #452（バックグラウンド起動時点では計画がまだ存在しないため）— 自動テスト: `tests/unit/test_plan_gate.py` / `packages/core/tests/test_plan_gate.py -k async`
 - [ ] EV-40（境界 / must）: `clear-plan-gate.py` は `<task-notification>` で始まる UserPromptSubmit（バックグラウンドタスク完了通知。ユーザーの確認ではない）に対して plan gate を解除しない（判定は `hook_common.is_task_notification` に集約） — 根拠: Issue #452 — 自動テスト: `tests/unit/test_plan_gate.py -k notification`
 - [ ] EV-41（正常 / must）: `load-task-state.py` は `## Project:` 直下の発注書の節（`#### Goal` / `#### Context` / `#### Out of Scope` / `#### Constraints` / `#### Open Questions`）を認識し、SessionStart のサマリーに Goal の先頭 1 行と Open Questions の件数（0 件なら省略）を含める。`## Project:` が 2 つ以上あるときは値を持つ Project の数によらず常に Project 名を付ける。Goal の先頭 1 行は HTML コメント（`<!-- … -->`）を読み飛ばして選び（コメント内の `####` 見出しで節の状態を変えない）、Open Questions は節直下の最上位ブレットだけを数える（ネストした選択肢は数えない）。タスク行が 1 つも無くても Goal か Open Questions があればサマリーを出す — 根拠: ADR-20260926-056 §決定 2, task-memory-usage.md（v2 書式）
-- [ ] EV-42（境界 / must）: 発注書の節内の行（箇条書き・チェックボックス・コード）はタスクとして数えず、WIP / TODO / blocked の注入対象にもならない。節内の行は `cc:` マーカーを含んでいても（設計書や既存 Plans.md からの引用等）無条件にタスクとして扱わない。コードフェンス（``` / ~~~。開始フェンスの文字と長さを記録し、同じ文字で同じ長さ以上の行でだけ閉じる）の中にある `##` / `###` / `####` 見出しや `cc:` 行は、タスク分類・発注書の解析・完了検出（自動アーカイブ）のいずれでも構造として解釈しない。雛形とルールでは「Tasks 以外に `cc:` を書かない」と案内する — 根拠: ADR-20260926-056 §決定 2
-- [ ] EV-43（境界 / must）: 発注書の節を持たない従来形式の Plans.md は、分類・注入・自動アーカイブの結果が v2 対応前と同一になる（後方互換。既存 Project に節を足す必要はない） — 根拠: ADR-20260926-056 §影響
-- [ ] EV-44（正常 / should）: 自動アーカイブは Project 単位で行われ、発注書の節も Phase と一緒に `Plans.archive.md` へ移る（節だけが Plans.md に残らない） — 根拠: task-memory-usage.md「自動アーカイブ」
-- [ ] EV-45（境界 / should）: Plans.md 先頭の codd frontmatter（`---` で囲まれた `codd:` ブロック）は分類・注入・アーカイブに影響せず、frontmatter 内の `## Project:` / `#### Goal` 等の文字列から発注書や Project を作らない。frontmatter の終端はインデントの無い `---` 行だけで、block scalar 内のインデントされた `---` では終わらない（codd-frontmatter-policy の `plan:` kind と両立する） — 根拠: codd-frontmatter-policy.md（`plan` kind の由来は `.claude/Plans.md`）
+- [ ] EV-42（境界 / must）: 発注書の節内の行（箇条書き・チェックボックス・コード）はタスクとして数えず、WIP / TODO / blocked の注入対象にもならない。節内の行は `cc:` マーカーを含んでいても（設計書や既存 Plans.md からの引用等）無条件にタスクとして扱わない。コードフェンス（``` / ~~~。開始フェンスの文字と長さを記録し、同じ文字で同じ長さ以上の行でだけ閉じる）の中にある `##` / `###` / `####` 見出しや `cc:` 行は、タスク分類・発注書の解析のいずれでも構造として解釈しない。雛形とルールでは「Tasks 以外に `cc:` を書かない」と案内する — 根拠: ADR-20260926-056 §決定 2
+- [ ] EV-43（境界 / must）: 発注書の節を持たない従来形式の Plans.md は、分類・注入の結果が v2 対応前と同一になる（後方互換。既存 Project に節を足す必要はない） — 根拠: ADR-20260926-056 §影響
+- ~~EV-44~~（**欠番**, 2026-09-28 レビュー）: 自動アーカイブの廃止（ADR-20260928-058）に伴い削除。SessionStart は Plans.md を書き換えない（EV-50）
+- [ ] EV-45（境界 / should）: Plans.md 先頭の codd frontmatter（`---` で囲まれた `codd:` ブロック）は分類・注入に影響せず、frontmatter 内の `## Project:` / `#### Goal` 等の文字列から発注書や Project を作らない。frontmatter の終端はインデントの無い `---` 行だけで、block scalar 内のインデントされた `---` では終わらない（codd-frontmatter-policy の `plan:` kind と両立する） — 根拠: codd-frontmatter-policy.md（`plan` kind の由来は `.claude/Plans.md`）
 - [ ] EV-46（境界 / must）: 同名の `## Project:` セクションが複数ある場合、発注書の節はセクション単位で保持され、後のセクションが前のセクションの Goal / Context / Constraints を上書きしない（サマリーと `handoff.py` の `order_markdown` は各セクションを名前を繰り返して出す） — 根拠: ADR-20260926-056 §決定 2（PR #484 レビュー指摘）
 - [ ] EV-47（正常 / must）: `handoff.py` の `order_markdown` は Project ごとに Goal / Context / Constraints とその Project に属する WIP / TODO / blocked タスクを出し、複数 Project のときにタスクがどの発注書に属するかを失わない（同名 Project はセクション単位で関連付け、名前で集約しない）。`#### Acceptance Criteria` のチェックボックス行は SessionStart と同様にタスクとして扱わない — 根拠: facets/instructions/handoff.md（Order 節と Instructions for Codex）、PR #484 レビュー指摘
 - [ ] EV-48（異常 / must）: `handoff.py` は `cli-tools.yaml`（+ `.local.yaml`）の実効値から Codex の起動コマンド `codex -C <project> --model <codex.model> --sandbox <codex.sandbox.implementation> "$(cat <handoff_path>)"` を生成し、project・model・sandbox・handoff_path はシェルで 1 引数として渡るように引用する（パスに空白や `'` を含んでも崩れない）。`codex.enabled` が false（codex セクション未定義を含む）、`codex.sandbox.implementation` が `workspace-write` でない、`codex.model` が routing hook と同じ安全文字集合 `[A-Za-z0-9_.,:/@+=-]` の外の文字を含む、または設定を読めない場合（プロジェクトの `cli-tools.local.yaml` があるのに解釈できない場合を含む。base の値で代用しない）は、コマンドを出さず `launch.available: false` と理由を返す（fail-closed）。`codex.flags` は `codex exec` 用なので対話起動のコマンドには含めない — 根拠: ADR-20260926-056 §決定 1（Codex 直接の再開コマンド）・§決定 6 の 3、PR #480 の Codex ローカルレビュー（文章ではなくスクリプトで担保する）
 - [ ] EV-49（境界 / must）: `handoff.py` は `branch_status`（現在ブランチ、detached か、`origin/HEAD` から得た既定ブランチ、現在ブランチが統合ブランチ（main / master / develop / staging / stage と既定ブランチ）か detached なら `on_integration_branch: true`。Git リポジトリでない場合は `git_repository: false` とし detached と区別する）と、未追跡ファイルの一覧（機密パターンを除外、上限件数を超えたら切り詰めてその旨を示す。ファイル名はバイト列のまま復元し改行変換しない）を JSON に出す。`handoff_path` は既存のファイルと重ならない名前にする。既存の JSON キーは変えない — 根拠: facets/instructions/handoff.md（Instructions for Codex のブランチ確認とパス単位ステージ）、PR #480 の Codex ローカルレビュー
+- [ ] EV-50（正常 / must）: `load-task-state.py` は SessionStart で `Plans.md` を書き換えない。全 Phase が完了した Project（タスクがすべて `cc:done` かつ AC がすべて `[x]`）も、Decisions / Notes も `Plans.md` にそのまま残り、サマリーの注入だけを行う — 根拠: ADR-20260928-058 §決定
 
 ## 4. 類型別観点
 
@@ -84,14 +85,14 @@ core は全パッケージが依存する共通基盤であり、(1) `Plans.md` 
 
 - [ ] EV-16（境界 / must）: stdin/stdout 契約 — 各 hook は Claude Code の hook イベント JSON を stdin から受け取り、コンテキスト注入結果は `hookSpecificOutput.additionalContext` 形式で返す（Claude Code hook 仕様に準拠） — 根拠: architecture.md 5.2
 - [ ] EV-17（異常 / must）: fail-safe 方針 — `check-plan-gate.py` を除く全 core hook は内部例外発生時に exit code 0 で正常終了しセッション/ツール実行をブロックしない（fail-open）。`check-plan-gate.py` のみ意図的に exit code 2 でブロック可能な設計上の例外である — 根拠: architecture.md 5.2
-- [ ] EV-18（境界 / should）: 冪等性 — 全フェーズ完了プロジェクトの自動アーカイブは、初回実行で `Plans.md` から該当セクションが除去済みのため、同一セッション内で再実行しても二重アーカイブされない（構造的冪等性） — 根拠: task-memory-usage.md
+- ~~EV-18~~（**欠番**, 2026-09-28 レビュー）: 自動アーカイブの廃止（ADR-20260928-058）に伴い削除。SessionStart は Plans.md を書き換えない（EV-50）
 - [ ] EV-19（正常 / must）: config 駆動 — `hook_common.load_package_config()` は `{package}/{name}.yaml`（base）と `{name}.local.yaml`（local）を deep_merge し、local の値が base を上書きする — 根拠: architecture.md 4.3
 - [ ] EV-20（境界 / should）: config 駆動（部分上書き） — base 設定にのみ存在するキーは local が存在してもそのまま base の値が使われる（local はキー単位の上書きであり全置換ではない） — 根拠: architecture.md 4.3
-- [ ] EV-21（正常 / must）: フェーズに `#### Acceptance Criteria` の未チェック `- [ ]` 行が残る場合、当該プロジェクトはアーカイブされない。フェーズ見出しが `cc:done` でも同様（AC が優先） — 根拠: task-memory-usage.md
-- [ ] EV-22（境界 / must）: AC セクションのないフェーズは従来通り `cc:` マーカーのみで完了判定される（後方互換） — 根拠: task-memory-usage.md
-- [ ] EV-23（正常 / should）: タスク全て `cc:done` かつ AC 全て `[x]` のプロジェクトはアーカイブされる — 根拠: task-memory-usage.md
+- ~~EV-21~~（**欠番**, 2026-09-28 レビュー）: 自動アーカイブの廃止（ADR-20260928-058）に伴い削除。hook は Phase の完了を判定しなくなった（完了の定義は task-memory-usage ルールに残り、`/goal` と `/release-readiness` が使う）
+- ~~EV-22~~（**欠番**, 2026-09-28 レビュー）: 自動アーカイブの廃止（ADR-20260928-058）に伴い削除。hook は Phase の完了を判定しなくなった（完了の定義は task-memory-usage ルールに残り、`/goal` と `/release-readiness` が使う）
+- ~~EV-23~~（**欠番**, 2026-09-28 レビュー）: 自動アーカイブの廃止（ADR-20260928-058）に伴い削除。hook は Phase の完了を判定しなくなった（完了の定義は task-memory-usage ルールに残り、`/goal` と `/release-readiness` が使う）
 - [ ] EV-24（境界 / should）: AC チェックリスト行（`- [ ]` / `- [x]`）はタスクサマリー注入の対象にならない（`cc:` マーカー行のみ注入） — 根拠: task-memory-usage.md
-- [ ] EV-25（正常 / must）: `#### Acceptance Criteria` セクションを持つフェーズは、フェーズ見出しが `cc:done` でも配下に `cc:done` 以外のマーカーを持つタスク行が残っていればアーカイブされない（AC なしフェーズは従来通り見出しマーカーで判定＝後方互換） — 根拠: task-memory-usage.md
+- ~~EV-25~~（**欠番**, 2026-09-28 レビュー）: 自動アーカイブの廃止（ADR-20260928-058）に伴い削除。hook は Phase の完了を判定しなくなった（完了の定義は task-memory-usage ルールに残り、`/goal` と `/release-readiness` が使う）
 - [ ] EV-26（正常 / must）: root worktree 解決の共通関数 — git worktree 環境では root worktree の絶対パスを返し、通常リポジトリではリポジトリルートを返し、git 実行不能・結果不正時は None を返して呼び出し側フォールバックを可能にする（audit の `event_logger.py` はこの共通関数への委譲ラッパーとして実装済み。実装パターンの共通化ではなく、audit 固有の解決ロジックそのものが core への委譲に置き換わっている） — 根拠: docs/adr/ADR-20260728-046.md
 - [ ] EV-27（正常 / must）: 有界移行プリミティブの claim/確定 契約 — `file_migration.migrate_bounded_file` は destination と source の実体が同一なら no-op、そうでなければ `<source>.migrating.<pid>-<monotonic_ns>` へ原子的 rename して排他 claim し、writer が正常完了した場合に限り同一 suffix の `<source>.migrated.<suffix>` へ確定 rename する。ファイルサイズが `max_bytes` を超える場合は行境界を壊さず末尾 `max_bytes` に収まるよう先頭側の途中行のみを読み捨てる（cut-1 バイト目が改行かどうかで判定） — 根拠: 実装挙動（packages/core/hooks/file_migration.py docstring）
 - [ ] EV-28（異常 / must）: stale claim の非破壊と writer 例外の伝播 — rename による claim 取得に失敗した場合（既に他プロセスが claim 済み、または stale な `.migrating.*` が残存する場合を含む）は何もせず return し、既存の `.migrating.*` ファイルには一切触れない。writer が例外を送出した場合はその例外を呼び出し元へ伝播し、claim は `.migrating.*` のまま残す（握りつぶさない。fail-open にするかどうかは呼び出し側ラッパーの責務） — 根拠: 実装挙動（packages/core/hooks/file_migration.py docstring）
@@ -102,7 +103,7 @@ core は全パッケージが依存する共通基盤であり、(1) `Plans.md` 
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
-- Plans.md の自動アーカイブに関するテストは「一部プロジェクトのみ完了」（EV-03 の境界）と「全プロジェクト完了」の両ケースを分けて検証しているか確認する。単一ケースのみのテストは gap として扱う
+- EV-50 のテストは、全 Phase が完了した Project を含む Plans.md で hook を実行し、完了した Project・Decisions・Notes を含めて `Plans.md` の内容が変わらないことをアサートしているか確認する。完了していない Project だけで確かめたテストは gap として扱う
 - `check-plan-gate.py` の exit code（0 か 2 か）が明示的にアサートされているか確認する。fail-open 原則からの逸脱は critical 相当のバグとみなす
 - `context_store.py` は fcntl ファイルロック付きと明記されている（architecture.md 4.3）が、ロック競合時の具体的挙動（待機/エラー等）は情報源に記載がない。ロック競合ケースをテストする場合、期待値が実装追認になっていないか重点確認する
 - 注入・保存時のトランケーション境界値（5 件目/6 件目、200 文字/201 文字、2000 文字/2001 文字、20 件目/21 件目）をテストしているか確認する。境界値を跨がないテストは EV-10/EV-11/EV-12/EV-14 の観点をカバーしたとみなさない

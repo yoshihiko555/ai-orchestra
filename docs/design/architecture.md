@@ -240,7 +240,7 @@ agents.{name}.tool の値:
 ```
 SessionStart:
   - sync-orchestra.py (外部)             パッケージ差分同期 + facet build
-  - load-task-state.py (core)            Plans.md 読み込み・自動アーカイブ・タスクサマリー表示
+  - load-task-state.py (core)            Plans.md 読み込み・タスクサマリー表示
   - orchestration-bootstrap.py (audit)   state/logs ディレクトリ初期化
 
 UserPromptSubmit:
@@ -437,7 +437,6 @@ agents:
 │   ├── orchestra.json              # インストール済みパッケージ・同期状態
 │   ├── settings.local.json         # hook 登録（自動管理）
 │   ├── Plans.md                    # タスク管理（SSOT）
-│   ├── Plans.archive.md            # 完了プロジェクトアーカイブ
 │   ├── agents/*.md                 # エージェント定義（30ファイル）
 │   ├── skills/*/SKILL.md           # スキル定義（14ディレクトリ）
 │   ├── rules/*.md                  # ルール定義（12ファイル）
@@ -464,7 +463,7 @@ agents:
 | CLI 検出   | `codex exec` / `agy -p` の正規表現マッチング               |
 | Facet      | composition 解決、policy 注入、エラーハンドリング          |
 | 同期       | agents/config の差分同期、agent model パッチ               |
-| タスク状態 | Plans.md パース、マーカー更新、アーカイブ                  |
+| タスク状態 | Plans.md パース、マーカー更新                              |
 
 **テストパターン**: `module_loader.py` による動的モジュールロード、`tmp_path` フィクスチャ、`monkeypatch`、`@pytest.mark.parametrize`
 

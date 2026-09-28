@@ -131,12 +131,13 @@ def _is_ac_section_heading_like(line: str) -> bool:
 def _is_ac_section_heading_effective(line: str) -> bool:
     """Match the Acceptance Criteria heading exactly as the production parser does.
 
-    `packages/core/hooks/ac_parser.py`'s `ac_section_ranges()` locates AC sections with
-    `lines[i].strip() != AC_SECTION_HEADING` -- an *outer*-whitespace-only comparison, not the
+    `packages/core/hooks/load-task-state.py`'s `parse_tasks()` locates AC sections with
+    `line.strip() == AC_SECTION_HEADING` -- an *outer*-whitespace-only comparison, not the
     internal-whitespace-collapsing `_is_ac_section_heading_like()` above. A with-AC candidate
     that writes `"#### Acceptance  Criteria"` (extra internal whitespace) would pass this
-    fixture's earlier, looser check while `ac_section_ranges()` fails to recognize the heading in
-    real Plans.md automation (completion gating, auto-archival): the seeded verify/judge items
+    fixture's earlier, looser check while `parse_tasks()` fails to recognize the heading in
+    real Plans.md automation (AC-line exclusion in the SessionStart summary and completion gating
+    in `/goal`): the seeded verify/judge items
     would never actually gate anything, silently defeating the whole point of Acceptance Criteria
     (PR #326 review round 5, Codex P2). `assert_add_phase_with_ac()` must therefore require the
     candidate's heading to match exactly what the production parser will recognize, not merely

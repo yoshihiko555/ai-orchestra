@@ -123,9 +123,8 @@ AC は対話で確定した内容を転記し、どちらの出力先でも聞�
 **Plans.md → Issue（`--from-plans`）**
 
 1. Plans.md の指定 Project を読み、Step 2 の issue と同じ写し方で Issue を作る（Open Questions のゲートも同じ）
-2. その Project セクション（+ 区切り線 `---`）を Plans.md から取り除き、`.claude/Plans.archive.md` に追記する。
-   形は SessionStart の自動アーカイブに合わせる（ファイル新規作成時は先頭に `# Archived Plans`、見出しは
-   `## Archived: {YYYY-MM-DD}` に `（#{N} へ引き渡し）` を付記、本文の後に `---`）。状態を二重に持たない
+2. その Project セクション（+ 区切り線 `---`）を Plans.md から取り除く。発注書の内容は Issue 本文に残るので、
+   ほかの場所には写さない。状態を二重に持たない
 
 **Issue → Plans.md（`--from-issue`）**
 

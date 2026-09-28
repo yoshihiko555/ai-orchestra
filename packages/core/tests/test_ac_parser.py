@@ -46,56 +46,13 @@ class TestClassifyCheckboxLine:
         assert ac_parser.classify_checkbox_line("plain text") is None
 
 
-class TestAcSectionRanges:
-    def test_extracts_single_ac_section(self) -> None:
-        lines = [
-            "### Phase 1: Setup",
-            "#### Acceptance Criteria",
-            "- [ ] condition A",
-            "- [x] condition B",
-            "#### Tasks",
-            "- `cc:done` task",
-        ]
-        ranges = ac_parser.ac_section_ranges(lines, phase_start=0, phase_end=5)
-        assert ranges == [(2, 3)]
-
-    def test_ac_section_extends_to_phase_end_when_no_next_heading(self) -> None:
-        lines = [
-            "### Phase 1: Setup",
-            "#### Acceptance Criteria",
-            "- [ ] condition A",
-            "- [x] condition B",
-        ]
-        ranges = ac_parser.ac_section_ranges(lines, phase_start=0, phase_end=3)
-        assert ranges == [(2, 3)]
-
-    def test_no_ac_section_returns_empty_list(self) -> None:
-        lines = [
-            "### Phase 1: Setup",
-            "#### Tasks",
-            "- `cc:done` task",
-        ]
-        ranges = ac_parser.ac_section_ranges(lines, phase_start=0, phase_end=2)
-        assert ranges == []
-
-    def test_empty_ac_section_returns_empty_range(self) -> None:
-        lines = [
-            "### Phase 1: Setup",
-            "#### Acceptance Criteria",
-            "#### Tasks",
-            "- `cc:done` task",
-        ]
-        ranges = ac_parser.ac_section_ranges(lines, phase_start=0, phase_end=3)
-        assert ranges == [(2, 1)]
-
-
 class TestProjectTemplateDoesNotFalsePositiveAsUncheckedAc:
     """Issue #297 PR #326 review (High): `orchex init`/scaffold copies
     `templates/project/Plans.md` verbatim (`copy2`, no placeholder substitution) into every new
     project's `.claude/Plans.md`. If the template's Phase 1 example contained literal
-    `#### Acceptance Criteria` / `- [ ]` placeholder lines, `load-task-state.py`'s AC parser
-    (built on this module) would treat them as a real unchecked Acceptance Criteria, permanently
-    blocking Phase 1 from ever being considered complete. The template must therefore keep its
+    `#### Acceptance Criteria` / `- [ ]` placeholder lines, `/goal` and `/release-readiness`
+    would read them as a real unchecked Acceptance Criteria, blocking Phase 1 from ever being
+    considered complete. The template must therefore keep its
     guidance out of ac_parser's literal line-matching (e.g. behind an HTML comment whose lines
     never exactly equal the AC heading or start with a checkbox marker)."""
 
@@ -108,17 +65,3 @@ class TestProjectTemplateDoesNotFalsePositiveAsUncheckedAc:
         text = (REPO_ROOT / "templates" / "project" / "Plans.md").read_text(encoding="utf-8")
         lines = text.splitlines()
         assert all(ac_parser.classify_checkbox_line(line.strip()) != "unchecked" for line in lines)
-
-
-class TestPhaseHasUncheckedAc:
-    def test_returns_true_when_unchecked_line_present(self) -> None:
-        lines = ["- [ ] condition A", "- [x] condition B"]
-        assert ac_parser.phase_has_unchecked_ac(lines, [(0, 1)]) is True
-
-    def test_returns_false_when_all_checked(self) -> None:
-        lines = ["- [x] condition A", "- [X] condition B"]
-        assert ac_parser.phase_has_unchecked_ac(lines, [(0, 1)]) is False
-
-    def test_returns_false_for_empty_ranges(self) -> None:
-        lines = ["- [ ] condition A"]
-        assert ac_parser.phase_has_unchecked_ac(lines, []) is False

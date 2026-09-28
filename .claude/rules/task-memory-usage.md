@@ -80,7 +80,7 @@ Project 直下の 5 節が発注書にあたる。
 - 雛形のプレースホルダ（`{...}` で始まる行）は注入・件数に含めない。埋めるまで残してよい
 - 対話（grill-me 等）で確定した計画は、5 節と Phase の AC・Tasks をそろえて **1 回で** 書き出す。以後の修正は Plans.md への差分編集で行い、対話に差し戻さない
 - タスク行は `{何をするか} — 対象: \`{ファイル}\` / 確認: {方法}`の形を標準とする。「確認」は`cc:done` にしてよい根拠（絞ったテスト・静的チェック・grep で消えたことを見る・手動観察）。省略可（`確認: なし`）。Phase の AC verify はフェーズ全体の合格判定、Task の確認は実装者がその場で回す自己チェック
-- Plans.md は `/goal` と Codex 直接（`/handoff`）の発注書。`/loop-issue` と TAKT に渡す作業は Issue 本文を発注書にし、Plans.md を持たない。Plans.md の Project を Issue に出したら、その Project は「#N へ引き渡し」として Plans.archive.md に移し、二重に状態を持たない。Open Questions が残る Project は自律エンジン（`/loop-issue` / TAKT）へ出さない
+- Plans.md は `/goal` と Codex 直接（`/handoff`）の発注書。`/loop-issue` と TAKT に渡す作業は Issue 本文を発注書にし、Plans.md を持たない。Plans.md の Project を Issue に出したら、その Project は Plans.md から取り除き、二重に状態を持たない。Open Questions が残る Project は自律エンジン（`/loop-issue` / TAKT）へ出さない
 
 ## 状態マーカー
 
@@ -119,7 +119,7 @@ Project 直下の 5 節が発注書にあたる。
 ### 完了判定
 
 - フェーズ完了 = タスク全て `cc:done` **かつ** AC 全て `[x]`
-- フェーズ見出しに `cc:done` が付与されていても、未チェック `- [ ]` の AC が残っていれば未完了として扱う（自動アーカイブされない）
+- フェーズ見出しに `cc:done` が付与されていても、未チェック `- [ ]` の AC が残っていれば未完了として扱う
 - AC セクションのないフェーズは、タスクが全て `cc:done` であれば完了とみなす
 
 ### チェック更新責務
@@ -135,18 +135,12 @@ Project 直下の 5 節が発注書にあたる。
 
 ## セッション開始時の動作
 
-SessionStart hook が `.claude/Plans.md` を読み込み、以下を実行する:
-
-### 自動アーカイブ
-
-1. 全フェーズが完了（タスク全て `cc:done` かつ AC 全て `[x]`）のプロジェクトを検出する。未チェック AC が残るフェーズは見出しマーカーに関わらず未完了扱い
-2. 該当プロジェクトを `.claude/Plans.archive.md` に日付付きで追記する
-3. Plans.md から該当プロジェクトセクション（+ 区切り線）を除去する
-4. **全プロジェクトが完了した場合のみ**、Decisions / Notes セクションもアーカイブに移動する
+SessionStart hook は `.claude/Plans.md` を読むだけで書き換えない。完了した Project も Decisions / Notes も
+Plans.md に残る（ADR-20260928-058）。
 
 ### タスクサマリー注入
 
-アーカイブ後の Plans.md から以下をコンテキストに注入する:
+Plans.md から以下をコンテキストに注入する:
 
 1. **Goal の先頭 1 行と Open Questions の件数** — 何のための作業か、未決が残っているか（節がない Project では省略）
 2. **WIP タスクの一覧** — 前回セッションで中断した作業
@@ -169,17 +163,16 @@ SessionStart hook が `.claude/Plans.md` を読み込み、以下を実行する
 - Plans.md はプロジェクトの `.claude/Plans.md` に配置する
 - `/task-state` スキルで Plans.md の作成・更新ができる
 - 手動編集も可能（フォーマットに従うこと）
-- Plans.md / Plans.archive.md はローカル管理とし、git にはコミットしない（`.gitignore` に追加する）
+- Plans.md はローカル管理とし、git にはコミットしない（`.gitignore` に追加する）
 - git worktree で作業する場合は、**作業中の worktree の `.claude/Plans.md` が正本（SSOT）**。root（main チェックアウト）側の Plans.md を worktree の作業から参照・更新しない
 - 計画は worktree ごとに起こし、タスク状態の更新もその worktree 内で完結させる
 - 進行状態は Plans.md に書き、auto-memory には書かない（auto-memory は全 worktree で共有されるため）。記憶の層の分担は `memory-layers` ルールに従う
 
-### アーカイブ
+### 完了した Project
 
-- 完了済みプロジェクトは SessionStart 時に自動で `.claude/Plans.archive.md` に移動される
-- アーカイブファイルは参照用に保持される（`.gitignore` に追加推奨）
-- Decisions / Notes は全プロジェクト完了時のみアーカイブに移動する（一部残存時は Plans.md に残る）
-- Plans.archive.md も worktree ごとに独立して生成される
+- 完了した Project は自動では移動も削除もされない。worktree で作業している場合は worktree ごと消えるので片付けは要らない
+- root で Plans.md を使い回す場合は、不要になった Project を手動で消す
+- タスクが終わった後も参照する記録は、Plans.md ではなく PR 本文・Issue・ADR に書く（`memory-layers` ルール参照）
 
 ### 設計判断の記録
 
@@ -192,4 +185,4 @@ SessionStart hook が `.claude/Plans.md` を読み込み、以下を実行する
 - 2026-02-20: PostgreSQL を選定（理由: JSON サポートと拡張性）
 ```
 
-Decisions は全プロジェクトが完了したときにまとめてアーカイブされる（Project 単位では移らない）。タスクが終わった後も参照する判断は ADR にも残す（`memory-layers` ルール参照）。
+Plans.md の Decisions は worktree と一緒に消える。タスクが終わった後も参照する判断は ADR にも残す（`memory-layers` ルール参照）。
