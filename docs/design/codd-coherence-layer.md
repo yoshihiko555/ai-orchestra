@@ -516,6 +516,11 @@ codd は essential（常時有効）のため、**条件分岐は不要**で常�
 本節後半「共有 timeout budget」参照）。manifest 値より小さく取り、hook 自身の import 等の
 オーバーヘッドとランナー側の余裕を確保する。
 
+`codd-validate-precommit.py` 本体は検出・設定判定・結果表示だけを持ち、index スナップショット
+構築と `codd validate` の実行は `packages/codd/lib/codd_index_snapshot.py`、`git commit`
+引数の分類は `packages/codd/lib/codd_commit_args.py` に置く（Issue #349）。どちらも codd lib
+の import を安価な前提チェックの後段に置くため、hook の `main()` 内で遅延 import する。
+
 **pre-commit の代替方式**: 実 git hook（`.git/hooks/pre-commit`）を配布するのではなく、
 PreToolUse (Bash) で `git commit` コマンドを検出するアプローチを採る。理由は次の3点。
 
@@ -605,7 +610,7 @@ shell 連結演算子（`&&` / `;` / `||` / `|`）を検出した場合、warn/b
 起動される `codd validate` は base 設定（`codd.yaml`）だけを再ロードしてしまい、外側の
 `main()` が実 working tree の local override から読んだ block/off モードと、実際の検査に
 使われる `scope`/`checks.*` が食い違う（正当な commit の誤ブロック、または必要な error の
-見逃し）。これを避けるため、`_run_validate` は実 root の `.claude/config/codd/codd.yaml` と
+見逃し）。これを避けるため、`run_validate` は実 root の `.claude/config/codd/codd.yaml` と
 （存在すれば）`codd.local.yaml` を snapshot 側の対応するパスへ明示的にコピーしてから
 `codd validate` を実行する。
 
@@ -690,7 +695,7 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 - **skip-worktree エントリの展開**: `checkout-index` に
   `--ignore-skip-worktree-bits` を付け、sparse checkout で skip-worktree bit が
   付いたエントリも実際の commit tree 通りに snapshot へ展開する。
-- **commit 引数分類の精度向上**: `_classify_commit_invocation` は、値を取る
+- **commit 引数分類の精度向上**: `classify_commit_invocation` は、値を取る
   短縮オプション（`-m`/`-F`/`-c`/`-C`/`-t` は次トークンも値として消費しうる、
   `-u` は attached value のみ）に到達した時点で結合形の走査を打ち切り、以降を
   attached value として扱う（`-amfix` の value 部分 `"fix"` に含まれる `i` を
@@ -714,7 +719,7 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 
 **反復6（Issue #338、PR #339 3巡目 bot レビュー追加指摘対応）**: 以下を修正した。
 
-- **`--trailer` の値を pathspec と誤認しない**: `_classify_commit_invocation` の値を取る
+- **`--trailer` の値を pathspec と誤認しない**: `classify_commit_invocation` の値を取る
   long option テーブルに `--trailer` を追加した。未対応のままだと `git commit -a --trailer
   "Acked-by: dev" -m x` の値がパススペック指定と誤認され、`has_unsupported=True` となって
   `-a` 候補ツリー再現（`simulate_commit_all`）が無効化され、実際には `-a` で取り込まれる
@@ -733,7 +738,7 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 
 **反復7（Issue #338、PR #339 4巡目 bot レビュー対応）**: 以下を修正した。
 
-- **`-S<keyid>` の attached value を `-a`/`--all` と誤認しない**: `_classify_commit_invocation`
+- **`-S<keyid>` の attached value を `-a`/`--all` と誤認しない**: `classify_commit_invocation`
   の値を取る短縮オプション文字（`_COMMIT_VALUE_SHORT_CHARS`）に `-S`（`--gpg-sign`）を
   追加した。未対応のままだと `git commit -Sabc1234 -m msg` の GPG keyid（16 進表記が一般的で
   `a` を含みやすい）中の `a` を独立した `-a` フラグと誤認し、`simulate_commit_all=True` として
