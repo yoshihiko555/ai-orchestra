@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **配布する AGENTS.md の作業ルールに過剰実装を防ぐ判断手順を追加**: 書く前に既存コード → 標準ライブラリ → 導入済みの依存の順で探す、依頼や受け入れ条件に必要ない抽象化・依存・ボイラープレートを足さない、など 4 項目。`code-reviewer` のチェックリストにも過剰実装の観点を追加。
 - **BREAKING** **`core`: `explain-visually` を `grasp-view` に改名**: `/explain-visually` は `/grasp-view` になり（`/grasp-check` と対になる名前）、HTML の出力先は `.claude/docs/grasp-view/` に変わる。旧名の互換スタブは置かない。
 - **BREAKING** **`core`: `grasp-view` の環境変数を改名**: `EXPLAIN_VISUALLY_CHROME` → `GRASP_VIEW_CHROME`、`EXPLAIN_VISUALLY_BASE` → `GRASP_VIEW_BASE`。旧名は読まないので、設定している場合は新しい名前に変える。
+- **`codd`: validate-precommit hook が scope 内のファイルだけを一時展開するようになった**: `git commit` のたびにリポジトリ全体を一時ディレクトリへ展開していたのをやめ、`scope` / `code_scope` に一致する index エントリだけを展開する。大きなリポジトリやモノレポで commit 時の検証が速くなる。project 配下に symlink があるとき、または scope のパターンに ASCII 以外の文字が含まれるときは、従来どおり全体を展開する。
 
 ### Removed
 
