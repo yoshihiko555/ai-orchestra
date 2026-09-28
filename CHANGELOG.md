@@ -10,10 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`core`: `memory-layers` ルールを追加**: 作業中の状態・決定・気づきを Plans.md / ADR / `AGENTS.md` / auto-memory / claude-mem のどこに書くかを定めた。auto-memory には進行状態を書かず、Codex / Antigravity にも必要な知見は手動の棚卸しで `AGENTS.md` の記述欄へ移す。
 - **引数を取る 13 スキルに `argument-hint` を追加**: `/review` や `/task-state` などを入力すると、補完候補に引数の形式と選択肢（例: `[all|code|security|...]`）が表示される。対象は review / task-state / issue-create / order / loop-issue / explain-visually / image-gen / pr-create / issue-fix / reverse / codd-impact / handoff / tdd。
+- **`core`: `grasp-check` スキルを追加**: AI が書いた計画・差分・PR を人間が自分の言葉で説明し、AI が人間に見せない採点基準と照合して「抜けている観点の種類」と「どこを読めば分かるか」だけを返す。問いは選択肢にせず 1 問ずつ出し、答えは人間が説明したあとにだけ開示する。説明は保存しない。`/order` と `/pr-create` は、Issue に出した発注書や大きい・重要な箇所に触れる差分のときに `/grasp-view` → `/grasp-check` を 1 行で案内する（警告のみ）。
 
 ### Changed
 
 - **配布する AGENTS.md の作業ルールに過剰実装を防ぐ判断手順を追加**: 書く前に既存コード → 標準ライブラリ → 導入済みの依存の順で探す、依頼や受け入れ条件に必要ない抽象化・依存・ボイラープレートを足さない、など 4 項目。`code-reviewer` のチェックリストにも過剰実装の観点を追加。
+- **BREAKING** **`core`: `explain-visually` を `grasp-view` に改名**: `/explain-visually` は `/grasp-view` になり（`/grasp-check` と対になる名前）、HTML の出力先は `.claude/docs/grasp-view/` に変わる。旧名の互換スタブは置かない。
+- **BREAKING** **`core`: `grasp-view` の環境変数を改名**: `EXPLAIN_VISUALLY_CHROME` → `GRASP_VIEW_CHROME`、`EXPLAIN_VISUALLY_BASE` → `GRASP_VIEW_BASE`。旧名は読まないので、設定している場合は新しい名前に変える。
 
 ### Removed
 

@@ -1,5 +1,5 @@
 ---
-name: explain-visually
+name: grasp-view
 description:
   'Turn a long design document, implementation plan, branch diff (AI-written
   code),
@@ -64,8 +64,8 @@ disable-model-invocation: true
 
 読み手は原文を読んでいない前提で書く。原文の要約ではなく、**原文では離れた場所に散っている事実を、理解に必要な順序で並べ直したもの**を作る。
 
-- テンプレート: `.claude/skills/explain-visually/scripts/template.html`
-- 検証スクリプト: `.claude/skills/explain-visually/scripts/verify_page.py`（python3 標準ライブラリのみで動作。Google Chrome を外部コマンドとして使う）
+- テンプレート: `.claude/skills/grasp-view/scripts/template.html`
+- 検証スクリプト: `.claude/skills/grasp-view/scripts/verify_page.py`（python3 標準ライブラリのみで動作。Google Chrome を外部コマンドとして使う）
 
 ## 最重要ルール
 
@@ -76,7 +76,7 @@ disable-model-invocation: true
 
 ## 前提条件
 
-- Google Chrome がインストール済み。解決順は次の通り: `--chrome` 明示指定 → 環境変数 `EXPLAIN_VISUALLY_CHROME` → macOS 既定パス（`/Applications/Google Chrome.app`）→ PATH 上の `google-chrome` / `chromium`
+- Google Chrome がインストール済み。解決順は次の通り: `--chrome` 明示指定 → 環境変数 `GRASP_VIEW_CHROME` → macOS 既定パス（`/Applications/Google Chrome.app`）→ PATH 上の `google-chrome` / `chromium`
 - PR・Issue を対象にする場合は `gh` が認証済み
 
 > **Bash サンドボックス制約**
@@ -123,11 +123,11 @@ fi
 
 `gh api` 自体が失敗した場合は PR/Issue いずれとも決めつけず、エラー内容をそのままユーザーに報告して処理を止める（無条件に Issue 側へフォールバックしない）。
 
-**ブランチ差分の取得**（未コミット変更も含める）。`main` が存在しないリポジトリでも失敗しないよう、基準 ref は次の優先順位で解決する: ① `--base <ref>` 指定 → ② 環境変数 `EXPLAIN_VISUALLY_BASE` → ③ `git symbolic-ref -q refs/remotes/origin/HEAD`（`origin/<default>`）→ ④ ローカル `main` / `master` の実在確認（`git rev-parse -q --verify`）→ ⑤ いずれも解決できなければ AskUserQuestion で基準 ref をユーザーに確認する:
+**ブランチ差分の取得**（未コミット変更も含める）。`main` が存在しないリポジトリでも失敗しないよう、基準 ref は次の優先順位で解決する: ① `--base <ref>` 指定 → ② 環境変数 `GRASP_VIEW_BASE` → ③ `git symbolic-ref -q refs/remotes/origin/HEAD`（`origin/<default>`）→ ④ ローカル `main` / `master` の実在確認（`git rev-parse -q --verify`）→ ⑤ いずれも解決できなければ AskUserQuestion で基準 ref をユーザーに確認する:
 
 ```bash
-if [ -n "$EXPLAIN_VISUALLY_BASE" ]; then
-  BASE_REF="$EXPLAIN_VISUALLY_BASE"
+if [ -n "$GRASP_VIEW_BASE" ]; then
+  BASE_REF="$GRASP_VIEW_BASE"
 elif ORIGIN_HEAD=$(git symbolic-ref -q refs/remotes/origin/HEAD); then
   BASE_REF="${ORIGIN_HEAD#refs/remotes/}"
 elif git rev-parse -q --verify main >/dev/null; then
@@ -152,7 +152,7 @@ git status --porcelain --untracked-files=all
 
 （または `git ls-files --others --exclude-standard`）出力されたパスはシェル変数へ読み込んでから `Read` に渡し、コマンド文字列へリテラル展開しない（`while IFS= read -r path; do ... done` のパターンは上記「diff / PR の場合」と同様）。除外パターンに一致するパスは、ここでも読まずファイル名のみ `U-` として記録する。
 
-`--base <ref>` が指定された場合はその値を上記コードの `EXPLAIN_VISUALLY_BASE` として扱い、他の解決手順（③〜⑤）より優先する。
+`--base <ref>` が指定された場合はその値を上記コードの `GRASP_VIEW_BASE` として扱い、他の解決手順（③〜⑤）より優先する。
 
 **文書の書き方はプロジェクトごとに違う。** 以下は「どこを見るか」だけを定めており、見出しの名前・節の並び・記法は前提にしない。対象に該当する記述が無ければ、無いものとして扱う。
 
@@ -224,7 +224,7 @@ diff / PR モードでは、上記に加えて「AI が書いたコード」向�
 
 ### 3. HTMLを作る
 
-`.claude/skills/explain-visually/scripts/template.html` をコピーし、`{{TITLE}}` と `{{BODY}}` を置き換える。テンプレートには必要な CSS が全て入っているので、スタイルを書き足さない（見た目が回ごとにばらつくと、読み手が毎回レイアウトを覚え直すことになる）。
+`.claude/skills/grasp-view/scripts/template.html` をコピーし、`{{TITLE}}` と `{{BODY}}` を置き換える。テンプレートには必要な CSS が全て入っているので、スタイルを書き足さない（見た目が回ごとにばらつくと、読み手が毎回レイアウトを覚え直すことになる）。
 
 **MUST: 原文から引用するテキストは必ず HTML エスケープしてから埋め込む。例外はない。** PR 本文 / Issue コメント / diff / レビュー指摘 / 設計文書など対象文書から引用する部分はすべて、`&` `<` `>` `"` `'` を実体参照化（Python の `html.escape()` 相当の処理をエージェント自身が行う）してから `{{BODY}}` に埋め込む。対象は `.card` の本文、`pre.code` のコードスニペット、見出し、`.figcap`。理由: 対象文書に仕込まれた `<script>` や `onerror=`、あるいは `</pre><style>body{display:none}</style>` のような断片がエスケープされずに HTML へ混入すると、CSP の `style-src 'unsafe-inline'` や lint の未検出パターンを介して生 HTML として解釈されうる（XSS / 表示破壊）。
 
@@ -234,9 +234,9 @@ diff / PR モードでは、上記に加えて「AI が書いたコード」向�
 
 **`<script>` ブロックは編集禁止。** テンプレート内のコメントは「Mermaid の図が無い場合は script 要素ごと削除する」と書いてあるが、当リポジトリでは削除しない。`.mermaid` 要素が0個でもスクリプトは何もせず終了するため実害がなく、`<script>` 編集禁止ルールを優先する。
 
-出力先は `.claude/docs/explain-visually/<対象名>.html`。ディレクトリが無ければ `mkdir -p` で作る。`<対象名>` は対象が特定できる短い名前を `[a-z0-9-]+` にサニタイズしたもの（パストラバーサル防止）。このサニタイズは技術的に強制されておらず運用ルールである。生成前に対象名を必ず正規化し、`..` や `/` を含む名前は拒否する。
+出力先は `.claude/docs/grasp-view/<対象名>.html`。ディレクトリが無ければ `mkdir -p` で作る。`<対象名>` は対象が特定できる短い名前を `[a-z0-9-]+` にサニタイズしたもの（パストラバーサル防止）。このサニタイズは技術的に強制されておらず運用ルールである。生成前に対象名を必ず正規化し、`..` や `/` を含む名前は拒否する。
 
-**MUST: 書き込み前に symlink 越し書き込みを拒否する。** 出力ディレクトリ `.claude/docs/explain-visually` とその祖先（`.claude/docs`、`.claude`）、および既存の `<対象名>.html` / `<対象名>-shot.png` が symlink なら（`test -L`）書き込まず停止して報告する。加えて、解決後のパス（`realpath` 等）が出力ディレクトリの解決後パス配下に無い場合も同様に停止する。symlink 経由で意図しない場所への書き込み・上書きを防ぐため。`verify_page.py` も同じ検査を行い、該当時は致命的エラー（exit 1）として扱う。
+**MUST: 書き込み前に symlink 越し書き込みを拒否する。** 出力ディレクトリ `.claude/docs/grasp-view` とその祖先（`.claude/docs`、`.claude`）、および既存の `<対象名>.html` / `<対象名>-shot.png` が symlink なら（`test -L`）書き込まず停止して報告する。加えて、解決後のパス（`realpath` 等）が出力ディレクトリの解決後パス配下に無い場合も同様に停止する。symlink 経由で意図しない場所への書き込み・上書きを防ぐため。`verify_page.py` も同じ検査を行い、該当時は致命的エラー（exit 1）として扱う。
 
 | 対象                         | サニタイズ例      |
 | ---------------------------- | ----------------- |
@@ -262,7 +262,7 @@ diff / PR モードでは、上記に加えて「AI が書いたコード」向�
 サンドボックスの外で実行する。
 
 ```bash
-python3 .claude/skills/explain-visually/scripts/verify_page.py .claude/docs/explain-visually/<対象名>.html
+python3 .claude/skills/grasp-view/scripts/verify_page.py .claude/docs/grasp-view/<対象名>.html
 ```
 
 終了コードで判定する。
@@ -284,12 +284,14 @@ python3 .claude/skills/explain-visually/scripts/verify_page.py .claude/docs/expl
 サンドボックスの外で実行する。
 
 ```bash
-open .claude/docs/explain-visually/<対象名>.html
+open .claude/docs/grasp-view/<対象名>.html
 ```
 
 Linux 環境では `xdg-open` を使う。
 
 ユーザーには、ページに置いた識別子を使って深掘りを頼めることを伝える。
+
+あわせて「読み終えたらページを閉じて `/grasp-check <対象>` で自分の言葉で説明すると、把握できているかを確かめられる」ことを 1 行で案内する。`/grasp-check` の実行は強制しない（読んだだけでは分かったつもりになりやすいため、説明する機会を示す）。
 
 ## 識別子
 
@@ -317,7 +319,7 @@ Linux 環境では `xdg-open` を使う。
 
 ## 深掘り（識別子を指定された場合）
 
-全体版は残したまま、`.claude/docs/explain-visually/<対象名>-<識別子>.html` を新しく作る（例: `<対象名>-d-03.html`）。両方を並べて見られるようにするため、全体版を書き換えない。
+全体版は残したまま、`.claude/docs/grasp-view/<対象名>-<識別子>.html` を新しく作る（例: `<対象名>-d-03.html`）。両方を並べて見られるようにするため、全体版を書き換えない。
 
 深掘りページには、全体版に入らなかった次を入れる。
 

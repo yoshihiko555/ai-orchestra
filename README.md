@@ -431,7 +431,8 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 | `/tdd`                | テスト駆動開発ワークフロー                                    |
 | `/code-comments`      | コード・テスト・コミットログ・コードコメントの書き分け        |
 | `/code-naming`        | 識別子（変数・関数・クラス等）の命名                          |
-| `/explain-visually`   | 計画・差分・PR/Issue を図解 HTML にして説明                   |
+| `/grasp-view`         | 計画・差分・PR/Issue を図解 HTML にして説明                   |
+| `/grasp-check`        | 計画・差分を自分の言葉で説明し、把握の抜けを確かめる          |
 
 開発の進め方（対話で決める → `/order` で発注書 → 実行エンジン（`/goal` / Codex 直接 / `/loop-issue` / TAKT）→ PR）と
 エンジンの使い分けは、git-workflow パッケージの `development-workflow` ルールにまとめている。

@@ -71,7 +71,8 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | skill  | `task-state`                 | Plans.md の作成・更新                                                                                          |
 | skill  | `design`                     | 要件定義・設計ドキュメント作成                                                                                 |
 | skill  | `handoff`                    | Plans.md の発注書と状態から Codex CLI 向けの引き継ぎファイルを生成                                             |
-| skill  | `explain-visually`           | 計画・差分・PR/Issue を図解 HTML にして説明                                                                    |
+| skill  | `grasp-view`                 | 計画・差分・PR/Issue を図解 HTML にして説明                                                                    |
+| skill  | `grasp-check`                | 計画・差分を自分の言葉で説明し、把握の抜けを確かめる                                                           |
 | rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                                                                             |
 | rule   | `coding-principles`          | コード品質の共通ルール                                                                                         |
 | rule   | `task-memory-usage`          | Plans.md によるタスク管理ルール                                                                                |

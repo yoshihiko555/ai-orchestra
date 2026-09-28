@@ -1,0 +1,26 @@
+# grasp-check スキルのファセット構成定義
+name: grasp-check
+description: 人間が自分の言葉で説明し、AI が答えを見せずに抜けを指摘して仕様の把握度を確かめる
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: grasp-check
+  description: |
+    Check whether the human has grasped an AI-written plan, branch diff, PR, Issue, or
+    document by having them explain it in their own words. Asks open questions one at a
+    time (never multiple choice), compares answers against a hidden rubric, and returns
+    only the kind of gap and where to read, never the answer. Pairs with /grasp-view.
+    Use when the user says "理解度を確かめたい", "自分の言葉で説明する", "把握できているか",
+    "grasp check", "teach back".
+  argument-hint: "[plan [<project>]|diff|#N|<PR/Issue URL>|<path>] [--base <ref>]"
+  metadata:
+    short-description: Explain a plan or diff in your own words and find what you missed
+  disable-model-invocation: true
+
+# 参照するポリシー（推測と事実の区別）。dialog-rules は含めない（理解を問う問いに
+# AskUserQuestion の選択肢を使わないため。docs/evaluation/skills/grasp-check.md EV-08）
+policies:
+  - factual-writing
+
+# スキル固有の instruction（ファイル参照）
+instruction: grasp-check
