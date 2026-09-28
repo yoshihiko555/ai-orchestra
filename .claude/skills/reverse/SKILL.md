@@ -12,6 +12,7 @@ description: "Reverse-engineer an existing codebase through 5 phases:
   Trigger: /reverse
 
   "
+argument-hint: "[path]"
 metadata:
   short-description: 既存コードのリバースエンジニアリング
 ---

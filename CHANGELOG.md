@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **`core`: `memory-layers` ルールを追加**: 作業中の状態・決定・気づきを Plans.md / ADR / `AGENTS.md` / auto-memory / claude-mem のどこに書くかを定めた。auto-memory には進行状態を書かず、Codex / Antigravity にも必要な知見は手動の棚卸しで `AGENTS.md` の記述欄へ移す。
+- **引数を取る 13 スキルに `argument-hint` を追加**: `/review` や `/task-state` などを入力すると、補完候補に引数の形式と選択肢（例: `[all|code|security|...]`）が表示される。対象は review / task-state / issue-create / order / loop-issue / explain-visually / image-gen / pr-create / issue-fix / reverse / codd-impact / handoff / tdd。
 
 ### Changed
 

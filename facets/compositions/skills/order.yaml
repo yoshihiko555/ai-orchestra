@@ -11,6 +11,7 @@ frontmatter:
     Plans.md の Project を Issue に引き渡すこともできる。
     「発注書にして」「Plans.md に起こして」「Issue に出して」「計画を固めて」といった
     依頼や /order で使用する。
+  argument-hint: "[--to plans|issue] [--from-plans <project>|--from-issue <N>]"
   metadata:
     short-description: 対話の結論を発注書（Plans.md / Issue）に書き出す
 

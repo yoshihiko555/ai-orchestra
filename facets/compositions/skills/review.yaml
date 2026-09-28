@@ -8,6 +8,7 @@ frontmatter:
   description: |
     Run code reviews using specialized reviewer agents.
     Supports individual or batch review modes with smart reviewer selection.
+  argument-hint: "[all|code|security|performance|spec|architecture|ux|adversarial|impl|design]"
   metadata:
     short-description: Multi-agent code review (smart selection)
 

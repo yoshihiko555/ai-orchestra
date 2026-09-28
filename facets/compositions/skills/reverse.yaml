@@ -10,6 +10,7 @@ frontmatter:
     Defaults to repository-wide scope; accepts `/reverse <path>` to narrow.
     Antigravity-driven (with claude-direct fallback) for large-scale comprehension.
     Trigger: /reverse
+  argument-hint: "[path]"
   metadata:
     short-description: 既存コードのリバースエンジニアリング
 

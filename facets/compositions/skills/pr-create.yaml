@@ -12,6 +12,7 @@ frontmatter:
     「PR 作成して」「プルリク作って」「PR 出して」等のリクエストや、
     実装完了後の PR 作成フローで使用する。
     トリガー: /pr-create
+  argument-hint: "[--issue <N>] [--base <branch>] [--reviewers <text>]"
   metadata:
     short-description: GitHub PR の作成
 

@@ -12,6 +12,7 @@ frontmatter:
     text, verify it renders, and open it in the browser. Use when the user wants to
     understand AI-generated code or plans at a glance, or says "図解", "explain visually",
     "可視化して", "わかりやすく説明", "この差分を説明", "計画を図にして".
+  argument-hint: "[<PR/Issue URL>|#N|<path>|diff|review] [--base <ref>]"
   metadata:
     short-description: Explain plans, diffs, PRs and docs as diagram-based HTML pages
   disable-model-invocation: true

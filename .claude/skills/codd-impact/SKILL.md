@@ -9,6 +9,7 @@ description:
   Trigger on: "codd impact", "影響分析", "信頼度", "/codd-impact".
 
   '
+argument-hint: "[git-ref]"
 metadata:
   short-description: Classify change impact into Green/Amber/Gray bands
 ---
