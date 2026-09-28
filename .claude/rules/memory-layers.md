@@ -7,7 +7,7 @@
 | 層                                            | 覚えるもの                                               | 寿命・スコープ                                                     | 読み手                                                                     |
 | --------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------- |
 | `.claude/context/`（context-sharing）         | サブエージェントの結果、作業中のファイル                 | 1 セッション（終了時に削除）                                       | サブエージェント（prompt に注入された分）                                  |
-| `.claude/Plans.md`（task-memory-usage）       | 発注書、進行状態、タスク中の決定と気づき                 | worktree ごと。完了した Project は `Plans.archive.md` へ           | ファイルを読む CLI すべて（`/handoff` で Codex へ渡す）                    |
+| `.claude/Plans.md`（task-memory-usage）       | 発注書、進行状態、タスク中の決定と気づき                 | worktree ごと。worktree と一緒に消える                             | ファイルを読む CLI すべて（`/handoff` で Codex へ渡す）                    |
 | `docs/adr/`（ADR・DECISIONS.md）              | リポジトリ全体・複数タスクに効く恒久的な設計判断         | リポジトリ（git 管理）                                             | 全 CLI                                                                     |
 | `AGENTS.md`                                   | 全 CLI が守る規約・手順・落とし穴                        | リポジトリ（git 管理）                                             | 全 CLI（起動時に自動で読む）                                               |
 | auto-memory（`~/.claude/projects/*/memory/`） | ユーザーの好み、作業の仕方へのフィードバック、長期の事実 | リポジトリ単位で、同じクローンの全 worktree が共有。マシンローカル | Claude Code 本体とサブエージェント（Codex / Antigravity には注入されない） |
@@ -29,7 +29,7 @@
 | ブランチをまたいで、長期的に有効な事実・外部の制約・参照先           | auto-memory（project / reference）                                                                                                                                         | 書く           |
 | Codex / Antigravity にも必要な規約・落とし穴                         | まず auto-memory。棚卸しで `AGENTS.md` の記述欄へ昇格                                                                                                                      | 昇格したら消す |
 
-- Plans.md の `## Decisions` は、Plans.md の全 Project が完了したときにまとめてアーカイブされる（Project 単位では移らない）。タスクが終わった後も参照する判断は ADR にも残す
+- Plans.md の `## Decisions` は worktree と一緒に消える。タスクが終わった後も参照する判断は ADR にも残す
 - Plans.md を持たないエンジンで作業しているときに、記録のために Plans.md を新しく作らない
 - ユーザーが `AGENTS.md` や rule への追記を明示的に指示した場合は、メモリを経由せずそちらに書く
 
@@ -43,7 +43,7 @@
 
 auto-memory は Claude Code 本体とサブエージェントに、claude-mem は Claude Code 本体に注入されるが、どちらも Codex / Antigravity には届かない。Codex / Antigravity にも必要な知見は、棚卸しで `AGENTS.md` の記述欄へ移す。
 
-- 実施するのはユーザーが依頼したときだけ。自動化せず、Plans.md のアーカイブや `/release-readiness` にも組み込まない
+- 実施するのはユーザーが依頼したときだけ。自動化せず、`/release-readiness` にも組み込まない
 - 手順:
   1. auto-memory の各ファイルと `MEMORY.md` を読み、候補を一覧にする
      - `AGENTS.md` / rules / ADR にすでに書かれている → 削除候補

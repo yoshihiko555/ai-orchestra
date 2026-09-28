@@ -1873,10 +1873,10 @@ _ADD_PHASE_WITH_AC_INTERNAL_WHITESPACE_HEADING_BLOCK = (
 def test_task_state_add_phase_with_ac_oracle_rejects_internal_whitespace_ac_heading(
     tmp_path: Path,
 ) -> None:
-    """Codex bot レビュー round 5 (P2): `packages/core/hooks/ac_parser.py` の
-    `ac_section_ranges()` は見出しを外側の空白だけ許容する完全一致（`.strip() != heading`）で
+    """Codex bot レビュー round 5 (P2): `packages/core/hooks/load-task-state.py` の
+    `parse_tasks()` は見出しを外側の空白だけ許容する完全一致（`.strip() == heading`）で
     判定するため、内部の空白が増えた `#### Acceptance  Criteria` は本番では AC セクションとして
-    一切認識されず、そこに書いた verify/judge は完了判定・自動アーカイブを何も止めない。この
+    一切認識されず、そこに書いた verify/judge は完了判定（`/goal` のループ判定）を何も止めない。この
     fixture が内部空白まで正規化して受理してしまうと、実際には機能しない Plans.md を合格させて
     しまうため、production パーサーと同じ外側空白のみ許容の判定へ揃える。"""
     fixture = _task_state_outcome_fixture()

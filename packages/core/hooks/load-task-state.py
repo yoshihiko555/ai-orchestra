@@ -14,7 +14,6 @@ import json
 import os
 import re
 import sys
-from datetime import date
 from pathlib import Path
 
 _HOOK_DIR = Path(__file__).resolve().parent
@@ -23,12 +22,7 @@ if str(_HOOK_DIR) not in sys.path:
 
 # AC (Acceptance Criteria) 解析ロジックは共有モジュールへ切り出し済み（Issue #299）。
 # task-state スキル支援ツール等、他コンポーネントからも ac_parser を直接 import して再利用できる。
-from ac_parser import (  # noqa: E402
-    AC_SECTION_HEADING,
-    ac_section_ranges,
-    classify_checkbox_line,
-    phase_has_unchecked_ac,
-)
+from ac_parser import AC_SECTION_HEADING, classify_checkbox_line  # noqa: E402
 
 # 状態マーカー定義
 DEFAULT_MARKERS = {
@@ -508,246 +502,6 @@ def format_summary(
     return "\n".join(parts)
 
 
-def detect_completed_projects(
-    content: str, marker_pattern: re.Pattern[str], marker_to_state: dict[str, str]
-) -> list[dict]:
-    """Plans.md から完了済みプロジェクトを検出する。"""
-    lines = content.splitlines()
-    excluded = structural_exclusions(lines)
-    completed: list[dict] = []
-
-    project_starts = [
-        i for i, line in enumerate(lines) if i not in excluded and line.startswith("## Project:")
-    ]
-    for project_start in project_starts:
-        project_end = len(lines) - 1
-        for i in range(project_start + 1, len(lines)):
-            if i not in excluded and lines[i].startswith("## "):
-                project_end = i - 1
-                break
-
-        if project_end < project_start:
-            project_end = project_start
-
-        phase_starts: list[int] = []
-        for i in range(project_start, project_end + 1):
-            if i not in excluded and lines[i].startswith("### Phase"):
-                phase_starts.append(i)
-
-        # フェーズが 1 つもないプロジェクトは完了扱いにしない
-        if not phase_starts:
-            continue
-
-        project_done = True
-        for idx, phase_start in enumerate(phase_starts):
-            phase_end = phase_starts[idx + 1] - 1 if idx + 1 < len(phase_starts) else project_end
-            phase_header = lines[phase_start]
-            ac_ranges = ac_section_ranges(lines, phase_start, phase_end)
-
-            # 未チェックの AC がある場合は、見出しの cc:done マーカーより優先して未完了とする
-            if phase_has_unchecked_ac(lines, ac_ranges):
-                project_done = False
-                break
-
-            header_marker_match = marker_pattern.search(phase_header)
-            header_state = (
-                marker_to_state.get(header_marker_match.group(1)) if header_marker_match else None
-            )
-            header_done = header_state == "done"
-
-            if header_marker_match and not header_done:
-                project_done = False
-                break
-
-            if header_done and not ac_ranges:
-                # 後方互換: AC セクションを持たないフェーズは見出し cc:done で従来通り短絡する
-                continue
-
-            # ここに到達するのは次のいずれか:
-            # - フェーズ見出しにマーカーがない（配下タスクが全て done かどうかで判定）
-            # - フェーズ見出しが cc:done かつ AC セクションを持つ（残存タスクの有無を確認する）
-            phase_done = True
-            has_task = False
-            ac_line_indices = {i for start, end in ac_ranges for i in range(start, end + 1)}
-            for line_idx in range(phase_start + 1, phase_end + 1):
-                if line_idx in excluded:
-                    continue
-                stripped = lines[line_idx].strip()
-                if line_idx in ac_line_indices and classify_checkbox_line(stripped) is not None:
-                    # AC セクション配下のチェックボックス行（チェック済み/未チェック共に）は
-                    # cc: マーカー判定に含めない
-                    continue
-                if not stripped.startswith("- "):
-                    continue
-
-                has_task = True
-                task_marker_match = marker_pattern.search(stripped)
-                if not task_marker_match:
-                    phase_done = False
-                    break
-
-                state = marker_to_state.get(task_marker_match.group(1))
-                if state != "done":
-                    phase_done = False
-                    break
-
-            # タスクが 1 件もない場合: 見出しが cc:done なら見出しのみ運用として完了扱いを維持する。
-            # 見出しにマーカーがない場合は従来通り未完了扱い。
-            if not has_task and not header_done:
-                phase_done = False
-
-            if not phase_done:
-                project_done = False
-                break
-
-        if project_done:
-            project_name = lines[project_start].split("## Project:", 1)[1].strip()
-            project_content = "\n".join(lines[project_start : project_end + 1])
-            completed.append(
-                {
-                    "name": project_name,
-                    "start_line": project_start,
-                    "end_line": project_end,
-                    "content": project_content,
-                }
-            )
-
-    return completed
-
-
-def archive_projects(
-    plans_path: Path, archive_path: Path, completed: list[dict], content: str
-) -> str:
-    """完了済みプロジェクトを archive に移し、Plans.md から除去する。"""
-    _ = plans_path  # シグネチャを維持しつつ将来拡張の余地を残す
-
-    if not completed:
-        return content
-
-    lines = content.splitlines()
-    removed_ranges: list[tuple[int, int]] = []
-
-    for project in sorted(completed, key=lambda p: p["start_line"]):
-        start = int(project["start_line"])
-        end = int(project["end_line"])
-
-        if start < 0 or start >= len(lines):
-            continue
-        end = min(end, len(lines) - 1)
-
-        # プロジェクト直後の空行 + `---` 区切り線を除去範囲に含める
-        cursor = end + 1
-        while cursor < len(lines) and lines[cursor].strip() == "":
-            cursor += 1
-        if cursor < len(lines) and lines[cursor].strip() == "---":
-            end = cursor
-
-        removed_ranges.append((start, end))
-
-    if removed_ranges:
-        merged_ranges: list[list[int]] = []
-        for start, end in removed_ranges:
-            if not merged_ranges or start > merged_ranges[-1][1] + 1:
-                merged_ranges.append([start, end])
-            else:
-                merged_ranges[-1][1] = max(merged_ranges[-1][1], end)
-
-        kept_lines: list[str] = []
-        for i, line in enumerate(lines):
-            should_remove = any(start <= i <= end for start, end in merged_ranges)
-            if not should_remove:
-                kept_lines.append(line)
-    else:
-        kept_lines = list(lines)
-
-    kept_excluded = structural_exclusions(kept_lines)
-    has_projects = any(
-        i not in kept_excluded and line.startswith("## Project:")
-        for i, line in enumerate(kept_lines)
-    )
-    moved_sections: list[str] = []
-
-    if not has_projects:
-        section_ranges: list[tuple[int, int]] = []
-        i = 0
-        while i < len(kept_lines):
-            line = kept_lines[i]
-            if i not in kept_excluded and (
-                line.startswith("## Decisions") or line.startswith("## Notes")
-            ):
-                start = i
-                j = i + 1
-                while j < len(kept_lines):
-                    if j not in kept_excluded and kept_lines[j].startswith("## "):
-                        break
-                    j += 1
-                section_ranges.append((start, j - 1))
-                moved_sections.append("\n".join(kept_lines[start:j]).strip())
-                i = j
-                continue
-            i += 1
-
-        if section_ranges:
-            filtered_lines: list[str] = []
-            for idx, line in enumerate(kept_lines):
-                should_remove = any(start <= idx <= end for start, end in section_ranges)
-                if not should_remove:
-                    filtered_lines.append(line)
-            kept_lines = filtered_lines
-
-            # Decisions/Notes を削除した結果、末尾に残る区切り線を除去
-            while kept_lines and kept_lines[-1].strip() == "":
-                kept_lines.pop()
-            if kept_lines and kept_lines[-1].strip() == "---":
-                kept_lines.pop()
-            while kept_lines and kept_lines[-1].strip() == "":
-                kept_lines.pop()
-
-    today = date.today().isoformat()
-    archive_exists = archive_path.is_file()
-
-    archive_blocks: list[str] = []
-    if not archive_exists:
-        archive_blocks.append("# Archived Plans")
-
-    for project in completed:
-        project_content_lines = project["content"].splitlines()
-        while project_content_lines and project_content_lines[-1].strip() == "":
-            project_content_lines.pop()
-        if project_content_lines and project_content_lines[-1].strip() == "---":
-            project_content_lines.pop()
-        while project_content_lines and project_content_lines[-1].strip() == "":
-            project_content_lines.pop()
-        project_content = "\n".join(project_content_lines).strip()
-        if not project_content:
-            continue
-
-        archive_blocks.append(f"## Archived: {today}")
-        archive_blocks.append(project_content)
-        archive_blocks.append("---")
-
-    if moved_sections:
-        archive_blocks.append(f"## Archived: {today}")
-        archive_blocks.append("\n\n".join(section for section in moved_sections if section))
-        archive_blocks.append("---")
-
-    archive_text = "\n\n".join(block for block in archive_blocks if block).strip()
-    if archive_text:
-        if archive_exists:
-            existing = archive_path.read_text(encoding="utf-8")
-            if existing and not existing.endswith("\n"):
-                existing += "\n"
-            if existing.strip():
-                archive_path.write_text(existing + "\n" + archive_text + "\n", encoding="utf-8")
-            else:
-                archive_path.write_text(archive_text + "\n", encoding="utf-8")
-        else:
-            archive_path.write_text(archive_text + "\n", encoding="utf-8")
-
-    updated_content = "\n".join(kept_lines).rstrip()
-    return updated_content + "\n" if updated_content else ""
-
-
 def main() -> None:
     data = read_hook_input()
     project_dir = get_project_dir(data)
@@ -779,20 +533,6 @@ def main() -> None:
     except ValueError as e:
         print(f"[task-memory] invalid markers config: {e}; fallback to defaults", file=sys.stderr)
         marker_pattern, marker_to_state = DEFAULT_MARKER_PATTERN, DEFAULT_MARKER_TO_STATE
-
-    archive_path = plans_path.parent / "Plans.archive.md"
-    completed = detect_completed_projects(content, marker_pattern, marker_to_state)
-    if completed:
-        try:
-            content = archive_projects(plans_path, archive_path, completed, content)
-            plans_path.write_text(content, encoding="utf-8")
-            archived_names = [p["name"] for p in completed]
-            print(
-                f"[task-memory] archived {len(completed)} completed project(s): "
-                + ", ".join(archived_names)
-            )
-        except OSError as e:
-            print(f"[task-memory] archive failed, skipping: {e}", file=sys.stderr)
 
     if not config.get("show_summary_on_start", True):
         return

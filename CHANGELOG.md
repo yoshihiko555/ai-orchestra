@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **配布する AGENTS.md の作業ルールに過剰実装を防ぐ判断手順を追加**: 書く前に既存コード → 標準ライブラリ → 導入済みの依存の順で探す、依頼や受け入れ条件に必要ない抽象化・依存・ボイラープレートを足さない、など 4 項目。`code-reviewer` のチェックリストにも過剰実装の観点を追加。
 
+### Removed
+
+- **BREAKING** **`core`: Plans.archive.md と SessionStart の自動アーカイブを廃止（ADR-058）**: SessionStart は Plans.md を書き換えなくなり、完了した Project も Decisions / Notes も Plans.md に残る。`/order --from-plans` は Issue に引き渡した Project を Plans.md から取り除くだけにした。既存の Plans.archive.md は不要なら手動で削除する。`core` の `ac_parser.py` から、完了検出専用だった `ac_section_ranges` / `phase_has_unchecked_ac` も削除した。
+
 ## [0.3.5] - 2026-09-27
 
 ### Added

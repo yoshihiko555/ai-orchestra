@@ -363,119 +363,82 @@ def test_main_passes_custom_marker_mapping_to_parse_tasks(tmp_path, monkeypatch)
     }
 
 
-def test_detect_completed_projects_blocks_on_unchecked_acceptance_criteria() -> None:
-    content = "\n".join(
-        [
-            "## Project: Demo",
-            "### Phase 1: Setup",
-            "#### Tasks",
-            "- `cc:done` task A",
-            "#### Acceptance Criteria",
-            "- [ ] condition — verify: `echo ok`",
-        ]
+def test_main_never_archives_completed_projects_or_touches_plans_file(
+    tmp_path, monkeypatch
+) -> None:
+    """core EV-50: 全 Phase 完了済みの Project があっても Plans.md からの除去・
+    Plans.archive.md への書き出しをせず、サマリー出力だけを行う。"""
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir(parents=True)
+    plans_path = claude_dir / "Plans.md"
+    original_content = """# Plans
+
+## Project: Completed
+
+#### Goal
+- Ship the completed feature
+
+### Phase 1: Build `cc:done`
+
+#### Acceptance Criteria
+
+- [x] condition met — verify: `echo ok`
+
+#### Tasks
+
+- `cc:done` Finished task
+
+---
+
+## Project: Active
+
+### Phase 1: Work `cc:TODO`
+
+#### Tasks
+
+- `cc:TODO` Pending task
+
+---
+
+## Decisions
+
+- 2026-09-28: some decision
+
+## Notes
+
+- some note
+"""
+    plans_path.write_text(original_content, encoding="utf-8")
+
+    def _tracked_files() -> list[str]:
+        return sorted(
+            str(p.relative_to(tmp_path))
+            for p in claude_dir.rglob("*")
+            if p.is_file() and "context" not in p.parts
+        )
+
+    before_files = _tracked_files()
+
+    monkeypatch.setattr(load_task_state, "read_hook_input", lambda: {"cwd": str(tmp_path)})
+    monkeypatch.setattr(
+        load_task_state,
+        "load_config",
+        lambda _project_dir: {
+            "plans_file": ".claude/Plans.md",
+            "show_summary_on_start": True,
+            "max_display_tasks": 20,
+        },
     )
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda message: printed.append(message))
 
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
+    load_task_state.main()
 
-    assert completed == []
-
-
-def test_detect_completed_projects_blocks_even_when_phase_header_marked_done() -> None:
-    content = "\n".join(
-        [
-            "## Project: Demo",
-            "### Phase 1: Setup `cc:done`",
-            "#### Acceptance Criteria",
-            "- [ ] condition — verify: `echo ok`",
-        ]
-    )
-
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
-
-    assert completed == []
-
-
-def test_detect_completed_projects_archives_when_all_acceptance_criteria_checked() -> None:
-    content = "\n".join(
-        [
-            "## Project: Demo",
-            "### Phase 1: Setup",
-            "#### Tasks",
-            "- `cc:done` task A",
-            "#### Acceptance Criteria",
-            "- [x] condition1 — verify: `echo 1`",
-            "- [X] condition2 — verify: `echo 2`",
-        ]
-    )
-
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
-
-    assert len(completed) == 1
-    assert completed[0]["name"] == "Demo"
-
-
-def test_detect_completed_projects_header_done_with_ac_blocks_on_residual_task() -> None:
-    content = "\n".join(
-        [
-            "## Project: Demo",
-            "### Phase 1: Setup `cc:done`",
-            "#### Tasks",
-            "- `cc:TODO` remaining task",
-            "#### Acceptance Criteria",
-            "- [x] condition1 — verify: `echo 1`",
-            "- [X] condition2 — verify: `echo 2`",
-        ]
-    )
-
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
-
-    assert completed == []
-
-
-def test_detect_completed_projects_header_done_with_ac_and_no_task_lines_archives() -> None:
-    content = "\n".join(
-        [
-            "## Project: Demo",
-            "### Phase 1: Setup `cc:done`",
-            "#### Acceptance Criteria",
-            "- [x] condition1 — verify: `echo 1`",
-            "- [X] condition2 — verify: `echo 2`",
-        ]
-    )
-
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
-
-    assert len(completed) == 1
-    assert completed[0]["name"] == "Demo"
-
-
-def test_detect_completed_projects_header_done_without_ac_section_legacy_archives() -> None:
-    content = "\n".join(
-        [
-            "## Project: Demo",
-            "### Phase 1: Setup `cc:done`",
-            "#### Tasks",
-            "- `cc:TODO` remaining task",
-        ]
-    )
-
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
-
-    # 後方互換: AC セクションがなければ従来通り見出し cc:done で短絡し、body は見ない
-    assert len(completed) == 1
-    assert completed[0]["name"] == "Demo"
+    assert plans_path.read_text(encoding="utf-8") == original_content
+    assert not (claude_dir / "Plans.archive.md").exists()
+    assert _tracked_files() == before_files
+    assert printed
+    assert "Pending task" in printed[0]
 
 
 def test_parse_tasks_skips_ac_checkbox_line_even_with_marker_like_text_in_body() -> None:
@@ -493,62 +456,6 @@ def test_parse_tasks_skips_ac_checkbox_line_even_with_marker_like_text_in_body()
 
     assert tasks["done"] == [{"task": "task A", "reason": None}]
     assert tasks["TODO"] == []
-
-
-def test_detect_completed_projects_does_not_misclassify_markdown_link_bullet_as_checked() -> None:
-    content = "\n".join(
-        [
-            "## Project: Demo",
-            "### Phase 1: Setup",
-            "#### Tasks",
-            "- `cc:done` task A",
-            "- [See discussion](https://example.com/issue/1)",
-        ]
-    )
-
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
-
-    assert completed == []
-
-
-def test_detect_completed_projects_empty_acceptance_criteria_section_does_not_block() -> None:
-    content = "\n".join(
-        [
-            "## Project: Demo",
-            "### Phase 1: Setup",
-            "#### Tasks",
-            "- `cc:done` task A",
-            "#### Acceptance Criteria",
-        ]
-    )
-
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
-
-    assert len(completed) == 1
-    assert completed[0]["name"] == "Demo"
-
-
-def test_detect_completed_projects_checkbox_outside_ac_section_uses_legacy_marker_check() -> None:
-    content = "\n".join(
-        [
-            "## Project: Demo",
-            "### Phase 1: Setup",
-            "#### Tasks",
-            "- `cc:done` task A",
-            "- [ ] not an AC line since there is no Acceptance Criteria heading",
-        ]
-    )
-
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
-
-    # AC セクション外の `- [ ]` は特別扱いせず、cc: マーカーなし行として未完了扱いになる
-    assert completed == []
 
 
 def test_parse_tasks_never_includes_acceptance_criteria_lines() -> None:
@@ -569,39 +476,9 @@ def test_parse_tasks_never_includes_acceptance_criteria_lines() -> None:
     assert not any("condition" in text for text in all_task_texts)
 
 
-def test_detect_completed_projects_legacy_format_without_acceptance_criteria() -> None:
-    completed_content = "\n".join(
-        [
-            "## Project: Legacy",
-            "### Phase 1: Setup",
-            "- `cc:done` task A",
-        ]
-    )
-    incomplete_content = "\n".join(
-        [
-            "## Project: Legacy",
-            "### Phase 1: Setup",
-            "- `cc:done` task A",
-            "- `cc:TODO` task B",
-        ]
-    )
-
-    completed = load_task_state.detect_completed_projects(
-        completed_content,
-        load_task_state.DEFAULT_MARKER_PATTERN,
-        load_task_state.DEFAULT_MARKER_TO_STATE,
-    )
-    incomplete = load_task_state.detect_completed_projects(
-        incomplete_content,
-        load_task_state.DEFAULT_MARKER_PATTERN,
-        load_task_state.DEFAULT_MARKER_TO_STATE,
-    )
-
-    assert len(completed) == 1
-    assert incomplete == []
-
-
-def test_detect_completed_projects_ignores_fenced_headings_and_tasks() -> None:
+def test_parse_orders_and_tasks_ignore_fenced_project_headings() -> None:
+    """core EV-42: フェンス内の見出し（## Project: Fake 等）と cc: マーカーは、
+    parse_orders / parse_tasks のいずれの構造解析にも影響しない。"""
     content = (
         "## Project: Real\n\n"
         "#### Context\n\n"
@@ -613,10 +490,13 @@ def test_detect_completed_projects_ignores_fenced_headings_and_tasks() -> None:
         "### Phase 1: Actual `cc:WIP`\n\n"
         "- `cc:WIP` actual task\n"
     )
-    completed = load_task_state.detect_completed_projects(
-        content, load_task_state.DEFAULT_MARKER_PATTERN, load_task_state.DEFAULT_MARKER_TO_STATE
-    )
-    assert completed == []
+
+    orders = load_task_state.parse_orders(content)
+    tasks = load_task_state.parse_tasks(content)
+
+    assert orders == [{"name": "Real", "goal": None, "open_questions": 0}]
+    assert tasks["done"] == []
+    assert tasks["WIP"] == [{"task": "actual task", "reason": None}]
 
 
 def test_parse_tasks_nested_fence_requires_matching_char_and_length() -> None:
@@ -1034,50 +914,8 @@ def test_legacy_plans_remain_byte_for_byte_compatible() -> None:
     ) == load_task_state.format_summary(tasks, 20)
 
 
-def test_archive_preserves_order_sections_for_completed_project(tmp_path) -> None:
-    plans_path = tmp_path / "Plans.md"
-    archive_path = tmp_path / "Plans.archive.md"
-    content = """# Plans
-
-## Project: Complete
-
-#### Goal
-- Preserve this goal
-
-#### Context
-- Preserve this context
-
-### Phase 1: Done
-#### Tasks
-- `cc:done` Finished task
-
----
-
-## Project: Active
-
-### Phase 1: Work `cc:TODO`
-#### Tasks
-- `cc:TODO` Pending task
-"""
-    plans_path.write_text(content, encoding="utf-8")
-
-    completed = load_task_state.detect_completed_projects(
-        content,
-        load_task_state.DEFAULT_MARKER_PATTERN,
-        load_task_state.DEFAULT_MARKER_TO_STATE,
-    )
-    updated = load_task_state.archive_projects(plans_path, archive_path, completed, content)
-
-    assert [project["name"] for project in completed] == ["Complete"]
-    archive_text = archive_path.read_text(encoding="utf-8")
-    assert "#### Goal\n- Preserve this goal" in archive_text
-    assert "#### Context\n- Preserve this context" in archive_text
-    assert "Preserve this goal" not in updated
-    assert "Preserve this context" not in updated
-    assert "## Project: Active" in updated
-
-
-def test_frontmatter_is_inert_and_survives_archiving(tmp_path) -> None:
+def test_frontmatter_is_inert_for_task_and_order_parsing() -> None:
+    """core EV-45: codd frontmatter は parse_tasks / parse_orders の構造解析に影響しない。"""
     frontmatter = """---
 codd:
   node_id: "plan:test"
@@ -1108,30 +946,3 @@ codd:
     assert load_task_state.parse_orders(frontmatter_content) == load_task_state.parse_orders(
         plain_content
     )
-
-    plain_completed = load_task_state.detect_completed_projects(
-        plain_content,
-        load_task_state.DEFAULT_MARKER_PATTERN,
-        load_task_state.DEFAULT_MARKER_TO_STATE,
-    )
-    frontmatter_completed = load_task_state.detect_completed_projects(
-        frontmatter_content,
-        load_task_state.DEFAULT_MARKER_PATTERN,
-        load_task_state.DEFAULT_MARKER_TO_STATE,
-    )
-    assert [project["name"] for project in frontmatter_completed] == [
-        project["name"] for project in plain_completed
-    ]
-    assert [project["content"] for project in frontmatter_completed] == [
-        project["content"] for project in plain_completed
-    ]
-
-    plans_path = tmp_path / "Plans.md"
-    archive_path = tmp_path / "Plans.archive.md"
-    plans_path.write_text(frontmatter_content, encoding="utf-8")
-    updated = load_task_state.archive_projects(
-        plans_path, archive_path, frontmatter_completed, frontmatter_content
-    )
-    plans_path.write_text(updated, encoding="utf-8")
-
-    assert plans_path.read_text(encoding="utf-8").startswith(f"{frontmatter}\n# Plans")

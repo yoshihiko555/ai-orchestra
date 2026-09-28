@@ -69,4 +69,5 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260924-054 | cocoindex パッケージの配布を終了し、実測で効果が確認できない意味検索は導入しない                                                  | accepted   | 2026-09-24 |
 | ADR-20260926-055 | 機能フラグは所有パッケージの config に置き、quality-gates のフラグを audit-flags.json から分離する（ADR-016 の部分 supersede）    | accepted   | 2026-09-26 |
 | ADR-20260926-056 | 開発プロセスを「対話 → 発注書 → 4 実行エンジン」に組み直し、Plans.md を発注書として拡張する                                       | accepted   | 2026-09-26 |
-| ADR-20260927-057 | 記憶の層の分担を memory-layers ルールで定め、全 CLI に必要な知見は手動の棚卸しで AGENTS.md に昇格する                               | accepted   | 2026-09-27 |
+| ADR-20260927-057 | 記憶の層の分担を memory-layers ルールで定め、全 CLI に必要な知見は手動の棚卸しで AGENTS.md に昇格する                             | accepted   | 2026-09-27 |
+| ADR-20260928-058 | Plans.archive.md と SessionStart の自動アーカイブを廃止する（ADR-056 の部分 supersede）                                           | accepted   | 2026-09-28 |
