@@ -755,6 +755,32 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
   がその空設定を実 root の設定とは異なる「設定あり」として読み込み、判定がずれる可能性が
   あった。削除後は snapshot 側にファイルが存在しない状態になり「設定不在」として扱われる。
 
+**Issue #349（validate-precommit hook の整理）**: 以下を変更した。
+
+- **subprocess 出力の復号失敗を fail-safe に収束**: `subprocess.run(..., text=True)` は
+  非 UTF-8 の出力で `UnicodeDecodeError` を送出する。これが各 subprocess の
+  `except (TimeoutExpired, OSError)` をすり抜けると、候補 index・snapshot の一時ファイルが
+  cleanup されずに残っていた。全 subprocess の except に `UnicodeDecodeError` を加え、
+  他の失敗と同じ cleanup と fail-safe（commit をブロックしない）へ合流させる（EV-95）。
+- **mtime 正規化の symlink ディレクトリ非追従を回帰テストで固定**: Issue では「Python 3.13
+  未満の `Path.rglob` はディレクトリへの symlink を辿り、snapshot 外のファイルの mtime を
+  書き換えうる」と指摘されたが、3.11〜3.14 のいずれでも辿らないことを確認した。実装は
+  変えず、symlink エントリ自体だけに timestamp を与え snapshot 外に触れない振る舞いを
+  回帰テストで固定する（EV-96）。
+- **mtime 正規化の権限エラーで cleanup を飛ばさない**: Python 3.12 以前の `Path.is_dir()` は
+  symlink を辿った stat の EACCES を再送出する。権限のない場所を指す symlink が index に
+  あると、例外が snapshot・候補 index の cleanup 前に漏れ、validate が汎用エラー 1 行で
+  スキップされたうえ一時ファイルが残っていた。`is_symlink()` を先に判定して symlink には
+  `is_dir()` を呼ばず、判定と `os.utime` の `OSError` はエントリ単位で無視する（EV-96）。
+- **一時 index 作成失敗の診断**: `tempfile.mkstemp` の `OSError` も `tempfile.mkdtemp` と
+  同じく診断メッセージへ収束させる（EV-95）。
+- **git-dir の解決を 1 回に**: `-a/--all` 検出時に候補 index 構築と snapshot 構築の
+  両方で `git rev-parse --git-dir` を実行していたのを、`run_validate` で 1 回だけ解決して
+  共有する（共有 deadline の無駄な消費をなくす）。予算切れはこの解決より前に判定し、
+  「git-dir の解決失敗」ではなく予算超過として診断する。`-a/--all` 時に git-dir を解決
+  できない場合の診断は「-a/--all 候補 index を構築できません」から「index スナップショットを
+  構築できません」に変わる（fail-safe の挙動は同じ）。
+
 **既知の制限（Issue #338、追跡中）**: hook プロセス自身の起動コマンド
 （`scripts/lib/hook_utils.py` が生成する `python3 "$AI_ORCHESTRA_DIR/..."`）は
 `PATH` 上の `python3` に依存している。4.8.1 前半で述べた「`codd` サブプロセスは

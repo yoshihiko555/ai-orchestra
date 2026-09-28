@@ -1,17 +1,19 @@
 """codd validate-precommit hook の index スナップショット構築・validate 実行のテスト。
 
 対象: packages/codd/lib/codd_index_snapshot.py（Issue #349 で hook から分割）。
-評価セット対応: docs/evaluation/codd.md §4.2 EV-68〜EV-89。
+評価セット対応: docs/evaluation/codd.md §4.2 の index スナップショット関連
+（EV-68〜EV-84、EV-87〜EV-89、EV-92、EV-94〜EV-96）。
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import pytest
 import yaml
@@ -43,6 +45,14 @@ CODD_CLI = str(REPO_ROOT / "packages" / "codd" / "scripts" / "codd.py")
 def _run_validate(root: str, **kwargs: Any) -> tuple[int, str, str] | None:
     """hook と同じ引数（codd CLI パス・サニタイズ済み env）で `run_validate` を呼ぶ。"""
     return snapshot.run_validate(root, codd_cli=CODD_CLI, git_env=sanitized_git_env(), **kwargs)
+
+
+def _resolve_git_dir_for_test(root: str) -> str:
+    """テスト用に `root` の絶対 git-dir を解決する（新しい deadline を使う、失敗しない前提）。"""
+    deadline = snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS)
+    git_dir = snapshot._resolve_absolute_git_dir(root, sanitized_git_env(), deadline)
+    assert git_dir is not None
+    return git_dir
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +199,9 @@ class TestValidateHookIndexSnapshotFailSafeBranches:
         assert "index スナップショット" in result.stderr
 
     def test_write_tree_timeout_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
-        """`git write-tree` の TimeoutExpired は fail-safe で `(None, None, diagnostic)`。"""
+        """`git write-tree` の TimeoutExpired は fail-safe で `(None, diagnostic)`。"""
         _git_init(tmp_path)
+        git_dir = _resolve_git_dir_for_test(str(tmp_path))
         real_run = snapshot.subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
@@ -200,18 +211,16 @@ class TestValidateHookIndexSnapshotFailSafeBranches:
 
         monkeypatch.setattr(snapshot.subprocess, "run", fake_run)
         deadline = snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS)
-        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
-            snapshot._build_index_snapshot(str(tmp_path), sanitized_git_env(), deadline)
+        built, diagnostic = snapshot._build_index_snapshot(
+            str(tmp_path), git_dir, sanitized_git_env(), deadline
         )
-        assert snapshot_dir is None
-        assert git_dir is None
-        assert prefix is None
-        assert candidate_index_path is None
+        assert built is None
         assert "git write-tree failed" in diagnostic
 
     def test_checkout_index_oserror_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
-        """`git checkout-index` の OSError は fail-safe で `(None, None, diagnostic)`。"""
+        """`git checkout-index` の OSError は fail-safe で `(None, diagnostic)`。"""
         _git_init(tmp_path)
+        git_dir = _resolve_git_dir_for_test(str(tmp_path))
         real_run = snapshot.subprocess.run
 
         def fake_run(cmd, *args, **kwargs):
@@ -221,41 +230,32 @@ class TestValidateHookIndexSnapshotFailSafeBranches:
 
         monkeypatch.setattr(snapshot.subprocess, "run", fake_run)
         deadline = snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS)
-        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
-            snapshot._build_index_snapshot(str(tmp_path), sanitized_git_env(), deadline)
+        built, diagnostic = snapshot._build_index_snapshot(
+            str(tmp_path), git_dir, sanitized_git_env(), deadline
         )
-        assert snapshot_dir is None
-        assert git_dir is None
-        assert prefix is None
-        assert candidate_index_path is None
+        assert built is None
         assert "git checkout-index failed" in diagnostic
 
-    def test_resolve_git_dir_failure_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
-        """絶対 git-dir を解決できない場合も snapshot 構築失敗として fail-safe になる。"""
+    def test_resolve_git_dir_failure_is_fail_safe(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """絶対 git-dir を解決できない場合、run_validate は fail-safe で None を返す。"""
         _git_init(tmp_path)
         monkeypatch.setattr(snapshot, "_resolve_absolute_git_dir", lambda root, env, deadline: None)
-        deadline = snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS)
-        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
-            snapshot._build_index_snapshot(str(tmp_path), sanitized_git_env(), deadline)
-        )
-        assert snapshot_dir is None
-        assert git_dir is None
-        assert prefix is None
-        assert candidate_index_path is None
-        assert diagnostic == "git rev-parse --git-dir failed"
+        outcome = _run_validate(str(tmp_path))
+        assert outcome is None
+        assert "git rev-parse --git-dir failed" in capsys.readouterr().err
 
     def test_resolve_prefix_failure_is_fail_safe(self, tmp_path: Path, monkeypatch) -> None:
         """prefix を解決できない場合も snapshot 構築失敗として fail-safe になる（反復3）。"""
         _git_init(tmp_path)
+        git_dir = _resolve_git_dir_for_test(str(tmp_path))
         monkeypatch.setattr(snapshot, "_resolve_repo_prefix", lambda root, env, deadline: None)
         deadline = snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS)
-        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
-            snapshot._build_index_snapshot(str(tmp_path), sanitized_git_env(), deadline)
+        built, diagnostic = snapshot._build_index_snapshot(
+            str(tmp_path), git_dir, sanitized_git_env(), deadline
         )
-        assert snapshot_dir is None
-        assert git_dir is None
-        assert prefix is None
-        assert candidate_index_path is None
+        assert built is None
         assert diagnostic == "git rev-parse --show-prefix failed"
 
     def test_run_validate_subprocess_timeout_is_fail_safe(
@@ -276,6 +276,225 @@ class TestValidateHookIndexSnapshotFailSafeBranches:
         monkeypatch.setattr(snapshot.subprocess, "run", fake_run)
         outcome = _run_validate(str(tmp_path))
         assert outcome is None
+
+
+class TestIndexSnapshotErrorPathHardening:
+    """index スナップショットの異常系（Issue #349）。
+
+    評価セット対応: EV-94（config コピーの部分書き込み）、EV-95（subprocess 出力の復号失敗・
+    一時ファイル作成失敗）、EV-96（mtime 正規化の symlink 非追従・権限エラー）。git-dir を
+    1 回だけ解決することも確認する。
+    """
+
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "checkout-index",
+            "write-tree",
+            "show-prefix",
+            "git add -u",
+            "codd validate",
+            "rev-parse",
+        ],
+    )
+    def test_unicode_decode_error_is_fail_safe_and_cleans_temporary_paths(
+        self, tmp_path: Path, monkeypatch, case: str
+    ) -> None:
+        """subprocess 出力の復号失敗も fail-safe に倒れ、一時ファイルを残さない（EV-95）。"""
+        _git_init(tmp_path)
+        if case in {"git add -u", "codd validate", "rev-parse"}:
+            _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+            _write_codd_config(tmp_path, _codd_config_dict())
+            _git_add_all(tmp_path)
+        if case in {"checkout-index", "write-tree", "show-prefix", "git add -u"}:
+            git_dir = _resolve_git_dir_for_test(str(tmp_path))
+
+        tmp_root = Path(tempfile.gettempdir())
+        patterns = (
+            "codd-candidate-index-*",
+            "codd-index-snapshot-*",
+            "codd-commit-a-index-*",
+        )
+
+        def temp_entries() -> set[Path]:
+            return {path for pattern in patterns for path in tmp_root.glob(pattern)}
+
+        before = temp_entries()
+        real_run = snapshot.subprocess.run
+        targeted = False
+
+        def fake_run(cmd, *args, **kwargs):
+            nonlocal targeted
+            matches = {
+                "checkout-index": "checkout-index" in cmd,
+                "write-tree": cmd[:2] == ["git", "write-tree"],
+                "git add -u": cmd[:3] == ["git", "add", "-u"],
+                "codd validate": len(cmd) > 1 and str(cmd[1]).endswith("codd.py"),
+                "show-prefix": cmd[:2] == ["git", "rev-parse"] and "--show-prefix" in cmd,
+                "rev-parse": cmd[:2] == ["git", "rev-parse"] and "--git-dir" in cmd,
+            }
+            if matches[case]:
+                targeted = True
+                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(snapshot.subprocess, "run", fake_run)
+        if case in {"checkout-index", "write-tree", "show-prefix"}:
+            built, diagnostic = snapshot._build_index_snapshot(
+                str(tmp_path),
+                git_dir,
+                sanitized_git_env(),
+                snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS),
+            )
+            assert built is None
+            assert diagnostic
+        elif case == "git add -u":
+            tmp_index_path, diagnostic = snapshot._build_commit_all_index_file(
+                str(tmp_path),
+                git_dir,
+                sanitized_git_env(),
+                snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS),
+            )
+            assert tmp_index_path is None
+            assert diagnostic
+        else:
+            assert _run_validate(str(tmp_path)) is None
+
+        assert targeted
+        assert temp_entries() == before
+
+    def test_normalize_mtimes_does_not_follow_directory_symlinks(self, tmp_path: Path) -> None:
+        """mtime 正規化はディレクトリへの symlink を辿らず、symlink 自体だけを正規化する（EV-96）。
+
+        Python 3.11〜3.14 の `Path.rglob` は symlink ディレクトリへ再帰しないため、現行実装の
+        まま snapshot 外（`outside/victim.txt`）の mtime は変わらない。この振る舞いを固定する
+        回帰テスト（Issue #349 の調査で、rglob が symlink を辿るという前提は誤りと確認済み）。
+        """
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = outside / "victim.txt"
+        victim.write_text("victim\n", encoding="utf-8")
+        snap_dir = tmp_path / "snap"
+        snap_dir.mkdir()
+        file_path = snap_dir / "file.txt"
+        file_path.write_text("file\n", encoding="utf-8")
+        link_dir = snap_dir / "linkdir"
+        link_dir.symlink_to(Path("..") / "outside", target_is_directory=True)
+        link_file = snap_dir / "linkfile"
+        link_file.symlink_to("file.txt")
+        old_mtime = 1_000_000
+        os.utime(victim, (old_mtime, old_mtime))
+        os.utime(file_path, (old_mtime, old_mtime))
+        os.utime(link_dir, (old_mtime, old_mtime), follow_symlinks=False)
+        os.utime(link_file, (old_mtime, old_mtime), follow_symlinks=False)
+
+        snapshot._normalize_snapshot_mtimes(str(snap_dir), snapshot._Deadline(60))
+
+        assert int(victim.stat().st_mtime) == old_mtime
+        assert file_path.stat().st_mtime > old_mtime + 1000
+        assert os.lstat(link_dir).st_mtime > old_mtime + 1000
+        assert os.lstat(link_file).st_mtime > old_mtime + 1000
+
+    def test_copy_no_follow_removes_partially_written_dest_on_enospc(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """書き込み途中で ENOSPC になっても、部分的に書かれた `dest` を残さない（EV-94）。"""
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"contents")
+        dest = tmp_path / "dest.bin"
+        real_fdopen = snapshot.os.fdopen
+
+        class PartialWriter:
+            def __init__(self, file: BinaryIO) -> None:
+                self._file = file
+
+            def __enter__(self) -> PartialWriter:
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                self._file.close()
+
+            def write(self, data: bytes) -> None:
+                self._file.write(data[:1])
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        def failing_fdopen(fd: int, mode: str) -> PartialWriter:
+            return PartialWriter(real_fdopen(fd, mode))
+
+        monkeypatch.setattr(snapshot.os, "fdopen", failing_fdopen)
+
+        assert snapshot._copy_no_follow(src, dest) is False
+        assert not dest.exists()
+
+    def test_normalize_mtimes_ignores_symlink_to_unreadable_location(self, tmp_path: Path) -> None:
+        """権限のない場所を指す symlink があっても例外を送出しない（EV-96、Issue #349）。
+
+        Python 3.12 以前の `Path.is_dir()` は symlink を辿った stat の EACCES を再送出する。
+        判定前に `is_symlink()` で分岐しないと、例外が snapshot・候補 index の cleanup 前に
+        漏れていた（3.13 以降は `is_dir()` が握りつぶすため、この回帰は 3.12 で検出される）。
+        """
+        locked = tmp_path / "locked"
+        (locked / "inner").mkdir(parents=True)
+        snap_dir = tmp_path / "snap"
+        snap_dir.mkdir()
+        file_path = snap_dir / "file.txt"
+        file_path.write_text("file\n", encoding="utf-8")
+        link = snap_dir / "link"
+        link.symlink_to(locked / "inner")
+        old_mtime = 1_000_000
+        os.utime(file_path, (old_mtime, old_mtime))
+        os.utime(link, (old_mtime, old_mtime), follow_symlinks=False)
+        locked.chmod(0o000)
+        try:
+            snapshot._normalize_snapshot_mtimes(str(snap_dir), snapshot._Deadline(60))
+        finally:
+            locked.chmod(0o700)
+
+        assert file_path.stat().st_mtime > old_mtime + 1000
+        assert os.lstat(link).st_mtime > old_mtime + 1000
+
+    @pytest.mark.parametrize("target", ["candidate", "commit-all"])
+    def test_mkstemp_failure_returns_diagnostic(
+        self, tmp_path: Path, monkeypatch, target: str
+    ) -> None:
+        """一時 index の作成（`tempfile.mkstemp`）の OSError も診断へ収束させる（EV-95）。"""
+        _git_init(tmp_path)
+        git_dir = _resolve_git_dir_for_test(str(tmp_path))
+
+        def fail_mkstemp(*, prefix: str) -> tuple[int, str]:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(snapshot.tempfile, "mkstemp", fail_mkstemp)
+        deadline = snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS)
+        if target == "candidate":
+            path, diagnostic = snapshot._prepare_candidate_index(git_dir, None, deadline)
+        else:
+            path, diagnostic = snapshot._build_commit_all_index_file(
+                str(tmp_path), git_dir, sanitized_git_env(), deadline
+            )
+        assert path is None
+        assert "tempfile.mkstemp failed" in diagnostic
+
+    def test_git_dir_is_resolved_once_for_commit_all(self, tmp_path: Path, monkeypatch) -> None:
+        """`-a/--all` 再現時も git-dir の解決は 1 回だけ（共有 deadline を無駄に消費しない）。"""
+        _git_init(tmp_path)
+        _git_config_identity(tmp_path)
+        _write(tmp_path, "docs/x.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict())
+        _git_add_all(tmp_path)
+        _git_commit_at(tmp_path, "init")
+        real_resolve = snapshot._resolve_absolute_git_dir
+        call_count = 0
+
+        def counting_resolve(root, env, deadline):
+            nonlocal call_count
+            call_count += 1
+            return real_resolve(root, env, deadline)
+
+        monkeypatch.setattr(snapshot, "_resolve_absolute_git_dir", counting_resolve)
+        outcome = _run_validate(str(tmp_path), simulate_commit_all=True)
+        assert outcome is not None
+        assert call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -497,9 +716,10 @@ class TestValidateHookCandidateIndexPermissions:
         real_index = tmp_path / git_dir_out / "index"
         real_index.chmod(0o644)  # 実 index の典型的な permission を明示的に再現する
 
+        git_dir = _resolve_git_dir_for_test(str(tmp_path))
         deadline = snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS)
         tmp_index_path, diagnostic = snapshot._build_commit_all_index_file(
-            str(tmp_path), sanitized_git_env(), deadline
+            str(tmp_path), git_dir, sanitized_git_env(), deadline
         )
         assert tmp_index_path is not None, diagnostic
         mode = Path(tmp_index_path).stat().st_mode & 0o777
@@ -545,6 +765,7 @@ class TestValidateHookCommitAllCopyFailureCleanup:
         _write(tmp_path, "docs/x.md", _CLEAN_DOC)
         _git_add_all(tmp_path)
         _git_commit_at(tmp_path, "init")
+        git_dir = _resolve_git_dir_for_test(str(tmp_path))
 
         def _raise_copyfile(*_args: object, **_kwargs: object) -> None:
             raise OSError("simulated ENOSPC")
@@ -554,7 +775,7 @@ class TestValidateHookCommitAllCopyFailureCleanup:
         before = set(Path(tempfile.gettempdir()).glob("codd-commit-a-index-*"))
         deadline = snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS)
         tmp_index_path, diagnostic = snapshot._build_commit_all_index_file(
-            str(tmp_path), sanitized_git_env(), deadline
+            str(tmp_path), git_dir, sanitized_git_env(), deadline
         )
         after = set(Path(tempfile.gettempdir()).glob("codd-commit-a-index-*"))
 
@@ -729,6 +950,7 @@ class TestValidateHookMkdtempFailure:
         _write_codd_config(tmp_path, _codd_config_dict())
         _git_add_all(tmp_path)
         _git_commit_at(tmp_path, "init")
+        git_dir = _resolve_git_dir_for_test(str(tmp_path))
 
         tmp_root = Path(tempfile.gettempdir())
         before = set(tmp_root.glob("codd-candidate-index-*"))
@@ -750,8 +972,9 @@ class TestValidateHookMkdtempFailure:
         monkeypatch.setattr(snapshot, "_prepare_candidate_index", capture_candidate_index)
         monkeypatch.setattr(snapshot.tempfile, "mkdtemp", fail_mkdtemp)
         try:
-            result = snapshot._build_index_snapshot(
+            built, diagnostic = snapshot._build_index_snapshot(
                 str(tmp_path),
+                git_dir,
                 sanitized_git_env(),
                 snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS),
             )
@@ -761,8 +984,8 @@ class TestValidateHookMkdtempFailure:
                 if candidate_path in after - before:
                     candidate_path.unlink(missing_ok=True)
 
-        assert result[:4] == (None, None, None, None)
-        assert "mkdtemp" in result[4]
+        assert built is None
+        assert "mkdtemp" in diagnostic
         assert after == before
 
 
@@ -861,19 +1084,17 @@ class TestValidateHookSharedTimeoutBudget:
         self, tmp_path: Path
     ) -> None:
         _git_init(tmp_path)
+        git_dir = _resolve_git_dir_for_test(str(tmp_path))
         deadline = snapshot._Deadline(0.0)
         time.sleep(0.01)
-        snapshot_dir, git_dir, prefix, candidate_index_path, diagnostic = (
-            snapshot._build_index_snapshot(str(tmp_path), sanitized_git_env(), deadline)
+        built, diagnostic = snapshot._build_index_snapshot(
+            str(tmp_path), git_dir, sanitized_git_env(), deadline
         )
-        assert snapshot_dir is None
-        assert git_dir is None
-        assert prefix is None
-        assert candidate_index_path is None
+        assert built is None
         assert "timeout budget" in diagnostic
 
     def test_run_validate_fails_safe_when_shared_budget_is_too_small(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch, capsys
     ) -> None:
         """`HOOK_TIMEOUT_BUDGET_SECONDS` を極小化すると write-tree 到達前に予算切れで
         fail-safe になる。この定数・deadline 共有機構自体を revert すると
@@ -886,6 +1107,10 @@ class TestValidateHookSharedTimeoutBudget:
         monkeypatch.setattr(snapshot, "HOOK_TIMEOUT_BUDGET_SECONDS", 0.0)
         outcome = _run_validate(str(tmp_path))
         assert outcome is None
+        # 予算切れは git-dir 解決の失敗ではなく予算超過として診断する（Issue #349）
+        stderr = capsys.readouterr().err
+        assert "タイムアウト予算" in stderr
+        assert "git rev-parse --git-dir failed" not in stderr
 
 
 class TestValidateHookGitOptionalLocksEnv:
