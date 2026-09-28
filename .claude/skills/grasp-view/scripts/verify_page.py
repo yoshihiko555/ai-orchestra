@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render and verify an explain-visually HTML page with headless Chrome.
+"""Render and verify a grasp-view HTML page with headless Chrome.
 
 Adapted from https://github.com/keitakn/engineering-skills at commit
 f972ef4a1f8fac0410c77d7918998e2bcfaae43c. The upstream work is MIT licensed.
@@ -31,7 +31,7 @@ CHROME_BINARY_CANDIDATES = (
     "chromium",
     "chromium-browser",
 )
-CHROME_ENVIRONMENT_VARIABLE = "EXPLAIN_VISUALLY_CHROME"
+CHROME_ENVIRONMENT_VARIABLE = "GRASP_VIEW_CHROME"
 DEFAULT_VIEWPORT_WIDTH = 1250
 DEFAULT_VIRTUAL_TIME_BUDGET_MS = 25000
 DEFAULT_CHROME_TIMEOUT_SECONDS = 40
@@ -40,7 +40,7 @@ STDERR_TAIL_CHARS = 2000
 DOM_WINDOW_HEIGHT = 1200
 FALLBACK_WINDOW_HEIGHT = 12000
 SCREENSHOT_HEIGHT_PADDING = 40
-TEMPORARY_DIRECTORY_PREFIX = "explain-visually-"
+TEMPORARY_DIRECTORY_PREFIX = "grasp-view-"
 TEMPLATE_FILENAME = "template.html"
 EXIT_OK = 0
 EXIT_FATAL = 1
@@ -600,7 +600,7 @@ def resolve_required_chrome(explicit: str | None) -> str:
     if chrome_path:
         return chrome_path
     raise VerificationError(
-        "Google Chrome が見つかりません。--chrome または EXPLAIN_VISUALLY_CHROME を指定してください"
+        "Google Chrome が見つかりません。--chrome または GRASP_VIEW_CHROME を指定してください"
     )
 
 

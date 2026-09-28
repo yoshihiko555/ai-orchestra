@@ -1,11 +1,11 @@
-# explain-visually スキルのファセット構成定義
+# grasp-view スキルのファセット構成定義
 # 出典: https://github.com/keitakn/engineering-skills (MIT) @ f972ef4a を当リポジトリ向けに適応
-name: explain-visually
+name: grasp-view
 description: 設計文書・実装計画・ブランチ差分・PR/Issue を図解 HTML にして人間の理解を助ける
 
 # フロントマター（生成される SKILL.md に付与）
 frontmatter:
-  name: explain-visually
+  name: grasp-view
   description: |
     Turn a long design document, implementation plan, branch diff (AI-written code),
     PR, Issue, or /review result into an explanatory HTML page with diagrams and short
@@ -22,9 +22,9 @@ policies:
   - factual-writing
 
 # スキル固有の instruction（ファイル参照）
-instruction: explain-visually
+instruction: grasp-view
 
 # 同梱スクリプト（scripts/ 配下へ flat 配布）
 scripts:
-  - explain-visually/template.html
-  - explain-visually/verify_page.py
+  - grasp-view/template.html
+  - grasp-view/verify_page.py

@@ -42,3 +42,6 @@ Issue 起点でセッション内に小さく直すだけなら `/issue-fix`（P
 - `/loop-issue` は PR 作成と外部レビュー対応を内包する。TAKT は `takt add '#N'` の `Auto-create PR?` で
   Yes を選び PR 作成を TAKT に任せる。これらの後に共通手順を重ねない
 - `/goal` のループ完了後は、ユーザーが `/release-readiness` で AC 全チェック・テスト・レビューを確認する
+- 複雑な処理や重要な仕様では、実装前（発注書）・実装後（差分・PR）のどちらでも、`/grasp-view` で読んでから
+  `/grasp-check` で自分の言葉で説明し、把握できているかを確かめられる（任意。ゲートではない。`/order` と
+  `/pr-create` が条件に当てはまるときに案内する）

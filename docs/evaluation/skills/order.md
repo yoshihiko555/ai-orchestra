@@ -3,7 +3,7 @@
 **対象スキル群**: `order`（正本: `facets/instructions/order.md`）と、その出力先の `issue-create`（AC 確定済み経路）・`task-memory-usage` ルール（Plans.md v2）・配布ルール `development-workflow`
 **単位**: スキルフロー（対話の結論 → 発注書 → 実行エンジンへの引き渡し）
 **作成日**: 2026-09-26
-**最終レビュー日**: 2026-09-28（ADR-20260928-058 で引き渡し時のアーカイブを廃止し、EV-10 と引き渡し表の行 4 を「Plans.md から取り除く」に改めた。2026-09-28 人間レビュー済み。前回 2026-09-26: 初版。ADR-20260926-056 §決定 1・3 に基づく先行作成。design-flow の旧 EV-14 / 15 / 17 / 18 / 19 / 21 の移管先）
+**最終レビュー日**: 2026-09-28（Step 4 の報告に `/grasp-view` → `/grasp-check` の案内（EV-13）を追加。2026-09-28 人間レビュー済み。前回 2026-09-28: ADR-20260928-058 で引き渡し時のアーカイブを廃止し、EV-10 と引き渡し表の行 4 を「Plans.md から取り除く」に改めた。2026-09-28 人間レビュー済み。前回 2026-09-26: 初版。ADR-20260926-056 §決定 1・3 に基づく先行作成。design-flow の旧 EV-14 / 15 / 17 / 18 / 19 / 21 の移管先）
 **情報源**: docs/adr/ADR-20260926-056.md, docs/adr/ADR-20260928-058.md, facets/instructions/order.md, facets/instructions/development-workflow.md, facets/instructions/issue-create.md, .claude/rules/task-memory-usage.md, docs/evaluation/skills/design-flow.md
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
@@ -25,13 +25,13 @@ Constraints / Open Questions + Phase ごとの Acceptance Criteria と Tasks）�
 
 ## 2. 期待するフローと成果物
 
-| ステップ | スキル / フェーズ | 入力                                 | 期待する成果物・振る舞い                                                                                                            |
-| -------- | ----------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| 1        | order Step 0      | 会話の結論、`docs/` の設計書         | 内容モデル 7 節が埋まった発注書案。設計書があれば Context に参照、矛盾があれば指摘                                                  |
-| 2        | order Step 1      | 発注書案                             | AskUserQuestion で 1 回提示（承認 / 修正 / 中止）。修正は発注書への差分編集                                                         |
-| 3        | order Step 2      | 承認済み発注書、出力先               | Plans.md v2（Project + Phase + AC + Tasks）か Issue（AC 確定済み経路）に 1 回で書く                                                 |
-| 4        | order Step 3      | Plans.md の既存 Project / 既存 Issue | `--from-plans`: Issue 化し、Plans.md 側の Project を取り除く。`--from-issue`: Project 化し、Issue に引き渡しコメントを付けて close  |
-| 5        | order Step 4      | 書き先                               | 次に使うエンジンのコマンドを 1 行で案内                                                                                             |
+| ステップ | スキル / フェーズ | 入力                                 | 期待する成果物・振る舞い                                                                                                           |
+| -------- | ----------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 1        | order Step 0      | 会話の結論、`docs/` の設計書         | 内容モデル 7 節が埋まった発注書案。設計書があれば Context に参照、矛盾があれば指摘                                                 |
+| 2        | order Step 1      | 発注書案                             | AskUserQuestion で 1 回提示（承認 / 修正 / 中止）。修正は発注書への差分編集                                                        |
+| 3        | order Step 2      | 承認済み発注書、出力先               | Plans.md v2（Project + Phase + AC + Tasks）か Issue（AC 確定済み経路）に 1 回で書く                                                |
+| 4        | order Step 3      | Plans.md の既存 Project / 既存 Issue | `--from-plans`: Issue 化し、Plans.md 側の Project を取り除く。`--from-issue`: Project 化し、Issue に引き渡しコメントを付けて close |
+| 5        | order Step 4      | 書き先                               | 次に使うエンジンのコマンドを 1 行で案内。条件に当てはまる発注書では `/grasp-view` → `/grasp-check` も 1 行で案内                   |
 
 ## 3. 評価観点
 
@@ -52,6 +52,7 @@ Constraints / Open Questions + Phase ごとの Acceptance Criteria と Tasks）�
 - [ ] EV-10（正常 / must）: `--from-plans` は Plans.md の Project を Issue 本文に変換したうえで、その Project を Plans.md から取り除く — 根拠: ADR-056 §決定 1「エンジンをまたぐときは片方だけ残す」、ADR-20260928-058 / 検証: 実行観察
 - [ ] EV-12（正常 / must）: `--from-issue N --to plans` は Issue 本文を Plans.md の Project に変換し、Issue に引き渡しコメントを付けて close する（Issue と Plans.md の両方を正本にしない）。`--from-plans` / `--from-issue` は Step 0〜2 を行わず引き渡しだけを実行する — 根拠: ADR-056 §決定 1「逆方向も同様に変換して片方だけ残す」 / 検証: 実行観察
 - [ ] EV-11（正常 / should）: 完了報告で、書き先と次に使うエンジンのコマンド（`/goal` はそのまま、`/loop-issue N`、`takt add '#N'`、`/handoff`）をエンジンごとに 1 行ずつ案内する — 根拠: development-workflow.md / 検証: 実行観察
+- [ ] EV-13（正常 / must）: 完了報告で、発注書が Issue に出したもの、またはアーキテクチャ・API・データモデル・認証・設定キーに触るものであれば、実装前に `/grasp-view` → `/grasp-check` を実行できることを 1 行で案内する。案内は警告だけで、Step 1 の提示や書き出しを変えない（詳細は `docs/evaluation/skills/grasp-check.md` EV-25 / EV-26） — 根拠: 2026-09-28 の設計相談での合意事項 / 検証: 実行観察
 
 ## 4. 検証方法
 

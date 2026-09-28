@@ -1,4 +1,4 @@
-"""facets/scripts/explain-visually/verify_page.py（explain-visually skill の検証スクリプト）の
+"""facets/scripts/grasp-view/verify_page.py（grasp-view skill の検証スクリプト）の
 単体テスト。
 
 Chrome を実際に起動しないテストのみを対象とする（`dump_dom` / `screenshot` は Chrome プロセス起動を
@@ -33,12 +33,10 @@ import pytest
 
 from tests.module_loader import REPO_ROOT, load_module
 
-SCRIPT_PATH = REPO_ROOT / "facets" / "scripts" / "explain-visually" / "verify_page.py"
-TEMPLATE_PATH = REPO_ROOT / "facets" / "scripts" / "explain-visually" / "template.html"
+SCRIPT_PATH = REPO_ROOT / "facets" / "scripts" / "grasp-view" / "verify_page.py"
+TEMPLATE_PATH = REPO_ROOT / "facets" / "scripts" / "grasp-view" / "template.html"
 
-verify_page = load_module(
-    "explain_visually_verify_page", "facets/scripts/explain-visually/verify_page.py"
-)
+verify_page = load_module("grasp_view_verify_page", "facets/scripts/grasp-view/verify_page.py")
 
 
 def _run(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -115,6 +113,19 @@ class _FakeChromeProcess:
 
 class TestResolveChromePath:
     """`resolve_chrome_path` の解決順序: 明示指定 → 環境変数 → macOS 既定パス → PATH → None。"""
+
+    def test_chrome_environment_variable_name(self) -> None:
+        assert verify_page.CHROME_ENVIRONMENT_VARIABLE == "GRASP_VIEW_CHROME"
+
+    def test_old_chrome_environment_variable_is_ignored(self) -> None:
+        result = verify_page.resolve_chrome_path(
+            None,
+            {"EXPLAIN_VISUALLY_CHROME": "/old/chrome"},
+            which=lambda _name: None,
+            exists=lambda _path: False,
+        )
+
+        assert result is None
 
     def test_explicit_argument_wins_over_env_and_which(self) -> None:
         result = verify_page.resolve_chrome_path(

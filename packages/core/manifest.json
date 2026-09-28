@@ -66,7 +66,8 @@
     "task-state",
     "design",
     "handoff",
-    "explain-visually"
+    "grasp-view",
+    "grasp-check"
   ],
   "agents": [],
   "rules": [
