@@ -81,9 +81,10 @@ from hook_common import (  # noqa: E402
 # （EV-102）。引用符・バッククォートは境界に含めない。含めると `echo "... git commit"` や
 # ヒアドキュメント中の `` `git commit` `` のような文章まで検出し、block モードでは無関係な
 # コマンドを止めてしまう。`commit-tree` / `commit.py` の `-` / `.` も境界に含めない。
-# 短縮オプションの値は `-` で始まらない語に限る。限らないと `-a -a -a ...` の各 `-a` を
-# 「オプション」とも「直前のオプションの値」とも読めて、長い列で指数的にバックトラックする。
-_GIT_OPTION = r"(?:\s+-[A-Za-z](?:=\S+|\s+(?!-)\S+)?|\s+--[\w-]+(?:=\S+)?)"
+# 値を取る短縮オプションは `-C` / `-c` だけ。値の先頭が `-` でも消費する。
+# それ以外の短縮オプションには値を許さず、同じ語をオプションと値の両方に
+# 解釈できる分岐を作らない（長い列での指数的バックトラックを防ぐ）。
+_GIT_OPTION = r"(?:\s+-[Cc](?:=\S+|\s+\S+)|\s+-[ABD-Zabd-z]|\s+--[\w-]+(?:=\S+)?)"
 _GIT_COMMIT_PATTERN = re.compile(rf"\bgit(?:{_GIT_OPTION})*\s+commit(?=$|[\s;&|()<>$])")
 
 # `-C <path>` / `-C=<path>` の値を抽出する（`git` 直後〜`commit` 直前のグローバル
@@ -112,18 +113,22 @@ _UNSUPPORTED_RECONSTRUCTION_NOTE = (
 # `git ... commit` より前にあると、実行時に引数を差し込むコマンド（`xargs git commit` /
 # `find ... -exec git commit`）。差し込まれる引数（`-a` 等）は文字列から分からない（EV-99）。
 _ARGUMENT_INJECTOR_PATTERN = re.compile(r"(?:\bxargs\b|(?<!\S)-exec(?:dir)?\b)")
+_SHELL_SEGMENT_SEPARATOR = re.compile(r"&&|\|\||[;|&\n]")
 
 
 def _has_argument_injector_before(command: str) -> bool:
-    """`git ... commit` の前に `xargs` / `-exec` があるかを判定する（Issue #349 レビュー指摘）。
+    """`git ... commit` と同じシェル区間に `xargs` / `-exec` があるか判定する。
 
     該当する場合、実際の引数は hook から見えないため、候補ツリー再現を行わず注記に倒す。
-    同じコマンド内の無関係な位置の `xargs` でも注記が付くが、安全側の誤りにとどまる。
     """
     match = _GIT_COMMIT_PATTERN.search(command)
     if not match:
         return False
-    return bool(_ARGUMENT_INJECTOR_PATTERN.search(command[: match.start()]))
+    prefix = command[: match.start()]
+    segment_start = 0
+    for separator in _SHELL_SEGMENT_SEPARATOR.finditer(prefix):
+        segment_start = separator.end()
+    return bool(_ARGUMENT_INJECTOR_PATTERN.search(prefix[segment_start:]))
 
 
 def _looks_like_git_commit(command: str) -> bool:

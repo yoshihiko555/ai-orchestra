@@ -153,6 +153,7 @@ class TestValidateHookCommitAllClassification:
         ('git commit -a -m x --trailer "Co-authored-by: X"', (True, False)),
         ("git commit -a --no-all -m x", (False, False)),
         ("git commit -a -m x --no-verify", (True, False)),
+        ("git commit -a -m x --no-post-rewrite", (True, False)),
         ("git commit --amend --no-edit -a", (True, False)),
         ("git commit -F msg.txt -a", (True, False)),
         ("git commit -San -m x", (False, False)),
@@ -174,8 +175,19 @@ class TestValidateHookCommitAllClassification:
         # 語中の `#` はコメントではない（bash と同じ）。捨てると `-a` / `--no-all` を見落とす
         ("git commit -m wip#1 -a", (True, False)),
         ("git commit -a -m fix#1 --no-all", (False, False)),
-        # 語頭の `#` 以降は pathspec 扱いで安全側に倒す
-        ("git commit -m x -a  # note", (True, True)),
+        ("git commit -a -m x$#", (True, False)),
+        # 引用符の外で語頭にある `#` から行末まではコメントとして除く
+        ("git commit -m x -a  # note", (True, False)),
+        ("git commit -a -m x # note --no-all", (True, False)),
+        ("git commit -a -m 'x' #c", (True, False)),
+        ('git commit -a -m "# not a comment" --no-all', (False, False)),
+        # エスケープした空白と閉じた引用符は語を終わらせない
+        ("git commit -a -m x\\ #y --no-all", (False, False)),
+        ("git commit -a -m 'x'#c --no-all", (False, False)),
+        ("git commit -m $(printf msg) -a", (False, True)),
+        ("git commit -m$(printf msg) -a", (False, True)),
+        ("git commit -a -m $(printf msg) --only docs/a.md", (True, True)),
+        ('git commit -a -m "$(printf msg)"', (True, False)),
         # 行継続（`\` + 改行）は区切りではない
         ("git commit -m x \\\n  -a", (True, False)),
         ("git commit -a \\\n  -m x", (True, False)),

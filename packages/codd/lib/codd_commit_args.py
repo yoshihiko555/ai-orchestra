@@ -96,6 +96,10 @@ _LONG_NO_VALUE_FLAGS = frozenset(
         "--allow-empty-message",
         "--reset-author",
         "--no-gpg-sign",
+        "--post-rewrite",
+        "--no-post-rewrite",
+        "--status",
+        "--no-status",
     }
 )
 # `=value` 形式のときだけ値を取る long option（bare 形は値を取らない。次トークンは
@@ -107,6 +111,47 @@ _LONG_UNSUPPORTED_NO_VALUE_FLAGS = frozenset({"--patch", "--interactive", "--inc
 # 再現困難と明示する long option のうち、値を取るもの（"=value" 形式でなければ
 # 次トークンを値として読み飛ばす）。
 _LONG_UNSUPPORTED_VALUE_FLAGS = frozenset({"--pathspec-from-file"})
+
+
+def _strip_shell_comments(source: str) -> str:
+    """引用符の外で語頭にある `#` から行末までを取り除く。"""
+    stripped: list[str] = []
+    quote: str | None = None
+    at_word_start = True
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if quote == "'":
+            stripped.append(char)
+            if char == "'":
+                quote = None
+            at_word_start = False
+        elif char == "\\" and quote != "'":
+            stripped.append(char)
+            index += 1
+            if index < len(source):
+                stripped.append(source[index])
+            at_word_start = False
+        elif quote == '"':
+            stripped.append(char)
+            if char == '"':
+                quote = None
+            at_word_start = False
+        elif char in ("'", '"'):
+            stripped.append(char)
+            quote = char
+            at_word_start = False
+        elif char == "#" and at_word_start:
+            newline_at = source.find("\n", index)
+            if newline_at == -1:
+                break
+            index = newline_at
+            continue
+        else:
+            stripped.append(char)
+            at_word_start = char.isspace() or char in _SHELL_PUNCTUATION_CHARS
+        index += 1
+    return "".join(stripped)
 
 
 def classify_commit_invocation(invocation: str) -> tuple[bool, bool]:
@@ -138,14 +183,15 @@ def classify_commit_invocation(invocation: str) -> tuple[bool, bool]:
     無くても区切りとして扱う（EV-101。例: `git commit -a -m x&&echo y` の `&&` 以降は
     走査しない）。
     """
-    source = _FD_REDIRECT_PREFIX.sub("", _LINE_CONTINUATION.sub("", invocation))
+    source = _strip_shell_comments(
+        _FD_REDIRECT_PREFIX.sub("", _LINE_CONTINUATION.sub("", invocation))
+    )
     try:
         lexer = shlex.shlex(source, posix=True, punctuation_chars=_SHELL_PUNCTUATION_CHARS)
         lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
-        # shlex の既定は語中の `#` 以降もコメントとして捨てる（bash は語頭の `#` だけ）。
-        # 捨てると後続の `-a` / `--no-all` を見落とすため無効にし、`#` を含む語は通常の語
-        # として扱う（語頭の `#` で始まるコメントは pathspec 扱いになり安全側に倒れる）。
+        # shlex のコメント処理は語中の `#` まで捨てるため使わない。語頭のコメントは
+        # `_strip_shell_comments` で引用状態と語の境界を確認して取り除く。
         lexer.commenters = ""
         tokens = list(lexer)
     except ValueError:
@@ -161,7 +207,9 @@ def classify_commit_invocation(invocation: str) -> tuple[bool, bool]:
     seen_pathspec_separator = False
     skip_next_value = False
 
-    for token in tokens[commit_at + 1 :]:
+    commit_tokens = tokens[commit_at + 1 :]
+    for index, token in enumerate(commit_tokens):
+        previous_token = commit_tokens[index - 1] if index > 0 else ""
         # 値待ちを先に消費する。引用符で囲んだ値（`-m ';'`）は shlex 上で演算子と区別できない
         # ため、演算子判定を先にすると以降のオプション（`--only` 等）を見落とす。未クォートの
         # 演算子を値として飲み込んでも、後続の語は pathspec になり安全側に倒れる。
@@ -173,6 +221,9 @@ def classify_commit_invocation(invocation: str) -> tuple[bool, bool]:
         # 続ける（`git commit -m x 2>&1 -a` の `-a` は git に渡る）。制御演算子（`;` / `&&` /
         # `||` / `&` / `|` / 括弧 / 改行）に到達したら走査を打ち切る。
         if token and set(token) <= set(_SHELL_PUNCTUATION_CHARS):
+            if token == "(" and previous_token.endswith("$"):
+                has_unsupported = True
+                break
             if "<" in token or ">" in token:
                 skip_next_value = True
                 continue

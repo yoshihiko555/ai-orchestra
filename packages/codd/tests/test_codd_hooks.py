@@ -315,11 +315,17 @@ class TestValidateHookCommitDetection:
     def test_many_short_options_do_not_backtrack_exponentially(self) -> None:
         """短縮オプションが大量に並んでも検出の正規表現が指数的にバックトラックしない。
 
-        値の語を `-` で始まらないものに限らないと、`-a` を「オプション」とも「直前の値」
-        とも読めて、40 個程度で数十秒以上かかっていた（Issue #349 レビュー指摘）。
+        値を取らない `-a` を「直前のオプションの値」とも読める形にすると、
+        40 個程度で数十秒以上かかっていた（Issue #349 レビュー指摘）。
         """
         started = time.monotonic()
         assert validate_hook._looks_like_git_commit("git " + "-a " * 40 + "x") is False
+        assert time.monotonic() - started < 1.0
+
+    def test_many_dash_c_value_pairs_do_not_backtrack_exponentially(self) -> None:
+        """値つき `-C` が大量に並んでも commit 不在の判定が長時間かからない。"""
+        started = time.monotonic()
+        assert validate_hook._looks_like_git_commit("git " + "-C x " * 40 + "y") is False
         assert time.monotonic() - started < 1.0
 
     @pytest.mark.parametrize("command", ["git commit-tree HEAD^{tree}", "python commit.py"])
@@ -329,6 +335,10 @@ class TestValidateHookCommitDetection:
 
     def test_detects_dash_capital_c_global_option(self) -> None:
         assert validate_hook._looks_like_git_commit("git -C /repo commit -m msg") is True
+
+    def test_detects_dash_c_value_starting_with_dash(self) -> None:
+        """EV-102: `-C` の値が `-` で始まっても commit を検出する。"""
+        assert validate_hook._looks_like_git_commit("git -C -foo -C .. commit -m x") is True
 
     def test_detects_dash_c_key_value_global_option(self) -> None:
         assert (
@@ -711,6 +721,8 @@ class TestValidateHookCompoundCommandNote:
         [
             ("echo -a | xargs git commit -m x", True),
             ("find . -name x -exec git commit -m y {} +", True),
+            ("echo xargs; git commit -a -m x", False),
+            ("printf 'xargs\\n' && git commit -a -m x", False),
             ("git commit -a -m x", False),
             ("git log --exec-path; git commit -a -m x", False),
         ],
