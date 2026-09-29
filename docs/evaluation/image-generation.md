@@ -3,7 +3,7 @@
 **パッケージ**: `packages/image-generation`
 **類型**: スキル型（`/image-gen` スキル + `image-generator` エージェント）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-23（EV-18〜21 にスタイル切替機構を追加）
+**最終レビュー日**: 2026-09-29（EV-16 に kill-switch チェックの起動インタプリタを追記。人間レビュー待ち（本 PR）。前回 2026-07-23: EV-18〜21 にスタイル切替機構を追加）
 **情報源**: packages/image-generation/README.md, docs/adr/ADR-20260605-023.md, facets/instructions/image-gen.md（`/image-gen` スキル指示書）, packages/image-generation/agents/image-generator.md（エージェント指示書）, packages/image-generation/config/image-generation.yaml, packages/image-generation/manifest.json（補助参照: 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -52,7 +52,7 @@
 - [ ] EV-12（対話規約 / 正常 / should）: 対話（AskUserQuestion）はプロンプトが空の場合、または EV-19 の未知 style を選び直す場合に限り発生し、それ以外のフェーズ（出力先解決・委譲・報告）は非対話で完結する — 根拠: facets/instructions/image-gen.md（Phase 1-3）。なお本パッケージ独自の「Dialog Rules Policy」参照は `.claude/rules/` 配下に存在せず、対話条件はスキル指示書の記述のみが根拠。
 - [ ] EV-13（非対話完結性 / 異常 / must）: `codex exec` 呼び出しは `< /dev/null` で stdin を封じ、Bash `timeout` を `180000` に設定し、exit code / stdout マーカーで成否を判定する（ハングしない） — 根拠: packages/image-generation/agents/image-generator.md（Step 3）
 - [ ] EV-14（フォールバック / 異常 / must）: Codex 利用不能時は claude-direct 相当の代替画像生成を行わず、「利用不可」を明示報告して停止する（本パッケージには AI 画像生成の claude-direct 代替経路が存在しないため、フォールバック先は「機能停止の明示報告」であり「別ツールでの続行」ではない） — 根拠: packages/image-generation/agents/image-generator.md（Fallback）
-- [ ] EV-16（config 駆動 / 異常 / must）: ルーティング尊重 — `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` のとき、`/image-gen` スキル・`image-generator` エージェントは画像生成を実行せず「利用不可」を明示報告する。`image-generator` は `codex exec` を直接呼ぶ設計（`agents.<name>.tool` ルーティングには ADR-023 で不参加）だが、Codex CLI 依存機能であるためグローバル無効化スイッチ `codex.enabled` は尊重する — 根拠: 2026-07-04 人間レビュー裁定。`packages/image-generation/scripts/check_image_gen_enabled.py` による Step 0 kill-switch チェックとして実装済み（Issue #133）
+- [ ] EV-16（config 駆動 / 異常 / must）: ルーティング尊重 — `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` のとき、`/image-gen` スキル・`image-generator` エージェントは画像生成を実行せず「利用不可」を明示報告する。`image-generator` は `codex exec` を直接呼ぶ設計（`agents.<name>.tool` ルーティングには ADR-023 で不参加）だが、Codex CLI 依存機能であるためグローバル無効化スイッチ `codex.enabled` は尊重する — 根拠: 2026-07-04 人間レビュー裁定。`packages/image-generation/scripts/check_image_gen_enabled.py` による Step 0 kill-switch チェックとして実装済み（Issue #133）。チェックは hook と同じ `"${AI_ORCHESTRA_PYTHON:-python3}"` で起動する（pyyaml を持たない Python で起動すると config を読めず、`codex.enabled: false` が黙って無視されて「利用可」と判定されるため）
 - [ ] EV-15（成果物規約 / 正常 / must）: 生成画像の保存先は既定 `generated-images/<slug>.png`（`.gitignore` 管理）、または EV-04 で検証済みの `--out` パスに限られ、それ以外の場所へは書き込まない — 根拠: packages/image-generation/README.md（出力先）, facets/instructions/image-gen.md（トリガーと引数）
 
 ## 5. テストレビュー判断基準（パッケージ固有）

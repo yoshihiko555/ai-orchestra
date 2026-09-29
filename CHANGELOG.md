@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BREAKING** **`core`: `grasp-view` の環境変数を改名**: `EXPLAIN_VISUALLY_CHROME` → `GRASP_VIEW_CHROME`、`EXPLAIN_VISUALLY_BASE` → `GRASP_VIEW_BASE`。旧名は読まないので、設定している場合は新しい名前に変える。
 - **`codd`: validate-precommit hook が scope 内のファイルだけを一時展開するようになった**: `git commit` のたびにリポジトリ全体を一時ディレクトリへ展開していたのをやめ、`scope` / `code_scope` に一致する index エントリだけを展開する。大きなリポジトリやモノレポで commit 時の検証が速くなる。project 配下に symlink があるとき、または scope のパターンに ASCII 以外の文字が含まれるときは、従来どおり全体を展開する。
 - **`codd`: validate-precommit hook が解釈できない `git commit` のオプションを再現困難として扱うようになった**: commit の内容に影響しないと分かっているオプション以外を含む場合や、コマンドを解析できない場合は、`-a` の未ステージ変更を再現せず、エラー時のメッセージに注記を付ける。`git commit$(...)` のような書き方や改行で区切った複合コマンドも検出する。
+- **`loop-issue` / `handoff` / `image-generator`: スクリプトを `AI_ORCHESTRA_PYTHON` の Python で起動するようになった**: `loop_step.py`・`handoff.py`・`check_image_gen_enabled.py` を hook と同じ `"${AI_ORCHESTRA_PYTHON:-python3}"` で起動する。`PATH` の `python3` に pyyaml が無い環境でも、`image-generator` が `codex.enabled: false` を無視して画像生成を始めることがなくなり、`/loop-issue` が止まらず、`/handoff` が Codex の起動コマンドを作れる。
+- **`orchex init` 等: `AI_ORCHESTRA_PYTHON` を自動設定しなかったときの警告に、手動設定の候補パスを表示する**: clone を uv tool / pipx の venv へ editable で入れた構成で、その venv の Python が使える場合に限る。値は書き込まない。
 
 ### Removed
 
