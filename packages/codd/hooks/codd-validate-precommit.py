@@ -46,7 +46,8 @@ import を安価な前提チェックの後段に置くため、`main()` 内で�
 **前**に動作するため、`generate-docs && git add docs && git commit` のような複合コマンドで
 は、hook 実行時点の index に同一コマンド内の先行ステップ（`git add` 等）の結果はまだ
 反映されていない。`git ... commit` 呼び出しの直前に shell 連結演算子（`&&` / `;` / `||` /
-`|`）を検出した場合は、warn/block メッセージにこの制限を注記する（ブロックはしない。
+`|`）または先行コマンドと改行だけの区切りを検出した場合は、warn/block メッセージに
+この制限を注記する（EV-69。ブロックはしない。
 あくまで検証対象が「hook 実行時点の index」であることの明示）。
 """
 
@@ -76,16 +77,23 @@ from hook_common import (  # noqa: E402
 # 許容しつつ `commit` サブコマンドを検出する。素朴な `"git commit" in command` より
 # 誤検出（例: `commit.py` や `git log` 単体）は少ないが、文字列中の偶然の一致
 # （例: echo のリテラル文字列内）まで完全に排除することは意図しない。
-_GIT_OPTION = r"(?:\s+-[A-Za-z](?:=\S+|\s+\S+)?|\s+--[\w-]+(?:=\S+)?)"
-_GIT_COMMIT_PATTERN = re.compile(rf"\bgit(?:{_GIT_OPTION})*\s+commit(?=\s|$)")
+# `commit` の直後は空白・終端のほか shell 演算子と `$`（`git commit$(true)`）も境界とする
+# （EV-102）。引用符・バッククォートは境界に含めない。含めると `echo "... git commit"` や
+# ヒアドキュメント中の `` `git commit` `` のような文章まで検出し、block モードでは無関係な
+# コマンドを止めてしまう。`commit-tree` / `commit.py` の `-` / `.` も境界に含めない。
+# 値を取る短縮オプションは `-C` / `-c` だけ。値の先頭が `-` でも消費する。
+# それ以外の短縮オプションには値を許さず、同じ語をオプションと値の両方に
+# 解釈できる分岐を作らない（長い列での指数的バックトラックを防ぐ）。
+_GIT_OPTION = r"(?:\s+-[Cc](?:=\S+|\s+\S+)|\s+-[ABD-Zabd-z]|\s+--[\w-]+(?:=\S+)?)"
+_GIT_COMMIT_PATTERN = re.compile(rf"\bgit(?:{_GIT_OPTION})*\s+commit(?=$|[\s;&|()<>$])")
 
 # `-C <path>` / `-C=<path>` の値を抽出する（`git` 直後〜`commit` 直前のグローバル
 # オプション区間のみに適用する。T5: Issue #95 bot レビュー対応）。
 _DASH_C_PATTERN = re.compile(r"-C(?:=(\S+)|\s+(\S+))")
 
-# `git ... commit` 呼び出しの直前が shell 連結演算子で終わっているかを検出する
-# （複合コマンドの既知の制限を注記するため。Issue #338）。
-_SHELL_CHAIN_OPERATOR_SUFFIX = re.compile(r"(?:&&|\|\||;|\|)\s*$")
+# `git ... commit` 呼び出しの直前が shell 連結演算子（バックグラウンド実行の `&` を含む）か、
+# 先行コマンドに続く改行だけの区切りで終わっているかを検出する（EV-69、Issue #338）。
+_SHELL_CHAIN_OPERATOR_SUFFIX = re.compile(r"(?:&&|\|\||;|\||&|\S[ \t]*\n)\s*$")
 
 _COMPOUND_COMMAND_NOTE = (
     "[codd] 注記: このコマンドは複合コマンド（`&&` 等）の一部として検出されました。"
@@ -95,11 +103,32 @@ _COMPOUND_COMMAND_NOTE = (
 )
 
 _UNSUPPORTED_RECONSTRUCTION_NOTE = (
-    "[codd] 注記: このコマンドは `-p`/`--patch`/`-i`/`--interactive`/`--include`/`--only` "
-    "またはパス指定を伴う `git commit` として検出されました。この形式では hook 実行時点の "
-    "index を検証しており、実際の commit tree と異なる可能性があります"
-    "（既知の制限。設計書 §4.8.1 参照）。"
+    "[codd] 注記: このコマンドは `-p`/`--patch`/`-i`/`--interactive`/`--include`/`--only`・"
+    "パス指定・hook が解釈できないオプションを伴う、または解析できない `git commit` として"
+    "検出されました。この形式では hook 実行時点の index を検証しており、実際の commit "
+    "tree と異なる可能性があります（既知の制限。設計書 §4.8.1 参照）。"
 )
+
+
+# `git ... commit` より前にあると、実行時に引数を差し込むコマンド（`xargs git commit` /
+# `find ... -exec git commit`）。差し込まれる引数（`-a` 等）は文字列から分からない（EV-99）。
+_ARGUMENT_INJECTOR_PATTERN = re.compile(r"(?:\bxargs\b|(?<!\S)-exec(?:dir)?\b)")
+_SHELL_SEGMENT_SEPARATOR = re.compile(r"&&|\|\||[;|&\n]")
+
+
+def _has_argument_injector_before(command: str) -> bool:
+    """`git ... commit` と同じシェル区間に `xargs` / `-exec` があるか判定する。
+
+    該当する場合、実際の引数は hook から見えないため、候補ツリー再現を行わず注記に倒す。
+    """
+    match = _GIT_COMMIT_PATTERN.search(command)
+    if not match:
+        return False
+    prefix = command[: match.start()]
+    segment_start = 0
+    for separator in _SHELL_SEGMENT_SEPARATOR.finditer(prefix):
+        segment_start = separator.end()
+    return bool(_ARGUMENT_INJECTOR_PATTERN.search(prefix[segment_start:]))
 
 
 def _looks_like_git_commit(command: str) -> bool:
@@ -161,8 +190,8 @@ def _has_preceding_command_segment(command: str) -> bool:
     （`git commit` 自体がまだ実行される前）の index には、同じコマンド内の先行ステップ
     （`git add` 等）の結果は反映されていない。PreToolUse hook はツール実行前に動作するため、
     この乖離を hook 側で解消することはできない（既知の制限。Issue #338）。マッチした
-    `git ... commit` 区間の直前に shell 連結演算子（`&&` / `;` / `||` / `|`）があれば
-    True を返す。
+    `git ... commit` 区間の直前に shell 連結演算子（`&&` / `;` / `||` / `|`）、
+    または先行コマンドと改行だけの区切りがあれば True を返す（EV-69）。
     """
     match = _GIT_COMMIT_PATTERN.search(command)
     if not match:
@@ -284,6 +313,8 @@ def main() -> None:
     has_all, has_unsupported_reconstruction = commit_args.classify_commit_invocation(
         _git_commit_invocation(command)
     )
+    if _has_argument_injector_before(command):
+        has_unsupported_reconstruction = True
     simulate_commit_all = has_all and not has_unsupported_reconstruction
 
     codd_cli = os.path.join(_orchestra_dir, "packages", "codd", "scripts", "codd.py")

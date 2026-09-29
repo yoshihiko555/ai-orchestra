@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BREAKING** **`core`: `explain-visually` を `grasp-view` に改名**: `/explain-visually` は `/grasp-view` になり（`/grasp-check` と対になる名前）、HTML の出力先は `.claude/docs/grasp-view/` に変わる。旧名の互換スタブは置かない。
 - **BREAKING** **`core`: `grasp-view` の環境変数を改名**: `EXPLAIN_VISUALLY_CHROME` → `GRASP_VIEW_CHROME`、`EXPLAIN_VISUALLY_BASE` → `GRASP_VIEW_BASE`。旧名は読まないので、設定している場合は新しい名前に変える。
 - **`codd`: validate-precommit hook が scope 内のファイルだけを一時展開するようになった**: `git commit` のたびにリポジトリ全体を一時ディレクトリへ展開していたのをやめ、`scope` / `code_scope` に一致する index エントリだけを展開する。大きなリポジトリやモノレポで commit 時の検証が速くなる。project 配下に symlink があるとき、または scope のパターンに ASCII 以外の文字が含まれるときは、従来どおり全体を展開する。
+- **`codd`: validate-precommit hook が解釈できない `git commit` のオプションを再現困難として扱うようになった**: commit の内容に影響しないと分かっているオプション以外を含む場合や、コマンドを解析できない場合は、`-a` の未ステージ変更を再現せず、エラー時のメッセージに注記を付ける。`git commit$(...)` のような書き方や改行で区切った複合コマンドも検出する。
 
 ### Removed
 

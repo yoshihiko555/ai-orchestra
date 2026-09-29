@@ -1,10 +1,13 @@
 """`git commit` 引数の分類（`classify_commit_invocation`）のテスト。
 
 対象: packages/codd/lib/codd_commit_args.py（Issue #349 で hook から分割）。
-評価セット対応: docs/evaluation/codd.md §4.2 EV-74 / EV-85 / EV-86 / EV-90 / EV-91。
+評価セット対応: docs/evaluation/codd.md §4.2 EV-74 / EV-85 / EV-86 / EV-90 / EV-91 / EV-93 /
+EV-99 / EV-100 / EV-101。
 """
 
 from __future__ import annotations
+
+from itertools import combinations
 
 import pytest
 
@@ -138,3 +141,101 @@ class TestValidateHookCommitAllClassification:
             True,
             False,
         )
+
+
+# 旧実装では -Kab、未知オプション、-zam、空白なしの &&、改行、不閉引用符、
+# commit$(true) の分類が異なったため、allowlist と shell 境界の回帰をまとめて確認する。
+@pytest.mark.parametrize(
+    ("invocation", "expected"),
+    [
+        ('git commit -m "msg"', (False, False)),
+        ('git commit -am "msg"', (True, False)),
+        ('git commit -a -m x --trailer "Co-authored-by: X"', (True, False)),
+        ("git commit -a --no-all -m x", (False, False)),
+        ("git commit -a -m x --no-verify", (True, False)),
+        ("git commit -a -m x --no-post-rewrite", (True, False)),
+        ("git commit --amend --no-edit -a", (True, False)),
+        ("git commit -F msg.txt -a", (True, False)),
+        ("git commit -San -m x", (False, False)),
+        ("git commit -Kab -m x", (False, True)),
+        ("git commit -a --future-option -m x", (True, True)),
+        ("git commit -m x docs/a.md", (False, True)),
+        ("git commit -m x&&echo y", (False, False)),
+        ("git commit -a -m x&&echo y", (True, False)),
+        ('git commit -a -m "unterminated', (False, True)),
+        ("git commit -s -a -m x", (True, False)),
+        ("git commit -zam x", (False, True)),
+        ("git commit -a --gpg-sign keyid -m x", (True, True)),
+        ("git commit -a --gpg-sign=ABC -m x", (True, False)),
+        ("git commit -a -u -m x", (True, False)),
+        ("git commit -a --untracked-files=no -m x", (True, False)),
+        ("git commit -a -m x\necho y", (True, False)),
+        ("git commit -a -m x | cat", (True, False)),
+        ("git commit$(true) -a -m x", (False, True)),
+        # 語中の `#` はコメントではない（bash と同じ）。捨てると `-a` / `--no-all` を見落とす
+        ("git commit -m wip#1 -a", (True, False)),
+        ("git commit -a -m fix#1 --no-all", (False, False)),
+        ("git commit -a -m x$#", (True, False)),
+        # 引用符の外で語頭にある `#` から行末まではコメントとして除く
+        ("git commit -m x -a  # note", (True, False)),
+        ("git commit -a -m x # note --no-all", (True, False)),
+        ("git commit -a -m 'x' #c", (True, False)),
+        ('git commit -a -m "# not a comment" --no-all', (False, False)),
+        # エスケープした空白と閉じた引用符は語を終わらせない
+        ("git commit -a -m x\\ #y --no-all", (False, False)),
+        ("git commit -a -m 'x'#c --no-all", (False, False)),
+        ("git commit -m $(printf msg) -a", (False, True)),
+        ("git commit -m$(printf msg) -a", (False, True)),
+        ("git commit -a -m $(printf msg) --only docs/a.md", (True, True)),
+        ('git commit -a -m "$(printf msg)"', (True, False)),
+        # 行継続（`\` + 改行）は区切りではない
+        ("git commit -m x \\\n  -a", (True, False)),
+        ("git commit -a \\\n  -m x", (True, False)),
+        # fd 指定つきリダイレクトは引数ではない。リダイレクト先の 1 語だけを読み飛ばし、
+        # 後続の引数（git に渡る）は走査を続ける
+        ("git commit -a -m x 2>&1", (True, False)),
+        ("git commit -m x 2>&1 -a", (True, False)),
+        ("git commit -a 2>&1 --no-all", (False, False)),
+        ("git commit -a -m x &> out -s", (True, False)),
+        # 引用符で囲んだ値が演算子と同じ文字でも、後続のオプションを見落とさない
+        ("git commit -a -m ';' --only x", (True, True)),
+        # グローバルオプションの値が `commit` でも安全側に倒れる
+        ("git -C commit commit -a -m x", (True, True)),
+        (
+            '''git commit -m "$(cat <<'EOF'
+msg
+EOF
+)"''',
+            (False, False),
+        ),
+    ],
+)
+def test_allowlist_commit_invocations(invocation: str, expected: tuple[bool, bool]) -> None:
+    """EV-99 / EV-100 / EV-101: allowlist、解析失敗、shell 境界を分類する。"""
+    assert commit_args.classify_commit_invocation(invocation) == expected
+
+
+def test_short_option_classification_tables_are_disjoint() -> None:
+    """短縮オプションの分類が重複しないことを確認する。"""
+    tables = (
+        commit_args._SHORT_VALUE_REQUIRED_CHARS,
+        commit_args._SHORT_VALUE_OPTIONAL_CHARS,
+        frozenset({commit_args._SHORT_ALL_CHAR}),
+        commit_args._SHORT_NEUTRAL_CHARS,
+        commit_args._SHORT_UNSUPPORTED_CHARS,
+    )
+    for first, second in combinations(tables, 2):
+        assert first & second == set()
+
+
+def test_long_option_classification_tables_are_disjoint() -> None:
+    """long option の分類が重複しないことを確認する。"""
+    tables = (
+        commit_args._LONG_VALUE_FLAGS,
+        commit_args._LONG_NO_VALUE_FLAGS,
+        commit_args._LONG_VALUE_ONLY_VIA_EQUALS_FLAGS,
+        commit_args._LONG_UNSUPPORTED_NO_VALUE_FLAGS,
+        commit_args._LONG_UNSUPPORTED_VALUE_FLAGS,
+    )
+    for first, second in combinations(tables, 2):
+        assert first & second == set()

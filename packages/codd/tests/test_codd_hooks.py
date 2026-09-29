@@ -14,6 +14,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import REPO_ROOT, load_module
 
 helpers = load_module("codd_hook_test_helpers", "packages/codd/tests/codd_hook_test_helpers.py")
@@ -286,8 +288,57 @@ class TestValidateHookCommitDetection:
     def test_detects_plain_git_commit(self) -> None:
         assert validate_hook._looks_like_git_commit('git commit -m "msg"') is True
 
+    @pytest.mark.parametrize(
+        "command",
+        ["git commit$(true) -m x", "git commit;", "git commit&&git push", "(git commit)"],
+    )
+    def test_detects_shell_boundary_after_commit(self, command: str) -> None:
+        """EV-102: shell 演算子や `$` が直後にあっても commit を検出する。"""
+        assert validate_hook._looks_like_git_commit(command) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'echo "Now running git commit"',
+            "cat > README.md <<'EOF'\nRun `git commit` after this.\nEOF",
+            "grep 'git commit' CHANGELOG.md",
+        ],
+    )
+    def test_does_not_detect_git_commit_closed_by_quote(self, command: str) -> None:
+        """EV-102: 引用符・バッククォートで閉じる文章中の `git commit` は検出しない。
+
+        block モードでは検出したコマンドが止まりうるため、git commit を実行しない
+        `echo` / `cat` / `grep` を巻き込まない（Issue #349 レビュー指摘）。
+        """
+        assert validate_hook._looks_like_git_commit(command) is False
+
+    def test_many_short_options_do_not_backtrack_exponentially(self) -> None:
+        """短縮オプションが大量に並んでも検出の正規表現が指数的にバックトラックしない。
+
+        値を取らない `-a` を「直前のオプションの値」とも読める形にすると、
+        40 個程度で数十秒以上かかっていた（Issue #349 レビュー指摘）。
+        """
+        started = time.monotonic()
+        assert validate_hook._looks_like_git_commit("git " + "-a " * 40 + "x") is False
+        assert time.monotonic() - started < 1.0
+
+    def test_many_dash_c_value_pairs_do_not_backtrack_exponentially(self) -> None:
+        """値つき `-C` が大量に並んでも commit 不在の判定が長時間かからない。"""
+        started = time.monotonic()
+        assert validate_hook._looks_like_git_commit("git " + "-C x " * 40 + "y") is False
+        assert time.monotonic() - started < 1.0
+
+    @pytest.mark.parametrize("command", ["git commit-tree HEAD^{tree}", "python commit.py"])
+    def test_does_not_detect_similar_command_names(self, command: str) -> None:
+        """EV-102: commit の後の `-` と `.` は単語境界として扱わない。"""
+        assert validate_hook._looks_like_git_commit(command) is False
+
     def test_detects_dash_capital_c_global_option(self) -> None:
         assert validate_hook._looks_like_git_commit("git -C /repo commit -m msg") is True
+
+    def test_detects_dash_c_value_starting_with_dash(self) -> None:
+        """EV-102: `-C` の値が `-` で始まっても commit を検出する。"""
+        assert validate_hook._looks_like_git_commit("git -C -foo -C .. commit -m x") is True
 
     def test_detects_dash_c_key_value_global_option(self) -> None:
         assert (
@@ -568,6 +619,19 @@ class TestHookInterpreterResolution:
 class TestValidateHookCompoundCommandDetection:
     """`_has_preceding_command_segment` の直接 import 単体テスト。"""
 
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("make docs\ngit commit -m x", True),
+            ("\ngit commit -m x", False),
+            ("git commit -m x && git push", False),
+            ("sleep 1 & git commit -m x", True),
+        ],
+    )
+    def test_newline_and_trailing_segments(self, command: str, expected: bool) -> None:
+        """EV-69: 改行だけの区切りと、先行コマンドがない場合を区別する。"""
+        assert validate_hook._has_preceding_command_segment(command) is expected
+
     def test_detects_preceding_double_ampersand_segment(self) -> None:
         assert (
             validate_hook._has_preceding_command_segment('git add docs && git commit -m "m"')
@@ -621,6 +685,84 @@ class TestValidateHookCompoundCommandNote:
         output = json.loads(result.stdout)
         context = output["hookSpecificOutput"]["additionalContext"]
         assert "複合コマンド" in context
+
+    def test_shell_boundary_chars_match_classifier_operators(self) -> None:
+        """hook の検出と引数分類が同じ shell 演算子を区切りとして扱う（Issue #349 レビュー指摘）。
+
+        `commit` 直後の境界（`_GIT_COMMIT_PATTERN`）と先行コマンドの区切り
+        （`_SHELL_CHAIN_OPERATOR_SUFFIX`）が、分類側の `_SHELL_PUNCTUATION_CHARS` とずれない。
+        """
+        commit_args = load_module("codd_commit_args", "packages/codd/lib/codd_commit_args.py")
+        for char in commit_args._SHELL_PUNCTUATION_CHARS:
+            assert validate_hook._looks_like_git_commit(f"git commit{char}x"), repr(char)
+        for operator in ("&&", "||", ";", "|", "&", "\n"):
+            command = f"make docs {operator} git commit -m x"
+            assert validate_hook._has_preceding_command_segment(command), repr(operator)
+
+    def test_warn_message_includes_unparseable_command_note(self, tmp_path: Path) -> None:
+        """EV-102 / EV-100: `git commit$(...)` も検出し、解析できない形式として注記する。"""
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="warn"))
+        _git_add_all(tmp_path)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": "git commit$(true) -a -m x"},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "errors=1" in context
+        assert "解析できない" in context
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("echo -a | xargs git commit -m x", True),
+            ("find . -name x -exec git commit -m y {} +", True),
+            ("echo xargs; git commit -a -m x", False),
+            ("printf 'xargs\\n' && git commit -a -m x", False),
+            ("git commit -a -m x", False),
+            ("git log --exec-path; git commit -a -m x", False),
+        ],
+    )
+    def test_detects_argument_injector_before_commit(self, command: str, expected: bool) -> None:
+        """EV-99: `xargs` / `-exec` が差し込む引数は見えないため、注記の対象にする。"""
+        assert validate_hook._has_argument_injector_before(command) is expected
+
+    def test_warn_message_includes_note_for_xargs_commit(self, tmp_path: Path) -> None:
+        """`xargs git commit -a ...` は `-a` の候補ツリーを再現せず、注記を付ける（EV-99）。"""
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="warn"))
+        _git_add_all(tmp_path)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": "git diff --name-only | xargs git commit -a -m x"},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "errors=1" in context
+        assert "解釈できないオプション" in context
+
+    def test_warn_message_includes_unknown_option_note(self, tmp_path: Path) -> None:
+        """未知の commit オプションでは候補ツリー再現の制限を表示する。"""
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/d.md", _DANGLING_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(validate_on_commit="warn"))
+        _git_add_all(tmp_path)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": "git commit -a --future-option -m x"},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        output = json.loads(result.stdout)
+        assert "解釈できないオプション" in output["hookSpecificOutput"]["additionalContext"]
 
     def test_plain_commit_message_has_no_compound_command_note(self, tmp_path: Path) -> None:
         _git_init(tmp_path)
