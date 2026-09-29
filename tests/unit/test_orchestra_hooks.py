@@ -803,6 +803,107 @@ class TestSetupEnvVar:
         assert hook_utils.HOOK_PYTHON_ENV_VAR not in saved["env"]
         assert "設定しません" in captured.err
 
+    def test_detached_venv_python_is_shown_as_manual_candidate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """非結合 venv の python は、書き込まず警告に手動設定の候補として載せる。"""
+        repo_dir = tmp_path / "repo"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(repo_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(hooks_mod.tempfile, "gettempdir", lambda: str(tmp_path / "systmp"))
+
+        venv_dir = tmp_path / "venvs" / "orchex-dev"
+        venv_python = _write_launchable_python(venv_dir / "bin" / "python3")
+        _pin_venv_interpreter(
+            monkeypatch,
+            executable=venv_python,
+            prefix=venv_dir,
+            base_executable=str(tmp_path / "gone" / "python3"),
+        )
+
+        manager.setup_env_var()
+
+        saved = json.loads((home_dir / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        captured = capsys.readouterr()
+        assert hook_utils.HOOK_PYTHON_ENV_VAR not in saved["env"]
+        assert f"手動設定の候補: {hook_utils.HOOK_PYTHON_ENV_VAR}={venv_python}" in captured.err
+        assert "全 hook が起動不能" in captured.err
+
+    def test_no_manual_candidate_for_venv_under_tempdir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """一時ディレクトリ配下の venv は非結合 venv でも候補として案内しない。"""
+        repo_dir = tmp_path / "repo"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(repo_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(hooks_mod.tempfile, "gettempdir", lambda: str(tmp_path / "systmp"))
+
+        venv_dir = tmp_path / "systmp" / "orchex-venv"
+        _pin_venv_interpreter(
+            monkeypatch,
+            executable=_write_launchable_python(venv_dir / "bin" / "python3"),
+            prefix=venv_dir,
+            base_executable=str(tmp_path / "gone" / "python3"),
+        )
+
+        manager.setup_env_var()
+
+        captured = capsys.readouterr()
+        assert "設定しません" in captured.err
+        assert "手動設定の候補" not in captured.err
+
+    def test_no_manual_candidate_for_venv_inside_orchestra_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """実行元リポジトリ（worktree を含む）配下の venv は候補として案内しない。"""
+        repo_dir = tmp_path / "repo"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(repo_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(hooks_mod.tempfile, "gettempdir", lambda: str(tmp_path / "systmp"))
+
+        venv_dir = repo_dir / ".venv"
+        _pin_venv_interpreter(
+            monkeypatch,
+            executable=_write_launchable_python(venv_dir / "bin" / "python3"),
+            prefix=venv_dir,
+            base_executable=str(tmp_path / "gone" / "python3"),
+        )
+
+        manager.setup_env_var()
+
+        captured = capsys.readouterr()
+        assert "設定しません" in captured.err
+        assert "手動設定の候補" not in captured.err
+
+    def test_no_manual_candidate_when_detached_venv_fails_launch_probe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """起動プローブに失敗する非結合 venv の python は候補として案内しない。"""
+        repo_dir = tmp_path / "repo"
+        home_dir = tmp_path / "home"
+        manager = _make_manager(repo_dir)
+        monkeypatch.setattr(hooks_mod.Path, "home", lambda: home_dir)
+        monkeypatch.setattr(hooks_mod.tempfile, "gettempdir", lambda: str(tmp_path / "systmp"))
+
+        venv_dir = tmp_path / "venvs" / "orchex-dev"
+        venv_python = _write_launchable_python(venv_dir / "bin" / "python3")
+        _pin_venv_interpreter(
+            monkeypatch,
+            executable=venv_python,
+            prefix=venv_dir,
+            base_executable=str(tmp_path / "gone" / "python3"),
+        )
+        monkeypatch.setattr(hooks_mod, "_can_launch_hooks", lambda interpreter: False)
+
+        manager.setup_env_var()
+
+        captured = capsys.readouterr()
+        assert "設定しません" in captured.err
+        assert "手動設定の候補" not in captured.err
+
     def test_pins_venv_python_when_orchestra_dir_lives_inside_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

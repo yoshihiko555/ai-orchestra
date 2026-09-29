@@ -148,7 +148,7 @@ Before doing anything else (prompt building, path validation, `codex exec`), ver
 the global kill-switch is not off. Run under the normal sandbox:
 
 ```bash
-python3 "$AI_ORCHESTRA_DIR/packages/image-generation/scripts/check_image_gen_enabled.py" --project .
+"${AI_ORCHESTRA_PYTHON:-python3}" "$AI_ORCHESTRA_DIR/packages/image-generation/scripts/check_image_gen_enabled.py" --project .
 ```
 
 - Output `ENABLED` (exit 0): proceed to Step 1.

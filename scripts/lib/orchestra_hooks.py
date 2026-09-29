@@ -307,6 +307,14 @@ class HooksMixin:
         command = get_hook_command(pkg_name, filename)
         _remove_hook(settings["hooks"], event, command, matcher)
 
+    def _orchestra_dirs(self, env: dict[str, Any]) -> list[Path]:
+        """実行元と記録済みの AI_ORCHESTRA_DIR を返す。"""
+        orchestra_dirs = [self.orchestra_dir]
+        persisted_dir = env.get("AI_ORCHESTRA_DIR")
+        if isinstance(persisted_dir, str) and persisted_dir:
+            orchestra_dirs.append(Path(persisted_dir))
+        return orchestra_dirs
+
     def _ephemeral_interpreter_roots(self, env: dict[str, Any]) -> list[Path]:
         """インタプリタを恒久設定へ焼き込んではいけないツリーの一覧を返す。
 
@@ -319,11 +327,7 @@ class HooksMixin:
         取りこぼす。そのため AI_ORCHESTRA_DIR と運命を共にしない venv の prefix も対象へ
         加える（`_detached_venv_root` 参照）。
         """
-        orchestra_dirs = [self.orchestra_dir]
-        persisted_dir = env.get("AI_ORCHESTRA_DIR")
-        if isinstance(persisted_dir, str) and persisted_dir:
-            orchestra_dirs.append(Path(persisted_dir))
-
+        orchestra_dirs = self._orchestra_dirs(env)
         roots = [*orchestra_dirs, Path(tempfile.gettempdir())]
         detached_venv = _detached_venv_root(orchestra_dirs)
         if detached_venv is not None:
@@ -345,6 +349,24 @@ class HooksMixin:
                 return candidate
         return None
 
+    def _detached_venv_candidate(self, env: dict[str, Any]) -> str | None:
+        """手動設定の候補として案内できる sys.executable を返す。なければ None。
+
+        sys.executable が「AI_ORCHESTRA_DIR と運命を共にしない venv」配下という理由だけで
+        除外され、かつ起動プローブを通る場合に限る（uv tool / pipx への editable 導入など）。
+        実行元リポジトリ・記録済み AI_ORCHESTRA_DIR・一時ディレクトリ配下は対象外。
+        """
+        orchestra_dirs = self._orchestra_dirs(env)
+        detached_venv = _detached_venv_root(orchestra_dirs)
+        if detached_venv is None:
+            return None
+        base_roots = [*orchestra_dirs, Path(tempfile.gettempdir())]
+        if _is_ephemeral_interpreter(sys.executable, base_roots):
+            return None
+        if not _is_ephemeral_interpreter(sys.executable, [detached_venv]):
+            return None
+        return sys.executable if _can_launch_hooks(sys.executable) else None
+
     def _initial_python_interpreter(self, env: dict[str, Any]) -> str | None:
         """未設定の AI_ORCHESTRA_PYTHON へ書き込む値を返す。適格な候補がなければ None。
 
@@ -356,11 +378,18 @@ class HooksMixin:
         """
         stable = self._stable_hook_interpreter(env)
         if stable is None:
+            candidate = self._detached_venv_candidate(env)
+            hint = (
+                f"。手動設定の候補: {HOOK_PYTHON_ENV_VAR}={candidate}"
+                "（あくまで候補であり書き込みません。この venv を削除すると全 hook が起動不能になります）"
+                if candidate
+                else ""
+            )
             print(
                 f"警告: {sys.executable} は削除されうる場所にあるため "
                 f"{HOOK_PYTHON_ENV_VAR} を設定しません"
                 "（hook は PATH の python3 で起動されます）。固定する場合は安定した "
-                f"Python のパスを {HOOK_PYTHON_ENV_VAR} へ手動で設定してください",
+                f"Python のパスを {HOOK_PYTHON_ENV_VAR} へ手動で設定してください{hint}",
                 file=sys.stderr,
             )
         return stable

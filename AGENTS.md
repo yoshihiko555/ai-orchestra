@@ -47,7 +47,7 @@ python scripts/orchestra-manager.py context sync --project .
 ```
 
 - worktree（`.worktrees/<name>`）では各コマンドの先頭に `AI_ORCHESTRA_DIR="$PWD"` を付ける（シェルの `AI_ORCHESTRA_DIR` が root チェックアウトを指しているため）
-- worktree では `orchex` コマンドを使わず、必ず `AI_ORCHESTRA_DIR="$PWD" python "$PWD/scripts/orchestra-manager.py" facet build --project "$PWD"` の形で実行する（`context build` / `sync` / `--target codex` も同様）。editable install の `orchex` は root チェックアウトを解決するため、worktree の `facets/` を見ずに失敗する
+- worktree では `orchex` コマンドを使わず、必ず `AI_ORCHESTRA_DIR="$PWD" uv run --no-project --with-editable "$PWD" python "$PWD/scripts/orchestra-manager.py" facet build --project "$PWD"` の形で実行する（`context build` / `sync` / `--target codex` も同様）。editable install の `orchex` は root チェックアウトを解決するため、worktree の `facets/` を見ずに失敗する。素の `python` にしないのは、PATH の Python が pyyaml を持つとは限らないため
 - CI は再生成後に `git diff --exit-code` を実行し、生成物のコミット漏れを検出する
 
 ---

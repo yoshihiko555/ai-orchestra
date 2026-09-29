@@ -18,7 +18,7 @@
 `scripts/handoff.py` を実行して構造化データを収集する:
 
 ```bash
-python3 .claude/skills/handoff/scripts/handoff.py
+"${AI_ORCHESTRA_PYTHON:-python3}" .claude/skills/handoff/scripts/handoff.py
 ```
 
 スクリプトが JSON を stdout に出力する。内容:

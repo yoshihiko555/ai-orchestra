@@ -87,6 +87,8 @@ hook の起動に使う Python は `env.AI_ORCHESTRA_PYTHON` で決まる（`orc
 `"${AI_ORCHESTRA_PYTHON:-python3}" "$AI_ORCHESTRA_DIR/..."` の形で登録されるため、hook 起動シェルの
 `PATH` 解決に依存しない。別の Python を使いたい場合はこの環境変数を書き換える（削除すると従来どおり
 `PATH` の `python3` にフォールバックする）。
+スキル・エージェントが起動するスクリプトのうち pyyaml を使うもの（`/loop-issue` の `loop_step.py`、`/handoff` の
+`handoff.py`、`image-generator` の `check_image_gen_enabled.py`）も同じ `"${AI_ORCHESTRA_PYTHON:-python3}"` で起動する。
 
 設定値の妥当性は、`init` / `setup` / `install` / `enable` のたびに実際にそのインタプリタを起動して
 確認する（起動でき、`requires-python` を満たし、`import yaml` できるか。pyyaml を見るのは、これを
@@ -109,6 +111,9 @@ Python から実行した場合は、venv の基底インタプリタ（起動�
 設定し、それも使えなければ警告のみを出して `env.AI_ORCHESTRA_PYTHON` を設定しない。未設定なら
 hook は従来どおり `PATH` の `python3` で起動される。固定したい場合は安定した Python のパスを手動で
 設定する。
+`AI_ORCHESTRA_DIR` の外に置いた venv（clone を uv tool / pipx の venv へ editable で入れた場合など）から
+実行し、その venv の Python が起動確認を通るときは、警告に手動設定の候補としてそのパスを示す（書き込みは
+しない。その venv を消すと全 hook が起動できなくなる点は変わらない）。
 
 ただし `pip` / `pipx` / `uv tool` で orchex 自体を venv へ入れた場合は例外で、その venv の Python を
 設定する。`AI_ORCHESTRA_DIR` も同じ venv の中を指すため、venv が消えればどちらにせよ hook は動かず、

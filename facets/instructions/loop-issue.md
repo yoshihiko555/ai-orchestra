@@ -15,7 +15,9 @@
 ## 実行プロトコル（MUST）
 
 実行開始時に一度だけ、実 CLI の絶対参照を定義する。以後、`loop_step` の各 subcommand は必ずこの
-変数を使って起動し、PATH 上の同名コマンドや current shell の cwd に依存しない。
+変数を使って起動し、PATH 上の同名コマンドや current shell の cwd に依存しない。インタプリタは hook と
+同じ `"${AI_ORCHESTRA_PYTHON:-python3}"` で起動する（`loop_step` は pyyaml を使うため、`PATH` の
+`python3` が pyyaml を持たない環境でも動くようにする）。
 
 ```bash
 LOOP_STEP="$AI_ORCHESTRA_DIR/packages/loop-harness/scripts/loop_step.py"
@@ -27,9 +29,9 @@ LOOP_STEP="$AI_ORCHESTRA_DIR/packages/loop-harness/scripts/loop_step.py"
 
 | 状況                                                                                  | 呼ぶコマンド                                                                     |
 | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| 新規 Issue（state 未存在）                                                            | `python3 "$LOOP_STEP" start --issue <N> --project <project_root>`               |
-| 既存ループの再開（前回セッションがクラッシュ・断絶し `lease_token` を保持していない） | `python3 "$LOOP_STEP" attach --loop-id <id> --project <project_root>`           |
-| 正規に `failed` / `stopped` で終了したループを、人間判断で再挑戦                      | `python3 "$LOOP_STEP" resume --loop-id <id> --reset-counters --project <root>` |
+| 新規 Issue（state 未存在）                                                            | `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" start --issue <N> --project <project_root>`               |
+| 既存ループの再開（前回セッションがクラッシュ・断絶し `lease_token` を保持していない） | `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" attach --loop-id <id> --project <project_root>`           |
+| 正規に `failed` / `stopped` で終了したループを、人間判断で再挑戦                      | `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" resume --loop-id <id> --reset-counters --project <root>` |
 
 3 入口の応答 JSON はすべて、内部で `propose` 済みの **最初の proposal** として扱う。応答の
 `lease_token` を保持し、以後の `propose` / `complete` / `reconcile` / `heartbeat` / `run-checker`
@@ -73,7 +75,7 @@ issue_json="$(cd "$worktree_path" && gh issue view "$issue_number" --json number
 4. 応答と同じ `action_id`、`state_version`、保持中の `lease_token` を使って完了する。
 
    ```bash
-   python3 "$LOOP_STEP" complete \
+   "${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" complete \
      --loop-id <loop_id> \
      --action-id <応答の action_id> \
      --state-version <応答の state_version> \
@@ -85,7 +87,7 @@ issue_json="$(cd "$worktree_path" && gh issue view "$issue_number" --json number
 5. `complete` 成功後に限り、同じ `lease_token` で次の `propose` を呼ぶ。
 
    ```bash
-   python3 "$LOOP_STEP" propose \
+   "${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" propose \
      --loop-id <loop_id> \
      --lease-token <保持中の lease_token> \
      --project <project_root>
@@ -96,12 +98,12 @@ issue_json="$(cd "$worktree_path" && gh issue view "$issue_number" --json number
 長時間処理中の lease 更新と、attach 時に孤立 pending の調停が必要な場合も同じ実 CLI を使う。
 
 ```bash
-python3 "$LOOP_STEP" heartbeat \
+"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" heartbeat \
   --loop-id <loop_id> \
   --lease-token <保持中の lease_token> \
   --project <project_root>
 
-python3 "$LOOP_STEP" reconcile \
+"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" reconcile \
   --loop-id <loop_id> \
   --lease-token <保持中の lease_token> \
   --project <project_root>
@@ -150,7 +152,7 @@ shell の cwd に依存する git / gh / PR 操作は禁止する。
 | Action                 | 実行内容                                                        |
 | ---------------------- | --------------------------------------------------------------- |
 | `run_maker`            | agent-routing で Maker を選定し、指定 worktree で Task 実行     |
-| `run_checker`          | LLM 後、`python3 "$LOOP_STEP" run-checker` で検証・集約       |
+| `run_checker`          | LLM 後、`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" run-checker` で検証・集約       |
 | `wait_external_review` | 必要時だけ同 action で push し、決定論 API で待機・収集          |
 | `advance_phase`        | `params.exec` 順を保ち baseline → push/PR → head を補助記録     |
 | `stop`                 | リポジトリを変更せず安全停止通知                                |
@@ -266,7 +268,7 @@ Maker の生出力をユーザーまたはメインオーケストレーター�
 オーケストレーターは Maker の要約を 0600 の result file に正規化し、少なくとも
 `maker: {agent: <agent_name>, tool: <get_agent_tool の値>}`、変更・commit の短い要約、artifact / state /
 journal の参照を保存する。この result file を改変せず
-`python3 "$LOOP_STEP" complete --result @file ...` に渡し、
+`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" complete --result @file ...` に渡し、
 `loop_iteration` audit へ Maker の agent / tool と要約・参照を記録させる。Maker 自身は state / journal /
 artifact や audit を直接編集しない。
 
@@ -322,7 +324,7 @@ infrastructure_failure=True, ...)` を構成し、`lc.check_result_to_dict()` �
 ### 決定論的な Checker 集約
 
 機械検証をオーケストレーターが独自に実行したり、集約済み `CheckResult` を手書きしたりしない。同じ
-proposal の識別子で `python3 "$LOOP_STEP" run-checker` を呼ぶ。`--llm-result` は
+proposal の識別子で `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" run-checker` を呼ぶ。`--llm-result` は
 `<reviewer>=@<file>` の形式でレビュアーごとに繰り返す。
 
 ```bash
@@ -330,7 +332,7 @@ umask 077
 checker_result_file="$(mktemp "${TMPDIR:-/tmp}/loop-check-result.XXXXXX")"
 python3 -c 'import os, stat, sys; s = os.lstat(sys.argv[1]); ok = stat.S_ISREG(s.st_mode) and stat.S_IMODE(s.st_mode) == 0o600 and s.st_size <= 1048576; raise SystemExit(0 if ok else 1)' "$checker_result_file"
 
-python3 "$LOOP_STEP" run-checker \
+"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" run-checker \
   --loop-id "$loop_id" \
   --action-id "$action_id" \
   --state-version "$state_version" \
@@ -354,7 +356,7 @@ reviewer manifest、metadata、集約結果を手書き・差し替えしては�
 
 stdout は上記ファイルへ保存し、JSON の並べ替え・ラップ・要約・手修正を一切しない。`run-checker` が
 同じ action 用に保存した `check_result.json` artifact と一致する stdout result だけを、そのまま
-`python3 "$LOOP_STEP" complete --result @"$checker_result_file" ...` へ渡す。artifact 不一致、CLI 失敗、
+`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" complete --result @"$checker_result_file" ...` へ渡す。artifact 不一致、CLI 失敗、
 欠落時は手書き result や `complete` の直接呼び出しで迂回せず、決定論経路の失敗として扱う。
 `complete` は artifact 本文だけでなく封印済み reviewer manifest も validator に通す。クラッシュ後に
 artifact から復旧する `reconcile` も同じ validator を必ず通し、不正・欠落した manifest の artifact を
@@ -467,7 +469,7 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
   pre-rebaseline drain の対象ではない。
 
 `wait_for_completion()` の heartbeat callback から保持中 token を使って
-`python3 "$LOOP_STEP" heartbeat` を呼ぶ。完了シグナルが得られたら `collect_review_findings()` で許可済み
+`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" heartbeat` を呼ぶ。完了シグナルが得られたら `collect_review_findings()` で許可済み
 発信元だけを取り込み、直後に `save_review_findings_snapshot(...)` で同じ action の snapshot を保存する。
 snapshot が永続化された後にだけ `confirm_review_findings_reported(...)` で明示 severity の finding を
 処理済みマークし、続けて下記「severity 分類（Step 2）」を適用する。ただし
@@ -613,7 +615,7 @@ repo identity 検証済みの `params.worktree_path` を cwd にして `GhApiCli
 cwd や独自の `gh` polling に依存しない。各 API の戻り値は既存の `phase_check_from_*()` と
 `lc.phase_check_to_dict()` で ready-to-complete JSON に変換し、0600 の結果ファイルへ保存する。その
 ファイルを同じ action の `action_id` / proposal `state_version` / `lease_token` で改変せず
-`python3 "$LOOP_STEP" complete --result @file` する。API が保存した要約、signature、artifact /
+`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" complete --result @file` する。API が保存した要約、signature、artifact /
 journal 参照だけをメインへ返し、外部レビューコメント全文や生 API 応答を転載しない。
 
 ## `advance_phase`
@@ -674,7 +676,7 @@ Task(subagent_type="general-purpose", prompt="""
    `params.repo_identity_verified is true` を確認したうえで `params.worktree_path` を cwd に固定し、
    `gh pr view <params.pr_number> --json isDraft,headRefName` を取得する。`headRefName` が
    `params.branch` と一致し、かつ Draft なら、保持中の `lease_token` で
-   `python3 "$LOOP_STEP" heartbeat` を通して lease と pending action が有効であることを確認してから
+   `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" heartbeat` を通して lease と pending action が有効であることを確認してから
    `gh pr ready <params.pr_number>` で ready に戻す。ブランチ名だけで PR を検索しない
    （fork の同名ブランチを誤って Ready 化しうる）。marker が無い Draft PR（このループが Draft 化して
    いない、または人間が意図的に Draft へ戻したもの）・既に ready・identity 未検証・lease 喪失の
@@ -688,7 +690,7 @@ Task(subagent_type="general-purpose", prompt="""
 4. macOS 通知を発火する。
 5. 投稿・通知の直前に redaction を適用する。
 6. auto-merge は付与せず、worktree を保持する。
-7. 出口処理の結果を同じ proposal 識別子で `python3 "$LOOP_STEP" complete ...` し、終了する。
+7. 出口処理の結果を同じ proposal 識別子で `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" complete ...` し、終了する。
 
 マージ判断は人間が行う。残存した非ブロッキング指摘がある場合は、上記コメントの一覧を参考に
 人間が任意で対応するかを判断する（ループ自体はそれを理由に失敗させない）。
@@ -703,7 +705,7 @@ proposal の `params.draft_pr_exec` を順序どおり実行する。
 - 反復履歴・Checker 結果を記録し、下記「通常終了の Issue コメント」に失敗理由を入れて投稿する。
 - macOS 通知を発火する。
 - auto-merge は付与せず、worktree を保持する。
-- 投稿・通知の直前に redaction し、完了結果を `python3 "$LOOP_STEP" complete ...` して終了する。
+- 投稿・通知の直前に redaction し、完了結果を `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" complete ...` して終了する。
 
 Draft PR の作成または既存 PR の Draft 化は次の Task テンプレートで実行する。proposal に PR 番号が
 無い場合だけ `pr-create` を使い、既存 PR がある場合は同じ PR を Draft に戻す。
@@ -755,7 +757,7 @@ params.draft_pr_exec の短い要約だけにし、レビュー本文やコマ�
 
 ### 次のアクション
 
-{FAILED: Draft PR を確認し、手動対応するか `python3 "$LOOP_STEP" resume --loop-id <loop_id> --reset-counters --project <project_root>` で再開してください}
+{FAILED: Draft PR を確認し、手動対応するか `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" resume --loop-id <loop_id> --reset-counters --project <project_root>` で再開してください}
 {PASSED: マージ判断は人間が行ってください（auto-merge は付与されません）。残存した非ブロッキング指摘がある場合は上記一覧を確認してください}
 ```
 
@@ -811,7 +813,7 @@ osascript -e 'display notification "外部レビュアーを利用できませ�
 
 PR の内容を人間が確認し、マージ可否を判断してください。再レビューが必要な場合は、外部レビュアーが
 利用可能になった後に
-`python3 "$LOOP_STEP" resume --loop-id <loop_id> --reset-counters --project <project_root>` で再開してください。
+`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" resume --loop-id <loop_id> --reset-counters --project <project_root>` で再開してください。
 ```
 
 専用通知と条件付きコメントを完了したら、下記の汎用安全停止通知・コメントは重ねて送らず、
@@ -837,13 +839,13 @@ osascript -e 'display notification "安全停止: {params.stop_reason}" with tit
 ### 次のアクション
 
 状況を確認し、問題を解消した上で
-`python3 "$LOOP_STEP" resume --loop-id <loop_id> --reset-counters --project <project_root>` で再開するか、
+`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" resume --loop-id <loop_id> --reset-counters --project <project_root>` で再開するか、
 手動で対応してください。
 ```
 
 macOS 通知と条件付き Issue コメントの本文を組み立てた後、表示・投稿 API 呼び出しの直前に redaction
 を適用する。通知完了後はリポジトリ変更を含まない結果で、同じ action を
-`python3 "$LOOP_STEP" complete ...` し、終了する。
+`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" complete ...` し、終了する。
 
 ## コンテキスト分離と機密保護（EV-44 / NF-05）
 
