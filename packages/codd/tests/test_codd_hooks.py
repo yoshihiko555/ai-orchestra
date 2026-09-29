@@ -392,6 +392,26 @@ class TestValidateHookModes:
         assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
         assert "errors=1" in context
 
+    def test_warn_mode_includes_code_scope_in_snapshot(self, tmp_path: Path) -> None:
+        """hook が code_scope の Python 注釈も展開し dangling として報告する。"""
+        _git_init(tmp_path)
+        _write(tmp_path, "docs/clean.md", _CLEAN_DOC)
+        _write(tmp_path, "src/mod.py", '"""codd:implements design:missing"""\n')
+        config = _codd_config_dict(validate_on_commit="warn")
+        config["kinds"].append("code")
+        config["code_scope"] = {"include": ["src/**/*.py"], "exclude": []}
+        _write_codd_config(tmp_path, config)
+        _git_add_all(tmp_path)
+        payload = {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "msg"'},
+        }
+        result = _run_hook("codd-validate-precommit.py", payload, tmp_path)
+        assert result.returncode == 0
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        assert "errors=1" in context
+
     def test_block_mode_blocks_commit_and_exits_two(self, tmp_path: Path) -> None:
         _git_init(tmp_path)
         _write(tmp_path, "docs/d.md", _DANGLING_DOC)

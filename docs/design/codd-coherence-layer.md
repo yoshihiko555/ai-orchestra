@@ -545,7 +545,8 @@ commit フローを侵さない」という要件の裏返しであり、意図�
 
 **index スナップショット検証（Issue #338）**: `git commit` が実際にコミットするのは
 working tree ではなく **git index** の内容である。hook は `git write-tree` で index の
-妥当性を確認したうえで `git --work-tree=<tmp> checkout-index -a -f` により index の内容を
+妥当性を確認したうえで `git --work-tree=<tmp> checkout-index -f` により index の内容
+（Issue #349 以降は scope / code_scope に一致するエントリだけ。本節後半「Issue #349」参照）を
 一時ディレクトリへ展開し、その一時ディレクトリに対して `codd validate` を実行する（実体の
 working tree・index は一切変更しない）。これにより「壊れた依存を `git add` した後、同じ
 ファイルを未ステージで修正する」ケースでも、実際にコミットされる内容（index）を正しく
@@ -615,7 +616,7 @@ shell 連結演算子（`&&` / `;` / `||` / `|`）を検出した場合、warn/b
 `codd validate` を実行する。
 
 **モノレポ（サブディレクトリ project root）対応（Issue #338 反復3、bot レビュー P1 対応）**:
-`checkout-index -a` は index 全体（= リポジトリ全体）を snapshot_dir へ書き出すため、
+`checkout-index` は repo root 相対のパスで snapshot_dir へ書き出すため、
 project root がリポジトリ直下でない構成（例: `/repo/apps/foo`）では `snapshot_dir` 直下では
 なく `snapshot_dir/<prefix>` に project が存在する。`git rev-parse --show-prefix` で
 prefix を解決し、`codd validate` の cwd をそこに合わせる（`GIT_WORK_TREE` は snapshot_dir の
@@ -654,9 +655,12 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
   できない場合がある）
 - `git commit` が明示的に `GIT_INDEX_FILE` で alternate index を指定するケースへの対応
 - scope 外ファイルの checkout filter 失敗による検証全体の無効化への対応（`checkout-index`
-  が一部ファイルの書き出しに失敗しても、hook は現状それを検知しない）
-- index の gitlink（submodule）は `checkout-index -a` で参照先 commit の内容が展開されず
-  空ディレクトリになるため、submodule 配下の CoDD ノードは検証対象から消える。
+  が一部ファイルの書き出しに失敗しても、hook は現状それを検知しない。Issue #349 の scope
+  限定展開で scope 外ファイルは原則展開しなくなり、scope 外ファイルの失敗に巻き込まれる
+  機会は減ったが、scope 内ファイルの書き出し失敗は引き続き検知しない）
+- index の gitlink（submodule）は参照先 commit の内容が展開されない（全体展開では空
+  ディレクトリになり、Issue #349 の scope 限定展開では展開対象から外す）ため、submodule
+  配下の CoDD ノードは検証対象から消える。
   superproject から submodule ノードへの依存は false dangling になり、submodule 内だけの
   不整合は見逃す（Issue #342 で追跡）
 
@@ -757,6 +761,22 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 
 **Issue #349（validate-precommit hook の整理）**: 以下を変更した。
 
+- **scope 限定の checkout**: 毎 commit でリポジトリ全体を展開し、全ファイルの mtime を
+  正規化していたのをやめ、project 配下で `scope.include` / `code_scope.include` に一致する
+  index エントリ（`git ls-files -s -z` で列挙）だけを `checkout-index -z --stdin` で展開する。
+  snapshot 上の `codd validate` が読むのは scope に一致するファイル・materialize した config・
+  symlink ノードのリンク先だけで、drift 検査の `git status` が展開しなかったファイルを削除
+  扱いにしても scope 内ノードの判定には影響しない。照合は `_normalize_scope_pattern` で
+  正規化したパターンを `glob_pattern_to_regex` と同じセグメント分解で正規表現にした上位集合
+  とし（exclude は validate 側で適用）、gitlink は展開しない。Python 3.13 以降の `Path.glob`
+  はワイルドカードを含まないセグメントをファイルシステムの存在確認で解決し、APFS では
+  大文字小文字と Unicode 正規化形の違いを無視して一致する。そのためワイルドカードを含まない
+  セグメントだけ大文字小文字を無視し（パターン全体を `re.IGNORECASE` にすると否定文字クラス
+  `[!a-z]` まで畳み込まれ一致が狭まる）、非 ASCII 文字を含むパターンは全体展開に戻す。
+  project 配下に symlink エントリが 1 件でもあるとき、大文字小文字・Unicode 正規化形の違い
+  だけで衝突するパスがあるとき（APFS では全体展開時に同じディレクトリへまとまり、ワイルド
+  カードセグメントの `Path.glob` が両方を見つける）、`git ls-files` やパターン変換が失敗
+  したときも、従来どおり index 全体を展開する（EV-97 / EV-98）。
 - **subprocess 出力の復号失敗を fail-safe に収束**: `subprocess.run(..., text=True)` は
   非 UTF-8 の出力で `UnicodeDecodeError` を送出する。これが各 subprocess の
   `except (TimeoutExpired, OSError)` をすり抜けると、候補 index・snapshot の一時ファイルが

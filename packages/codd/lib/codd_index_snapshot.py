@@ -35,8 +35,8 @@ base 設定（`codd.yaml`）だけを再ロードしてしまい、local overrid
 `.claude/config/codd/codd.yaml` と（存在すれば）`codd.local.yaml` を snapshot 側の
 対応するパスへ明示的にコピーしてから `codd validate` を実行する。
 
-**モノレポ（サブディレクトリ project root）対応（Issue #338 反復3）**: `checkout-index -a`
-は index 全体（= リポジトリ全体）を snapshot_dir へ書き出すため、project root がリポジトリ
+**モノレポ（サブディレクトリ project root）対応（Issue #338 反復3）**: `checkout-index`
+は repo root 相対のパスで snapshot_dir へ書き出すため、project root がリポジトリ
 直下でない構成（例: `/repo/apps/foo`）では、`snapshot_dir` 直下ではなく
 `snapshot_dir/<prefix>` に project が存在する。`git rev-parse --show-prefix` で
 prefix を解決し、`codd validate` の cwd をそこに合わせる（`GIT_WORK_TREE` は
@@ -116,18 +116,29 @@ tree・index は一切変更しない設計方針に反し、`index.lock` 競合
 **Issue #349**: `subprocess.run(..., text=True)` は非 UTF-8 出力で
 `UnicodeDecodeError` を送出する。従来の timeout / OSError の捕捉から漏れると、
 候補 index や snapshot の一時ファイルが残るため、fail-safe の診断へ収束させる。
+
+**scope 限定の index 展開（Issue #349）**: commit ごとにリポジトリ全体を展開しないよう、
+検証対象の include パターンに合う index エントリだけを checkout する。直接呼び出しで
+`scope_patterns=None` の場合、`ls-files` に失敗した場合、または project 内に symlink
+エントリがある場合は従来の全件 checkout に戻す。exclude はここでは適用せず、
+最終的な scope 判定は `codd validate` に委ねるため、安全な上位集合を展開する。
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
+
+import codd_common as cc
 
 # manifest.json（packages/codd/manifest.json）の PreToolUse timeout は 90 秒。write-tree /
 # rev-parse / checkout-index / 一時 index 構築（-a/--all 再現） / codd validate の全
@@ -319,7 +330,7 @@ def _safe_mkdir_within(dest_dir: Path, snapshot_root: Path) -> bool:
 def _resolve_repo_prefix(root: str, env: dict[str, str], deadline: _Deadline) -> str | None:
     """repo root から見た `root` の prefix を解決する（モノレポ対応。Issue #338 反復3）。
 
-    `git ... checkout-index -a` は index 全体（= リポジトリ全体）を一時ディレクトリへ
+    `git ... checkout-index` は repo root 相対のパスで一時ディレクトリへ
     書き出すため、`root`（validate 対象のプロジェクトルート）がリポジトリ直下でない構成
     （例: `/repo/apps/foo`）では、書き出し先の中で `root` に対応する project root は
     `<snapshot_dir>/<prefix>` になる。`git rev-parse --show-prefix` はこの prefix
@@ -537,6 +548,134 @@ def _normalize_snapshot_mtimes(snapshot_dir: str, deadline: _Deadline) -> None:
             continue
 
 
+_GLOB_MAGIC_CHARS = re.compile(r"[*?\[]")
+
+
+def _scope_segment_regex(normalized: str) -> str:
+    """root 相対に正規化した scope パターンを、`Path.glob` の上位集合になる正規表現へ変換する。
+
+    `codd_common.glob_pattern_to_regex` と同じセグメント分解を使い、ワイルドカード
+    （`*` / `?` / `[`）を含まないセグメントだけ大文字小文字を無視する。Python 3.13 以降の
+    `Path.glob` は literal セグメントをファイルシステムの存在確認で解決するため、APFS 等の
+    大文字小文字を区別しない FS では大小文字違いのパスにも一致する。一方ワイルドカードを含む
+    セグメント（文字クラスを含む）は大文字小文字を区別して照合する。パターン全体に
+    `re.IGNORECASE` を掛けると否定文字クラス（`[!a-z]`）まで畳み込まれ、逆に一致が狭まる
+    （Issue #349 レビュー指摘）。
+    """
+    segments = normalized.split("/")
+    regex = "^"
+    for index, segment in enumerate(segments):
+        is_last = index == len(segments) - 1
+        if segment == "**":
+            regex += ".*" if is_last else "(?:.*/)?"
+            continue
+        if _GLOB_MAGIC_CHARS.search(segment):
+            regex += cc._glob_segment_to_regex(segment)
+        else:
+            regex += f"(?i:{re.escape(segment)})"
+        if not is_last:
+            regex += "/"
+    return regex + "$"
+
+
+def _scope_matcher(root: str, patterns: list[str]) -> Callable[[str], bool] | None:
+    """include パターンに合うパスの上位集合を判定する述語を返す（EV-97）。
+
+    checkout 対象を広めに選び、実際の scope 判定は `codd validate` が自身で再適用する。
+    exclude も validate 側で適用するため、ここでは除外しない（余分なファイルの展開は安全）。
+
+    パターンに非 ASCII 文字が含まれる場合は None を返し、呼び出し元は index 全体を展開する
+    （EV-98）。APFS は literal セグメントの存在確認で Unicode 正規化形（NFC / NFD）の違いを
+    無視するため、文字列照合では `Path.glob` と同じ結果を保証できない。
+    """
+    compiled: list[re.Pattern[str]] = []
+    for pattern in patterns:
+        if not pattern.isascii():
+            return None
+        normalized = cc._normalize_scope_pattern(Path(root), pattern)
+        if normalized is None:
+            continue
+        compiled.append(re.compile(_scope_segment_regex(normalized)))
+
+    def _matches(relpath: str) -> bool:
+        return any(pattern.match(relpath) for pattern in compiled)
+
+    return _matches
+
+
+def _list_index_entries(
+    root: str, env: dict[str, str], deadline: _Deadline
+) -> list[tuple[str, bytes]] | None:
+    """候補 index の project 配下エントリを生のパス bytes と mode で取得する。"""
+    if deadline.expired():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-s", "-z"],
+            cwd=root,
+            env=env,
+            timeout=deadline.remaining_seconds(),
+            capture_output=True,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    entries: list[tuple[str, bytes]] = []
+    try:
+        records = result.stdout.split(b"\0")
+        if records[-1] == b"":
+            records.pop()
+        for record in records:
+            if not record:
+                return None
+            meta, raw_path = record.split(b"\t", 1)
+            fields = meta.split()
+            if len(fields) != 3 or not raw_path:
+                return None
+            entries.append((fields[0].decode("ascii"), raw_path))
+    except (AttributeError, UnicodeDecodeError, ValueError):
+        return None
+    return entries
+
+
+def _has_folding_collision(paths: list[str]) -> bool:
+    """大文字小文字・Unicode 正規化形の違いだけで衝突するパスがあるかを判定する。
+
+    ディレクトリ部分も含めて比較する。APFS 等では `Docs/x.md` と `docs/y.md` が全体展開時に
+    同じ物理ディレクトリへまとまり、`Path.glob` のワイルドカードセグメントは両方を見つける。
+    一方パス文字列での選択は片方しか選ばないため、validate の結果が食い違う（Issue #349
+    レビュー指摘）。
+    """
+    seen: dict[str, str] = {}
+    for path in paths:
+        parts = path.split("/")
+        for depth in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:depth])
+            key = unicodedata.normalize("NFC", prefix).casefold()
+            if seen.setdefault(key, prefix) != prefix:
+                return True
+    return False
+
+
+def _select_scope_paths(
+    entries: list[tuple[str, bytes]], matches: Callable[[str], bool]
+) -> list[bytes] | None:
+    """EV-97 の scope 対象を選ぶ。symlink や大小文字・正規化形だけで衝突するパスがあれば
+    None（全件展開）を返す（EV-98）。
+    """
+    if any(mode == "120000" for mode, _ in entries):
+        return None
+    if _has_folding_collision([os.fsdecode(raw_path) for _, raw_path in entries]):
+        return None
+    return [
+        raw_path
+        for mode, raw_path in entries
+        if mode != "160000" and matches(os.fsdecode(raw_path))
+    ]
+
+
 def _build_index_snapshot(
     root: str,
     git_dir: str,
@@ -544,12 +683,14 @@ def _build_index_snapshot(
     deadline: _Deadline,
     *,
     index_file: str | None = None,
+    scope_patterns: list[str] | None = None,
 ) -> tuple[IndexSnapshot | None, str]:
     """git index の内容を一時ディレクトリへ展開する（working tree 近似の解消。Issue #338）。
 
     `git commit` が実際にコミットするのは working tree ではなく index の内容である。
     `git write-tree` で index の妥当性を確認したうえで、`git --work-tree=<tmp>
-    checkout-index -a -f --ignore-skip-worktree-bits` により index の内容だけを別
+    checkout-index -f --ignore-skip-worktree-bits`（`scope_patterns` 指定時は `-z --stdin` で
+    選んだエントリだけ、それ以外は `-a` で全体）により index の内容だけを別
     ディレクトリへ書き出す。実体の working tree・index には一切変更を加えない。
     `--ignore-skip-worktree-bits` は sparse checkout で skip-worktree bit が付いた
     エントリも展開する（E-3: Issue #338 反復4 bot レビュー対応。付けないと実際の
@@ -570,6 +711,10 @@ def _build_index_snapshot(
     候補 index のコピー元として使う（`git commit -a/--all` 候補 index の再現用。
     反復3。`_build_commit_all_index_file` 参照）。未指定時は ambient な実 index を
     コピー元として使う。
+
+    `scope_patterns` を指定すると対象パスだけを展開する。未指定、`ls-files` 失敗、
+    symlink エントリ検出、非 ASCII 文字を含むパターン、パターン変換の失敗時は従来通り
+    index 全体を展開する（EV-97 / EV-98）。
 
     `env` は ambient な `GIT_DIR`/`GIT_WORK_TREE` 等を除いた環境変数
     （`hook_common.sanitized_git_env()`）。これを使わずに `os.environ` をそのまま渡すと、
@@ -629,26 +774,51 @@ def _build_index_snapshot(
         Path(candidate_index_path).unlink(missing_ok=True)
         return None, f"candidate index chmod failed: {exc}"
 
+    selected: list[bytes] | None = None
+    if scope_patterns is not None:
+        # 選択に失敗したら全体展開へ戻す（候補 index を残したまま例外を漏らさない）
+        try:
+            matches = _scope_matcher(root, scope_patterns)
+        except (re.error, TypeError, ValueError):
+            matches = None
+        entries = _list_index_entries(root, run_env, deadline) if matches is not None else None
+        if matches is not None and entries is not None:
+            selected = _select_scope_paths(entries, matches)
+
     try:
         snapshot_dir = tempfile.mkdtemp(prefix="codd-index-snapshot-")
     except OSError as exc:
         Path(candidate_index_path).unlink(missing_ok=True)
         return None, f"tempfile.mkdtemp failed: {exc}"
     try:
-        checkout = subprocess.run(
-            [
+        if selected is None:
+            command = [
                 "git",
                 f"--work-tree={snapshot_dir}",
                 "checkout-index",
                 "-a",
                 "-f",
                 "--ignore-skip-worktree-bits",
-            ],
+            ]
+            checkout_input = None
+        else:
+            command = [
+                "git",
+                f"--work-tree={snapshot_dir}",
+                "checkout-index",
+                "-f",
+                "-z",
+                "--stdin",
+                "--ignore-skip-worktree-bits",
+            ]
+            checkout_input = b"".join(os.fsencode(prefix) + path + b"\0" for path in selected)
+        checkout = subprocess.run(
+            command,
             cwd=root,
             env=run_env,
             timeout=deadline.remaining_seconds(),
             capture_output=True,
-            text=True,
+            input=checkout_input,
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError, UnicodeDecodeError) as exc:
@@ -658,7 +828,8 @@ def _build_index_snapshot(
     if checkout.returncode != 0:
         shutil.rmtree(snapshot_dir, ignore_errors=True)
         Path(candidate_index_path).unlink(missing_ok=True)
-        reason = checkout.stderr.strip().splitlines()[0] if checkout.stderr.strip() else ""
+        stderr = checkout.stderr.decode("utf-8", "replace")
+        reason = stderr.strip().splitlines()[0] if stderr.strip() else ""
         return None, f"git checkout-index failed (code={checkout.returncode}): {reason}"
     _normalize_snapshot_mtimes(snapshot_dir, deadline)
     return (
@@ -678,6 +849,7 @@ def run_validate(
     codd_cli: str,
     git_env: dict[str, str],
     simulate_commit_all: bool = False,
+    scope_patterns: list[str] | None = None,
 ) -> tuple[int, str, str] | None:
     """index スナップショットに対して `codd validate` を実行する。失敗・timeout 時は None。
 
@@ -689,6 +861,9 @@ def run_validate(
     ではなく `_build_commit_all_index_file` が構築した候補 index を検証する。絶対 git-dir
     は最初に一度だけ解決し、`_build_commit_all_index_file` と `_build_index_snapshot` に
     共有する（Issue #349）。
+
+    `scope_patterns` は展開する include パターン。hook は
+    `[*config.include, *config.code_include]` を渡す。未指定時は全件展開する。
 
     `codd validate` サブプロセスには `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` を
     明示的に渡す（反復2: Issue #338、D-1: 反復4）。これにより codd 内部の `git status`
@@ -741,7 +916,12 @@ def run_validate(
 
     try:
         built, diagnostic = _build_index_snapshot(
-            root, git_dir, git_env, deadline, index_file=commit_all_index_path
+            root,
+            git_dir,
+            git_env,
+            deadline,
+            index_file=commit_all_index_path,
+            scope_patterns=scope_patterns,
         )
     finally:
         if commit_all_index_path is not None:

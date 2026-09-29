@@ -292,6 +292,7 @@ def main() -> None:
         codd_cli=codd_cli,
         git_env=sanitized_git_env(),
         simulate_commit_all=simulate_commit_all,
+        scope_patterns=[*config.include, *config.code_include],
     )
     if outcome is None:
         sys.exit(0)  # fail-safe: validate 実行自体の失敗では commit をブロックしない

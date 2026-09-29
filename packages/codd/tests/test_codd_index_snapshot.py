@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import errno
 import os
+import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -37,6 +39,7 @@ _CLEAN_DOC = helpers._CLEAN_DOC
 from hook_common import sanitized_git_env  # noqa: E402
 
 commit_args = load_module("codd_commit_args", "packages/codd/lib/codd_commit_args.py")
+cc = load_module("codd_common", "packages/codd/lib/codd_common.py")
 snapshot = load_module("codd_index_snapshot", "packages/codd/lib/codd_index_snapshot.py")
 
 CODD_CLI = str(REPO_ROOT / "packages" / "codd" / "scripts" / "codd.py")
@@ -53,6 +56,227 @@ def _resolve_git_dir_for_test(root: str) -> str:
     git_dir = snapshot._resolve_absolute_git_dir(root, sanitized_git_env(), deadline)
     assert git_dir is not None
     return git_dir
+
+
+class TestScopeLimitedIndexSnapshot:
+    """Issue #349 の EV-97 scope 限定展開と EV-98 symlink fallback を検証する。"""
+
+    @staticmethod
+    def _build_and_list_files(root: Path, scope_patterns: list[str] | None) -> list[str]:
+        """snapshot のファイル一覧を返し、候補 index と展開先を必ず削除する。"""
+        git_dir = _resolve_git_dir_for_test(str(root))
+        deadline = snapshot._Deadline(snapshot.HOOK_TIMEOUT_BUDGET_SECONDS)
+        built, diagnostic = snapshot._build_index_snapshot(
+            str(root),
+            git_dir,
+            sanitized_git_env(),
+            deadline,
+            scope_patterns=scope_patterns,
+        )
+        assert built is not None, diagnostic
+        try:
+            return sorted(
+                path.relative_to(built.snapshot_dir).as_posix()
+                for path in Path(built.snapshot_dir).rglob("*")
+                if path.is_file()
+            )
+        finally:
+            shutil.rmtree(built.snapshot_dir, ignore_errors=True)
+            Path(built.candidate_index_path).unlink(missing_ok=True)
+
+    @staticmethod
+    def _stage_monorepo(tmp_path: Path) -> Path:
+        """project 内外にファイルがある staged リポジトリを作る。"""
+        _git_init(tmp_path)
+        project = tmp_path / "apps" / "foo"
+        _write(project, "docs/a.md", "# A\n")
+        _write(project, "src/x.txt", "x\n")
+        _write(tmp_path, "other/b.md", "# B\n")
+        _git_add_all(tmp_path)
+        return project
+
+    def test_monorepo_scope_checks_out_only_project_match(self, tmp_path: Path) -> None:
+        """project 相対の ls-files パスを repo prefix 付きで展開する。"""
+        project = self._stage_monorepo(tmp_path)
+        assert self._build_and_list_files(project, ["docs/**/*.md"]) == ["apps/foo/docs/a.md"]
+
+    def test_project_symlink_expands_full_index(self, tmp_path: Path) -> None:
+        """project 内の symlink は scope 外ファイルも含む全件展開に戻す。"""
+        project = self._stage_monorepo(tmp_path)
+        (project / "link.md").symlink_to("docs/a.md")
+        _git_add_all(tmp_path)
+        files = self._build_and_list_files(project, ["docs/**/*.md"])
+        assert "apps/foo/src/x.txt" in files
+        assert "other/b.md" in files
+
+    def test_case_insensitive_superset_includes_path(self, tmp_path: Path) -> None:
+        """ワイルドカードを含まないセグメントは大小文字違いも候補に含める。"""
+        project = self._stage_monorepo(tmp_path)
+        assert self._build_and_list_files(project, ["Docs/*.md"]) == ["apps/foo/docs/a.md"]
+
+    def test_negated_char_class_keeps_case_sensitive_match(self, tmp_path: Path) -> None:
+        """否定文字クラスは大文字小文字を区別して照合し、一致を狭めない（Issue #349 レビュー）。
+
+        パターン全体を `re.IGNORECASE` で照合すると `[!a-z]` が `R` を除外し、`Path.glob` が
+        一致させる `docs/README.md` を展開し損ねていた。
+        """
+        project = self._stage_monorepo(tmp_path)
+        _write(project, "docs/README.md", "# R\n")
+        _git_add_all(tmp_path)
+        files = self._build_and_list_files(project, ["docs/[!a-z]*.md"])
+        assert files == ["apps/foo/docs/README.md"]
+
+    def test_non_ascii_pattern_falls_back_to_full_checkout(self, tmp_path: Path) -> None:
+        """非 ASCII 文字を含むパターンは全件展開に戻す（EV-98。Unicode 正規化形の差の回避）。"""
+        project = self._stage_monorepo(tmp_path)
+        files = self._build_and_list_files(project, ["café/*.md"])
+        assert "apps/foo/src/x.txt" in files
+        assert "other/b.md" in files
+
+    def test_pattern_conversion_failure_falls_back_to_full_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """パターン変換の例外は全件展開へ戻し、候補 index を残さない。"""
+        project = self._stage_monorepo(tmp_path)
+
+        def broken_matcher(root: str, patterns: list[str]) -> None:
+            raise re.error("simulated")
+
+        monkeypatch.setattr(snapshot, "_scope_matcher", broken_matcher)
+        files = self._build_and_list_files(project, ["docs/**/*.md"])
+        assert "other/b.md" in files
+
+    def test_project_prefix_with_space_is_expanded(self, tmp_path: Path) -> None:
+        """空白を含む project prefix でも repo root 相対のパスで展開する（EV-82 との組み合わせ）。"""
+        _git_init(tmp_path)
+        project = tmp_path / "apps" / "my proj"
+        _write(project, "docs/a.md", "# A\n")
+        _write(project, "src/x.txt", "x\n")
+        _git_add_all(tmp_path)
+        files = self._build_and_list_files(project, ["docs/**/*.md"])
+        assert files == ["apps/my proj/docs/a.md"]
+
+    def test_none_scope_keeps_full_checkout(self, tmp_path: Path) -> None:
+        """scope 未指定の直接呼び出しは従来通り全件展開する。"""
+        project = self._stage_monorepo(tmp_path)
+        files = self._build_and_list_files(project, None)
+        assert "apps/foo/src/x.txt" in files
+        assert "other/b.md" in files
+
+    def test_ls_files_failure_falls_back_to_full_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ls-files の失敗時も snapshot を構築し全件展開する。"""
+        project = self._stage_monorepo(tmp_path)
+        real_run = snapshot.subprocess.run
+
+        def fake_run(cmd: list[str], *args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+            if cmd[:2] == ["git", "ls-files"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=b"boom")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(snapshot.subprocess, "run", fake_run)
+        files = self._build_and_list_files(project, ["docs/**/*.md"])
+        assert "apps/foo/src/x.txt" in files
+        assert "other/b.md" in files
+
+    def test_empty_selection_checks_out_nothing(self, tmp_path: Path) -> None:
+        """一致エントリがなくても空 snapshot を成功として返す。"""
+        project = self._stage_monorepo(tmp_path)
+        assert self._build_and_list_files(project, ["nomatch/**/*.xyz"]) == []
+
+    def test_gitlink_is_excluded_from_selection(self, tmp_path: Path) -> None:
+        """gitlink は glob に一致しても通常ファイルとして展開しない。"""
+        project = self._stage_monorepo(tmp_path)
+        subprocess.run(
+            [
+                "git",
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                f"160000,{'a' * 40},apps/foo/docs/sub",
+            ],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        files = self._build_and_list_files(project, ["docs/**"])
+        assert files == ["apps/foo/docs/a.md"]
+
+    def test_validate_result_matches_full_checkout(self, tmp_path: Path) -> None:
+        """scope 外・project 外のファイルがあるモノレポでも、全件展開と結果が一致する（EV-97）。"""
+        for name, document, expected in (
+            ("dangling", _DANGLING_DOC, 1),
+            ("clean", _CLEAN_DOC, 0),
+        ):
+            repo = tmp_path / name
+            project = repo / "apps" / "foo"
+            repo.mkdir()
+            _git_init(repo)
+            _write(project, "docs/a.md", document)
+            _write(project, "notes/out-of-scope.md", _DANGLING_DOC)
+            _write(repo, "other/docs/outside.md", _DANGLING_DOC)
+            _write_codd_config(project, _codd_config_dict())
+            _git_add_all(repo)
+            full = _run_validate(str(project))
+            limited = _run_validate(str(project), scope_patterns=["docs/**/*.md"])
+            assert full is not None
+            assert limited is not None
+            assert full[0] == limited[0] == expected
+            assert limited[1] == full[1]
+
+    def test_case_only_path_collision_falls_back_to_full_checkout(self, tmp_path: Path) -> None:
+        """大文字小文字だけが異なるパスが index にあれば全件展開に戻し、結果を一致させる（EV-98）。
+
+        APFS では全件展開時に `Docs/` と `docs/` が同じ物理ディレクトリへまとまり、ワイルド
+        カードセグメント（`D*`）の `Path.glob` が両方を見つける。パス文字列で選ぶと
+        `docs/y.md` の壊れた依存を見逃していた（Issue #349 レビュー指摘）。
+        """
+        _git_init(tmp_path)
+        _write(tmp_path, "Docs/x.md", _CLEAN_DOC)
+        _write_codd_config(tmp_path, _codd_config_dict(scope_include=["D*/*.md"]))
+        _git_add_all(tmp_path)
+        blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=tmp_path,
+            input=_DANGLING_DOC,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "update-index", "--add", "--cacheinfo", f"100644,{blob},docs/y.md"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        full = _run_validate(str(tmp_path))
+        limited = _run_validate(str(tmp_path), scope_patterns=["D*/*.md"])
+        assert full is not None
+        assert limited is not None
+        assert limited == full
+        assert snapshot._has_folding_collision(["Docs/x.md", "docs/y.md"])
+        assert not snapshot._has_folding_collision(["Docs/x.md", "Docs/y.md"])
+
+    def test_symlink_node_validate_result_matches_full_checkout(self, tmp_path: Path) -> None:
+        """scope 外を指す symlink ノードがあっても全件展開と結果が一致する（EV-98）。
+
+        `docs/alias.md -> ../shared/real.md` の実体は scope 外にある。symlink 時の全件展開に
+        戻らないと実体が snapshot に無く alias ノードが消え、`docs/b.md` の依存が false
+        dangling になる。
+        """
+        _git_init(tmp_path)
+        _write(tmp_path, "shared/real.md", _doc("design:real"))
+        _write(tmp_path, "docs/b.md", _doc("design:b", deps=[("design:real", "derives_from")]))
+        (tmp_path / "docs" / "alias.md").symlink_to(Path("..") / "shared" / "real.md")
+        _write_codd_config(tmp_path, _codd_config_dict())
+        _git_add_all(tmp_path)
+        full = _run_validate(str(tmp_path))
+        limited = _run_validate(str(tmp_path), scope_patterns=["docs/**/*.md"])
+        assert full is not None
+        assert limited is not None
+        assert full[0] == limited[0] == 0
+        assert limited[1] == full[1]
 
 
 # ---------------------------------------------------------------------------
