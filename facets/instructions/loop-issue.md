@@ -27,10 +27,10 @@ LOOP_STEP="$AI_ORCHESTRA_DIR/packages/loop-harness/scripts/loop_step.py"
 
 対象 `loop_id` の状況に応じて、次の 3 つの入口から **1 つだけ**を呼ぶ。
 
-| 状況                                                                                  | 呼ぶコマンド                                                                                             |
-| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| 新規 Issue（state 未存在）                                                            | `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" start --issue <N> --project <project_root>`              |
-| 既存ループの再開（前回セッションがクラッシュ・断絶し `lease_token` を保持していない） | `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" attach --loop-id <id> --project <project_root>`          |
+| 状況                                                                                  | 呼ぶコマンド                                                                     |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 新規 Issue（state 未存在）                                                            | `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" start --issue <N> --project <project_root>`               |
+| 既存ループの再開（前回セッションがクラッシュ・断絶し `lease_token` を保持していない） | `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" attach --loop-id <id> --project <project_root>`           |
 | 正規に `failed` / `stopped` で終了したループを、人間判断で再挑戦                      | `"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" resume --loop-id <id> --reset-counters --project <root>` |
 
 3 入口の応答 JSON はすべて、内部で `propose` 済みの **最初の proposal** として扱う。応答の
@@ -149,15 +149,15 @@ Task は cwd を明示し、すべての git は `git -C "<params.worktree_path>
 subshell、すべての `gh` / `pr-create` は同パスを明示した Task または subshell で実行する。current
 shell の cwd に依存する git / gh / PR 操作は禁止する。
 
-| Action                 | 実行内容                                                                               |
-| ---------------------- | -------------------------------------------------------------------------------------- |
-| `run_maker`            | agent-routing で Maker を選定し、指定 worktree で Task 実行                            |
-| `run_checker`          | LLM 後、`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" run-checker` で検証・集約      |
-| `wait_external_review` | 必要時だけ同 action で push し、決定論 API で待機・収集                                |
-| `advance_phase`        | `params.exec` 順を保ち baseline → push/PR → head を補助記録                            |
-| `stop`                 | リポジトリを変更せず安全停止通知                                                       |
+| Action                 | 実行内容                                                        |
+| ---------------------- | --------------------------------------------------------------- |
+| `run_maker`            | agent-routing で Maker を選定し、指定 worktree で Task 実行     |
+| `run_checker`          | LLM 後、`"${AI_ORCHESTRA_PYTHON:-python3}" "$LOOP_STEP" run-checker` で検証・集約       |
+| `wait_external_review` | 必要時だけ同 action で push し、決定論 API で待機・収集          |
+| `advance_phase`        | `params.exec` 順を保ち baseline → push/PR → head を補助記録     |
+| `stop`                 | リポジトリを変更せず安全停止通知                                |
 | `exit_success`         | `params.exec` の `pr_mark_ready`（Draft PR を ready へ）→ 成功コメント・通知で正常終了 |
-| `exit_failure`         | Draft PR、失敗コメント・通知を行い失敗終了                                             |
+| `exit_failure`         | Draft PR、失敗コメント・通知を行い失敗終了                      |
 
 ## `run_maker`
 
@@ -439,7 +439,7 @@ artifact から復旧する `reconcile` も同じ validator を必ず通し、�
     medium/low は非ブロッキング）。
   - drain の結果 **critical/high の finding が 0 件**（medium/low のみ残存、または finding 自体が
     0 件）の場合に限り、`detect_pr_review_push_delta(loop_id,
-params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status` で以下のとおり分岐する。
+    params.worktree_path, params.worktree_path)` を呼び、戻り値 `delta.status` で以下のとおり分岐する。
     **drain の critical/high が 0 件であることを確認せずに `phase_check_from_review_findings()` を呼んで
     complete することは禁止する**（critical/high finding が存在しない場合、
     `phase_check_from_review_findings()` は `passed: true` を返すため、push もレビュー待機も行わずに
@@ -488,7 +488,7 @@ API error など）の場合も同じ API で変換する。この 2 経路で�
    action の中で、オーケストレーター自身が上記 push 分岐（push → `record_iteration_head(...)` 成功）を実行した
    （proposal JSON を読み直す必要はない。自分が実行した事実で判定する）。(b) push 分岐を実行せず DH5
    ショートカットに入った場合に、公開 API `iteration_head_recorded_for_action(loop_id, project_dir,
-<現在の action_id>)` が `true` を返す（fenced state を読み取り専用で参照する。proposal の
+   <現在の action_id>)` が `true` を返す（fenced state を読み取り専用で参照する。proposal の
    `params.pr_review.iteration_head_action_id` は proposal 生成時点 = この action の push **前**の値なので、
    この判定には使わない）。それ以外（DH5 が別アクション・resume 前の記録に一致した場合）は `false`。
    state.json を直接読まない。
@@ -505,7 +505,7 @@ API error など）の場合も同じ API で変換する。この 2 経路で�
      まだ blocking 扱いで `iteration_findings` を更新できていないため addressed にしてはならない。
 3. **addressed への更新**: `resolved_signatures` が空でなければ
    `mark_addressed_findings(loop_id, params.worktree_path, resolved_signatures, commit_sha, iteration,
-lease_token, action_id=<現在の action_id>)` を呼ぶ（`action_id` 省略は legacy mode で `state_version` が
+   lease_token, action_id=<現在の action_id>)` を呼ぶ（`action_id` 省略は legacy mode で `state_version` が
    進み、最後の `complete` が stale 拒否されるため禁止）（`commit_sha` は baseline に記録済みの
    `iteration_head_sha`）。同 API は `status` が正確に `open` のレコードだけを
    `addressed` へ更新し、**実際に更新したシグネチャ集合**を返す。候補集合ではなくこの戻り値
@@ -520,7 +520,7 @@ lease_token, action_id=<現在の action_id>)` を呼ぶ（`action_id` 省略は
    `open` に戻ったもの）は `not_addressed` outcome として除外するので、事前スナップショットの候補をそのまま
    渡してよい。信頼済み thread へ reply + resolve を試み、GitHub 側失敗でも例外を投げない。戻り値
    （`AddressedFindingsResult`）は `journal_addressed_findings_outcome(loop_id, project_dir, result,
-action_id=<現在の action_id>)` で journal へ記録する（`reply_failed` / `resolve_failed` /
+   action_id=<現在の action_id>)` で journal へ記録する（`reply_failed` / `resolve_failed` /
    `no_trusted_thread` / `lease_expired` を含む完全な outcome を残す公開 API。payload を手書きしない）。
    合否には影響させない（再実行してもべき等）。
 5. **最終合否**: `phase_check_from_review_findings(result, include_persisted_open_blocking=True)` を呼ぶ。
@@ -739,9 +739,9 @@ params.draft_pr_exec の短い要約だけにし、レビュー本文やコマ�
 
 ### 反復サマリ
 
-| #           | フェーズ | Checker 結果                        | 停止/継続理由 |
-| ----------- | -------- | ----------------------------------- | ------------- |
-| {iteration} | {phase}  | {severity 件数・失敗種別だけの要約} | {reason}      |
+| # | フェーズ | Checker 結果 | 停止/継続理由 |
+| --- | -------- | -------------- | ------------- |
+| {iteration} | {phase} | {severity 件数・失敗種別だけの要約} | {reason} |
 
 ### 無視した非許可指摘
 
@@ -751,8 +751,8 @@ params.draft_pr_exec の短い要約だけにし、レビュー本文やコマ�
 
 {PASSED かつ `params.non_blocking_open` が 1 件以上ある場合のみ表示。0 件ならこのセクション自体を省略する}
 
-| severity      | path:line       | 抜粋（200 字まで）   |
-| ------------- | --------------- | -------------------- |
+| severity | path:line | 抜粋（200 字まで） |
+| -------- | --------- | ------------------- |
 | {medium\|low} | `{path}:{line}` | {レビュー本文の抜粋} |
 
 ### 次のアクション
