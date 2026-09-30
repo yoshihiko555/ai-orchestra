@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-09-30
+
 ### Added
 
 - **`core`: `memory-layers` ルールを追加**: 作業中の状態・決定・気づきを Plans.md / ADR / `AGENTS.md` / auto-memory / claude-mem のどこに書くかを定めた。auto-memory には進行状態を書かず、Codex / Antigravity にも必要な知見は手動の棚卸しで `AGENTS.md` の記述欄へ移す。
