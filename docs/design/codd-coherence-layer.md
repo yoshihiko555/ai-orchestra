@@ -879,6 +879,7 @@ Markdown の先頭は固定マーカー `<!-- codd-guardrail -->`。判定・val
 JSON は `verdict` / `ref` / `validate.errors` / `validate.warnings` / `impact` / `markdown` を返し、
 各 finding は `check` / `level` / `message`、`impact` は既存の `impact --json` と同じ構造を使う。
 JSON の一覧は省略・エスケープせず、`ref` は Markdown と同じ `impact_result.ref` を使う。
+verdict の出力に限り、全文字列のサロゲートを純粋関数で置換し、JSON と Markdown を厳密な UTF-8 として読めるようにする。
 
 終了コードは `reject` で REJECT、`conditional` で CONDITIONAL または REJECT のとき 1、
 それ以外は 0。`never` では判定による失敗はなく、`ImpactError` は全モードで stderr に
@@ -900,6 +901,7 @@ CODD 無効時は JSON の `disabled` で検出し、output を空にして無�
 | `fail-on`        | `reject`                        | 判定によるジョブ失敗条件                                            |
 | `config`         | `.claude/config/codd/codd.yaml` | 未導入の場合は action 同梱の `../config/codd.yaml` にフォールバック |
 | `comment`        | `'true'`                        | PR コメントの投稿・更新を有効化                                     |
+| `comment-author` | `''`                            | GitHub App token を使う場合は `<app-slug>[bot]` を指定                |
 | `github-token`   | `${{ github.token }}`           | fetch とコメント API の認証（ログには出さない）                     |
 | `python-version` | `'3.12'`                        | 実行 Python                                                         |
 
@@ -914,12 +916,14 @@ private repo の fetch に認証が必要な場合は、対象リポジトリの
 **fork PR の扱い**: `pull_request` のときだけ、固定マーカーを含む既存コメントを `gh api` で探し、
 あれば PATCH、なければ POST する。fork PR などで投稿権限がなければ `::warning::` を出して続行し、
 ジョブ要約と `fail-on` による終了判定は維持する。
-検索対象は `gh api user --jq .login` の投稿者に限定し、取得できなければ（既定の
+`comment-author` 指定時はその投稿者に限定し、`/user` は呼ばない。未指定時は従来どおり
+検索対象を `gh api user --jq .login` の投稿者に限定し、取得できなければ（既定の
 GITHUB_TOKEN では `/user` が 403 になるのが通常のため警告せず）`github-actions[bot]` にフォールバックする。API 失敗の警告には HTTP status 等の理由を含め、
 token は伏せる。コメント本文が 60000 バイトを超える場合は UTF-8 を壊さず注記付きで切り詰め、
 ジョブ要約の本文は維持する。
 `pull_request_target` は、PR 内の未信頼コードを強い権限で実行することを避けるため使わない。
 入力・ref・token は `env:` 経由で渡し、shell には `${{ }}` を直接展開しない。
+GHES では `github.server_url` のホスト名を `GH_HOST`、入力 token を `GH_ENTERPRISE_TOKEN` に渡す。github.com では従来どおり `GH_TOKEN` を使う。
 
 導入先の workflow 例（`<tag>` は利用するリリースタグに置き換える）:
 

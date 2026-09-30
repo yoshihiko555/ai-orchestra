@@ -2459,6 +2459,90 @@ def test_verdict_escapes_all_dynamic_fields_and_uses_impact_ref(
     assert "input-ref" not in output
 
 
+@pytest.mark.parametrize("surrogate", ["\udcff", "\ud800"])
+@pytest.mark.parametrize("output_format", ["markdown", "json"])
+def test_verdict_outputs_strict_utf8_for_surrogates_in_all_dynamic_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfdbinary: pytest.CaptureFixture[bytes],
+    surrogate: str,
+    output_format: str,
+) -> None:
+    path = f"docs/bad-{surrogate}.md"
+    sanitized_path = "docs/bad-\ufffd.md"
+    errors = [cli.Finding(path, cc.LEVEL_ERROR, f"依存先がない: {path}")]
+    warnings = [cli.Finding(path, cc.LEVEL_WARNING, f"要確認: {path}")]
+    impact = _verdict_impact(cc.BAND_GREEN, deleted_upstream=[path])
+    impact.ref = path
+    impact.changed_ids = [path]
+    impact.impacted[0].node_id = path
+    impact.impacted[0].path = path
+    impact.impacted[0].origins = [path]
+    _mock_verdict_analysis(monkeypatch, errors + warnings, impact)
+    config = _write(tmp_path, "codd.yaml", _MINIMAL_CODD_YAML)
+    assert (
+        cli.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--config",
+                str(config),
+                "verdict",
+                "--format",
+                output_format,
+                "--fail-on",
+                "never",
+            ]
+        )
+        == 0
+    )
+    captured = capfdbinary.readouterr()
+    assert captured.err == b""
+    output = captured.out.decode("utf-8", errors="strict")
+    if output_format == "json":
+        payload = json.loads(output)
+        assert payload["verdict"] == cli.VERDICT_REJECT
+        assert payload["ref"] == payload["impact"]["ref"] == sanitized_path
+        assert payload["validate"]["errors"] == [
+            {
+                "check": sanitized_path,
+                "level": cc.LEVEL_ERROR,
+                "message": f"依存先がない: {sanitized_path}",
+            }
+        ]
+        assert payload["validate"]["warnings"] == [
+            {
+                "check": sanitized_path,
+                "level": cc.LEVEL_WARNING,
+                "message": f"要確認: {sanitized_path}",
+            }
+        ]
+        assert payload["impact"]["changed_nodes"] == [sanitized_path]
+        assert payload["impact"]["deleted_upstream"] == [sanitized_path]
+        node = payload["impact"]["impacted"][0]
+        assert node["node_id"] == node["path"] == sanitized_path
+        assert node["origins"] == [sanitized_path]
+        assert node["band"] == cc.BAND_GREEN
+        assert node["score"] == 0.8
+        assert node["min_hops"] == 1
+        assert node["co_changed"] is False
+        output = payload["markdown"]
+        output.encode("utf-8", errors="strict")
+    assert output.startswith(cli.VERDICT_MARKER + "\n")
+    assert f"依存先がない: {sanitized_path}" in output
+    assert f"要確認: {sanitized_path}" in output
+    assert (
+        f"{sanitized_path} / {sanitized_path} / green / score=0.80 / via {sanitized_path}" in output
+    )
+    assert f"比較 ref: `{sanitized_path}`" in output
+    assert errors[0].check == warnings[0].check == impact.ref == path
+    assert errors[0].message == f"依存先がない: {path}"
+    assert warnings[0].message == f"要確認: {path}"
+    assert impact.changed_ids == impact.deleted_upstream == [path]
+    assert impact.impacted[0].node_id == impact.impacted[0].path == path
+    assert cli._impact_to_json(impact)["impacted"][0]["origins"] == [path]
+
+
 @pytest.mark.parametrize("extra", [0, 3])
 def test_verdict_display_limits_preserve_counts_and_full_json(
     tmp_path: Path,
@@ -2629,9 +2713,18 @@ def test_codd_action_and_workflow_yaml_use_minimal_permissions_and_safe_shell() 
         "fail-on",
         "config",
         "comment",
+        "comment-author",
         "github-token",
         "python-version",
     }
+    assert action["inputs"]["comment-author"]["default"] == ""
+    assert action["inputs"]["comment-author"]["description"] == (
+        "GitHub App token を使う場合は `<app-slug>[bot]` を指定"
+    )
+    comment_env = _action_step("Update PR comment")["env"]
+    assert comment_env["CODD_SERVER_URL"] == "${{ github.server_url }}"
+    assert comment_env["CODD_COMMENT_AUTHOR"] == "${{ inputs.comment-author }}"
+    assert comment_env["GH_TOKEN"] == "${{ inputs.github-token }}"
     assert "verdict" in action["outputs"]
     assert action["runs"]["steps"][0]["name"] == "Validate inputs"
     for step in action["runs"]["steps"]:
@@ -2642,8 +2735,9 @@ def test_codd_action_and_workflow_yaml_use_minimal_permissions_and_safe_shell() 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="投稿者フィルターの検証には jq が必要")
 @pytest.mark.parametrize("existing_comment", ["own", "other", "none"])
 @pytest.mark.parametrize("failed_api", [None, "user", "list", "post"])
+@pytest.mark.parametrize("comment_author", ["", "codd-test[bot]"])
 def test_codd_action_posts_or_updates_comment_and_tolerates_permission_failure(
-    tmp_path: Path, existing_comment: str, failed_api: str | None
+    tmp_path: Path, existing_comment: str, failed_api: str | None, comment_author: str
 ) -> None:
     step = next(
         step for step in _codd_action()["runs"]["steps"] if step.get("name") == "Update PR comment"
@@ -2671,7 +2765,7 @@ def test_codd_action_posts_or_updates_comment_and_tolerates_permission_failure(
     mock_gh.chmod(0o755)
     body = "<!-- codd-guardrail -->\n# APPROVE\n"
     markdown = _write(tmp_path, "verdict.md", body)
-    author = "github-actions[bot]" if failed_api == "user" else "token-user"
+    author = comment_author or ("github-actions[bot]" if failed_api == "user" else "token-user")
     comments = [{"id": 55, "user": {"login": author}, "body": "関係ないコメント"}]
     if existing_comment != "none":
         comments.append({"id": 99, "user": {"login": "another-user"}, "body": body})
@@ -2690,6 +2784,8 @@ def test_codd_action_posts_or_updates_comment_and_tolerates_permission_failure(
             "CODD_REPOSITORY": "test/repo",
             "CODD_PR_NUMBER": "97",
             "CODD_MARKDOWN": str(markdown),
+            "CODD_SERVER_URL": "https://github.com",
+            "CODD_COMMENT_AUTHOR": comment_author,
             "CODD_TEST_CALLS": str(calls),
             "CODD_TEST_COMMENTS": str(comment_file),
             "CODD_TEST_FAILED_API": failed_api or "",
@@ -2702,7 +2798,7 @@ def test_codd_action_posts_or_updates_comment_and_tolerates_permission_failure(
     )
     assert completed.returncode == 0, completed.stderr
     api_calls = calls.read_text(encoding="utf-8")
-    assert "api user --jq .login" in api_calls
+    assert ("api user --jq .login" in api_calls) == (not comment_author)
     assert f'select(.user.login == "{author}")' in api_calls
     if failed_api == "list":
         assert "--method" not in api_calls
@@ -2722,6 +2818,52 @@ def test_codd_action_posts_or_updates_comment_and_tolerates_permission_failure(
         assert "test-secret-token" not in completed.stdout + completed.stderr
     if failed_api in (None, "user"):
         assert posted_body.read_text(encoding="utf-8") == body
+
+
+@pytest.mark.parametrize("server_url", ["https://github.com", "https://github.example.com"])
+def test_codd_action_routes_comment_api_and_token_to_server_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, server_url: str
+) -> None:
+    monkeypatch.delenv("GH_HOST", raising=False)
+    monkeypatch.delenv("GH_ENTERPRISE_TOKEN", raising=False)
+    calls = tmp_path / "calls"
+    mock_gh = _write(
+        tmp_path,
+        "bin/gh",
+        "#!/bin/bash\n"
+        'printf "%s\\t%s\\t%s\\t%s\\n" "${GH_HOST-unset}" "$GH_TOKEN" '
+        '"${GH_ENTERPRISE_TOKEN-unset}" "$*" >> "$CODD_TEST_CALLS"\n'
+        'if [ "$2" = user ]; then echo token-user; fi\n',
+    )
+    mock_gh.chmod(0o755)
+    markdown = _write(tmp_path, "verdict.md", cli.VERDICT_MARKER + "\n# APPROVE\n")
+    completed = _run_action_step(
+        "Update PR comment",
+        {
+            "PATH": f"{mock_gh.parent}{os.pathsep}{os.environ['PATH']}",
+            "CODD_REPOSITORY": "test/repo",
+            "CODD_PR_NUMBER": "97",
+            "CODD_MARKDOWN": str(markdown),
+            "CODD_SERVER_URL": server_url,
+            "CODD_COMMENT_AUTHOR": "",
+            "CODD_TEST_CALLS": str(calls),
+            "GH_TOKEN": "test-secret-token",
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    records = [line.split("\t") for line in calls.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 3
+    for host, token, enterprise_token, _ in records:
+        assert token == "test-secret-token"
+        if server_url == "https://github.com":
+            assert host == enterprise_token == "unset"
+        else:
+            assert host == "github.example.com"
+            assert enterprise_token == token
+    assert records[0][3] == "api user --jq .login"
+    assert records[1][3].startswith("api --paginate repos/test/repo/issues/97/comments")
+    assert records[2][3].startswith("api --method POST repos/test/repo/issues/97/comments")
+    assert "test-secret-token" not in completed.stdout + completed.stderr
 
 
 @pytest.mark.parametrize("size", [59999, 60000, 60001, 90000])
@@ -2750,6 +2892,8 @@ def test_codd_action_limits_comment_bytes_without_changing_summary_body(
             "CODD_REPOSITORY": "test/repo",
             "CODD_PR_NUMBER": "97",
             "CODD_MARKDOWN": str(markdown),
+            "CODD_SERVER_URL": "https://github.com",
+            "CODD_COMMENT_AUTHOR": "",
             "CODD_TEST_BODY": str(posted_body),
         },
     )

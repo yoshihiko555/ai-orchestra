@@ -1539,6 +1539,20 @@ def _should_fail(verdict: str, fail_on: str) -> bool:
     )
 
 
+def _sanitize_verdict_output(value: Any) -> Any:
+    """Replace surrogates in output strings without mutating analysis results."""
+    if isinstance(value, str):
+        return re.sub(r"[\ud800-\udfff]", "\ufffd", value)
+    if isinstance(value, dict):
+        return {
+            _sanitize_verdict_output(key): _sanitize_verdict_output(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_verdict_output(item) for item in value]
+    return value
+
+
 def cmd_verdict(
     root: Path, config: cc.CoddConfig, ref: str, output_format: str, fail_on: str
 ) -> int:
@@ -1565,9 +1579,9 @@ def cmd_verdict(
             "impact": _impact_to_json(impact_result),
             "markdown": markdown,
         }
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(_sanitize_verdict_output(payload), ensure_ascii=False, indent=2))
     else:
-        print(markdown, end="")
+        print(_sanitize_verdict_output(markdown), end="")
     return int(_should_fail(verdict, fail_on))
 
 

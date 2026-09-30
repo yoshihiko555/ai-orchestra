@@ -57,6 +57,8 @@ action は merge-base から比較し、ジョブ要約と PR コメントに判
 JSON 出力は Markdown 本文を含み、無効時は `{"verdict": null, "disabled": true}` を返す。
 checkout は `persist-credentials: false` とし、private repo では読み取り権限を持つ
 `github-token` を action に渡す。
+GitHub App token を使う場合は `comment-author: "<app-slug>[bot]"` を指定する。
+未指定時は `/user` の login（取得できなければ `github-actions[bot]`）で既存コメントを探す。GHES の API ホストと認証は自動で切り替える。
 導入例・入力・fork PR の扱いは [設計 §4.8.2](docs/design/codd-coherence-layer.md#482-ci-ガードレールissue-97) を参照。
 
 ## アーキテクチャ

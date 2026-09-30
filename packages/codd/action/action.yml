@@ -14,6 +14,9 @@ inputs:
   comment:
     description: pull_request イベントで判定コメントを投稿する
     default: "true"
+  comment-author:
+    description: "GitHub App token を使う場合は `<app-slug>[bot]` を指定"
+    default: ""
   github-token:
     description: fetch と PR コメント用 GitHub token
     default: ${{ github.token }}
@@ -123,10 +126,17 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        CODD_SERVER_URL: ${{ github.server_url }}
+        CODD_COMMENT_AUTHOR: ${{ inputs.comment-author }}
         CODD_REPOSITORY: ${{ github.repository }}
         CODD_PR_NUMBER: ${{ github.event.pull_request.number }}
         CODD_MARKDOWN: ${{ steps.verdict.outputs.markdown }}
       run: |
+        gh_host=${CODD_SERVER_URL#https://}
+        if [ "$gh_host" != github.com ]; then
+          export GH_HOST="$gh_host"
+          export GH_ENTERPRISE_TOKEN="$GH_TOKEN"
+        fi
         comment_body=$(mktemp)
         # GitHub のコメント上限を超える長い値への安全策（Issue #97）。要約は切り詰めない。
         python - "$CODD_MARKDOWN" "$comment_body" <<'PY'
@@ -152,9 +162,12 @@ runs:
           api_error=${api_error//%/%25}
           printf '::warning::%s: %s。ジョブ要約を確認してください。\n' "$1" "$api_error"
         }
-        # 既定の GITHUB_TOKEN では /user が 403 になるのが通常のため、警告せず bot 名へ戻す。
-        if ! login=$(gh api user --jq .login 2>/dev/null) || [ -z "$login" ]; then
-          login='github-actions[bot]'
+        login=$CODD_COMMENT_AUTHOR
+        if [ -z "$login" ]; then
+          # 既定の GITHUB_TOKEN では /user が 403 になるのが通常のため、警告せず bot 名へ戻す。
+          if ! login=$(gh api user --jq .login 2>/dev/null) || [ -z "$login" ]; then
+            login='github-actions[bot]'
+          fi
         fi
         comment_author=$(python -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$login")
         # fork PR の token は通常書き込みできないため、投稿失敗では判定を中断しない（Issue #97）。
