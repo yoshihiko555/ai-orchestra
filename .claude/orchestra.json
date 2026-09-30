@@ -73,7 +73,7 @@
       "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
     },
     "agent-routing": {
-      "config/agent-routing/cli-tools.yaml": "8e364371675525226d2e01e0b7bb3d264b360846c2851ffc9f5fcd3b0a95cdfa",
+      "config/agent-routing/cli-tools.yaml": "21fc3eee58acae46227ec9d20fc140f38394dc08821b56a6fa325f552f6cc080",
       "agents/ai-architect.md": "d04bcb1017752f8bd3e1f6ffc5b7f292809357fa3c0b6c807617ebdc480ed446",
       "agents/ai-dev.md": "f1c53f1064c0fe7be172f235837dc511597fe169678f06e102e66c3562a8dd30",
       "agents/api-designer.md": "bb81a221c98b8a0b88513c1c040e844aae7b317679c8f7e6952168108b511a2b",
