@@ -27,13 +27,17 @@ def _resolve_orchex_version() -> str:
 
     orchex エントリポイント経由の実行では ai_orchestra が import 済みのため
     その値を使う。`python3 scripts/orchestra-manager.py` の直接実行時は、
-    site-packages にインストール済みの ai_orchestra にシャドウイングされない
-    よう、import 前にチェックアウトルートを sys.path の先頭へ挿入する。
+    site-packages や PYTHONPATH 上の別の ai_orchestra にシャドウイングされない
+    よう、import 前にチェックアウトルートを sys.path の先頭へ移す。
     """
     if "ai_orchestra" not in sys.modules:
-        repo_root = Path(__file__).resolve().parent.parent
-        if (repo_root / "ai_orchestra").is_dir() and str(repo_root) not in sys.path:
-            sys.path.insert(0, str(repo_root))
+        repo_root = str(Path(__file__).resolve().parent.parent)
+        if (Path(repo_root) / "ai_orchestra").is_dir():
+            # editable install の .pth はルートを sys.path の末尾に追加するため、
+            # 存在チェックで挿入を省くと PYTHONPATH 上の別の ai_orchestra が優先される
+            if repo_root in sys.path:
+                sys.path.remove(repo_root)
+            sys.path.insert(0, repo_root)
 
     try:
         from ai_orchestra import __version__
