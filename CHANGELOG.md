@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Codex の既定モデルを `gpt-6.1-sol` に更新**: エージェントルーティング（`codex.model` / `codex.model_allowlist`）、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。
 - **配布する AGENTS.md の作業ルールに過剰実装を防ぐ判断手順を追加**: 書く前に既存コード → 標準ライブラリ → 導入済みの依存の順で探す、依頼や受け入れ条件に必要ない抽象化・依存・ボイラープレートを足さない、など 4 項目。`code-reviewer` のチェックリストにも過剰実装の観点を追加。
 - **BREAKING** **`core`: `explain-visually` を `grasp-view` に改名**: `/explain-visually` は `/grasp-view` になり（`/grasp-check` と対になる名前）、HTML の出力先は `.claude/docs/grasp-view/` に変わる。旧名の互換スタブは置かない。
 - **BREAKING** **`core`: `grasp-view` の環境変数を改名**: `EXPLAIN_VISUALLY_CHROME` → `GRASP_VIEW_CHROME`、`EXPLAIN_VISUALLY_BASE` → `GRASP_VIEW_BASE`。旧名は読まないので、設定している場合は新しい名前に変える。
