@@ -18,7 +18,7 @@
   "scripts": [
     {
       "path": "scripts/codd.py",
-      "description": "CODD CLI: scan（依存グラフ構築）/ validate（整合性検証）/ graph（可視化）/ impact（変更影響の信頼度分類）"
+      "description": "CODD CLI: scan（依存グラフ構築）/ validate（整合性検証）/ graph（可視化）/ impact（変更影響の信頼度分類）/ verdict（CI の PR 整合性判定）"
     }
   ],
   "config": ["config/codd.yaml"]

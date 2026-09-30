@@ -64,14 +64,14 @@ skill / hook）で独自実装する。
 
 ### 3.2 Out of Scope（別Issue 登録）
 
-| 項目                                                                                           | 理由                                       | 移管先                          |
-| ---------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------- |
-| ~~impact 分析（Green/Amber/Gray 信頼度スコア）~~ → **Phase 2 で実装済み（Issue #94 / 4.5.1）**             | —                                           | 完了                             |
-| ~~hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開~~ → **Issue #95 で実装済み（4.8.1）** | —                                           | 完了                             |
-| 実 git pre-commit hook（PreToolUse 代替ではない本物の git hook）の配布                                     | 既存 pre-commit 環境との衝突・uninstall 時の原状回復を避けるため、Issue #95 では PreToolUse (Bash) の `git commit` 検出方式で代替した | Issue: codd-real-git-hook-distribution |
-| CI（PR に verdict 投稿）                                                                                   | impact 分析に依存                           | Issue: codd-ci-guardrail         |
-| ~~コード ⇔ ドキュメントのトレーサビリティ~~ → **Phase 3 で opt-in 実装済み（Issue #98 / 4.3.1）** | —                                            | 完了                             |
-| ノードのサブ粒度化（1ファイル内 FT-xxx 単位のノード）                                                      | parser/validate が複雑化                    | Issue: codd-subnode-granularity  |
+| 項目                                                                                                        | 理由                                                                                                                                  | 移管先                                 |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| ~~impact 分析（Green/Amber/Gray 信頼度スコア）~~ → **Phase 2 で実装済み（Issue #94 / 4.5.1）**              | —                                                                                                                                     | 完了                                   |
+| ~~hook 自動配線（PostToolUse scan / pre-commit validate）の導入先展開~~ → **Issue #95 で実装済み（4.8.1）** | —                                                                                                                                     | 完了                                   |
+| 実 git pre-commit hook（PreToolUse 代替ではない本物の git hook）の配布                                      | 既存 pre-commit 環境との衝突・uninstall 時の原状回復を避けるため、Issue #95 では PreToolUse (Bash) の `git commit` 検出方式で代替した | Issue: codd-real-git-hook-distribution |
+| ~~CI（PR に verdict 投稿）~~ → **Issue #97 で実装済み（4.8.2）**                                            | —                                                                                                                                     | 完了                                   |
+| ~~コード ⇔ ドキュメントのトレーサビリティ~~ → **Phase 3 で opt-in 実装済み（Issue #98 / 4.3.1）**           | —                                                                                                                                     | 完了                                   |
+| ノードのサブ粒度化（1ファイル内 FT-xxx 単位のノード）                                                       | parser/validate が複雑化                                                                                                              | Issue: codd-subnode-granularity        |
 
 ---
 
@@ -292,16 +292,16 @@ dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱
 
 `scan` がフロントマターを収集してグラフを構築し、`validate` が以下を検査する。
 
-| 検査                       | 条件                                                 | 既定レベル |
-| -------------------------- | ---------------------------------------------------- | ---------- |
-| **dangling**（リンク切れ） | `depends_on.id` が既存 node_id に存在しない          | error      |
-| **duplicate**              | 同一 node_id が複数ドキュメントに存在                | error      |
-| **cycle**（循環依存）      | depends_on を辿ると循環する                          | error      |
-| **unknown**                | 未定義の kind / relation / status を使用             | error      |
+| 検査                                  | 条件                                                                                                                 | 既定レベル |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---------- |
+| **dangling**（リンク切れ）            | `depends_on.id` が既存 node_id に存在しない                                                                          | error      |
+| **duplicate**                         | 同一 node_id が複数ドキュメントに存在                                                                                | error      |
+| **cycle**（循環依存）                 | depends_on を辿ると循環する                                                                                          | error      |
+| **unknown**                           | 未定義の kind / relation / status を使用                                                                             | error      |
 | **malformed_annotation**（Issue #98） | code_scope の注釈が不正（relation 注釈の参照先 value 欠落、`codd:kind` にソース非対応の値、`codd:<key>` 文法違反等） | error      |
-| **missing_frontmatter**    | scope 内なのに `codd:` ブロックが無い（H-5）         | warning    |
-| **orphan**（孤立）         | 被参照ゼロ かつ 参照ゼロ（`roots` 指定 kind は除外） | warning    |
-| **drift**（ドリフト疑い）  | 上流ノードの最終コミット時刻が下流より新しい         | warning    |
+| **missing_frontmatter**               | scope 内なのに `codd:` ブロックが無い（H-5）                                                                         | warning    |
+| **orphan**（孤立）                    | 被参照ゼロ かつ 参照ゼロ（`roots` 指定 kind は除外）                                                                 | warning    |
+| **drift**（ドリフト疑い）             | 上流ノードの最終コミット時刻が下流より新しい                                                                         | warning    |
 
 - **drift の時刻ソース**（H-3）: `git log -1 --format=%ct -- <path>`（最終コミット時刻）を用いる。
   未コミット（ワーキングツリーのみ）の場合はファイルシステム mtime にフォールバックする。
@@ -504,10 +504,10 @@ codd は essential（常時有効）のため、**条件分岐は不要**で常�
 `packages/codd/manifest.json` に以下の hooks を宣言し、既存の同期レール（sync_hooks）経由で
 導入先 `.claude/settings.local.json` へ自動登録する（essential プリセットのため全導入先が対象）。
 
-| hook スクリプト                | イベント    | matcher   | 役割                                       |
-| ------------------------------ | ----------- | --------- | ------------------------------------------ |
-| `codd-scan-postedit.py`        | PostToolUse | `Edit\|Write` | scope 内ファイル編集時に `scan` を実行し、graph を再構築する（常に非ブロック） |
-| `codd-validate-precommit.py`   | PreToolUse  | `Bash`    | `git commit` を検出したら `validate` を実行し、警告またはブロックする |
+| hook スクリプト              | イベント    | matcher       | 役割                                                                           |
+| ---------------------------- | ----------- | ------------- | ------------------------------------------------------------------------------ |
+| `codd-scan-postedit.py`      | PostToolUse | `Edit\|Write` | scope 内ファイル編集時に `scan` を実行し、graph を再構築する（常に非ブロック） |
+| `codd-validate-precommit.py` | PreToolUse  | `Bash`        | `git commit` を検出したら `validate` を実行し、警告またはブロックする          |
 
 両 hook とも manifest 上で `"timeout": 90`（秒）を宣言し、同期レール（`sync_hooks`）が
 導入先 `.claude/settings.local.json` へ登録する際にこの値を反映する。`codd-validate-precommit.py`
@@ -566,7 +566,7 @@ level は warning のため通常は commit をブロックしないが、`check
 対応方針として、次の2案を比較検討した:
 
 1. **（採用）実リポジトリの git コンテキストをスナップショットへ伝播する**: `git rev-parse
-   --path-format=absolute --git-dir` で解決した絶対 git-dir を `GIT_DIR`、一時ディレクトリを
+--path-format=absolute --git-dir` で解決した絶対 git-dir を `GIT_DIR`、一時ディレクトリを
    `GIT_WORK_TREE` として `codd validate` サブプロセスの環境変数に渡す。checkout-index の
    内容は index そのもののコピーなので、この状態で `git status` を実行すると
    worktree（スナップショット）と index の差分は常にクリーンになり、index と HEAD の差分
@@ -691,10 +691,10 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
   バックが書き込み順を「新旧」として誤解釈しうる。checkout 直後に snapshot 内の
   全ファイルへ共通の prospective timestamp を与え、この artifact を解消する。
 - **repo prefix の空白保持**: `_resolve_repo_prefix` は `git rev-parse
-  --show-prefix` の出力から末尾改行のみを除去する（`.strip()` は project root
+--show-prefix` の出力から末尾改行のみを除去する（`.strip()` は project root
   ディレクトリ名の有効な先頭空白まで削ってしまう）。
 - **snapshot cleanup の確実化**: `_materialize_config` 呼び出しから `codd
-  validate` 実行までを単一の `finally` で包み、途中で例外（ENOSPC / permission /
+validate` 実行までを単一の `finally` で包み、途中で例外（ENOSPC / permission /
   I/O error 等）が発生しても snapshot・候補 index が `/tmp` に残留しないようにする。
 - **skip-worktree エントリの展開**: `checkout-index` に
   `--ignore-skip-worktree-bits` を付け、sparse checkout で skip-worktree bit が
@@ -725,7 +725,7 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 
 - **`--trailer` の値を pathspec と誤認しない**: `classify_commit_invocation` の値を取る
   long option テーブルに `--trailer` を追加した。未対応のままだと `git commit -a --trailer
-  "Acked-by: dev" -m x` の値がパススペック指定と誤認され、`has_unsupported=True` となって
+"Acked-by: dev" -m x` の値がパススペック指定と誤認され、`has_unsupported=True` となって
   `-a` 候補ツリー再現（`simulate_commit_all`）が無効化され、実際には `-a` で取り込まれる
   未ステージの追跡済み文書が古い index だけで検査されてしまっていた（block モードでも
   不整合を含む commit が通りうる）。
@@ -837,10 +837,10 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 「実動作」は `codd.yaml` の `hooks:` セクションで制御する（config キーは 4.6 の `checks` 等と同じ
 `.claude/config/codd/codd.yaml` 配下）。
 
-| キー                       | 型                            | 既定値  | 意味                                                                 |
-| -------------------------- | ------------------------------ | ------- | ---------------------------------------------------------------------- |
-| `hooks.scan_on_edit`       | bool                            | `false` | scope 内ファイル編集時に `scan` で graph を再構築するか。常に非ブロック |
-| `hooks.validate_on_commit` | `"off"` / `warn` / `block`      | `warn`  | `warn` は additionalContext で警告表示のみ。`block` は validate error 検出時に commit を止める（exit 2） |
+| キー                       | 型                         | 既定値  | 意味                                                                                                     |
+| -------------------------- | -------------------------- | ------- | -------------------------------------------------------------------------------------------------------- |
+| `hooks.scan_on_edit`       | bool                       | `false` | scope 内ファイル編集時に `scan` で graph を再構築するか。常に非ブロック                                  |
+| `hooks.validate_on_commit` | `"off"` / `warn` / `block` | `warn`  | `warn` は additionalContext で警告表示のみ。`block` は validate error 検出時に commit を止める（exit 2） |
 
 `hooks.validate_on_commit` の bare `off` は YAML 1.1 仕様上 boolean `False` としてパースされるが、
 `normalize_check_level`（`codd-frontmatter-policy.md` と同じ正規化関数）により大文字小文字違いも
@@ -849,6 +849,104 @@ working tree・index は一切変更しない設計方針に反し、`index.lock
 **fail-safe**: codd 未初期化（`codd.yaml` が存在しない）または `enabled: false` のプロジェクトでは、
 両 hook とも即座に no-op として終了する。実行時例外が発生した場合も exit 0 でフェイルセーフに倒し、
 hook 導入がホスト側の commit/edit フローをブロックしないことを優先する。
+
+### 4.8.2 CI ガードレール（Issue #97）
+
+`codd verdict --diff <ref> [--format markdown|json] [--fail-on reject|conditional|never]` は、
+既存の `scan_project` + `run_checks` と `compute_impact_result` をそれぞれ一度呼び出し、
+純粋関数 `decide_verdict` で判定する。既存の scan / validate / graph / impact の挙動は変えない。
+既定値は `--diff HEAD`、`--format markdown`、`--fail-on reject`。
+
+| 優先順位 | 条件                                                                                                     | 判定          |
+| -------- | -------------------------------------------------------------------------------------------------------- | ------------- |
+| 1        | validate error が 1 件以上                                                                               | `REJECT`      |
+| 2        | error が 0 件で、Green / Amber の影響先に `co_changed == false` がある、または `deleted_upstream` が非空 | `CONDITIONAL` |
+| 3        | 上記以外（影響なし・影響先がすべて追従済み・Gray のみ・warning のみ）                                    | `APPROVE`     |
+
+**warning を判定から除外する理由**: 既存ドキュメントには drift warning が多数あり、
+warning を条件に含めると、変更の内容にかかわらず毎回の PR が `CONDITIONAL` になってしまう。
+件数と一覧は表示し、Markdown の一覧は `<details>` 内で `VERDICT_WARNING_LIMIT`（20 件）まで
+に制限する。Gray は参考情報として帯域別件数に含める。
+
+Markdown の先頭は固定マーカー `<!-- codd-guardrail -->`。判定・validate 件数とエラー・
+帯域別件数・確認が必要なノード（node_id / path / score / via origins）・消失した上流・ref を出す。
+エラー・warning・確認が必要なノードの一覧は、それぞれ `VERDICT_ERROR_LIMIT` /
+`VERDICT_WARNING_LIMIT` / `VERDICT_REVIEW_LIMIT`（各 20 件）まで表示し、超過分は
+「他 N 件（ジョブ要約/CLI で確認）」と示す。全件は JSON 出力で確認できる。
+動的な値は純粋関数 `_escape_markdown` で改行・空白を一つのスペースにまとめ、
+`<` / `>` / `&` を HTML エスケープし、バッククォートを除去、`@` の後にゼロ幅スペースを挿入する。
+これにより本文中への固定マーカー混入とメンションを防ぐ。
+JSON は `verdict` / `ref` / `validate.errors` / `validate.warnings` / `impact` / `markdown` を返し、
+各 finding は `check` / `level` / `message`、`impact` は既存の `impact --json` と同じ構造を使う。
+JSON の一覧は省略・エスケープせず、`ref` は Markdown と同じ `impact_result.ref` を使う。
+
+終了コードは `reject` で REJECT、`conditional` で CONDITIONAL または REJECT のとき 1、
+それ以外は 0。`never` では判定による失敗はなく、`ImpactError` は全モードで stderr に
+エラーを出して 2。失敗条件は純粋関数 `_should_fail` で判定する。
+`enabled: false` は exit 0 で解析を省略し、verdict の JSON 形式だけ
+`{"verdict": null, "disabled": true}` を返す。Markdown と既存サブコマンドは従来の無効化メッセージを維持する。
+
+配布する composite action は `packages/codd/action/action.yml`。Python と pyyaml を用意し、
+`--format json --fail-on never` を一度だけ実行し、`markdown` フィールドから本文を取り出す。
+最初に `fail-on` を検証し、不正な値は `::error::` で中断する。
+解析の失敗（exit 2）は `::error::` とジョブ要約の一行で案内してジョブを失敗させる。
+判定は output `verdict` に返し、Markdown を `$GITHUB_STEP_SUMMARY` に書き込む。
+CODD 無効時は JSON の `disabled` で検出し、output を空にして無効化メッセージのみを
+要約へ書き、投稿と判定による失敗を省略する。
+
+| input            | 既定値                          | 用途                                                                |
+| ---------------- | ------------------------------- | ------------------------------------------------------------------- |
+| `base-ref`       | `${{ github.base_ref }}`        | 比較対象ブランチ                                                    |
+| `fail-on`        | `reject`                        | 判定によるジョブ失敗条件                                            |
+| `config`         | `.claude/config/codd/codd.yaml` | 未導入の場合は action 同梱の `../config/codd.yaml` にフォールバック |
+| `comment`        | `'true'`                        | PR コメントの投稿・更新を有効化                                     |
+| `github-token`   | `${{ github.token }}`           | fetch とコメント API の認証（ログには出さない）                     |
+| `python-version` | `'3.12'`                        | 実行 Python                                                         |
+
+**merge-base を使う理由**: base tip と HEAD を比較すると、分岐後に main 側だけで進んだ変更まで
+PR の変更に混ざる。`git fetch --no-tags origin <base-ref>` の後、
+`git merge-base origin/<base-ref> HEAD` を比較 ref とし、PR 側の変更だけを分析する。
+呼び出し側は `actions/checkout` に **`fetch-depth: 0`** を指定して共通祖先を取得する。
+空の `base-ref` と shallow repository は `::error::` で中断し、後者は `fetch-depth: 0` を案内する。
+checkout は `persist-credentials: false` とし、fetch の認証ヘッダーはその git コマンドだけに渡す。
+private repo の fetch に認証が必要な場合は、対象リポジトリの読み取り権限を持つ `github-token` を渡す。
+
+**fork PR の扱い**: `pull_request` のときだけ、固定マーカーを含む既存コメントを `gh api` で探し、
+あれば PATCH、なければ POST する。fork PR などで投稿権限がなければ `::warning::` を出して続行し、
+ジョブ要約と `fail-on` による終了判定は維持する。
+検索対象は `gh api user --jq .login` の投稿者に限定し、取得できなければ（既定の
+GITHUB_TOKEN では `/user` が 403 になるのが通常のため警告せず）`github-actions[bot]` にフォールバックする。API 失敗の警告には HTTP status 等の理由を含め、
+token は伏せる。コメント本文が 60000 バイトを超える場合は UTF-8 を壊さず注記付きで切り詰め、
+ジョブ要約の本文は維持する。
+`pull_request_target` は、PR 内の未信頼コードを強い権限で実行することを避けるため使わない。
+入力・ref・token は `env:` 経由で渡し、shell には `${{ }}` を直接展開しない。
+
+導入先の workflow 例（`<tag>` は利用するリリースタグに置き換える）:
+
+```yaml
+name: CODD guardrail
+on:
+  pull_request:
+concurrency:
+  group: codd-guardrail-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  codd-guardrail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # merge-base の算出に必要（Issue #97）
+          persist-credentials: false
+      - uses: yoshihiko555/ai-orchestra/packages/codd/action@<tag>
+        with:
+          fail-on: reject
+          comment: "true"
+```
 
 ### 4.9 ドッグフーディング
 
@@ -864,19 +962,19 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
 - **Phase 1**: フロントマター規約 + `packages/codd`（scan/validate）+ essential 化 + skill 改修 + ドッグフード
 - **Phase 2**: impact 分析（Green/Amber/Gray）**実装済み（Issue #94）** + hook 自動配線（PostToolUse scan /
   pre-commit validate 代替）**実装済み（Issue #95 / 4.8.1）**
-- **Phase 3**: コード⇔ドキュメントトレース（opt-in・**実装済み（Issue #98 / 4.3.1）**）+ CI verdict（別Issue）
+- **Phase 3**: コード⇔ドキュメントトレース（opt-in・**実装済み（Issue #98 / 4.3.1）**）+ CI verdict（**実装済み（Issue #97 / 4.8.2）**）
 
 ---
 
 ## 6. リスクと対策
 
-| リスク                                           | 対策                                                                        |
-| ------------------------------------------------ | --------------------------------------------------------------------------- |
-| フロントマターのプロパティ不足                   | 5プロパティで全検査が成立することを 4.5 で確認済み。不足時は後方互換で追加  |
-| 既存ドキュメントへのフロントマター一括付与コスト | Phase 1 は対象を docs/・.claude/rules/・Plans.md・templates/context/ に限定 |
-| drift 検査の誤検知                               | warning 止まり。コミット時刻ベースと明示し、本格判定は Phase 2              |
+| リスク                                           | 対策                                                                                                                                                                                                     |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| フロントマターのプロパティ不足                   | 5プロパティで全検査が成立することを 4.5 で確認済み。不足時は後方互換で追加                                                                                                                               |
+| 既存ドキュメントへのフロントマター一括付与コスト | Phase 1 は対象を docs/・.claude/rules/・Plans.md・templates/context/ に限定                                                                                                                              |
+| drift 検査の誤検知                               | warning 止まり。コミット時刻ベースと明示し、本格判定は Phase 2                                                                                                                                           |
 | essential 化による全導入先への影響               | hook の**登録**は essential で自動展開されるが、**実動作**は `codd.yaml` の `hooks.scan_on_edit`（既定 false）/ `hooks.validate_on_commit`（既定 warn）による二段構え opt-in で制御（Issue #95 / 4.8.1） |
-| frontmatter parser の誤検出                      | 先頭ブロックのみ読む実装に限定（M-1）                                       |
+| frontmatter parser の誤検出                      | 先頭ブロックのみ読む実装に限定（M-1）                                                                                                                                                                    |
 
 ---
 
