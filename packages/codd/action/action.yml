@@ -1,0 +1,207 @@
+name: CODD guardrail
+description: CODD の整合性判定を PR コメントとジョブ要約に出力する
+
+inputs:
+  base-ref:
+    description: PR の比較対象ブランチ
+    default: ${{ github.base_ref }}
+  fail-on:
+    description: ジョブを失敗させる判定（reject / conditional / never）
+    default: reject
+  config:
+    description: CODD 設定パス（未導入の場合は同梱設定を利用）
+    default: .claude/config/codd/codd.yaml
+  comment:
+    description: pull_request イベントで判定コメントを投稿する
+    default: "true"
+  comment-author:
+    description: "GitHub App token を使う場合は `<app-slug>[bot]` を指定"
+    default: ""
+  github-token:
+    description: fetch と PR コメント用 GitHub token
+    default: ${{ github.token }}
+  python-version:
+    description: 実行する Python バージョン
+    default: "3.12"
+
+outputs:
+  verdict:
+    description: APPROVE / CONDITIONAL / REJECT（CODD 無効時は空）
+    value: ${{ steps.verdict.outputs.verdict }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        CODD_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        case "$CODD_FAIL_ON" in
+          reject|conditional|never) ;;
+          *) echo '::error::fail-on は reject / conditional / never を指定してください。'; exit 1 ;;
+        esac
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install dependencies
+      shell: bash
+      run: pip install 'pyyaml>=6.0'
+
+    - name: Resolve merge base
+      id: base
+      shell: bash
+      env:
+        CODD_BASE_REF: ${{ inputs.base-ref }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        CODD_SERVER_URL: ${{ github.server_url }}
+        GIT_TERMINAL_PROMPT: "0"
+      run: |
+        # Issue #97: main 側だけの変更を混ぜないため、base tip ではなく merge-base を使う。
+        # 呼び出し側の actions/checkout は fetch-depth: 0 を指定する。
+        if [ -z "$CODD_BASE_REF" ]; then
+          echo '::error::base-ref が空です。比較対象ブランチを指定してください。'
+          exit 1
+        fi
+        if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+          echo '::error::CODD には全履歴が必要です。actions/checkout に fetch-depth: 0 を指定してください。'
+          exit 1
+        fi
+        git check-ref-format --branch "$CODD_BASE_REF" > /dev/null
+        # checkout に資格情報を残さず、private repo の fetch だけを認証する（Issue #97）。
+        auth_header="http.$CODD_SERVER_URL/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+        git -c credential.helper= -c "$auth_header" fetch --no-tags origin "$CODD_BASE_REF"
+        merge_base=$(git merge-base "origin/$CODD_BASE_REF" HEAD)
+        printf 'ref=%s\n' "$merge_base" >> "$GITHUB_OUTPUT"
+
+    - name: Run CODD verdict
+      id: verdict
+      shell: bash
+      env:
+        CODD_ACTION_PATH: ${{ github.action_path }}
+        CODD_CONFIG: ${{ inputs.config }}
+        CODD_REF: ${{ steps.base.outputs.ref }}
+      run: |
+        if [ ! -f "$CODD_CONFIG" ]; then
+          CODD_CONFIG="$CODD_ACTION_PATH/../config/codd.yaml"
+        fi
+        report_dir=$(mktemp -d "$RUNNER_TEMP/codd-guardrail.XXXXXX")
+        if python "$CODD_ACTION_PATH/../scripts/codd.py" --config "$CODD_CONFIG" \
+          verdict --diff "$CODD_REF" --format json --fail-on never > "$report_dir/verdict.json"; then
+          python - "$report_dir/verdict.json" "$report_dir/verdict.md" "$GITHUB_OUTPUT" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+
+        payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+        if payload.get("disabled", False):
+            verdict = ""
+            markdown = "[codd] disabled（config の enabled: false）\n"
+        else:
+            verdict = payload["verdict"]
+            markdown = payload["markdown"]
+        Path(sys.argv[2]).write_text(markdown, encoding="utf-8")
+        with Path(sys.argv[3]).open("a", encoding="utf-8") as output:
+            output.write(f"verdict={verdict}\nmarkdown={sys.argv[2]}\n")
+        PY
+        else
+          status=$?
+          if [ "$status" -eq 2 ]; then
+            echo '::error::CODD 解析に失敗しました（exit 2）。設定と比較 ref を確認してください。'
+            echo 'CODD 解析に失敗しました（exit 2）。設定と比較 ref を確認してください。' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+        fi
+
+    - name: Write job summary
+      shell: bash
+      env:
+        CODD_MARKDOWN: ${{ steps.verdict.outputs.markdown }}
+      run: cat "$CODD_MARKDOWN" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Update PR comment
+      if: ${{ inputs.comment == 'true' && github.event_name == 'pull_request' && steps.verdict.outputs.verdict != '' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CODD_SERVER_URL: ${{ github.server_url }}
+        CODD_COMMENT_AUTHOR: ${{ inputs.comment-author }}
+        CODD_REPOSITORY: ${{ github.repository }}
+        CODD_PR_NUMBER: ${{ github.event.pull_request.number }}
+        CODD_MARKDOWN: ${{ steps.verdict.outputs.markdown }}
+      run: |
+        gh_host=${CODD_SERVER_URL#https://}
+        if [ "$gh_host" != github.com ]; then
+          export GH_HOST="$gh_host"
+          export GH_ENTERPRISE_TOKEN="$GH_TOKEN"
+        fi
+        comment_body=$(mktemp)
+        # GitHub のコメント上限を超える長い値への安全策（Issue #97）。要約は切り詰めない。
+        python - "$CODD_MARKDOWN" "$comment_body" <<'PY'
+        import sys
+        from pathlib import Path
+
+        body = Path(sys.argv[1]).read_bytes()
+        limit = 60000
+        if len(body) > limit:
+            note = "\n\n本文を 60000 バイト以内に省略しました（ジョブ要約/CLI で確認）。\n".encode("utf-8")
+            body = body[:limit - len(note)].decode("utf-8", errors="ignore").encode("utf-8") + note
+        Path(sys.argv[2]).write_bytes(body)
+        PY
+        api_error_file=$(mktemp)
+        trap 'rm -f "$comment_body" "$api_error_file"' EXIT
+        warn_api_failure() {
+          api_error=$(cat "$api_error_file")
+          if [ -n "${GH_TOKEN:-}" ]; then
+            api_error=${api_error//"$GH_TOKEN"/[REDACTED]}
+          fi
+          api_error=${api_error//$'\r'/ }
+          api_error=${api_error//$'\n'/ }
+          api_error=${api_error//%/%25}
+          printf '::warning::%s: %s。ジョブ要約を確認してください。\n' "$1" "$api_error"
+        }
+        login=$CODD_COMMENT_AUTHOR
+        if [ -z "$login" ]; then
+          # 既定の GITHUB_TOKEN では /user が 403 になるのが通常のため、警告せず bot 名へ戻す。
+          if ! login=$(gh api user --jq .login 2>/dev/null) || [ -z "$login" ]; then
+            login='github-actions[bot]'
+          fi
+        fi
+        comment_author=$(python -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$login")
+        # fork PR の token は通常書き込みできないため、投稿失敗では判定を中断しない（Issue #97）。
+        if comment_ids=$(gh api --paginate "repos/$CODD_REPOSITORY/issues/$CODD_PR_NUMBER/comments" \
+          --jq ".[] | select(.user.login == $comment_author) | select((.body // \"\") | contains(\"<!-- codd-guardrail -->\")) | .id" 2>"$api_error_file"); then
+          comment_id=${comment_ids%%$'\n'*}
+          if [ -n "$comment_id" ]; then
+            endpoint="repos/$CODD_REPOSITORY/issues/comments/$comment_id"
+            method=PATCH
+          else
+            endpoint="repos/$CODD_REPOSITORY/issues/$CODD_PR_NUMBER/comments"
+            method=POST
+          fi
+          if gh api --method "$method" "$endpoint" -F "body=@$comment_body" > /dev/null 2>"$api_error_file"; then
+            exit 0
+          fi
+        fi
+        warn_api_failure 'CODD 判定コメントを投稿できませんでした'
+
+    - name: Enforce verdict
+      shell: bash
+      env:
+        CODD_FAIL_ON: ${{ inputs.fail-on }}
+        CODD_VERDICT: ${{ steps.verdict.outputs.verdict }}
+      run: |
+        case "$CODD_FAIL_ON" in
+          reject)
+            if [ "$CODD_VERDICT" != REJECT ]; then exit 0; fi
+            ;;
+          conditional)
+            if [ "$CODD_VERDICT" != REJECT ] && [ "$CODD_VERDICT" != CONDITIONAL ]; then exit 0; fi
+            ;;
+          never) exit 0 ;;
+          *) echo '::error::fail-on は reject / conditional / never を指定してください。'; exit 1 ;;
+        esac
+        echo "::error::CODD verdict: $CODD_VERDICT"
+        exit 1

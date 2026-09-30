@@ -1,15 +1,18 @@
-"""codd.py CLI（scan / graph / validate）の unit test。"""
+"""codd.py CLI（scan / graph / validate / impact / verdict）の unit test。"""
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest.mock
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.module_loader import load_module
 
@@ -2199,3 +2202,905 @@ def test_orchex_run_codd_scan_and_validate_backward_compatible(tmp_path) -> None
     validate_result = _run_orchex_codd(project, "validate")
     assert validate_result.returncode == 0, validate_result.stderr
     assert "[codd validate]" in validate_result.stdout
+
+
+# ---------------------------------------------------------------------------
+# EV-103〜115: verdict / CI ガードレール（Issue #97）
+# ---------------------------------------------------------------------------
+
+
+def _verdict_impact(
+    band: str | None = None,
+    *,
+    co_changed: bool = False,
+    deleted_upstream: list[str] | None = None,
+) -> cli.ImpactResult:
+    """判定表の帯域・追従・消失条件を組み立てる。"""
+    nodes = []
+    if band is not None:
+        nodes.append(
+            cc.ImpactedNode(
+                node_id="design:d",
+                path="docs/design.md",
+                score=0.8,
+                band=band,
+                origins=["req:r"],
+                min_hops=1,
+                co_changed=co_changed,
+            )
+        )
+    return cli.ImpactResult("HEAD", ["req:r"], nodes, deleted_upstream or [])
+
+
+@pytest.mark.parametrize(
+    ("level", "band", "co_changed", "deleted_upstream", "expected"),
+    [
+        (cc.LEVEL_ERROR, None, False, [], cli.VERDICT_REJECT),
+        (cc.LEVEL_ERROR, cc.BAND_GREEN, False, ["docs/old.md"], cli.VERDICT_REJECT),
+        (None, cc.BAND_GREEN, False, [], cli.VERDICT_CONDITIONAL),
+        (None, cc.BAND_AMBER, False, [], cli.VERDICT_CONDITIONAL),
+        (None, cc.BAND_GREEN, True, [], cli.VERDICT_APPROVE),
+        (None, cc.BAND_AMBER, True, [], cli.VERDICT_APPROVE),
+        (None, None, False, ["docs/old.md"], cli.VERDICT_CONDITIONAL),
+        (None, cc.BAND_GRAY, False, [], cli.VERDICT_APPROVE),
+        (None, cc.BAND_GRAY, True, [], cli.VERDICT_APPROVE),
+        (cc.LEVEL_WARNING, None, False, [], cli.VERDICT_APPROVE),
+        (None, None, False, [], cli.VERDICT_APPROVE),
+    ],
+)
+def test_decide_verdict_follows_priority_and_excludes_informational_findings(
+    level: str | None,
+    band: str | None,
+    co_changed: bool,
+    deleted_upstream: list[str],
+    expected: str,
+) -> None:
+    findings = [cli.Finding("drift", level, "上流が新しい")] if level else []
+    impact_result = _verdict_impact(band, co_changed=co_changed, deleted_upstream=deleted_upstream)
+    assert cli.decide_verdict(findings, impact_result) == expected
+
+
+def _mock_verdict_analysis(
+    monkeypatch: pytest.MonkeyPatch,
+    findings: list[cli.Finding],
+    impact_result: cli.ImpactResult,
+) -> tuple[unittest.mock.Mock, unittest.mock.Mock, unittest.mock.Mock]:
+    """判定の検証でファイル走査・git の結果を固定する。"""
+    scan = unittest.mock.Mock(return_value=cli.ScanResult(cc.CoddGraph(), [], [], []))
+    checks = unittest.mock.Mock(return_value=findings)
+    impact = unittest.mock.Mock(return_value=impact_result)
+    monkeypatch.setattr(cli, "scan_project", scan)
+    monkeypatch.setattr(cli, "run_checks", checks)
+    monkeypatch.setattr(cli, "compute_impact_result", impact)
+    return scan, checks, impact
+
+
+@pytest.mark.parametrize(
+    ("expected_verdict", "fail_on", "exit_code"),
+    [
+        (cli.VERDICT_APPROVE, "reject", 0),
+        (cli.VERDICT_APPROVE, "conditional", 0),
+        (cli.VERDICT_APPROVE, "never", 0),
+        (cli.VERDICT_CONDITIONAL, "reject", 0),
+        (cli.VERDICT_CONDITIONAL, "conditional", 1),
+        (cli.VERDICT_CONDITIONAL, "never", 0),
+        (cli.VERDICT_REJECT, "reject", 1),
+        (cli.VERDICT_REJECT, "conditional", 1),
+        (cli.VERDICT_REJECT, "never", 0),
+    ],
+)
+def test_cmd_verdict_exit_codes_and_analysis_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    expected_verdict: str,
+    fail_on: str,
+    exit_code: int,
+) -> None:
+    findings = (
+        [cli.Finding("dangling", cc.LEVEL_ERROR, "依存先がない")]
+        if expected_verdict == cli.VERDICT_REJECT
+        else []
+    )
+    band = cc.BAND_GREEN if expected_verdict == cli.VERDICT_CONDITIONAL else None
+    scan, checks, impact = _mock_verdict_analysis(monkeypatch, findings, _verdict_impact(band))
+    config = _config()
+    assert cli._should_fail(expected_verdict, fail_on) == bool(exit_code)
+    assert cli.cmd_verdict(tmp_path, config, "HEAD", "json", fail_on) == exit_code
+    assert json.loads(capsys.readouterr().out)["verdict"] == expected_verdict
+    scan.assert_called_once_with(tmp_path, config)
+    checks.assert_called_once_with(scan.return_value, config, tmp_path)
+    impact.assert_called_once_with(tmp_path, config, "HEAD")
+
+
+@pytest.mark.parametrize("fail_on", ["reject", "conditional", "never"])
+def test_cmd_verdict_impact_failure_is_exit_two_for_all_fail_on_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fail_on: str,
+) -> None:
+    _, _, impact = _mock_verdict_analysis(monkeypatch, [], _verdict_impact())
+    impact.side_effect = cli.ImpactError("無効な ref")
+    assert cli.cmd_verdict(tmp_path, _config(), "no-such-ref", "markdown", fail_on) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[codd verdict] ERROR: 無効な ref" in captured.err
+
+
+@pytest.mark.parametrize("output_format", ["markdown", "json"])
+def test_verdict_formats_report_errors_warnings_impact_and_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output_format: str,
+) -> None:
+    errors = [cli.Finding("dangling", cc.LEVEL_ERROR, "依存先がない")]
+    warnings = [
+        cli.Finding("drift", cc.LEVEL_WARNING, f"警告-{index:03d}")
+        for index in range(cli.VERDICT_WARNING_LIMIT + 1)
+    ]
+    impact_result = _verdict_impact(cc.BAND_GREEN, deleted_upstream=["docs/old.md"])
+    for band, co_changed in [(cc.BAND_AMBER, False), (cc.BAND_AMBER, True), (cc.BAND_GRAY, False)]:
+        node = _verdict_impact(band, co_changed=co_changed).impacted[0]
+        node.node_id = f"design:{band}-{co_changed}"
+        impact_result.impacted.append(node)
+    _mock_verdict_analysis(monkeypatch, errors + warnings, impact_result)
+    assert cli.cmd_verdict(tmp_path, _config(), "HEAD", output_format, "never") == 0
+    output = capsys.readouterr().out
+    if output_format == "json":
+        payload = json.loads(output)
+        assert set(payload) == {"verdict", "ref", "validate", "impact", "markdown"}
+        assert payload["verdict"] == cli.VERDICT_REJECT
+        assert payload["ref"] == "HEAD"
+        assert payload["validate"]["errors"] == [
+            {"check": "dangling", "level": cc.LEVEL_ERROR, "message": "依存先がない"}
+        ]
+        assert len(payload["validate"]["warnings"]) == len(warnings)
+        assert payload["validate"]["warnings"][-1] == {
+            "check": "drift",
+            "level": cc.LEVEL_WARNING,
+            "message": warnings[-1].message,
+        }
+        assert payload["impact"] == cli._impact_to_json(impact_result)
+        assert payload["markdown"] == cli.render_verdict_markdown(
+            cli.VERDICT_REJECT, errors, warnings, impact_result
+        )
+        return
+    assert output.startswith("<!-- codd-guardrail -->\n# CODD verdict: REJECT\n")
+    assert f"errors=1 warnings={len(warnings)}" in output
+    assert "[dangling] 依存先がない" in output
+    warning_details = output.split("<details>")[1].split("</details>")[0]
+    assert warnings[0].message in warning_details
+    assert warnings[cli.VERDICT_WARNING_LIMIT - 1].message in warning_details
+    assert warnings[-1].message not in output
+    assert "他 1 件（ジョブ要約/CLI で確認）" in warning_details
+    assert "Green（自動更新可）: 1" in output
+    assert "Amber（要確認）: 2" in output
+    assert "Gray（参考）: 1" in output
+    assert "design:d / docs/design.md / green / score=0.80 / via req:r" in output
+    assert "design:amber-False" in output
+    assert "design:amber-True" not in output
+    assert "design:gray-False" not in output
+    assert "docs/old.md" in output
+    assert "比較 ref: `HEAD`" in output
+
+
+def test_verdict_parser_defaults_match_impact() -> None:
+    args = cli.build_parser().parse_args(["verdict"])
+    assert args.diff == cli.build_parser().parse_args(["impact"]).diff == "HEAD"
+    assert args.format == "markdown"
+    assert args.fail_on == "reject"
+
+
+def test_verdict_help_explains_output_format_and_failure_modes(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.build_parser().parse_args(["verdict", "--help"])
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert "出力形式" in output
+    assert "Markdown 本文も含む" in output
+    assert "exit 1 にする判定" in output
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("design:doc / docs/design.md", "design:doc / docs/design.md"),
+        ("a\r\nb\nc\td", "a b c d"),
+        ("<script>&</script>", "&lt;script&gt;&amp;&lt;/script&gt;"),
+        ("@team @org/team", "@\u200bteam @\u200borg/team"),
+        ("`ref``", "ref"),
+        ("<!-- codd-guardrail -->", "&lt;!-- codd-guardrail --&gt;"),
+    ],
+)
+def test_escape_markdown_is_pure_and_neutralizes_dynamic_content(
+    value: str, expected: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli._escape_markdown(value) == expected
+    assert cli._escape_markdown(value) == expected
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+@pytest.mark.parametrize("output_format", ["markdown", "json"])
+def test_verdict_escapes_all_dynamic_fields_and_uses_impact_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output_format: str,
+) -> None:
+    value = "unsafe\r\n<&>@team` " + cli.VERDICT_MARKER
+    errors = [cli.Finding(value, cc.LEVEL_ERROR, value)]
+    warnings = [cli.Finding(value, cc.LEVEL_WARNING, value)]
+    impact = _verdict_impact(cc.BAND_GREEN, deleted_upstream=[value])
+    impact.ref = value
+    impact.impacted[0].node_id = value
+    impact.impacted[0].path = value
+    impact.impacted[0].origins = [value]
+    _mock_verdict_analysis(monkeypatch, errors + warnings, impact)
+    assert cli.cmd_verdict(tmp_path, _config(), "input-ref", output_format, "never") == 0
+    output = capsys.readouterr().out
+    if output_format == "json":
+        payload = json.loads(output)
+        assert payload["ref"] == payload["impact"]["ref"] == value
+        assert payload["validate"]["errors"][0]["message"] == value
+        assert payload["impact"]["impacted"][0]["origins"] == [value]
+        output = payload["markdown"]
+    escaped = cli._escape_markdown(value)
+    assert output.count(escaped) == 9
+    assert output.count(cli.VERDICT_MARKER) == 1
+    assert output.startswith(cli.VERDICT_MARKER + "\n")
+    assert "@team" not in output
+    assert "\r" not in output
+    assert f"比較 ref: `{escaped}`" in output
+    assert "input-ref" not in output
+
+
+@pytest.mark.parametrize("surrogate", ["\udcff", "\ud800"])
+@pytest.mark.parametrize("output_format", ["markdown", "json"])
+def test_verdict_outputs_strict_utf8_for_surrogates_in_all_dynamic_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfdbinary: pytest.CaptureFixture[bytes],
+    surrogate: str,
+    output_format: str,
+) -> None:
+    path = f"docs/bad-{surrogate}.md"
+    sanitized_path = "docs/bad-\ufffd.md"
+    errors = [cli.Finding(path, cc.LEVEL_ERROR, f"依存先がない: {path}")]
+    warnings = [cli.Finding(path, cc.LEVEL_WARNING, f"要確認: {path}")]
+    impact = _verdict_impact(cc.BAND_GREEN, deleted_upstream=[path])
+    impact.ref = path
+    impact.changed_ids = [path]
+    impact.impacted[0].node_id = path
+    impact.impacted[0].path = path
+    impact.impacted[0].origins = [path]
+    _mock_verdict_analysis(monkeypatch, errors + warnings, impact)
+    config = _write(tmp_path, "codd.yaml", _MINIMAL_CODD_YAML)
+    assert (
+        cli.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--config",
+                str(config),
+                "verdict",
+                "--format",
+                output_format,
+                "--fail-on",
+                "never",
+            ]
+        )
+        == 0
+    )
+    captured = capfdbinary.readouterr()
+    assert captured.err == b""
+    output = captured.out.decode("utf-8", errors="strict")
+    if output_format == "json":
+        payload = json.loads(output)
+        assert payload["verdict"] == cli.VERDICT_REJECT
+        assert payload["ref"] == payload["impact"]["ref"] == sanitized_path
+        assert payload["validate"]["errors"] == [
+            {
+                "check": sanitized_path,
+                "level": cc.LEVEL_ERROR,
+                "message": f"依存先がない: {sanitized_path}",
+            }
+        ]
+        assert payload["validate"]["warnings"] == [
+            {
+                "check": sanitized_path,
+                "level": cc.LEVEL_WARNING,
+                "message": f"要確認: {sanitized_path}",
+            }
+        ]
+        assert payload["impact"]["changed_nodes"] == [sanitized_path]
+        assert payload["impact"]["deleted_upstream"] == [sanitized_path]
+        node = payload["impact"]["impacted"][0]
+        assert node["node_id"] == node["path"] == sanitized_path
+        assert node["origins"] == [sanitized_path]
+        assert node["band"] == cc.BAND_GREEN
+        assert node["score"] == 0.8
+        assert node["min_hops"] == 1
+        assert node["co_changed"] is False
+        output = payload["markdown"]
+        output.encode("utf-8", errors="strict")
+    assert output.startswith(cli.VERDICT_MARKER + "\n")
+    assert f"依存先がない: {sanitized_path}" in output
+    assert f"要確認: {sanitized_path}" in output
+    assert (
+        f"{sanitized_path} / {sanitized_path} / green / score=0.80 / via {sanitized_path}" in output
+    )
+    assert f"比較 ref: `{sanitized_path}`" in output
+    assert errors[0].check == warnings[0].check == impact.ref == path
+    assert errors[0].message == f"依存先がない: {path}"
+    assert warnings[0].message == f"要確認: {path}"
+    assert impact.changed_ids == impact.deleted_upstream == [path]
+    assert impact.impacted[0].node_id == impact.impacted[0].path == path
+    assert cli._impact_to_json(impact)["impacted"][0]["origins"] == [path]
+
+
+@pytest.mark.parametrize("extra", [0, 3])
+def test_verdict_display_limits_preserve_counts_and_full_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    extra: int,
+) -> None:
+    errors = [
+        cli.Finding("dangling", cc.LEVEL_ERROR, f"エラー-{index:03d}")
+        for index in range(cli.VERDICT_ERROR_LIMIT + extra)
+    ]
+    warnings = [
+        cli.Finding("drift", cc.LEVEL_WARNING, f"警告-{index:03d}")
+        for index in range(cli.VERDICT_WARNING_LIMIT + extra)
+    ]
+    impact = _verdict_impact()
+    for index in range(cli.VERDICT_REVIEW_LIMIT + extra):
+        node = _verdict_impact(cc.BAND_AMBER).impacted[0]
+        node.node_id = f"design:review-{index:03d}"
+        impact.impacted.append(node)
+    _mock_verdict_analysis(monkeypatch, errors + warnings, impact)
+    assert cli.cmd_verdict(tmp_path, _config(), "HEAD", "json", "never") == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["validate"]["errors"]) == len(errors)
+    assert len(payload["validate"]["warnings"]) == len(warnings)
+    assert len(payload["impact"]["impacted"]) == len(impact.impacted)
+    markdown = payload["markdown"]
+    assert f"errors={len(errors)} warnings={len(warnings)}" in markdown
+    assert f"Amber（要確認）: {len(impact.impacted)}" in markdown
+    for prefix, limit in [
+        ("エラー-", cli.VERDICT_ERROR_LIMIT),
+        ("警告-", cli.VERDICT_WARNING_LIMIT),
+        ("design:review-", cli.VERDICT_REVIEW_LIMIT),
+    ]:
+        assert f"{prefix}{limit - 1:03d}" in markdown
+        assert f"{prefix}{limit:03d}" not in markdown
+    if extra:
+        assert markdown.count(f"他 {extra} 件（ジョブ要約/CLI で確認）") == 3
+    else:
+        assert "件（ジョブ要約/CLI で確認）" not in markdown
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["verdict"],
+        ["verdict", "--format", "json"],
+        ["scan"],
+        ["graph"],
+        ["validate"],
+        ["impact", "--json"],
+    ],
+)
+def test_disabled_emits_structured_json_only_for_verdict_and_skips_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: list[str],
+) -> None:
+    config = _write(tmp_path, "codd.yaml", "enabled: false\n")
+    mocks = _mock_verdict_analysis(monkeypatch, [], _verdict_impact())
+    assert cli.main(["--root", str(tmp_path), "--config", str(config), *command]) == 0
+    output = capsys.readouterr().out
+    if command == ["verdict", "--format", "json"]:
+        assert json.loads(output) == {"verdict": None, "disabled": True}
+    else:
+        assert output == "[codd] disabled（config の enabled: false）\n"
+    for mock in mocks:
+        mock.assert_not_called()
+
+
+@pytest.mark.parametrize("output_format", ["markdown", "json"])
+def test_verdict_cli_detects_unchanged_downstream_in_git_repo(
+    tmp_path: Path, output_format: str
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, ".claude/config/codd/codd.yaml", _MINIMAL_CODD_YAML)
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+    _write(
+        tmp_path,
+        "docs/design.md",
+        _doc("design:d", "design", deps=[("req:r", "derives_from")]),
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "init")
+    _write(tmp_path, "docs/req.md", _doc("req:r", "requirement") + "\n変更\n")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(_REPO_ROOT / "packages/codd/scripts/codd.py"),
+            "verdict",
+            "--format",
+            output_format,
+            "--fail-on",
+            "conditional",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 1, completed.stderr
+    assert completed.stderr == ""
+    if output_format == "json":
+        payload = json.loads(completed.stdout)
+        assert payload["verdict"] == cli.VERDICT_CONDITIONAL
+        assert payload["validate"]["errors"] == []
+        assert payload["impact"]["changed_nodes"] == ["req:r"]
+        assert payload["impact"]["impacted"][0]["co_changed"] is False
+        assert payload["impact"]["impacted"][0]["node_id"] == "design:d"
+    else:
+        assert completed.stdout.startswith("<!-- codd-guardrail -->\n")
+        assert "CONDITIONAL" in completed.stdout
+        assert "design:d / docs/design.md" in completed.stdout
+    assert not (tmp_path / ".claude/codd/graph.jsonl").exists()
+
+
+def _codd_action() -> dict:
+    """配布する composite action を YAML として読み込む。"""
+    return yaml.safe_load(
+        (_REPO_ROOT / "packages/codd/action/action.yml").read_text(encoding="utf-8")
+    )
+
+
+def _action_step(name: str) -> dict:
+    """名前に対応する action の shell ステップを選ぶ。"""
+    return next(step for step in _codd_action()["runs"]["steps"] if step.get("name") == name)
+
+
+def _run_action_step(
+    name: str, env: dict[str, str], *, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    """GitHub Actions と同じ bash オプションで shell 本文を実行する。"""
+    return subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", _action_step(name)["run"]],
+        env={**os.environ, **env},
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def test_codd_action_and_workflow_yaml_use_minimal_permissions_and_safe_shell() -> None:
+    action = _codd_action()
+    workflow = yaml.safe_load(
+        (_REPO_ROOT / ".github/workflows/codd-guardrail.yml").read_text(encoding="utf-8")
+    )
+    assert "permissions" not in workflow
+    job = workflow["jobs"]["codd-guardrail"]
+    assert job["permissions"] == {"contents": "read", "pull-requests": "write"}
+    assert job["timeout-minutes"] == 10
+    assert workflow["concurrency"] == {
+        "group": "codd-guardrail-${{ github.event.pull_request.number || github.ref }}",
+        "cancel-in-progress": True,
+    }
+    # safe_load は YAML 1.1 の on を True と解釈する（Issue #97）。
+    events = workflow.get("on", workflow.get(True))
+    assert set(events) == {"pull_request"}
+    steps = workflow["jobs"]["codd-guardrail"]["steps"]
+    assert steps[0]["uses"] == "actions/checkout@v4"
+    assert steps[0]["with"]["fetch-depth"] == 0
+    assert steps[0]["with"]["persist-credentials"] is False
+    assert steps[1]["uses"] == "./packages/codd/action"
+    assert action["runs"]["using"] == "composite"
+    assert set(action["inputs"]) == {
+        "base-ref",
+        "fail-on",
+        "config",
+        "comment",
+        "comment-author",
+        "github-token",
+        "python-version",
+    }
+    assert action["inputs"]["comment-author"]["default"] == ""
+    assert action["inputs"]["comment-author"]["description"] == (
+        "GitHub App token を使う場合は `<app-slug>[bot]` を指定"
+    )
+    comment_env = _action_step("Update PR comment")["env"]
+    assert comment_env["CODD_SERVER_URL"] == "${{ github.server_url }}"
+    assert comment_env["CODD_COMMENT_AUTHOR"] == "${{ inputs.comment-author }}"
+    assert comment_env["GH_TOKEN"] == "${{ inputs.github-token }}"
+    assert "verdict" in action["outputs"]
+    assert action["runs"]["steps"][0]["name"] == "Validate inputs"
+    for step in action["runs"]["steps"]:
+        if "run" in step:
+            assert "${{" not in step["run"]
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="投稿者フィルターの検証には jq が必要")
+@pytest.mark.parametrize("existing_comment", ["own", "other", "none"])
+@pytest.mark.parametrize("failed_api", [None, "user", "list", "post"])
+@pytest.mark.parametrize("comment_author", ["", "codd-test[bot]"])
+def test_codd_action_posts_or_updates_comment_and_tolerates_permission_failure(
+    tmp_path: Path, existing_comment: str, failed_api: str | None, comment_author: str
+) -> None:
+    step = next(
+        step for step in _codd_action()["runs"]["steps"] if step.get("name") == "Update PR comment"
+    )
+    calls = tmp_path / "calls"
+    mock_gh = _write(
+        tmp_path,
+        "bin/gh",
+        "#!/bin/bash\n"
+        'printf "%s\\n" "$*" >> "$CODD_TEST_CALLS"\n'
+        'fail_api() { echo "gh: HTTP 403 Forbidden ($GH_TOKEN)" >&2; exit 1; }\n'
+        'if [ "$2" = user ]; then\n'
+        '  if [ "$CODD_TEST_FAILED_API" = user ]; then fail_api; fi\n'
+        "  echo token-user\n"
+        "  exit 0\n"
+        "fi\n"
+        'if [ "$2" = --paginate ]; then\n'
+        '  if [ "$CODD_TEST_FAILED_API" = list ]; then fail_api; fi\n'
+        '  jq "${@: -1}" "$CODD_TEST_COMMENTS"\n'
+        "  exit $?\n"
+        "fi\n"
+        'if [ "$CODD_TEST_FAILED_API" = post ]; then fail_api; fi\n'
+        'cp "${6#body=@}" "$CODD_TEST_BODY"\n',
+    )
+    mock_gh.chmod(0o755)
+    body = "<!-- codd-guardrail -->\n# APPROVE\n"
+    markdown = _write(tmp_path, "verdict.md", body)
+    author = comment_author or ("github-actions[bot]" if failed_api == "user" else "token-user")
+    comments = [{"id": 55, "user": {"login": author}, "body": "関係ないコメント"}]
+    if existing_comment != "none":
+        comments.append({"id": 99, "user": {"login": "another-user"}, "body": body})
+    if existing_comment == "own":
+        comments.extend(
+            {"id": comment_id, "user": {"login": author}, "body": body} for comment_id in (123, 124)
+        )
+    comments.append({"id": 100, "user": {"login": author}, "body": None})
+    comment_file = _write(tmp_path, "comments.json", json.dumps(comments))
+    posted_body = tmp_path / "posted.md"
+    completed = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{mock_gh.parent}{os.pathsep}{os.environ['PATH']}",
+            "CODD_REPOSITORY": "test/repo",
+            "CODD_PR_NUMBER": "97",
+            "CODD_MARKDOWN": str(markdown),
+            "CODD_SERVER_URL": "https://github.com",
+            "CODD_COMMENT_AUTHOR": comment_author,
+            "CODD_TEST_CALLS": str(calls),
+            "CODD_TEST_COMMENTS": str(comment_file),
+            "CODD_TEST_FAILED_API": failed_api or "",
+            "CODD_TEST_BODY": str(posted_body),
+            "GH_TOKEN": "test-secret-token",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == 0, completed.stderr
+    api_calls = calls.read_text(encoding="utf-8")
+    assert ("api user --jq .login" in api_calls) == (not comment_author)
+    assert f'select(.user.login == "{author}")' in api_calls
+    if failed_api == "list":
+        assert "--method" not in api_calls
+    else:
+        expected = (
+            "--method PATCH repos/test/repo/issues/comments/123"
+            if existing_comment == "own"
+            else "--method POST repos/test/repo/issues/97/comments"
+        )
+        assert expected in api_calls
+    # /user の 403 は既定 GITHUB_TOKEN で通常起きるため警告しない（bot 名へ戻すだけ）。
+    warns = failed_api in ("list", "post")
+    assert ("::warning::" in completed.stdout) == warns
+    if warns:
+        assert "HTTP 403 Forbidden" in completed.stdout
+    if failed_api:
+        assert "test-secret-token" not in completed.stdout + completed.stderr
+    if failed_api in (None, "user"):
+        assert posted_body.read_text(encoding="utf-8") == body
+
+
+@pytest.mark.parametrize("server_url", ["https://github.com", "https://github.example.com"])
+def test_codd_action_routes_comment_api_and_token_to_server_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, server_url: str
+) -> None:
+    monkeypatch.delenv("GH_HOST", raising=False)
+    monkeypatch.delenv("GH_ENTERPRISE_TOKEN", raising=False)
+    calls = tmp_path / "calls"
+    mock_gh = _write(
+        tmp_path,
+        "bin/gh",
+        "#!/bin/bash\n"
+        'printf "%s\\t%s\\t%s\\t%s\\n" "${GH_HOST-unset}" "$GH_TOKEN" '
+        '"${GH_ENTERPRISE_TOKEN-unset}" "$*" >> "$CODD_TEST_CALLS"\n'
+        'if [ "$2" = user ]; then echo token-user; fi\n',
+    )
+    mock_gh.chmod(0o755)
+    markdown = _write(tmp_path, "verdict.md", cli.VERDICT_MARKER + "\n# APPROVE\n")
+    completed = _run_action_step(
+        "Update PR comment",
+        {
+            "PATH": f"{mock_gh.parent}{os.pathsep}{os.environ['PATH']}",
+            "CODD_REPOSITORY": "test/repo",
+            "CODD_PR_NUMBER": "97",
+            "CODD_MARKDOWN": str(markdown),
+            "CODD_SERVER_URL": server_url,
+            "CODD_COMMENT_AUTHOR": "",
+            "CODD_TEST_CALLS": str(calls),
+            "GH_TOKEN": "test-secret-token",
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    records = [line.split("\t") for line in calls.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 3
+    for host, token, enterprise_token, _ in records:
+        assert token == "test-secret-token"
+        if server_url == "https://github.com":
+            assert host == enterprise_token == "unset"
+        else:
+            assert host == "github.example.com"
+            assert enterprise_token == token
+    assert records[0][3] == "api user --jq .login"
+    assert records[1][3].startswith("api --paginate repos/test/repo/issues/97/comments")
+    assert records[2][3].startswith("api --method POST repos/test/repo/issues/97/comments")
+    assert "test-secret-token" not in completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("size", [59999, 60000, 60001, 90000])
+def test_codd_action_limits_comment_bytes_without_changing_summary_body(
+    tmp_path: Path, size: int
+) -> None:
+    prefix = cli.VERDICT_MARKER + "\n"
+    count, remainder = divmod(size - len(prefix.encode("utf-8")), 3)
+    body = prefix + "あ" * count + "x" * remainder
+    markdown = _write(tmp_path, "verdict.md", body)
+    assert markdown.stat().st_size == size
+    mock_gh = _write(
+        tmp_path,
+        "bin/gh",
+        "#!/bin/bash\n"
+        'if [ "$2" = user ]; then echo token-user; exit 0; fi\n'
+        'if [ "$2" = --paginate ]; then exit 0; fi\n'
+        'cp "${6#body=@}" "$CODD_TEST_BODY"\n',
+    )
+    mock_gh.chmod(0o755)
+    posted_body = tmp_path / "posted.md"
+    completed = _run_action_step(
+        "Update PR comment",
+        {
+            "PATH": f"{mock_gh.parent}{os.pathsep}{os.environ['PATH']}",
+            "CODD_REPOSITORY": "test/repo",
+            "CODD_PR_NUMBER": "97",
+            "CODD_MARKDOWN": str(markdown),
+            "CODD_SERVER_URL": "https://github.com",
+            "CODD_COMMENT_AUTHOR": "",
+            "CODD_TEST_BODY": str(posted_body),
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    posted = posted_body.read_text(encoding="utf-8")
+    assert posted_body.stat().st_size <= 60000
+    assert posted.startswith(prefix)
+    if size <= 60000:
+        assert posted == body
+    else:
+        assert "本文を 60000 バイト以内に省略しました（ジョブ要約/CLI で確認）。" in posted
+    assert markdown.read_text(encoding="utf-8") == body
+
+
+def _verdict_action_env(tmp_path: Path, payload: dict, status: int = 0) -> dict[str, str]:
+    """CLI の応答を固定し、action の一度だけの実行と出力を観測する。"""
+    action_dir = tmp_path / "package/action"
+    action_dir.mkdir(parents=True)
+    _write(tmp_path, "package/config/codd.yaml", "enabled: true\n")
+    _write(
+        tmp_path,
+        "package/scripts/codd.py",
+        "import json, os, sys\n"
+        'with open(os.environ["CODD_TEST_CALLS"], "a") as calls:\n'
+        '    calls.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+        'if os.environ["CODD_TEST_STATUS"] == "0":\n'
+        '    print(os.environ["CODD_TEST_PAYLOAD"])\n'
+        "else:\n"
+        '    print("[codd verdict] ERROR: 無効な ref", file=sys.stderr)\n'
+        'sys.exit(int(os.environ["CODD_TEST_STATUS"]))\n',
+    )
+    return {
+        "CODD_ACTION_PATH": str(action_dir),
+        "CODD_CONFIG": str(tmp_path / "missing.yaml"),
+        "CODD_REF": "test-merge-base",
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        "CODD_TEST_CALLS": str(tmp_path / "calls"),
+        "CODD_TEST_PAYLOAD": json.dumps(payload),
+        "CODD_TEST_STATUS": str(status),
+    }
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+@pytest.mark.parametrize("has_config", [False, True])
+def test_codd_action_runs_once_and_uses_structured_disable_and_config_fallback(
+    tmp_path: Path, disabled: bool, has_config: bool
+) -> None:
+    # メッセージだけに依存する実装なら、通常の本文を無効化と誤認する（Issue #97）。
+    markdown = "[codd] disabled（config の enabled: false）\n通常の本文\n"
+    payload = (
+        {"verdict": None, "disabled": True}
+        if disabled
+        else {"verdict": "APPROVE", "markdown": markdown}
+    )
+    env = _verdict_action_env(tmp_path, payload)
+    if has_config:
+        _write(tmp_path, "missing.yaml", "enabled: true\n")
+    completed = _run_action_step("Run CODD verdict", env, cwd=tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    calls = [json.loads(line) for line in (tmp_path / "calls").read_text().splitlines()]
+    assert len(calls) == 1
+    config = Path(env["CODD_CONFIG"]) if has_config else tmp_path / "package/config/codd.yaml"
+    assert Path(calls[0][1]).resolve() == config
+    assert calls[0][2:] == [
+        "verdict",
+        "--diff",
+        "test-merge-base",
+        "--format",
+        "json",
+        "--fail-on",
+        "never",
+    ]
+    outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
+    assert outputs["verdict"] == ("" if disabled else "APPROVE")
+    expected = "[codd] disabled（config の enabled: false）\n" if disabled else markdown
+    assert Path(outputs["markdown"]).read_text(encoding="utf-8") == expected
+    summary = _run_action_step("Write job summary", {**env, "CODD_MARKDOWN": outputs["markdown"]})
+    assert summary.returncode == 0, summary.stderr
+    assert (tmp_path / "summary").read_text(encoding="utf-8") == expected
+    gate = _run_action_step(
+        "Enforce verdict", {"CODD_VERDICT": outputs["verdict"], "CODD_FAIL_ON": "conditional"}
+    )
+    assert gate.returncode == 0, gate.stderr
+    assert "steps.verdict.outputs.verdict != ''" in _action_step("Update PR comment")["if"]
+
+
+def test_codd_action_reports_exit_two_in_annotation_and_job_summary(tmp_path: Path) -> None:
+    env = _verdict_action_env(tmp_path, {}, status=2)
+    completed = _run_action_step("Run CODD verdict", env, cwd=tmp_path)
+    assert completed.returncode == 2
+    assert "::error::CODD 解析に失敗しました（exit 2）" in completed.stdout
+    assert "無効な ref" in completed.stderr
+    summary = (tmp_path / "summary").read_text(encoding="utf-8")
+    assert "exit 2" in summary
+    assert len(summary.splitlines()) == 1
+    assert not (tmp_path / "output").exists()
+    assert len((tmp_path / "calls").read_text().splitlines()) == 1
+
+
+@pytest.mark.parametrize("fail_on", ["reject", "conditional", "never", "typo", ""])
+def test_codd_action_rejects_invalid_fail_on_before_other_steps(fail_on: str) -> None:
+    completed = _run_action_step("Validate inputs", {"CODD_FAIL_ON": fail_on})
+    invalid = fail_on in ("typo", "")
+    assert completed.returncode == int(invalid)
+    assert ("::error::fail-on" in completed.stdout) == invalid
+
+
+@pytest.mark.parametrize("base_ref", ["", "main"])
+def test_codd_action_rejects_empty_base_and_shallow_checkout_before_fetch(
+    tmp_path: Path, base_ref: str
+) -> None:
+    mock_git = _write(
+        tmp_path,
+        "bin/git",
+        "#!/bin/bash\n"
+        'printf "%s\\n" "$*" >> "$CODD_TEST_CALLS"\n'
+        'if [ "$1" = rev-parse ]; then echo true; exit 0; fi\n'
+        "exit 99\n",
+    )
+    mock_git.chmod(0o755)
+    calls = tmp_path / "calls"
+    completed = _run_action_step(
+        "Resolve merge base",
+        {
+            "PATH": f"{mock_git.parent}{os.pathsep}{os.environ['PATH']}",
+            "CODD_BASE_REF": base_ref,
+            "CODD_TEST_CALLS": str(calls),
+        },
+    )
+    assert completed.returncode == 1
+    assert "::error::" in completed.stdout
+    if base_ref:
+        assert "fetch-depth: 0" in completed.stdout
+        assert calls.read_text().splitlines() == ["rev-parse --is-shallow-repository"]
+    else:
+        assert "base-ref が空" in completed.stdout
+        assert not calls.exists()
+
+
+def test_codd_action_authenticates_fetch_without_persisting_or_printing_token(
+    tmp_path: Path,
+) -> None:
+    mock_git = _write(
+        tmp_path,
+        "bin/git",
+        "#!/bin/bash\n"
+        'printf "%s\\n" "$*" >> "$CODD_TEST_CALLS"\n'
+        'case "$1" in\n'
+        "  rev-parse) echo false ;;\n"
+        "  merge-base) echo test-merge-base ;;\n"
+        "esac\n",
+    )
+    mock_git.chmod(0o755)
+    calls = tmp_path / "calls"
+    output = tmp_path / "output"
+    completed = _run_action_step(
+        "Resolve merge base",
+        {
+            "PATH": f"{mock_git.parent}{os.pathsep}{os.environ['PATH']}",
+            "CODD_BASE_REF": "main",
+            "CODD_TEST_CALLS": str(calls),
+            "GITHUB_OUTPUT": str(output),
+            "GH_TOKEN": "test-secret-token",
+            "CODD_SERVER_URL": "https://github.com",
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    commands = calls.read_text().splitlines()
+    assert len(commands) == 4
+    assert commands[1] == "check-ref-format --branch main"
+    assert commands[2].startswith(
+        "-c credential.helper= -c http.https://github.com/.extraheader=AUTHORIZATION: basic "
+    )
+    assert commands[2].endswith(" fetch --no-tags origin main")
+    assert commands[3] == "merge-base origin/main HEAD"
+    assert output.read_text() == "ref=test-merge-base\n"
+    assert "test-secret-token" not in completed.stdout + completed.stderr
+    assert "AUTHORIZATION" not in completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("verdict", "fail_on", "exit_code"),
+    [
+        ("APPROVE", "reject", 0),
+        ("APPROVE", "conditional", 0),
+        ("APPROVE", "never", 0),
+        ("CONDITIONAL", "reject", 0),
+        ("CONDITIONAL", "conditional", 1),
+        ("CONDITIONAL", "never", 0),
+        ("REJECT", "reject", 1),
+        ("REJECT", "conditional", 1),
+        ("REJECT", "never", 0),
+    ],
+)
+def test_codd_action_enforces_fail_on_after_reporting(
+    verdict: str, fail_on: str, exit_code: int
+) -> None:
+    step = _codd_action()["runs"]["steps"][-1]
+    assert step["name"] == "Enforce verdict"
+    completed = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]],
+        env={**os.environ, "CODD_VERDICT": verdict, "CODD_FAIL_ON": fail_on},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert completed.returncode == exit_code, completed.stderr
+    assert ("::error::" in completed.stdout) == bool(exit_code)

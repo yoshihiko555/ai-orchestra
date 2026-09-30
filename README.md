@@ -43,6 +43,24 @@ codd:node_id code:my-module
 
 `//` 系言語（TS/JS/Go/Java/Rust/C 系。`.mjs` / `.cjs` を含む）はファイル先頭の連続する行コメントに同じ記法で書ける。コード注釈由来のリンクは既定 `inline_confidence: 0.7`（doc frontmatter の既定 1.0 より低い信頼度）として扱われ、`codd impact` の下流影響スコアに比例して弱く反映される。詳細は [整合性レイヤー設計 §4.3.1](docs/design/codd-coherence-layer.md) を参照。
 
+#### PR の CI ガードレール
+
+`codd verdict --diff <ref> [--format markdown|json] [--fail-on reject|conditional|never]` は
+validate と impact を統合し、`APPROVE` / `CONDITIONAL` / `REJECT` を返す。
+既定は `--diff HEAD --format markdown --fail-on reject`。validate error があれば `REJECT`、
+未追従の Green / Amber または上流ノードの消失があれば `CONDITIONAL`、それ以外は `APPROVE`。
+warning と Gray は参考情報として表示する。
+
+GitHub Actions では `yoshihiko555/ai-orchestra/packages/codd/action@<tag>` を利用できる。
+呼び出し側の `actions/checkout@v4` に **`fetch-depth: 0`** を指定する。
+action は merge-base から比較し、ジョブ要約と PR コメントに判定を出力する。
+JSON 出力は Markdown 本文を含み、無効時は `{"verdict": null, "disabled": true}` を返す。
+checkout は `persist-credentials: false` とし、private repo では読み取り権限を持つ
+`github-token` を action に渡す。
+GitHub App token を使う場合は `comment-author: "<app-slug>[bot]"` を指定する。
+未指定時は `/user` の login（取得できなければ `github-actions[bot]`）で既存コメントを探す。GHES の API ホストと認証は自動で切り替える。
+導入例・入力・fork PR の扱いは [設計 §4.8.2](docs/design/codd-coherence-layer.md#482-ci-ガードレールissue-97) を参照。
+
 ## アーキテクチャ
 
 ![アーキテクチャ図](docs/assets/architecture.png)

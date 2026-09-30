@@ -1,0 +1,25 @@
+name: CODD guardrail
+
+on:
+  pull_request:
+
+concurrency:
+  group: codd-guardrail-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codd-guardrail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # merge-base を算出するため全履歴が必要（Issue #97）。
+          fetch-depth: 0
+          persist-credentials: false
+
+      # pull_request_target は使わない。PR のコードを強い権限で実行しない（Issue #97）。
+      - uses: ./packages/codd/action

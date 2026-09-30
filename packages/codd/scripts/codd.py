@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""CODD CLI: scan / validate / graph。
+"""CODD CLI: scan / validate / graph / impact / verdict。
 
 `orchex run codd codd -- <subcommand>` から、または直接実行する。
 プロジェクトルート（cwd）を基準に scope を走査し、依存グラフの構築・整合性検証・
-可視化を行う。設定は `.claude/config/codd/codd.yaml`（+ local 上書き）。
+可視化・CI 判定を行う。設定は `.claude/config/codd/codd.yaml`（+ local 上書き）。
 """
 
 from __future__ import annotations
 
 import argparse
+import html
 import io
 import json
 import os
@@ -18,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 import tokenize
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,13 @@ import codd_code as cx  # noqa: E402
 import codd_common as cc  # noqa: E402
 
 DEFAULT_CONFIG_PATH = Path(".claude/config/codd/codd.yaml")
+VERDICT_APPROVE = "APPROVE"
+VERDICT_CONDITIONAL = "CONDITIONAL"
+VERDICT_REJECT = "REJECT"
+VERDICT_MARKER = "<!-- codd-guardrail -->"
+VERDICT_ERROR_LIMIT = 20
+VERDICT_WARNING_LIMIT = 20
+VERDICT_REVIEW_LIMIT = 20
 
 
 # ---------------------------------------------------------------------------
@@ -1445,6 +1453,139 @@ def cmd_impact(root: Path, config: cc.CoddConfig, ref: str, as_json: bool) -> in
 
 
 # ---------------------------------------------------------------------------
+# verdict（Issue #97 / CI ガードレール）
+# ---------------------------------------------------------------------------
+
+
+def _needs_review(node: cc.ImpactedNode) -> bool:
+    """同一 diff で追従していない Green / Amber ノードを判別する。"""
+    return node.band in (cc.BAND_GREEN, cc.BAND_AMBER) and not node.co_changed
+
+
+def decide_verdict(findings: list[Finding], impact_result: ImpactResult) -> str:
+    """検査結果と影響分析から、副作用なしに PR の判定を返す。"""
+    if any(finding.level == cc.LEVEL_ERROR for finding in findings):
+        return VERDICT_REJECT
+    # 既存の drift warning が多いため、warning は判定に含めない（Issue #97）。
+    if impact_result.deleted_upstream or any(
+        _needs_review(node) for node in impact_result.impacted
+    ):
+        return VERDICT_CONDITIONAL
+    return VERDICT_APPROVE
+
+
+def _escape_markdown(value: str) -> str:
+    """動的な値を一行にし、HTML・メンション・コード区切りを無害化する。"""
+    # 固定マーカーの混入や ref のコード区切り解除を防ぐ（Issue #97）。
+    return html.escape(" ".join(value.split()).replace("`", ""), quote=False).replace(
+        "@", "@\u200b"
+    )
+
+
+def render_verdict_markdown(
+    verdict: str, errors: list[Finding], warnings: list[Finding], impact_result: ImpactResult
+) -> str:
+    """PR コメントとジョブ要約に利用する Markdown を組み立てる。"""
+    lines = [
+        VERDICT_MARKER,
+        f"# CODD verdict: {_escape_markdown(verdict)}",
+        f"\nvalidate: errors={len(errors)} warnings={len(warnings)}",
+        "\n## validate エラー\n",
+    ]
+    for finding in errors[:VERDICT_ERROR_LIMIT]:
+        lines.append(f"- [{_escape_markdown(finding.check)}] {_escape_markdown(finding.message)}")
+    if len(errors) > VERDICT_ERROR_LIMIT:
+        lines.append(f"\n他 {len(errors) - VERDICT_ERROR_LIMIT} 件（ジョブ要約/CLI で確認）")
+    if not errors:
+        lines.append("なし")
+    lines.append("\n<details>")
+    lines.append(f"<summary>validate warnings（{len(warnings)} 件、判定対象外）</summary>\n")
+    for finding in warnings[:VERDICT_WARNING_LIMIT]:
+        lines.append(f"- [{_escape_markdown(finding.check)}] {_escape_markdown(finding.message)}")
+    if len(warnings) > VERDICT_WARNING_LIMIT:
+        lines.append(f"\n他 {len(warnings) - VERDICT_WARNING_LIMIT} 件（ジョブ要約/CLI で確認）")
+    if not warnings:
+        lines.append("なし")
+    lines.append("\n</details>")
+    lines.append("\n## impact\n")
+    for band in (cc.BAND_GREEN, cc.BAND_AMBER, cc.BAND_GRAY):
+        count = sum(node.band == band for node in impact_result.impacted)
+        lines.append(f"- {_BAND_LABEL[band]}: {count}")
+    lines.append("\n### 確認が必要なノード\n")
+    review_nodes = [node for node in impact_result.impacted if _needs_review(node)]
+    for node in review_nodes[:VERDICT_REVIEW_LIMIT]:
+        origins = ", ".join(node.origins) if node.origins else "-"
+        lines.append(
+            f"- {_escape_markdown(node.node_id)} / {_escape_markdown(node.path)} / "
+            f"{_escape_markdown(node.band)} / score={node.score:.2f} / via {_escape_markdown(origins)}"
+        )
+    if len(review_nodes) > VERDICT_REVIEW_LIMIT:
+        lines.append(f"\n他 {len(review_nodes) - VERDICT_REVIEW_LIMIT} 件（ジョブ要約/CLI で確認）")
+    if not review_nodes:
+        lines.append("なし")
+    lines.append("\n### 消失した上流ノード\n")
+    for path in impact_result.deleted_upstream:
+        lines.append(f"- {_escape_markdown(path)}")
+    if not impact_result.deleted_upstream:
+        lines.append("なし")
+    lines.append(f"\n比較 ref: `{_escape_markdown(impact_result.ref)}`")
+    return "\n".join(lines) + "\n"
+
+
+def _should_fail(verdict: str, fail_on: str) -> bool:
+    """判定と失敗条件から終了コード 1 の対象を決める。"""
+    return (fail_on == "reject" and verdict == VERDICT_REJECT) or (
+        fail_on == "conditional" and verdict in (VERDICT_CONDITIONAL, VERDICT_REJECT)
+    )
+
+
+def _sanitize_verdict_output(value: Any) -> Any:
+    """Replace surrogates in output strings without mutating analysis results."""
+    if isinstance(value, str):
+        return re.sub(r"[\ud800-\udfff]", "\ufffd", value)
+    if isinstance(value, dict):
+        return {
+            _sanitize_verdict_output(key): _sanitize_verdict_output(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_verdict_output(item) for item in value]
+    return value
+
+
+def cmd_verdict(
+    root: Path, config: cc.CoddConfig, ref: str, output_format: str, fail_on: str
+) -> int:
+    """validate / impact の結果を統合し、指定した判定で非ゼロ終了する。"""
+    result = scan_project(root, config)
+    findings = run_checks(result, config, root)
+    try:
+        impact_result = compute_impact_result(root, config, ref)
+    except ImpactError as exc:
+        print(f"[codd verdict] ERROR: {exc}", file=sys.stderr)
+        return 2
+    verdict = decide_verdict(findings, impact_result)
+    errors = [finding for finding in findings if finding.level == cc.LEVEL_ERROR]
+    warnings = [finding for finding in findings if finding.level == cc.LEVEL_WARNING]
+    markdown = render_verdict_markdown(verdict, errors, warnings, impact_result)
+    if output_format == "json":
+        payload = {
+            "verdict": verdict,
+            "ref": impact_result.ref,
+            "validate": {
+                "errors": [asdict(finding) for finding in errors],
+                "warnings": [asdict(finding) for finding in warnings],
+            },
+            "impact": _impact_to_json(impact_result),
+            "markdown": markdown,
+        }
+        print(json.dumps(_sanitize_verdict_output(payload), ensure_ascii=False, indent=2))
+    else:
+        print(_sanitize_verdict_output(markdown), end="")
+    return int(_should_fail(verdict, fail_on))
+
+
+# ---------------------------------------------------------------------------
 # エントリポイント
 # ---------------------------------------------------------------------------
 
@@ -1478,6 +1619,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="JSON で出力（既定はテキスト）",
     )
+    verdict = sub.add_parser("verdict", help="validate と impact から PR の整合性を判定")
+    verdict.add_argument(
+        "--diff",
+        default="HEAD",
+        help="比較対象の git ref（既定: HEAD。例: origin/main, HEAD~1）",
+    )
+    verdict.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="出力形式（既定: markdown。json は Markdown 本文も含む）",
+    )
+    verdict.add_argument(
+        "--fail-on",
+        choices=("reject", "conditional", "never"),
+        default="reject",
+        help="exit 1 にする判定（reject: REJECT、conditional: CONDITIONAL / REJECT、never: なし。既定: reject）",
+    )
     return parser
 
 
@@ -1487,11 +1646,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = cc.load_config(root / args.config)
         if not config.enabled:
-            print("[codd] disabled（config の enabled: false）")
+            if args.command == "verdict" and args.format == "json":
+                print(json.dumps({"verdict": None, "disabled": True}))
+            else:
+                print("[codd] disabled（config の enabled: false）")
             return 0
 
         if args.command == "impact":
             return cmd_impact(root, config, args.diff, args.json)
+        if args.command == "verdict":
+            return cmd_verdict(root, config, args.diff, args.format, args.fail_on)
 
         handlers = {"scan": cmd_scan, "graph": cmd_graph, "validate": cmd_validate}
         return handlers[args.command](root, config)
