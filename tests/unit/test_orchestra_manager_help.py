@@ -139,6 +139,29 @@ def test_version_prefers_checkout_over_installed_package(tmp_path: Path) -> None
     assert result.stdout.strip() == f"orchex {ai_orchestra.__version__}"
 
 
+def test_version_prefers_checkout_when_repo_root_already_on_sys_path(tmp_path: Path) -> None:
+    """チェックアウトルートが sys.path の後方に既にあっても先頭へ移して優先する。
+
+    editable install は .pth でルートを sys.path の末尾に追加する。その状態を
+    PYTHONPATH で install 方式に依存せず再現する。
+    """
+    shadow_pkg = tmp_path / "ai_orchestra"
+    shadow_pkg.mkdir()
+    (shadow_pkg / "__init__.py").write_text('__version__ = "9.9.9-shadow"\n', encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(ORCHESTRA_MANAGER), "--version"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": f"{tmp_path}{os.pathsep}{REPO_ROOT}"},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == f"orchex {ai_orchestra.__version__}"
+
+
 def test_no_args_prints_top_level_help_and_exits_1() -> None:
     result = _run_manager()
 
