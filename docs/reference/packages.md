@@ -306,6 +306,8 @@ hook の**登録**は essential プリセットで自動展開されるが、**�
 hook 自体の登録解除は `orchex disable codd --project .` で行う。実動作のみを止めたい場合は
 上記キーで制御する（登録は残したまま無害化できる）。
 
+導入先での段階的な導入・設定例・CI の導入は [CODD 利用者ガイド](../guides/codd.md) を参照。
+
 ---
 
 ## codex-harness
