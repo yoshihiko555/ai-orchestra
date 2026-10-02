@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`codd`: PR の CI ガードレールを追加**: `codd verdict` が validate と impact から APPROVE / CONDITIONAL / REJECT を判定する。
   composite action で PR コメントとジョブ要約に出力し、`fail-on` に応じて CI を失敗させられる。
   GHES に対応し、GitHub App token では `comment-author` で投稿者を指定できる。
+- **`codd`: 利用者ガイド（図解つき）を追加**: `docs/guides/codd.md` に、導入先での段階的な導入手順・`codd.local.yaml` の書き方（リストは置き換え）・検査が走るタイミング・CI 導入時の注意をまとめた。
 - **`image-generation`: 同梱スタイル `line-illust` を追加**: 技術記事の構成図・比較図向けの、親しみやすい線画イラスト調の図解スタイル。`/image-gen <prompt> --style line-illust` で適用できる。
 
 ## [0.3.6] - 2026-09-30
