@@ -1,9 +1,13 @@
 # image-generation パッケージ設定
 #
-# image-generator エージェントが参照する画像生成専用モデル。
+# image_model: image-generator エージェントが `codex exec --model` に渡すモデル。
+# これは組み込み image_gen ツールを呼び出す Codex エージェント側のモデルで、画像を
+# 描画するモデルではない（描画は OpenAI の gpt-image が行い、ここでは選べない）。
 # Codex 組み込み image_gen は ChatGPT 認証で動くため OPENAI_API_KEY 不要。
-# 注意: codex.model（gpt-5.3-codex 等）は image_gen 非対応のため、ここで
-#       image_gen 対応モデルを指定する。差し替えはこのキーで行う。
+# codex.model とは分けて指定する（codex.model や ~/.codex/config.toml の既定値を
+# 変えても画像生成に影響しないようにするため）。gpt-5.3-codex 等のコーディング
+# モデルは image_gen を呼べないので指定しない。gpt-6.1-sol でも生成できることを
+# 確認済み（codex 0.160.0、2026-10-02。ADR-20260605-023 参照）。
 # 上書きは .claude/config/image-generation/image-generation.local.yaml で可能。
 image_model: gpt-5.5
 

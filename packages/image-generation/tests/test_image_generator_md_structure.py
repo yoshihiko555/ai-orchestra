@@ -243,6 +243,70 @@ class TestFreshnessGuard:
 
 
 # ---------------------------------------------------------------------------
+# EV-22: 鮮度ガードの探索を自分のセッションのフォルダに限定する
+# ---------------------------------------------------------------------------
+
+
+class TestSessionScopedSearch:
+    """EV-22: 別の Codex セッションの画像を自分の成果物として採用しない。"""
+
+    def test_step3_captures_stderr_into_log_under_output_dir(self) -> None:
+        # session id: はヘッダとして stderr に出るため、stderr をログに取っておく
+        assert '2>> "$ERR_LOG"' in STEP3
+        assert 'ERR_LOG="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.stderr.log"' in STEP3
+        assert 'ERR_LOG="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.stderr.log"' in STEP3_5
+
+    def test_log_path_does_not_use_tmpdir(self) -> None:
+        # Step 3（sandbox 無効）と Step 3.5（sandbox 有効）で $TMPDIR の解決先が異なる
+        for section in (STEP3, STEP3_5):
+            log_lines = [line for line in section.splitlines() if line.startswith("ERR_LOG=")]
+            assert log_lines, "ERR_LOG の代入行が見つかりません"
+            for line in log_lines:
+                assert "TMPDIR" not in line
+
+    def test_step3_cleans_up_log_on_failure(self) -> None:
+        assert 'rm -f "$MARKER" "$ERR_LOG"' in STEP3
+
+    def test_step3_refuses_to_write_through_existing_log_path(self) -> None:
+        # sandbox 無効のシェルで、仕込まれた symlink 経由の上書きをしない
+        assert "set -o noclobber" in STEP3
+        guard = 'if [ -e "$ERR_LOG" ] || [ -L "$ERR_LOG" ]; then'
+        assert guard in STEP3
+        assert STEP3.index(guard) < STEP3.index(': > "$ERR_LOG"')
+
+    def test_step3_prints_log_from_handle_opened_before_codex(self) -> None:
+        # 実行中に Codex がパスを symlink に差し替えても、開き直さず事前のハンドルで読む
+        codex_pos = re.search(r"^codex exec\b", STEP3, re.MULTILINE).start()
+        assert 'exec 4< "$ERR_LOG"' in STEP3
+        assert STEP3.index('exec 4< "$ERR_LOG"') < codex_pos
+        assert "cat <&4" in STEP3
+        assert 'cat "$ERR_LOG"' not in STEP3
+        assert '2>> "$ERR_LOG" 4<&-' in STEP3
+
+    def test_step3_5_reads_session_id_from_header_only(self) -> None:
+        # echo されたプロンプト（`user` 行以降）の中の `session id:` は読まない
+        assert "SESSION_ID=$(sed -n -e '/^user$/q' -e 's/^session id: *//p' \"$ERR_LOG\"" in STEP3_5
+        assert 'rm -f "$ERR_LOG"' in STEP3_5
+
+    def test_session_id_is_validated_as_uuid_before_use(self) -> None:
+        uuid_re = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        assert uuid_re in STEP3_5
+        assert STEP3_5.index(uuid_re) < STEP3_5.index('SESSION_DIR="$GEN_DIR/$SESSION_ID"')
+
+    def test_invalid_session_id_fails_closed(self) -> None:
+        assert "session id not found in codex output" in STEP3_5
+        assert "NOT falling back to scanning other sessions" in STEP3_5
+
+    def test_find_is_limited_to_session_directory(self) -> None:
+        assert 'find "$SESSION_DIR"' in STEP3_5
+        assert 'find "$GEN_DIR"' not in STEP3_5
+
+    def test_any_png_name_is_accepted_within_session(self) -> None:
+        # 保存名はモデルで異なる（gpt-5.5: call_*.png / sol 系: exec-*.png）
+        assert "-name '*.png' -newer \"$MARKER\"" in STEP3_5
+
+
+# ---------------------------------------------------------------------------
 # EV-06: 生成物検証（PNG magic bytes / サイズ / フォールバックマーカー）
 # ---------------------------------------------------------------------------
 

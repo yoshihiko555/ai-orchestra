@@ -117,8 +117,8 @@
       "config/git-workflow/sandbox-requirements.json": "4b2f9366201ed8f90d3f2f5e418502f75d977b4ca659f8dfc91b8369e5971e5e"
     },
     "image-generation": {
-      "config/image-generation/image-generation.yaml": "da79053a36901fa084e8fbad994cb69b4e5de70b8c374ba144250da5d24518b3",
-      "agents/image-generator.md": "372052e21ad41a0fa50654858f5ab5e9decfed422dd17e25f7fbacc93e6eb80f",
+      "config/image-generation/image-generation.yaml": "94637c2cf3c4214e48e50a6238d317de090dc2af881bda5641ac14edda2931ab",
+      "agents/image-generator.md": "e7e14e2a8ced41352e52e8cbf8c56795bef68fd45b096d0eb871c1c71f695646",
       "config/image-generation/styles/isometric.md": "821224582cf75c6148d683b67407bd5de6d9d7b208742de27ba5df5650a10861",
       "config/image-generation/styles/blueprint.md": "70d4d9843bff8b04dd1cbc80753ccd10b897e31def54a45c0764adbe480be8a8",
       "config/image-generation/styles/line-illust.md": "763b37dd0247fc2aa60a523424663e8bb671e4a00cbb9b220982922ed36e2983"

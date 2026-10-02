@@ -93,8 +93,10 @@ Task(subagent_type="image-generator", prompt="""
 ## 注意事項
 
 - **API キー不要**: 組み込み `image_gen` は Codex の ChatGPT 認証で動く。`OPENAI_API_KEY` は使わない。
-- **モデル**: 既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。
-  変更は `image-generation` パッケージ config（`config/image-generation.yaml` の `image_model`）で行う。
+- **モデル**: 既定 `gpt-5.5`。これは `image_gen` を呼び出す Codex エージェントのモデルで、
+  描画モデル（OpenAI の gpt-image）ではない。`codex.model` とは分けて、`image-generation`
+  パッケージ config（`config/image-generation.yaml` の `image_model`）で指定する。
+  `gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応。`gpt-6.1-sol` でも生成できる。
 - **スタイル**: `--style <name>` で `.claude/config/image-generation/styles/<name>.md` を適用する。
   `--style none` はその実行だけ `default_style` を無効化する。style 定義の本文は翻訳しない。
 - **sandbox**: 画像生成コマンドのみ Claude Code 側 Bash を `dangerouslyDisableSandbox: true` で実行する
