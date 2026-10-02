@@ -3,7 +3,7 @@
 **パッケージ**: `packages/image-generation`
 **類型**: スキル型（`/image-gen` スキル + `image-generator` エージェント）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-09-29（EV-16 に kill-switch チェックの起動インタプリタを追記。人間レビュー待ち（本 PR）。前回 2026-07-23: EV-18〜21 にスタイル切替機構を追加）
+**最終レビュー日**: 2026-10-02（EV-05 の探索対象をセッションのフォルダ・任意の `*.png` に改め、EV-22 を追加。人間レビュー待ち（本 PR）。前回 2026-09-29: EV-16 に kill-switch チェックの起動インタプリタを追記）
 **情報源**: packages/image-generation/README.md, docs/adr/ADR-20260605-023.md, facets/instructions/image-gen.md（`/image-gen` スキル指示書）, packages/image-generation/agents/image-generator.md（エージェント指示書）, packages/image-generation/config/image-generation.yaml, packages/image-generation/manifest.json（補助参照: 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -34,7 +34,8 @@
 - [ ] EV-02（正常 / must）: `--out <path>` 指定時はそのパスが出力先として使われ、絶対パスに解決される — 根拠: facets/instructions/image-gen.md（Phase 1）
 - [ ] EV-03（異常 / must）: プロンプトが空の場合、画像生成を実行せず AskUserQuestion で確認する — 根拠: facets/instructions/image-gen.md（Phase 1 手順3）
 - [ ] EV-04（境界 / must）: 出力先パスが `git rev-parse --show-toplevel` で得たリポジトリルート外に解決される場合（パストラバーサル）、生成を実行せず拒否する — 根拠: packages/image-generation/agents/image-generator.md（Step 1）
-- [ ] EV-05（異常 / must）: Codex 実行後、Step 3 で打ったフレッシュネスマーカーより新しい `call_*.png`/`ig_*.png` が存在しない場合、既存の古いファイルを流用せず FAILURE として報告する（`ls -t | head` 等での手動迂回は禁止） — 根拠: packages/image-generation/agents/image-generator.md（Step 3.5）, docs/adr/ADR-20260605-023.md（Update 2026-06-17 #2 点7）
+- [ ] EV-05（異常 / must）: Codex 実行後、EV-22 で特定したセッションのフォルダに Step 3 で打ったフレッシュネスマーカーより新しい `*.png`（保存名はモデルで異なり、`gpt-5.5` は `call_*.png`、sol 系は `exec-*.png`、旧 codex は `ig_*.png`）が存在しない場合、既存の古いファイルを流用せず FAILURE として報告する（`ls -t | head` 等での手動迂回は禁止） — 根拠: packages/image-generation/agents/image-generator.md（Step 3.5）, docs/adr/ADR-20260605-023.md（Update 2026-06-17 #2 点7）
+- [ ] EV-22（境界 / must）: Step 3.5 の鮮度ガードは、`codex exec` が stderr のヘッダに出す `session id: <uuid>` を Step 3 で取得したログのヘッダ部分（echo されたプロンプトより前）から読み取り、UUID 形式 `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` に一致することを機械的に確認したうえで、探索を `~/.codex/generated_images/<session id>/` に限定する。`~/.codex/generated_images` 全体は探索しない（並行して動く別の Codex セッション（TUI や並列の `/image-gen`）の画像を自分の成果物として採用しないため）。session id が取得できない・形式に一致しない場合は全体探索に戻さず FAILURE として報告する — 根拠: packages/image-generation/agents/image-generator.md（Step 3, Step 3.5）, docs/adr/ADR-20260605-023.md（Update 2026-10-02）
 - [ ] EV-06（異常 / must）: 出力ファイルが PNG マジックバイトを持たない、サイズが閾値未満、または Codex 出力ログにレートリミット/Pillow/PIL/ImageMagick/matplotlib 等のフォールバックマーカー（英日双方）を含む場合、成功として扱わず FAILURE 報告する — 根拠: packages/image-generation/agents/image-generator.md（Step 4）
 - [ ] EV-07（異常 / must）: Codex CLI が未インストール・未認証・実行エラーの場合、画像生成は利用不可として報告し、Pillow 等での自前代替描画は行わない — 根拠: packages/image-generation/agents/image-generator.md（Fallback）, packages/image-generation/README.md（CLI連携）
 - [ ] EV-08（境界 / should）: `image_model` は `config/image-generation.yaml`（+ `.local.yaml`）の値を正とし、キー自体が存在しない場合のみ `gpt-5.5` にフォールバックし、その旨を報告する — 根拠: packages/image-generation/agents/image-generator.md（Configuration）
@@ -66,6 +67,7 @@
 - EV-01, EV-02, EV-03: 引数解析・デフォルトパス生成・空プロンプト検知のロジック
 - EV-04: パストラバーサルガード（`realpath` 判定と repo root 比較）
 - EV-05: フレッシュネスガード（`find -newer` 相当のマーカー比較ロジック。マーカーより新しいファイルが「ある/ない」の2ケースを固定ディレクトリでシミュレート可能）
+- EV-22: セッション限定の探索（Step 3 が stderr をログに取り、Step 3.5 が `session id:` を読み取って UUID 形式で検証し、`find` の対象をそのセッションのフォルダに限定し、取得失敗時に FAILURE を返すこと。sandbox 無効の Step 3 が既存のログパス（symlink を含む）に書き込まないこと）をエージェント指示書の構造契約テストで検証可能
 - EV-06: 生成物検証（PNG magic bytes 判定、サイズ閾値判定、フォールバックマーカー文字列検知は固定 stdout 文字列 + 固定バイト列で完全に決定的）
 - EV-09: モデル名のブロックリスト判定（`gpt-5.3-codex` 等を弾くロジック）
 - EV-13: `codex exec` コマンドライン組み立て（`< /dev/null` / `timeout` / 必須フラグの有無）を文字列組み立てレベルで検証

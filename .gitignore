@@ -31,6 +31,8 @@ env/
 
 # Generated images (/image-gen output)
 generated-images/
+# image-generator の一時ファイル（マーカー・stderr ログ）。中断時に出力先へ残っても追跡しない
+.imggen.*
 
 # image-generator agent freshness marker (backstop; Step 3/3.5 remove it on
 # both success and failure, this only catches leftovers from abnormal exits)

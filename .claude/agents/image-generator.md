@@ -129,7 +129,10 @@ wording.
     rejected: the agent could be invoked with an untrusted prompt, so the OS
     boundary must remain.
 - **Residual risk** (accepted): with network open and repo files readable, repo
-  contents could in principle be exfiltrated. Input validation (Steps 1–2) and
+  contents could in principle be exfiltrated. Likewise, a prompt-injected Codex can
+  rewrite the Step 3 `ERR_LOG` before Step 3.5 reads it and point the session
+  id at another session's directory; that is no worse than its existing ability
+  to write any file in the repo. Input validation (Steps 1–2) and
   the constrained Codex prompt (Step 2) are defense-in-depth on top of the OS
   boundary — keep them. Do not feed this agent prompts from fully untrusted
   automated sources. Style definition files are untrusted input too: unlike the
@@ -327,17 +330,32 @@ if [ -z "$IMG_FEATURE" ]; then
 fi
 
 MARKER="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.marker"   # e.g. .../generated-images/.imggen.20260617-0930-a1b2.marker
+ERR_LOG="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.stderr.log"   # SAME <RUN_ID>; Step 3.5 reads `session id:` from it
 touch "$MARKER"
 sleep 1  # ensure any new image has a strictly newer mtime than the marker
 
+# stdout (Codex's messages) is shown as usual. stderr (the header with
+# `session id:`, the echoed prompt, errors) goes to ERR_LOG and is printed right
+# after, so nothing is hidden. This shell runs with the sandbox OFF, so never
+# write through a pre-existing path (e.g. a symlink planted by an earlier run).
+set -o noclobber
+if [ -e "$ERR_LOG" ] || [ -L "$ERR_LOG" ]; then
+  rm -f "$MARKER"
+  echo "ERROR: $ERR_LOG already exists; refusing to write through it."
+  exit 1
+fi
+CODEX_RC=0
 codex exec \
   --model "$IMAGE_MODEL" \
   --sandbox workspace-write \
   -c sandbox_workspace_write.network_access=true \
   --enable "$IMG_FEATURE" \
   -c model_reasoning_effort=low \
+  --color never \
   --skip-git-repo-check \
-  "$FULL_PROMPT" < /dev/null || { rm -f "$MARKER"; exit 1; }
+  "$FULL_PROMPT" < /dev/null 2> "$ERR_LOG" || CODEX_RC=$?
+cat "$ERR_LOG"
+[ "$CODEX_RC" -eq 0 ] || { rm -f "$MARKER" "$ERR_LOG"; exit 1; }
 ```
 
 Notes:
@@ -367,20 +385,38 @@ Notes:
 - `--full-auto` is **removed** — it is deprecated in codex 0.140.0 (folded into
   `--sandbox`). Do not re-add it.
 - If `codex exec` exits non-zero (rate limit, app-server error, etc.), the
-  `|| { rm -f "$MARKER"; exit 1; }` above deletes the marker before failing, so
-  a failed run never leaves an untracked `.imggen.*.marker` file inside a
-  tracked output directory (e.g. `docs/assets/`). This is independent of Step
-  3.5's own `rm -f "$MARKER"`: Step 3.5 is a separate Bash call that only runs
-  when Step 3 succeeded, so the two cleanups never race — do NOT remove this
-  one thinking it is redundant with Step 3.5's.
+  `CODEX_RC` check above prints the captured stderr and then deletes the marker
+  and `ERR_LOG` before failing, so a failed run never leaves an untracked
+  `.imggen.*` file inside a tracked output directory (e.g. `docs/assets/`).
+  This is independent of Step 3.5's own `rm -f`: Step 3.5 is a separate Bash
+  call that only runs when Step 3 succeeded, so the two cleanups never race —
+  do NOT remove this one thinking it is redundant with Step 3.5's.
+- `2> "$ERR_LOG"` exists so Step 3.5 can read the `session id: <uuid>` header
+  line, which `codex exec` prints on **stderr** (verified on codex 0.160.0).
+  `ERR_LOG` follows the marker's rules: a fixed literal under `$RESOLVED`'s
+  directory (NOT `$TMPDIR`), the same `<RUN_ID>`, reused verbatim in Step 3.5.
+  `--color never` keeps that header free of escape codes.
+- `set -o noclobber` and the existence check before the redirect matter because
+  this command runs with the Claude Code sandbox off: a redirect would follow a
+  symlink planted at the `ERR_LOG` path (for example by an earlier Codex run,
+  which can write inside the repo) and overwrite the file it points to.
+- The printed stderr echoes the prompt, which itself mentions "rate limit",
+  "Pillow", "fallback" and so on. Do not count those echoed words as Step 4
+  fallback markers; judge by Codex's own messages and error lines.
 
 ### Step 3.5 — Locate the fresh output and copy it to `$RESOLVED` (freshness guard)
 
 With the image-generation feature enabled (Step 3, via the runtime-resolved
 `--enable "$IMG_FEATURE"`), `image_gen` saves to
-`~/.codex/generated_images/<session>/call_*.png` (older codex used `ig_*.png`), NOT
-to `$RESOLVED`. Find the newest generated PNG (`call_*.png` or `ig_*.png`) that is
-**strictly newer than the Step 3 marker** and copy it. The marker check is the
+`~/.codex/generated_images/<session id>/`, NOT to `$RESOLVED`. The file name
+depends on the model (`call_*.png` for `gpt-5.5`, `exec-*.png` for sol-family
+models such as `gpt-6.1-sol`, `ig_*.png` on older codex). Search **only this
+run's session directory** (the `session id:` that Step 3 captured), and take the
+newest PNG there that is **strictly newer than the Step 3 marker**, then copy
+it. The session scope keeps out images that other Codex sessions write at the
+same time (the Codex TUI, a parallel `/image-gen`): scanning all of
+`~/.codex/generated_images` would let the newest-file rule pick another
+session's image and report it as this run's success. The marker check is the
 freshness guard: it prevents picking up a **stale image from a previous run** (which
 would otherwise be reported as a false success — this is exactly what happens when
 the file is missing and the agent grabs an old one). Re-use the **same** `RUN_ID`
@@ -389,20 +425,36 @@ variable). Run under the normal sandbox:
 
 ```bash
 MARKER="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.marker"   # SAME literal as Step 3 (NOT $TMPDIR)
+ERR_LOG="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.stderr.log"   # SAME literal as Step 3
 GEN_DIR="$HOME/.codex/generated_images"
 
-# Newest generated PNG strictly newer than the marker. Match BOTH naming schemes
-# (`call_*.png` on codex 0.140.0+ with image_generation/imagegenext, `ig_*.png` on older codex).
-# NUL-delimited read + `-nt` so the result is empty when nothing new was produced,
-# and it is safe for any filename. Do NOT pipe to `xargs ls`: with no input, BSD
-# xargs runs `ls` against the CWD and yields a bogus match that defeats the
-# freshness guard. Avoid GNU-only flags (`find -printf`, `stat -c`, `xargs -r`) —
-# this must work on macOS too.
+# The session id is also the name of the directory image_gen saved into.
+# Read only the header: stop at the `user` line, after which codex echoes the
+# prompt (which could itself contain a `session id:` line).
+SESSION_ID=$(sed -n -e '/^user$/q' -e 's/^session id: *//p' "$ERR_LOG" 2>/dev/null | head -n 1)
+rm -f "$ERR_LOG"
+# Mechanical gate before the value is used in a path. Fail CLOSED: never fall
+# back to scanning all of $GEN_DIR (that reintroduces the cross-session pick).
+if ! printf '%s' "$SESSION_ID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+  rm -f "$MARKER"
+  echo "ERROR: session id not found in codex output (header format may have \
+changed); NOT falling back to scanning other sessions."
+  exit 1
+fi
+SESSION_DIR="$GEN_DIR/$SESSION_ID"
+
+# Newest PNG in this session's directory strictly newer than the marker. Any
+# name is accepted (it differs by model); the session scope is what isolates
+# this run. NUL-delimited read + `-nt` so the result is empty when nothing new
+# was produced, and it is safe for any filename. Do NOT pipe to `xargs ls`: with
+# no input, BSD xargs runs `ls` against the CWD and yields a bogus match that
+# defeats the freshness guard. Avoid GNU-only flags (`find -printf`, `stat -c`,
+# `xargs -r`) — this must work on macOS too.
 FRESH=""
-if [ -d "$GEN_DIR" ]; then
+if [ -d "$SESSION_DIR" ]; then
   while IFS= read -r -d '' f; do
     if [ -z "$FRESH" ] || [ "$f" -nt "$FRESH" ]; then FRESH="$f"; fi
-  done < <(find "$GEN_DIR" -type f \( -name 'call_*.png' -o -name 'ig_*.png' \) -newer "$MARKER" -print0 2>/dev/null)
+  done < <(find "$SESSION_DIR" -type f -name '*.png' -newer "$MARKER" -print0 2>/dev/null)
 fi
 rm -f "$MARKER"
 
@@ -426,8 +478,10 @@ FAILURE. Do NOT then browse `$GEN_DIR`, run `ls -t … | head`, pick "the newest
 file", or copy any file you locate by hand — those bypass the freshness guard and
 will silently grab a stale image from a previous run (observed false-success mode:
 the agent copied an unrelated older `call_*.png` and reported success). The ONLY
-file you may copy is the one the freshness-guarded `find` above selected. If the
-flag/glob seem wrong, report that — do not work around the guard.
+file you may copy is the one the freshness-guarded `find` above selected. Do NOT
+widen the search to other session directories or to all of `$GEN_DIR`. If the
+session id, flag, or search seem wrong, report that — do not work around the
+guard.
 
 ### Step 4 — Verify it is a real AI image (placeholder = failure)
 

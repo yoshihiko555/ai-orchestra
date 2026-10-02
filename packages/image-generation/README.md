@@ -73,12 +73,18 @@ codex exec --model gpt-5.5 \
   境界を維持）。
 - **`--full-auto` は廃止**: codex 0.140.0 で deprecated（`--sandbox` に統合）。
 - **保存先**: `image_gen` は `~/.codex/generated_images/<session>/` に保存する
-  （`imagegenext`/`image_generation` いずれの場合もファイル名は `call_*.png`、旧 codex は
-  `ig_*.png`）。エージェントは生成直前のマーカー時刻より**新しい**ファイルだけを採用して
-  出力先へコピーする（古い画像を誤って成功扱いしない鮮度ガード）。対象なし時に手動で
-  ディレクトリを漁って最新ファイルを掴むのは**禁止**（虚偽成功の原因）。
-- モデルは既定 `gpt-5.5`（`gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応）。
-  `config/image-generation.yaml` の `image_model` で差し替え可能。
+  （ファイル名はモデルで異なり、`gpt-5.5` は `call_*.png`、sol 系は `exec-*.png`、
+  旧 codex は `ig_*.png`）。エージェントは `codex exec` が stderr に出す `session id:` から
+  その実行のセッションのフォルダを特定し、そのフォルダの中で生成直前のマーカー時刻より
+  **新しい**ファイルだけを採用して出力先へコピーする（古い画像や、並行して動く別の
+  Codex セッションの画像を誤って成功扱いしない鮮度ガード）。session id が取れない場合や
+  対象なしの場合は失敗として報告し、手動でディレクトリを漁って最新ファイルを掴むのは
+  **禁止**（虚偽成功の原因）。
+- `image_model`（既定 `gpt-5.5`）は `image_gen` ツールを呼び出す Codex エージェントの
+  モデルで、画像を描画するモデルではない（描画は OpenAI の gpt-image で、選択できない）。
+  `codex.model` とは分けて `config/image-generation.yaml` の `image_model` で指定する。
+  `gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応。`gpt-6.1-sol` でも生成できる
+  （codex 0.160.0 で確認）
 - 画像内の見出し・ラベル等は `output_language`（既定 `ja`）に従う。技術用語・固有名詞は
   英語のままでもよく、ユーザープロンプトに画像内テキストの言語を明記した場合はその指定を優先する。
   恒久的な変更は `.claude/config/image-generation/image-generation.local.yaml` で上書きできる。
