@@ -252,7 +252,7 @@ class TestSessionScopedSearch:
 
     def test_step3_captures_stderr_into_log_under_output_dir(self) -> None:
         # session id: はヘッダとして stderr に出るため、stderr をログに取っておく
-        assert '2> "$ERR_LOG"' in STEP3
+        assert '2>> "$ERR_LOG"' in STEP3
         assert 'ERR_LOG="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.stderr.log"' in STEP3
         assert 'ERR_LOG="$(dirname "$RESOLVED")/.imggen.<RUN_ID>.stderr.log"' in STEP3_5
 
@@ -272,7 +272,16 @@ class TestSessionScopedSearch:
         assert "set -o noclobber" in STEP3
         guard = 'if [ -e "$ERR_LOG" ] || [ -L "$ERR_LOG" ]; then'
         assert guard in STEP3
-        assert STEP3.index(guard) < STEP3.index('2> "$ERR_LOG"')
+        assert STEP3.index(guard) < STEP3.index(': > "$ERR_LOG"')
+
+    def test_step3_prints_log_from_handle_opened_before_codex(self) -> None:
+        # 実行中に Codex がパスを symlink に差し替えても、開き直さず事前のハンドルで読む
+        codex_pos = re.search(r"^codex exec\b", STEP3, re.MULTILINE).start()
+        assert 'exec 4< "$ERR_LOG"' in STEP3
+        assert STEP3.index('exec 4< "$ERR_LOG"') < codex_pos
+        assert "cat <&4" in STEP3
+        assert 'cat "$ERR_LOG"' not in STEP3
+        assert '2>> "$ERR_LOG" 4<&-' in STEP3
 
     def test_step3_5_reads_session_id_from_header_only(self) -> None:
         # echo されたプロンプト（`user` 行以降）の中の `session id:` は読まない

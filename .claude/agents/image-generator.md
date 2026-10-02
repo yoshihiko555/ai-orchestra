@@ -344,6 +344,17 @@ if [ -e "$ERR_LOG" ] || [ -L "$ERR_LOG" ]; then
   echo "ERROR: $ERR_LOG already exists; refusing to write through it."
   exit 1
 fi
+# Create the log (noclobber refuses anything that appeared at the path) and open
+# a read handle on it BEFORE Codex starts. The log is printed from that handle,
+# never by reopening the path: Codex can rewrite the repo while it runs, and a
+# path swapped for a symlink would make this sandbox-off shell read a file
+# outside Codex's workspace boundary.
+if ! : > "$ERR_LOG"; then
+  rm -f "$MARKER"
+  echo "ERROR: could not create $ERR_LOG; refusing to continue."
+  exit 1
+fi
+exec 4< "$ERR_LOG"
 CODEX_RC=0
 codex exec \
   --model "$IMAGE_MODEL" \
@@ -353,8 +364,9 @@ codex exec \
   -c model_reasoning_effort=low \
   --color never \
   --skip-git-repo-check \
-  "$FULL_PROMPT" < /dev/null 2> "$ERR_LOG" || CODEX_RC=$?
-cat "$ERR_LOG"
+  "$FULL_PROMPT" < /dev/null 2>> "$ERR_LOG" 4<&- || CODEX_RC=$?
+cat <&4
+exec 4<&-
 [ "$CODEX_RC" -eq 0 ] || { rm -f "$MARKER" "$ERR_LOG"; exit 1; }
 ```
 
@@ -391,7 +403,7 @@ Notes:
   This is independent of Step 3.5's own `rm -f`: Step 3.5 is a separate Bash
   call that only runs when Step 3 succeeded, so the two cleanups never race —
   do NOT remove this one thinking it is redundant with Step 3.5's.
-- `2> "$ERR_LOG"` exists so Step 3.5 can read the `session id: <uuid>` header
+- `2>> "$ERR_LOG"` exists so Step 3.5 can read the `session id: <uuid>` header
   line, which `codex exec` prints on **stderr** (verified on codex 0.160.0).
   `ERR_LOG` follows the marker's rules: a fixed literal under `$RESOLVED`'s
   directory (NOT `$TMPDIR`), the same `<RUN_ID>`, reused verbatim in Step 3.5.
@@ -400,6 +412,9 @@ Notes:
   this command runs with the Claude Code sandbox off: a redirect would follow a
   symlink planted at the `ERR_LOG` path (for example by an earlier Codex run,
   which can write inside the repo) and overwrite the file it points to.
+  For the same reason the log is printed with `cat <&4` from a handle opened
+  before Codex starts, never by reopening the path: Codex can replace the path
+  with a symlink while it runs. `4<&-` keeps that handle out of the Codex process.
 - The printed stderr echoes the prompt, which itself mentions "rate limit",
   "Pillow", "fallback" and so on. Do not count those echoed words as Step 4
   fallback markers; judge by Codex's own messages and error lines.
