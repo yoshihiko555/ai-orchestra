@@ -20,21 +20,26 @@ codd:
 
 各ドキュメント先頭の `codd:` frontmatter で依存関係を宣言し、依存グラフを使って次の 3 つを行う。
 
-| 機能       | コマンド / スキル                      | 内容                                                                            |
-| ---------- | -------------------------------------- | ------------------------------------------------------------------------------- |
-| グラフ構築 | `/codd-scan`                           | scope 内のドキュメントから `.claude/codd/graph.jsonl` を作る                    |
-| 整合性検証 | `/codd-validate`                       | リンク切れ・重複・循環・語彙違い（error）、欠落・孤立・drift（warning）を検出   |
-| 影響分析   | `/codd-impact`（`codd impact --diff`） | 変更したノードの下流を Green（要追従）/ Amber（要確認）/ Gray（参考）に分類する |
+| 機能       | コマンド / スキル                      | 内容                                                                                            |
+| ---------- | -------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| グラフ構築 | `/codd-scan`                           | scope 内のドキュメントから `.claude/codd/graph.jsonl` を作る                                    |
+| 整合性検証 | `/codd-validate`                       | リンク切れ・重複・循環・語彙違い・不正なコード注釈（error）、欠落・孤立・drift（warning）を検出 |
+| 影響分析   | `/codd-impact`（`codd impact --diff`） | 変更したノードの下流を Green（要追従）/ Amber（要確認）/ Gray（参考）に分類する                 |
 
 CLI として直接呼ぶ場合は `orchex run codd codd -- <scan|validate|impact|verdict>` を使う。
 
-codd は essential プリセットに含まれるため、`setup essential` の時点で次がすべて導入先に入る。導入先で手を入れるのは基本的に `.claude/config/codd/codd.local.yaml` だけである。
+codd は essential プリセットに含まれる。導入先で手を入れるのは基本的に `.claude/config/codd/codd.local.yaml` だけである。
+
+`setup essential` の直後に入るもの:
 
 - 設定: `.claude/config/codd/codd.yaml`（SessionStart で同期される。直接編集しない）
-- スキル: `codd-scan` / `codd-validate` / `codd-impact`
-- ルール: `codd-frontmatter-policy`
 - hook: 編集時の scan（既定は無効の opt-in）、commit 時の validate（既定で有効・warn）
 - `.gitignore`: `.claude/codd/`（グラフの出力先）
+
+次回 SessionStart の facet build（または手動の `orchex facet build --project .`）で生成されるもの:
+
+- スキル: `codd-scan` / `codd-validate` / `codd-impact`
+- ルール: `codd-frontmatter-policy`
 
 ---
 
@@ -50,8 +55,9 @@ codd は essential プリセットに含まれるため、`setup essential` の�
 | 手動         | `/codd-validate`・`/codd-impact`                | —                                    | working tree                                          |
 
 - commit 時の検査は、hook 実行時点の git index を検証する（`-a` / `--all` は候補の index を再現して検証する）。未追跡ファイル（`.claude/Plans.md` 等）は対象にならない
-- PreToolUse hook はコマンド実行前に動くため、`git add ... && git commit` のような複合コマンドでは同じコマンド内の `git add` は反映されない（注記が表示される）
-- 手動実行は working tree を見るため、未追跡の Plans.md も対象になる。手動と commit / CI で結果がずれる原因になる（4 節）
+- commit 時の検査は Claude Code の PreToolUse(Bash) hook なので、**Claude Code セッション経由の `git commit` のみ**が対象になる。手動シェル・GUI Git クライアント・CI からの commit は対象外（設計書 §4.8.1 の既知の制限）。`validate_on_commit: block` も通常の git hook（pre-commit）相当ではない
+- PreToolUse hook はコマンド実行前に動くため、`git add ... && git commit` のような複合コマンドでは同じコマンド内の `git add` は反映されない。注記が表示されるのは、hook 実行時点の index で既に error が検出された場合のみである。index がクリーンなら注記も block も出ず、同じコマンド内の `git add` で入った error はそのまま commit される
+- 手動実行は working tree を見るため、未追跡の Plans.md や未ステージの変更も対象になる。手動と commit / CI で結果がずれる原因になる（7 節）
 
 ---
 
@@ -59,7 +65,7 @@ codd は essential プリセットに含まれるため、`setup essential` の�
 
 ![CODD の段階的な導入](../assets/codd/codd-adoption-steps-ja.png)
 
-frontmatter の欠落は warning なので、それだけでは block モードでも commit は止まらない。止まるのは validate error（リンク切れ・重複・循環・語彙違い）があるときで、frontmatter を付け始めると書き間違いで error が出やすい。警告から始め、error を 0 件にしてから締める。
+frontmatter の欠落は warning なので、それだけでは block モードでも commit は止まらない。止まるのは validate error（リンク切れ・重複・循環・語彙違い・不正なコード注釈）があるときで、frontmatter を付け始めると書き間違いで error が出やすい。警告から始め、error を 0 件にしてから締める。
 
 | 段階 | やること                                                                                              | 終わりの目安                        |
 | ---- | ----------------------------------------------------------------------------------------------------- | ----------------------------------- |
@@ -106,6 +112,7 @@ scope:
   exclude:
     - "docs/adr/_template.md"
     - "docs/adr/DECISIONS.md"
+    - "docs/evaluation/**/*.md" # base 設定が eval kind 未対応のため除外（リストは置き換えなので残す）
 hooks:
   validate_on_commit: warn # error が 0 件になったら block に上げる
 ```
@@ -118,13 +125,13 @@ hooks:
 
 ## 5. 日々の使い方
 
-| 場面                         | やること                                                                     |
-| ---------------------------- | ---------------------------------------------------------------------------- |
-| 要件・設計を変える前         | `/codd-impact`（`codd impact --diff main`）で下流の影響を確認する            |
-| ドキュメントを書いた・直した | `/codd-validate` で error が出ていないか確認する                             |
-| commit 時に警告が出た        | error は直す。warning は内容を見て、必要なら下流ドキュメントを追従させる     |
-| PR に `CONDITIONAL` が付いた | Green / Amber の未追従ノードを確認し、追従するか、追従不要の理由を PR に書く |
-| PR に `REJECT` が付いた      | validate error（リンク切れ・重複・循環・語彙違い）を直す                     |
+| 場面                         | やること                                                                           |
+| ---------------------------- | ---------------------------------------------------------------------------------- |
+| 上流ドキュメントを変更した後 | 下流を追従させる前に `/codd-impact`（`codd impact --diff main`）で追従先を確認する |
+| ドキュメントを書いた・直した | `/codd-validate` で error が出ていないか確認する                                   |
+| commit 時に警告が出た        | error は直す。warning は内容を見て、必要なら下流ドキュメントを追従させる           |
+| PR に `CONDITIONAL` が付いた | Green / Amber の未追従ノードを確認し、追従するか、追従不要の理由を PR に書く       |
+| PR に `REJECT` が付いた      | validate error（リンク切れ・重複・循環・語彙違い・不正なコード注釈）を直す         |
 
 PR の判定の意味:
 
@@ -151,14 +158,14 @@ workflow の例と入力一覧は [設計 §4.8.2](../design/codd-coherence-laye
 
 ## 7. よくあるつまずき
 
-| 症状                                                | 原因と対処                                                                                                                              |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| warning が大量に出る                                | frontmatter の無い既存ドキュメントや配布ルール。scope を絞るか、段階 3 で少しずつ付ける                                                 |
-| `scope.include` を足したら既定の対象が消えた        | リストは置き換えになる（4 節）。既定値も含めて全部書く                                                                                  |
-| 手動の `/codd-validate` と commit / CI で結果が違う | 未追跡の `.claude/Plans.md` が手動実行だけで対象になっている。scope から外す                                                            |
-| CI で local の設定が効かない                        | `codd.yaml` / `codd.local.yaml` がコミットされていない（6 節）                                                                          |
-| CI が「全履歴が必要」で失敗する                     | `actions/checkout` に `fetch-depth: 0` を指定する                                                                                       |
-| hook 自体を止めたい                                 | 実動作だけ止めるなら `hooks.scan_on_edit: false` と `hooks.validate_on_commit: off`。登録ごと外すなら `orchex disable codd --project .` |
+| 症状                                                | 原因と対処                                                                                                                                                                                                                                                             |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| warning が大量に出る                                | frontmatter の無い既存ドキュメントや配布ルール。scope を絞るか、段階 3 で少しずつ付ける                                                                                                                                                                                |
+| `scope.include` を足したら既定の対象が消えた        | リストは置き換えになる（4 節）。既定値も含めて全部書く                                                                                                                                                                                                                 |
+| 手動の `/codd-validate` と commit / CI で結果が違う | 手動は working tree、commit は index を見る。未追跡の `.claude/Plans.md` のほか、scope 内の未ステージ変更でもずれる（例: 壊れた内容を stage 後に working tree だけ直した）。Plans.md は scope から外す。`git diff` で未ステージの差分を確認し、直した内容を stage する |
+| CI で local の設定が効かない                        | `codd.yaml` / `codd.local.yaml` がコミットされていない（6 節）                                                                                                                                                                                                         |
+| CI が「全履歴が必要」で失敗する                     | `actions/checkout` に `fetch-depth: 0` を指定する                                                                                                                                                                                                                      |
+| hook 自体を止めたい                                 | 実動作だけ止めるなら `hooks.scan_on_edit: false` と `hooks.validate_on_commit: off`。登録ごと外すなら `orchex disable codd --project .`                                                                                                                                |
 
 ---
 
