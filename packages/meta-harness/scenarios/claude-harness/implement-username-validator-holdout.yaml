@@ -6,7 +6,7 @@ description: >-
   the harness's coding-principles instruction (nest depth <=2 via early return) generalizes to
   an unseen prompt (ADR-20260817-052, measurement axis (1) instruction adherence).
 prompt: |
-  This is an offline, network-free evaluation harness for the ai-orchestra CLAUDE.md/rules
+  This is an offline, network-free evaluation harness for the ai-orchestra AGENTS.md/rules
   instruction set:
   - There is no network access. Do not attempt to fetch external resources.
   - Git write operations (commit/push) are unavailable in this harness. Do not attempt them.

@@ -341,7 +341,7 @@ class TestScenarioExecutionEnvelope:
             config_hash="b" * 64,
             routing_config_base_hash=None,
             model=None,
-            claude_version="2.1.207",
+            claude_version="2.1.282",
             cli_capabilities={},
             allowed_tools=["Read", "Edit", "Write"],
             allowed_tools_source="scenario",

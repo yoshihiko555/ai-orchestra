@@ -1137,6 +1137,90 @@ class TestInstallContextInitFiles:
         assert manager.CONTEXT_SPECS[0].required_pkg is None
 
 
+class TestInstallPlacesContextInitFiles:
+    def test_install_places_init_files_for_newly_installed_package(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """init() 済みのプロジェクトへ後から install しても .codex/config.toml が配置される。"""
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude").mkdir(parents=True)
+        (project_dir / ".claude" / "orchestra.json").write_text(
+            json.dumps({"installed_packages": []}), encoding="utf-8"
+        )
+        codex_template_dir = orchestra_dir / "templates" / "codex"
+        skill_dir = codex_template_dir / "skills" / "context-loader"
+        skill_dir.mkdir(parents=True)
+        (codex_template_dir / "config.toml").write_text("model = 'example'\n", encoding="utf-8")
+        (skill_dir / "SKILL.md").write_text("skill content\n", encoding="utf-8")
+        _setup_context_packages(
+            orchestra_dir,
+            extra_packages={
+                "codex-suggestions": {
+                    "name": "codex-suggestions",
+                    "version": "0.0.0",
+                    "depends": [],
+                    "context_files": {
+                        "template_dir": "templates/codex",
+                        "init": [".codex/config.toml", ".codex/skills/context-loader/"],
+                    },
+                }
+            },
+        )
+        manager = OrchestraManager(orchestra_dir)
+        monkeypatch.setattr(manager, "setup_env_var", lambda *_a, **_k: None)
+        monkeypatch.setattr(manager, "register_sync_hook", lambda *_a, **_k: None)
+        monkeypatch.setattr(manager, "context_sync", lambda *_a, **_k: None)
+        monkeypatch.setattr(manager, "run_initial_sync", lambda *_a, **_k: None)
+
+        manager.install("codex-suggestions", str(project_dir), _skip_dep_check=True)
+
+        config = project_dir / ".codex" / "config.toml"
+        skill = project_dir / ".codex" / "skills" / "context-loader" / "SKILL.md"
+        assert config.read_text(encoding="utf-8") == "model = 'example'\n"
+        assert skill.read_text(encoding="utf-8") == "skill content\n"
+
+    def test_install_does_not_overwrite_existing_init_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude").mkdir(parents=True)
+        (project_dir / ".claude" / "orchestra.json").write_text(
+            json.dumps({"installed_packages": []}), encoding="utf-8"
+        )
+        (project_dir / ".codex").mkdir()
+        (project_dir / ".codex" / "config.toml").write_text("user = true\n", encoding="utf-8")
+        codex_template_dir = orchestra_dir / "templates" / "codex"
+        codex_template_dir.mkdir(parents=True)
+        (codex_template_dir / "config.toml").write_text("model = 'example'\n", encoding="utf-8")
+        _setup_context_packages(
+            orchestra_dir,
+            extra_packages={
+                "codex-suggestions": {
+                    "name": "codex-suggestions",
+                    "version": "0.0.0",
+                    "depends": [],
+                    "context_files": {
+                        "template_dir": "templates/codex",
+                        "init": [".codex/config.toml"],
+                    },
+                }
+            },
+        )
+        manager = OrchestraManager(orchestra_dir)
+        monkeypatch.setattr(manager, "setup_env_var", lambda *_a, **_k: None)
+        monkeypatch.setattr(manager, "register_sync_hook", lambda *_a, **_k: None)
+        monkeypatch.setattr(manager, "context_sync", lambda *_a, **_k: None)
+        monkeypatch.setattr(manager, "run_initial_sync", lambda *_a, **_k: None)
+
+        manager.install("codex-suggestions", str(project_dir), _skip_dep_check=True)
+
+        assert (project_dir / ".codex" / "config.toml").read_text(
+            encoding="utf-8"
+        ) == "user = true\n"
+
+
 class TestInitRunsContextSync:
     def test_init_creates_agents_via_context_sync_when_init_template_is_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -27,7 +27,7 @@ def _base_config() -> dict:
     return {
         "evaluate": {
             "isolation": {
-                "image": "ai-orchestra/meta-harness-scenario:2.1.207",
+                "image": "ai-orchestra/meta-harness-scenario:2.1.282",
                 "image_pin": None,
                 "auto_build_images": True,
                 "image_cache": {},
@@ -110,7 +110,7 @@ class TestRecipeAndPolicyNamespace:
         assert policy.lock_path == tmp_path / ".claude/meta-harness/docker-image-build.lock"
         assert policy.builder_name == "meta-harness-builder"
         assert captured["kwargs"]["auto_build"] is True
-        assert captured["kwargs"]["immutable_image"] == "ai-orchestra/meta-harness-scenario:2.1.207"
+        assert captured["kwargs"]["immutable_image"] == "ai-orchestra/meta-harness-scenario:2.1.282"
 
     def test_broker_recipe_and_policy_use_meta_harness_defaults_and_shared_context(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -313,7 +313,7 @@ class TestImagePinReconciliation:
             lambda *_args, **_kwargs: "9.9.9 (Claude Code)",
         )
         config = _base_config()
-        config["evaluate"]["isolation"]["image_pin"] = "2.1.207 (Claude Code)"
+        config["evaluate"]["isolation"]["image_pin"] = "2.1.282 (Claude Code)"
 
         with pytest.raises(docker_image.DockerImageError, match="image_pin mismatch"):
             docker_image.ensure_scenario_image(config, tmp_path)
@@ -330,10 +330,10 @@ class TestImagePinReconciliation:
         monkeypatch.setattr(
             docker_image.runtime_cli,
             "image_claude_version",
-            lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+            lambda *_args, **_kwargs: "2.1.282 (Claude Code)",
         )
         config = _base_config()
-        config["evaluate"]["isolation"]["image_pin"] = "2.1.207 (Claude Code)"
+        config["evaluate"]["isolation"]["image_pin"] = "2.1.282 (Claude Code)"
 
         ensured = docker_image.ensure_scenario_image(config, tmp_path)
 
@@ -341,7 +341,7 @@ class TestImagePinReconciliation:
         # Issue #307 review: the verified version must be surfaced on the
         # returned EnsuredImage so callers can reuse it instead of launching
         # another container to look it up again.
-        assert ensured.claude_version == "2.1.207 (Claude Code)"
+        assert ensured.claude_version == "2.1.282 (Claude Code)"
 
     def test_scenario_no_image_pin_configured_skips_reconciliation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -398,7 +398,7 @@ class TestImagePinReconciliation:
         ensured = docker_image.ensure_scenario_image(config, tmp_path)
 
         assert ensured.built is True
-        assert captured["build_args"] == {"CLAUDE_CODE_VERSION": "2.1.207"}
+        assert captured["build_args"] == {"CLAUDE_CODE_VERSION": "2.1.282"}
 
     def test_broker_ensure_does_not_perform_image_pin_reconciliation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -417,7 +417,7 @@ class TestImagePinReconciliation:
         monkeypatch.setattr(docker_image.runtime_image, "ensure_recipe_image", ensure)
         monkeypatch.setattr(docker_image.runtime_cli, "image_claude_version", _fail_version_check)
         config = _base_config()
-        config["evaluate"]["isolation"]["image_pin"] = "2.1.207 (Claude Code)"
+        config["evaluate"]["isolation"]["image_pin"] = "2.1.282 (Claude Code)"
 
         ensured = docker_image.ensure_broker_image(config, tmp_path)
 
@@ -481,13 +481,13 @@ class TestImageRepositoryHelper:
         ("image", "expected"),
         [
             ("ai-orchestra/meta-harness-scenario", "ai-orchestra/meta-harness-scenario"),
-            ("ai-orchestra/meta-harness-scenario:2.1.207", "ai-orchestra/meta-harness-scenario"),
+            ("ai-orchestra/meta-harness-scenario:2.1.282", "ai-orchestra/meta-harness-scenario"),
             (
                 "ai-orchestra/meta-harness-scenario@sha256:" + "a" * 64,
                 "ai-orchestra/meta-harness-scenario",
             ),
             (
-                "ai-orchestra/meta-harness-scenario:2.1.207@sha256:" + "a" * 64,
+                "ai-orchestra/meta-harness-scenario:2.1.282@sha256:" + "a" * 64,
                 "ai-orchestra/meta-harness-scenario",
             ),
         ],

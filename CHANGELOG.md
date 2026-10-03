@@ -14,8 +14,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`codd`: 利用者ガイド（図解つき）を追加**: `docs/guides/codd.md` に、導入先での段階的な導入手順・`codd.local.yaml` の書き方（リストは置き換え）・検査が走るタイミング・CI 導入時の注意をまとめた。
 - **`image-generation`: 同梱スタイル `line-illust` を追加**: 技術記事の構成図・比較図向けの、親しみやすい線画イラスト調の図解スタイル。`/image-gen <prompt> --style line-illust` で適用できる。
 
+### Changed
+
+- **meta-harness / loop-harness: Docker 内 Claude Code の pin を 2.1.282 に更新**: コンテナ内の Claude が `AGENTS.md` を読めるようになる。
+  既存の Docker イメージは再ビルドが必要で、meta-harness の baseline は作り直しになる。
+- **meta-harness: 評価・昇格のビルドで `context sync` も実行**: 候補が `templates/context/` を変えると、評価環境と昇格 PR のルート `AGENTS.md` の管理ブロックに反映される。
+
 ### Fixed
 
+- **`orchex install` / `setup` で `.codex/config.toml` と `.codex/skills/context-loader/` が配置されない問題を修正**: `codex-suggestions` を後から導入しても初回テンプレートが配置される（既存ファイルは上書きしない）。
 - **`image-generation`: `image_model` に sol 系モデル（`gpt-6.1-sol` 等）を指定すると、生成に成功しても失敗と報告される問題を修正**: 保存名が `exec-*.png` になるモデルでも生成した画像を受け取れる。既定値は `gpt-5.5` のまま。
 - **`image-generation`: 並行して動く別の Codex セッションの画像を、自分の生成結果として取り違えることがある問題を修正**: 探索をその実行のセッションのフォルダに限定した。
 

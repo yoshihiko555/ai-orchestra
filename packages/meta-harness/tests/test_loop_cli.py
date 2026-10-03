@@ -632,8 +632,8 @@ def test_resume_reuses_train_evaluation_id_for_holdout(
     loop_cli._stop_loop(git_project, config, spec, "interrupted")
     restored = loop_cli._restore_loop(git_project, config, spec.loop_id, None)
     capabilities = loop_cli.ev.CliCapabilities(
-        claude_version="2.1.207",
-        version_pin="2.1.207",
+        claude_version="2.1.282",
+        version_pin="2.1.282",
         version_pin_match=True,
         checks={},
         judge_tool="codex",

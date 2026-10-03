@@ -71,7 +71,7 @@ class TestCapabilityGateHappyPath:
                 "isolation": {
                     "backend": "docker",
                     "execution_backend": "docker",
-                    "image_pin": "2.1.207 (Claude Code)",
+                    "image_pin": "2.1.282 (Claude Code)",
                 }
             },
             "judge": {"tool": "claude-bare"},
@@ -81,8 +81,8 @@ class TestCapabilityGateHappyPath:
             ev.siso.docker,
             "check_docker_capabilities",
             lambda *_args, **_kwargs: SimpleNamespace(
-                claude_version="2.1.207 (Claude Code)",
-                version_pin="2.1.207 (Claude Code)",
+                claude_version="2.1.282 (Claude Code)",
+                version_pin="2.1.282 (Claude Code)",
                 version_pin_match=True,
                 checks={"docker_daemon": True, "broker_auth": True},
                 ok=True,
@@ -97,7 +97,7 @@ class TestCapabilityGateHappyPath:
         )
 
         assert caps.ok is True
-        assert caps.claude_version == "2.1.207 (Claude Code)"
+        assert caps.claude_version == "2.1.282 (Claude Code)"
         assert caps.checks["scenario_execution_boundary"] is True
         assert caps.checks["broker_auth"] is True
 
@@ -111,7 +111,7 @@ class TestCapabilityGateHappyPath:
             "check_docker_capabilities",
             lambda *_args, **_kwargs: SimpleNamespace(
                 claude_version=None,
-                version_pin="2.1.207 (Claude Code)",
+                version_pin="2.1.282 (Claude Code)",
                 version_pin_match=None,
                 checks={"docker_daemon": False},
                 ok=False,

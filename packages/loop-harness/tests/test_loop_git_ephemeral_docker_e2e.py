@@ -16,7 +16,7 @@ git_ephemeral = load_module(
     "packages/loop-harness/lib/loop_git_ephemeral.py",
 )
 
-DEFAULT_IMAGE = "ai-orchestra/loop-harness-scenario:2.1.207"
+DEFAULT_IMAGE = "ai-orchestra/loop-harness-scenario:2.1.282"
 pytestmark = pytest.mark.docker
 
 

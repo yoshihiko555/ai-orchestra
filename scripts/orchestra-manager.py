@@ -596,6 +596,11 @@ class OrchestraManager(ContextMixin, HooksMixin):
             orch["last_sync"] = datetime.datetime.now(datetime.UTC).isoformat()
             self.save_orchestra_json(project_dir, orch)
 
+        # init() はインストール済みパッケージしか見ないため、新規インストール分の初回配置テンプレート
+        # （.codex/config.toml 等）はここで配置する。既存ファイルは上書きしない。
+        if pkg.context_files:
+            self._install_context_init_files(pkg, project_dir, dry_run)
+
         self.context_sync(project, dry_run)
         self.run_initial_sync(project_dir, dry_run, force=force)
 

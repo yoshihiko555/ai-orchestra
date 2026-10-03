@@ -2172,6 +2172,7 @@ def test_build_facets_and_context_runs_facet_build_per_target_then_context_build
         [sys.executable, orchestra_manager, "facet", "build", "--target", "claude"],
         [sys.executable, orchestra_manager, "facet", "build", "--target", "codex"],
         [sys.executable, orchestra_manager, "context", "build"],
+        [sys.executable, orchestra_manager, "context", "sync", "--project", str(worktree)],
     ]
 
 
@@ -2229,6 +2230,14 @@ def test_promote_flow_invokes_facet_build_for_all_declared_targets(
         [sys.executable, orchestra_manager, "facet", "build", "--target", "claude"],
         [sys.executable, orchestra_manager, "facet", "build", "--target", "codex"],
         [sys.executable, orchestra_manager, "context", "build"],
+        [
+            sys.executable,
+            orchestra_manager,
+            "context",
+            "sync",
+            "--project",
+            str(worktree_dir),
+        ],
     ]
     for build_command in build_commands:
         assert build_command in commands

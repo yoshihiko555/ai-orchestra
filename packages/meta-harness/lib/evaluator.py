@@ -1154,7 +1154,11 @@ def build_facet_and_context(
     source_commit: str | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> None:
-    """`AI_ORCHESTRA_DIR=<worktree>` で facet build → context build を実行する（Sec2-1 手順4）。"""
+    """`AI_ORCHESTRA_DIR=<worktree>` で facet build → context build → context sync を実行する（Sec2-1 手順4）。
+
+    `context sync` は `templates/context/` の変更をルート `AGENTS.md` の管理ブロックへ反映する。
+    これを省くと、候補が指示書テンプレートを変えても評価環境の `AGENTS.md` が古いまま評価される。
+    """
     if _uses_docker_backend(config):
         if main_root is None:
             raise EvaluatorStageError("build", "build_error", "main_root is required for Docker")
@@ -1166,7 +1170,8 @@ def build_facet_and_context(
             "/bin/sh",
             "-c",
             "set -eu; python3 scripts/orchestra-manager.py facet build; "
-            "python3 scripts/orchestra-manager.py context build",
+            "python3 scripts/orchestra-manager.py context build; "
+            "python3 scripts/orchestra-manager.py context sync --project .",
         ]
         try:
             completed = siso.docker.run_preparation_command(
@@ -1191,7 +1196,11 @@ def build_facet_and_context(
         return
     orchestra_manager = worktree_dir / "scripts" / "orchestra-manager.py"
     env = {**os.environ, "AI_ORCHESTRA_DIR": str(worktree_dir)}
-    for args in (["facet", "build"], ["context", "build"]):
+    for args in (
+        ["facet", "build"],
+        ["context", "build"],
+        ["context", "sync", "--project", str(worktree_dir)],
+    ):
         _run_build_step(orchestra_manager, args, worktree_dir, env, runner=runner)
 
 

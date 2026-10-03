@@ -5,7 +5,7 @@ description: >-
   素朴な文字列変換タスクを解かせ、ハーネスの指示書（coding-principles: 型ヒント・命名規約・
   関数長）を prompt で明示せずに守れるかを測る（ADR-20260817-052、測定軸①指示遵守）。
 prompt: |
-  This is an offline, network-free evaluation harness for the ai-orchestra CLAUDE.md/rules
+  This is an offline, network-free evaluation harness for the ai-orchestra AGENTS.md/rules
   instruction set:
   - There is no network access. Do not attempt to fetch external resources.
   - Git write operations (commit/push) are unavailable in this harness. Do not attempt them.

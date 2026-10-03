@@ -249,7 +249,7 @@ def _recipe(context: Path, **overrides) -> object:
         "repository": "ai-orchestra/loop-harness-scenario",
         "context_dir": context,
         "docker_label": DOCKER_LABEL,
-        "build_args": {"CLAUDE_CODE_VERSION": "2.1.207"},
+        "build_args": {"CLAUDE_CODE_VERSION": "2.1.282"},
         "platform": None,
         "target": None,
     }

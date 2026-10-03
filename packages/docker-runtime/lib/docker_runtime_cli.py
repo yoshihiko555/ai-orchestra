@@ -293,8 +293,8 @@ def host_env() -> dict[str, str]:
 
 def version_token(value: str | None) -> str:
     """Extract the leading version token so bare semver image_pin values (e.g.
-    "2.1.207") compare equal to full `claude --version` output (e.g.
-    "2.1.207 (Claude Code)").
+    "2.1.282") compare equal to full `claude --version` output (e.g.
+    "2.1.282 (Claude Code)").
 
     Shared image_pin semver validation/matching implementation: every
     Docker-backed harness (meta-harness, loop-harness) delegates here so the
@@ -317,11 +317,11 @@ def version_matches(actual: str | None, pin: str) -> bool:
     image_pin.
 
     Shared image_pin semver matching implementation. A bare semver pin (e.g.
-    "2.1.207") matches via leading-token comparison so it accepts the fuller
-    `claude --version` output (e.g. "2.1.207 (Claude Code)"). Any other pin
+    "2.1.282") matches via leading-token comparison so it accepts the fuller
+    `claude --version` output (e.g. "2.1.282 (Claude Code)"). Any other pin
     format must match the reported version exactly, preserving the strict
     Docker capability contract: a prebuilt image reporting an unexpected
-    wrapper (e.g. "2.1.207 (unexpected wrapper)") must fail closed rather
+    wrapper (e.g. "2.1.282 (unexpected wrapper)") must fail closed rather
     than pass on a token match.
     """
     if actual is None:

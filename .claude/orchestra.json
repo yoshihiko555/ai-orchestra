@@ -124,7 +124,7 @@
       "config/image-generation/styles/line-illust.md": "763b37dd0247fc2aa60a523424663e8bb671e4a00cbb9b220982922ed36e2983"
     },
     "loop-harness": {
-      "config/loop-harness/loop-harness.yaml": "15b6bea59c94babefff1576f4af74895c680215353c5fc36ff45bae0bb513e5b",
+      "config/loop-harness/loop-harness.yaml": "e899bc9dfa30ffd636e4629ee635e65a9c2841b47828cc68ac55fc2a80d19b59",
       "config/loop-harness/loops/issue-loop.yaml": "f0355b7d55a1dc603fbf65ec5721056511e7891a794d523934f02062832f5257"
     },
     "fail-logs": {
@@ -137,7 +137,7 @@
       "agents/reverse-coordinator.md": "b4ba084e8d03e158ed5ab4d44b93655de2044a1506c22319df5a6bbf2ab6c574"
     },
     "meta-harness": {
-      "config/meta-harness/meta-harness.yaml": "21f506bfcaefd7c964d87ea0f036826f9974dc420d399d95668bac5825793bf5"
+      "config/meta-harness/meta-harness.yaml": "a2f621840a8e186f79d0f5ee196f5cac054045cb4989dc7ec45a342c11511833"
     },
     "quality-gates": {
       "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95",

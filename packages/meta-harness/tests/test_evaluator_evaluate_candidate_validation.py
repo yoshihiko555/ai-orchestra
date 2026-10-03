@@ -195,7 +195,7 @@ class TestRepeatValidation:
             manifest=manifest,
             scenario_ids=None,
             repeat_override=None,
-            cli_capabilities={"claude_version": "2.1.207", "ok": True},
+            cli_capabilities={"claude_version": "2.1.282", "ok": True},
         )
 
         run_events = [event for event in emitted if event["event"] == "run_completed"]
