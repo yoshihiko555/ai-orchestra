@@ -1003,6 +1003,31 @@ class TestInstallContextInitFiles:
         assert destination.is_file()
         assert destination.read_text(encoding="utf-8") == "toml content"
 
+    def test_symlinked_parent_is_not_written_through(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        outside = tmp_path / "outside"
+        project_dir.mkdir(parents=True)
+        outside.mkdir()
+        (project_dir / ".codex").symlink_to(outside, target_is_directory=True)
+        template_dir = orchestra_dir / "templates" / "project"
+        template_dir.mkdir(parents=True)
+        (template_dir / "config.toml").write_text("toml content", encoding="utf-8")
+        _write_package_manifest(
+            orchestra_dir,
+            "core",
+            _core_context_files(init=[".codex/config.toml"]),
+        )
+        manager = OrchestraManager(orchestra_dir)
+
+        manager._install_context_init_files(
+            manager.load_packages()["core"],
+            project_dir,
+            dry_run=False,
+        )
+
+        assert not (outside / "config.toml").exists()
+
     def test_directory_entry_is_copied_recursively(self, tmp_path: Path) -> None:
         orchestra_dir = tmp_path / "orchestra"
         project_dir = tmp_path / "project"

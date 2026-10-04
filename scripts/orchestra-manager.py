@@ -494,6 +494,10 @@ class OrchestraManager(ContextMixin, HooksMixin):
             dst = project_dir / entry_clean
             label = entry_clean
 
+            if self._has_symlink_in_path(project_dir, dst):
+                print(f"警告: symlink を含むためスキップしました: {label}", file=sys.stderr)
+                continue
+
             if is_dir:
                 if not src.is_dir():
                     continue
@@ -501,6 +505,12 @@ class OrchestraManager(ContextMixin, HooksMixin):
                     if not src_file.is_file():
                         continue
                     file_rel = src_file.relative_to(src)
+                    if self._has_symlink_in_path(project_dir, dst / file_rel):
+                        print(
+                            f"警告: symlink を含むためスキップしました: {label}/{file_rel}",
+                            file=sys.stderr,
+                        )
+                        continue
                     self._copy_template_if_missing(
                         src_file, dst / file_rel, f"{label}/{file_rel}", dry_run
                     )
@@ -508,6 +518,20 @@ class OrchestraManager(ContextMixin, HooksMixin):
                 if not src.is_file():
                     continue
                 self._copy_template_if_missing(src, dst, label, dry_run)
+
+    @staticmethod
+    def _has_symlink_in_path(project_dir: Path, dst: Path) -> bool:
+        """project_dir から dst までの経路（dst 自身を含む）に symlink（壊れたものも含む）があるか。"""
+        try:
+            parts = dst.relative_to(project_dir).parts
+        except ValueError:
+            return True
+        current = project_dir
+        for part in parts:
+            current = current / part
+            if current.is_symlink():
+                return True
+        return False
 
     def _copy_template_if_missing(
         self, src: Path, dst: Path, label: str, dry_run: bool = False

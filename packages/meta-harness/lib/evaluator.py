@@ -55,8 +55,12 @@ _THIS_FILE = Path(__file__).resolve()
 _COMMON_FILE = _LIB_DIR / "meta_harness_common.py"
 _PACKAGE_DIR = _LIB_DIR.parent
 _DOCKER_RUNTIME_DIR = _PACKAGE_DIR.parent / "docker-runtime"
+_REPO_SCRIPTS_DIR = _PACKAGE_DIR.parent.parent / "scripts"
 _EVALUATOR_SOURCE_FILES: tuple[tuple[str, Path], ...] = (
     ("lib/evaluator.py", _THIS_FILE),
+    # 評価準備の `context sync` が評価環境の AGENTS.md 管理ブロックを生成するため、その実装を含める。
+    ("scripts/orchestra-manager.py", _REPO_SCRIPTS_DIR / "orchestra-manager.py"),
+    ("scripts/lib/orchestra_context.py", _REPO_SCRIPTS_DIR / "lib" / "orchestra_context.py"),
     ("lib/meta_harness_common.py", _COMMON_FILE),
     ("lib/claude_credentials.py", _LIB_DIR / "claude_credentials.py"),
     ("lib/scenario_docker.py", _LIB_DIR / "scenario_docker.py"),

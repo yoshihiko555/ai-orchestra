@@ -81,7 +81,10 @@ class TestEvaluatorHash:
             "docker-runtime/lib/docker_runtime_image.py",
             "docker/broker/broker.py",
             "docker/scenario/Dockerfile",
+            "scripts/orchestra-manager.py",
+            "scripts/lib/orchestra_context.py",
         } <= labels
+        assert all(path.is_file() for _label, path in ev._EVALUATOR_SOURCE_FILES)
 
     def test_hash_changes_when_backend_source_changes(self, tmp_path: Path) -> None:
         evaluator = tmp_path / "evaluator.py"
