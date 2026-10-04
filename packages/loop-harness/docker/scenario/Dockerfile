@@ -5,7 +5,7 @@ FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145
 
 FROM node:22.17.0-bookworm-slim@sha256:b04ce4ae4e95b522112c2e5c52f781471a5cbc3b594527bcddedee9bc48c03a0
 
-ARG CLAUDE_CODE_VERSION=2.1.207
+ARG CLAUDE_CODE_VERSION=2.1.282
 
 # node イメージの /usr/local/bin/node・npm 等を壊さないよう、python 関連のサブパスのみを
 # コピーする（/usr/local を丸ごと COPY すると node の実行ファイルが失われる恐れがある）。

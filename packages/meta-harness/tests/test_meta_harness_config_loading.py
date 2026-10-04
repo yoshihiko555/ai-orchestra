@@ -134,7 +134,7 @@ class TestConfigLocalOverride:
         isolation = config["evaluate"]["isolation"]
         assert isolation["backend"] == "docker"
         assert isolation["execution_backend"] == "docker"
-        assert isolation["image_pin"] == "2.1.207 (Claude Code)"
+        assert isolation["image_pin"] == "2.1.282 (Claude Code)"
         assert isolation["broker"]["pricing_upper_bound_usd_per_million"]["output"] == 15.0
 
     def test_malformed_local_yaml_warns_and_falls_back_to_defaults(

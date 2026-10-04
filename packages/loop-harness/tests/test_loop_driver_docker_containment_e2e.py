@@ -34,7 +34,7 @@ driver = load_module(
     "packages/loop-harness/scripts/loop_driver.py",
 )
 
-DEFAULT_IMAGE = "ai-orchestra/loop-harness-scenario:2.1.207"
+DEFAULT_IMAGE = "ai-orchestra/loop-harness-scenario:2.1.282"
 pytestmark = pytest.mark.docker
 
 

@@ -317,7 +317,7 @@ def test_handoff_bootstrap_and_missing_activation_fail_closed(tmp_path: Path) ->
         manifest=manifest,
         scenario_ids=["handoff-bootstrap"],
         repeat_override=1,
-        cli_capabilities={"claude_version": "2.1.207"},
+        cli_capabilities={"claude_version": "2.1.282"},
     )
     assert len(passing) == 1
     assert passing[0]["verdict"] == "pass", passing[0]["errors"]
@@ -338,7 +338,7 @@ def test_handoff_bootstrap_and_missing_activation_fail_closed(tmp_path: Path) ->
         manifest=manifest,
         scenario_ids=["handoff-not-invoked"],
         repeat_override=1,
-        cli_capabilities={"claude_version": "2.1.207"},
+        cli_capabilities={"claude_version": "2.1.282"},
     )
     assert len(rejected) == 1
     assert rejected[0]["verdict"] == "error"
@@ -429,7 +429,7 @@ def test_shared_policy_candidate_runs_affected_skill_train_regression(tmp_path: 
         manifest=manifest,
         scenario_ids=["handoff-own"],
         repeat_override=1,
-        cli_capabilities={"claude_version": "2.1.207"},
+        cli_capabilities={"claude_version": "2.1.282"},
     )
     events = mh.read_ledger_events_strict(project, mh.DEFAULTS)
     evaluation = next(

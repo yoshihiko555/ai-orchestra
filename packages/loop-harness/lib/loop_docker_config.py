@@ -11,7 +11,7 @@ from typing import Any
 
 _DIGEST_IMAGE_RE = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
 _MEMORY_RE = re.compile(r"^[1-9][0-9]*(?:[bkmg]|[kmgt]i?b)?$", re.IGNORECASE)
-DEFAULT_SCENARIO_IMAGE = "ai-orchestra/loop-harness-scenario:2.1.207"
+DEFAULT_SCENARIO_IMAGE = "ai-orchestra/loop-harness-scenario:2.1.282"
 DEFAULT_BROKER_IMAGE = "ai-orchestra/loop-harness-broker:0.1.0"
 
 

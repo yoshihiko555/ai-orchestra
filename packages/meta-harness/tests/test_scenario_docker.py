@@ -343,7 +343,7 @@ def test_broker_token_is_injected_via_stdin_not_argv_or_env(tmp_path: Path, monk
         ),
     )
     monkeypatch.setattr(
-        docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.207 (Claude Code)"
+        docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.282 (Claude Code)"
     )
     monkeypatch.setattr(docker, "_wait_for_broker", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -442,13 +442,13 @@ def test_image_pin_mismatch_fails_capability_before_smoke(tmp_path: Path, monkey
 
 
 def test_bare_semver_image_pin_passes_capability_check(tmp_path: Path, monkeypatch) -> None:
-    """A bare semver pin (e.g. "2.1.207") must not be rejected by the
+    """A bare semver pin (e.g. "2.1.282") must not be rejected by the
     capability check just because the actual `claude --version` output is
-    the full form (e.g. "2.1.207 (Claude Code)")."""
+    the full form (e.g. "2.1.282 (Claude Code)")."""
     session = _broker(tmp_path)
     session.cleaned = True
     config = copy.deepcopy(mh.DEFAULTS)
-    config["evaluate"]["isolation"]["image_pin"] = "2.1.207"
+    config["evaluate"]["isolation"]["image_pin"] = "2.1.282"
     monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
     monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -457,7 +457,7 @@ def test_bare_semver_image_pin_passes_capability_check(tmp_path: Path, monkeypat
     monkeypatch.setattr(
         docker,
         "_image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+        lambda *_args, **_kwargs: "2.1.282 (Claude Code)",
     )
     monkeypatch.setattr(docker, "_run_smoke_container", _run_smoke_stub)
 
@@ -474,7 +474,7 @@ def test_capability_check_reuses_ensure_resolved_version_without_extra_container
     pin-verified a version (surfaced via `DockerBrokerSession.
     scenario_claude_version`), `check_docker_capabilities` must reuse it
     instead of launching a second container just to look it up again."""
-    session = _broker(tmp_path, scenario_claude_version="2.1.207 (Claude Code)")
+    session = _broker(tmp_path, scenario_claude_version="2.1.282 (Claude Code)")
     session.cleaned = True
     monkeypatch.setattr(docker.dcli, "docker_daemon_available", lambda **_kwargs: True)
     monkeypatch.setattr(docker, "sweep_stale_resources", lambda *_args, **_kwargs: None)
@@ -495,14 +495,14 @@ def test_capability_check_reuses_ensure_resolved_version_without_extra_container
     )
 
     assert result.ok is True
-    assert result.claude_version == "2.1.207 (Claude Code)"
+    assert result.claude_version == "2.1.282 (Claude Code)"
     assert result.version_pin_match is True
 
 
 def test_full_image_pin_rejects_matching_version_with_unexpected_suffix(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A full-format pin (the default "2.1.207 (Claude Code)") must keep the
+    """A full-format pin (the default "2.1.282 (Claude Code)") must keep the
     exact Docker capability contract: an image reporting the same bare
     version but an unexpected wrapper/suffix must still fail capability
     checks, not pass via bare-token comparison."""
@@ -516,7 +516,7 @@ def test_full_image_pin_rejects_matching_version_with_unexpected_suffix(
     monkeypatch.setattr(
         docker,
         "_image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (unexpected wrapper)",
+        lambda *_args, **_kwargs: "2.1.282 (unexpected wrapper)",
     )
     monkeypatch.setattr(
         docker,
@@ -536,13 +536,13 @@ def test_full_image_pin_rejects_matching_version_with_unexpected_suffix(
 @pytest.mark.parametrize(
     ("actual", "pin", "expected"),
     [
-        ("2.1.207 (Claude Code)", "2.1.207", True),
-        ("2.1.207-beta.1 (Claude Code)", "2.1.207-beta.1", True),
-        ("9.9.9 (Claude Code)", "2.1.207", False),
-        ("2.1.207 (Claude Code)", "2.1.207 (Claude Code)", True),
-        ("2.1.207 (unexpected wrapper)", "2.1.207 (Claude Code)", False),
-        (None, "2.1.207", False),
-        (None, "2.1.207 (Claude Code)", False),
+        ("2.1.282 (Claude Code)", "2.1.282", True),
+        ("2.1.282-beta.1 (Claude Code)", "2.1.282-beta.1", True),
+        ("9.9.9 (Claude Code)", "2.1.282", False),
+        ("2.1.282 (Claude Code)", "2.1.282 (Claude Code)", True),
+        ("2.1.282 (unexpected wrapper)", "2.1.282 (Claude Code)", False),
+        (None, "2.1.282", False),
+        (None, "2.1.282 (Claude Code)", False),
     ],
     ids=[
         "bare-pin-matches-full-output",
@@ -584,7 +584,7 @@ def test_capability_smoke_uses_configured_evaluate_model(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         docker,
         "_image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+        lambda *_args, **_kwargs: "2.1.282 (Claude Code)",
     )
 
     def run_smoke(_broker_session, command, **_kwargs):
@@ -627,7 +627,7 @@ def test_bare_judge_smoke_uses_pinned_model(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(
         docker,
         "_image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+        lambda *_args, **_kwargs: "2.1.282 (Claude Code)",
     )
 
     def run_smoke(_broker_session, command, **_kwargs):
@@ -664,7 +664,7 @@ def _run_capability_gate_with_allowlist_probe_response(
     monkeypatch.setattr(
         docker,
         "_image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+        lambda *_args, **_kwargs: "2.1.282 (Claude Code)",
     )
 
     def run_smoke(_broker_session, command, **_kwargs):
@@ -778,7 +778,7 @@ def test_capability_gate_opens_a_dedicated_broker_session_for_the_allowlist_prob
     monkeypatch.setattr(
         docker,
         "_image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+        lambda *_args, **_kwargs: "2.1.282 (Claude Code)",
     )
     monkeypatch.setattr(docker, "_run_smoke_container", _run_smoke_stub)
 
@@ -826,7 +826,7 @@ def test_capability_gate_pins_a_fixed_safe_budget_for_the_allowlist_probe_sessio
     monkeypatch.setattr(
         docker,
         "_image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+        lambda *_args, **_kwargs: "2.1.282 (Claude Code)",
     )
     monkeypatch.setattr(docker, "_run_smoke_container", _run_smoke_stub)
 
@@ -899,7 +899,7 @@ def test_capability_smoke_uses_configured_max_output_tokens(
     monkeypatch.setattr(
         docker,
         "_image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+        lambda *_args, **_kwargs: "2.1.282 (Claude Code)",
     )
 
     def run_smoke(_broker_session, command, *, max_output_tokens, **_kwargs):
@@ -949,7 +949,7 @@ def test_broker_startup_cleanup_failure_is_reported(tmp_path: Path, monkeypatch)
         ),
     )
     monkeypatch.setattr(
-        docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.207 (Claude Code)"
+        docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.282 (Claude Code)"
     )
     monkeypatch.setattr(
         docker.credentials,
@@ -1079,7 +1079,7 @@ def test_preparation_uses_named_bounded_no_network_container(tmp_path: Path, mon
         ),
     )
     monkeypatch.setattr(
-        docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.207 (Claude Code)"
+        docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.282 (Claude Code)"
     )
     monkeypatch.setattr(docker, "_remove_container", lambda *_args, **_kwargs: True)
 
@@ -1146,7 +1146,7 @@ def test_preparation_preserves_primary_error_when_cleanup_also_fails(
         ),
     )
     monkeypatch.setattr(
-        docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.207 (Claude Code)"
+        docker, "_image_claude_version", lambda *_args, **_kwargs: "2.1.282 (Claude Code)"
     )
     monkeypatch.setattr(docker, "_remove_container", lambda *_args, **_kwargs: False)
 
@@ -1587,17 +1587,17 @@ def test_image_pin_semver_versions_produce_validated_build_args(
     )
 
     for version_pin in [
-        "2.1.207",
-        "2.1.207 (Claude Code)",
-        "2.1.207-beta.1",
+        "2.1.282",
+        "2.1.282 (Claude Code)",
+        "2.1.282-beta.1",
     ]:
         config["evaluate"]["isolation"]["image_pin"] = version_pin
         docker.dcli.ensure_images(config, main_root=tmp_path)
 
     assert captured_build_args == [
-        {"CLAUDE_CODE_VERSION": "2.1.207"},
-        {"CLAUDE_CODE_VERSION": "2.1.207"},
-        {"CLAUDE_CODE_VERSION": "2.1.207-beta.1"},
+        {"CLAUDE_CODE_VERSION": "2.1.282"},
+        {"CLAUDE_CODE_VERSION": "2.1.282"},
+        {"CLAUDE_CODE_VERSION": "2.1.282-beta.1"},
     ]
 
 
@@ -1643,13 +1643,13 @@ def test_ensure_images_detailed_propagates_verified_image_id(
 def test_image_pin_rejects_invalid_versions_before_build(tmp_path: Path) -> None:
     config = copy.deepcopy(mh.DEFAULTS)
     runner_calls = []
-    injection_pin = "".join(['2.1.207";', "cu", "rl${IFS}evil|", "s", 'h;"'])
+    injection_pin = "".join(['2.1.282";', "cu", "rl${IFS}evil|", "s", 'h;"'])
 
     def runner(*args, **kwargs):
         runner_calls.append((args, kwargs))
         raise AssertionError("invalid image_pin reached the Docker build command")
 
-    for version_pin in [injection_pin, "2.1", "v2.1.207", "2.1.207.9"]:
+    for version_pin in [injection_pin, "2.1", "v2.1.282", "2.1.282.9"]:
         config["evaluate"]["isolation"]["image_pin"] = version_pin
         with pytest.raises(docker.dcli.DockerCliError, match="semver"):
             docker.dcli.ensure_images(config, runner=runner, main_root=tmp_path)

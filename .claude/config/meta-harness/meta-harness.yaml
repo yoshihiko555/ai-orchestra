@@ -28,8 +28,8 @@ evaluate:
     # computes from the recipe (context + build args + image_pin etc.), not
     # by this string. `image_pin` is the source of truth for the intended
     # Claude Code version. Changing only this tag does not trigger a rebuild.
-    image: ai-orchestra/meta-harness-scenario:2.1.207
-    image_pin: "2.1.207 (Claude Code)"
+    image: ai-orchestra/meta-harness-scenario:2.1.282
+    image_pin: "2.1.282 (Claude Code)"
     auto_build_images: true
     # Persistent, content-addressed image cache (packages/docker-runtime's
     # `ensure_recipe_image`). All paths below are resolved relative to the

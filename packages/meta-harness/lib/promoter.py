@@ -1229,13 +1229,15 @@ def _facet_build_targets(worktree_dir: Path) -> list[str]:
 
 
 def _build_facets_and_context(worktree_dir: Path) -> None:
-    """promotion worktree で facet build（全ターゲット分） + context build を実行する。
+    """promotion worktree で facet build（全ターゲット分） + context build + context sync を実行する。
 
     Gap (a): `evaluator.build_facet_and_context`（評価専用パス、変更禁止）は
     `orchestra-manager.py facet build`（--target 省略 = claude のみ）+ `context build` しか
     実行せず、`.agents/skills/`（codex ターゲット）が再生成されなかった（PR #374 レビュー指摘）。
     promote はここで独自に、worktree の installed_packages が宣言する全ターゲット分の
-    facet build を実行してから context build を行う。
+    facet build を実行してから context build を行う。さらに `context sync` で
+    `templates/context/` の変更をルート `AGENTS.md` の管理ブロックへ反映する
+    （省くと、候補が指示書テンプレートを変えても昇格 PR の `AGENTS.md` が古いままになる）。
     """
     orchestra_manager = worktree_dir / "scripts" / "orchestra-manager.py"
     env = {"AI_ORCHESTRA_DIR": str(worktree_dir)}
@@ -1248,6 +1250,19 @@ def _build_facets_and_context(worktree_dir: Path) -> None:
         )
     _run(
         [sys.executable, str(orchestra_manager), "context", "build"],
+        cwd=worktree_dir,
+        timeout=BUILD_TIMEOUT_SECONDS,
+        env=env,
+    )
+    _run(
+        [
+            sys.executable,
+            str(orchestra_manager),
+            "context",
+            "sync",
+            "--project",
+            str(worktree_dir),
+        ],
         cwd=worktree_dir,
         timeout=BUILD_TIMEOUT_SECONDS,
         env=env,

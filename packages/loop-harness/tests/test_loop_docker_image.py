@@ -62,7 +62,7 @@ def test_scenario_dockerfile_is_dedicated_digest_pinned_and_non_root() -> None:
     assert "python3" not in apt_package_lines
     assert "python3-pip" not in apt_package_lines
 
-    assert "ARG CLAUDE_CODE_VERSION=2.1.207" in dockerfile
+    assert "ARG CLAUDE_CODE_VERSION=2.1.282" in dockerfile
     assert "ruff==0.15.1" in dockerfile
     assert "USER 65532:65532" in dockerfile
 
@@ -226,12 +226,12 @@ def test_wrapper_fails_closed_on_image_pin_mismatch(
         "image_claude_version",
         lambda *_args, **_kwargs: "2.1.206 (Claude Code)",
     )
-    config = {"lp2": {"isolation": {"image_pin": "2.1.207 (Claude Code)"}}}
+    config = {"lp2": {"isolation": {"image_pin": "2.1.282 (Claude Code)"}}}
 
     with pytest.raises(docker_image.DockerImageError, match="image_pin mismatch"):
         docker_image.ensure_scenario_image(config, tmp_path)
 
-    assert captured["recipe"].build_args == {"CLAUDE_CODE_VERSION": "2.1.207"}
+    assert captured["recipe"].build_args == {"CLAUDE_CODE_VERSION": "2.1.282"}
 
 
 def test_image_pin_semver_versions_produce_validated_build_args(
@@ -253,9 +253,9 @@ def test_image_pin_semver_versions_produce_validated_build_args(
     )
 
     for version_pin, expected_version in [
-        ("2.1.207", "2.1.207"),
-        ("2.1.207 (Claude Code)", "2.1.207"),
-        ("2.1.207-beta.1", "2.1.207-beta.1"),
+        ("2.1.282", "2.1.282"),
+        ("2.1.282 (Claude Code)", "2.1.282"),
+        ("2.1.282-beta.1", "2.1.282-beta.1"),
     ]:
         current_pin["value"] = version_pin
         config = {"lp2": {"isolation": {"image_pin": version_pin}}}
@@ -270,7 +270,7 @@ def test_image_pin_rejects_invalid_versions_before_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     build_calls = []
-    injection_pin = "".join(['2.1.207";', "cu", "rl${IFS}evil|", "s", 'h;"'])
+    injection_pin = "".join(['2.1.282";', "cu", "rl${IFS}evil|", "s", 'h;"'])
 
     def ensure(*args, **kwargs):
         build_calls.append((args, kwargs))
@@ -278,7 +278,7 @@ def test_image_pin_rejects_invalid_versions_before_build(
 
     monkeypatch.setattr(docker_image.runtime_image, "ensure_recipe_image", ensure)
 
-    for version_pin in [injection_pin, "2.1", "v2.1.207", "2.1.207.9"]:
+    for version_pin in [injection_pin, "2.1", "v2.1.282", "2.1.282.9"]:
         config = {"lp2": {"isolation": {"image_pin": version_pin}}}
         with pytest.raises(docker_image.DockerImageError, match="semver"):
             docker_image.ensure_scenario_image(config, tmp_path)
@@ -294,8 +294,8 @@ def test_bare_semver_image_pin_matches_full_claude_version_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bare semver pin (e.g. "2.1.207") must pass verification against the
-    full `claude --version` output (e.g. "2.1.207 (Claude Code)"), since only
+    """A bare semver pin (e.g. "2.1.282") must pass verification against the
+    full `claude --version` output (e.g. "2.1.282 (Claude Code)"), since only
     the bare version token is used as the CLAUDE_CODE_VERSION build arg."""
 
     def ensure(_recipe, _policy, **_kwargs):
@@ -305,9 +305,9 @@ def test_bare_semver_image_pin_matches_full_claude_version_output(
     monkeypatch.setattr(
         docker_image.runtime_cli,
         "image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (Claude Code)",
+        lambda *_args, **_kwargs: "2.1.282 (Claude Code)",
     )
-    config = {"lp2": {"isolation": {"image_pin": "2.1.207"}}}
+    config = {"lp2": {"isolation": {"image_pin": "2.1.282"}}}
 
     ensured = docker_image.ensure_scenario_image(config, tmp_path)
 
@@ -318,7 +318,7 @@ def test_full_image_pin_rejects_matching_version_with_unexpected_suffix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A full-format pin (e.g. "2.1.207 (Claude Code)") must keep the exact
+    """A full-format pin (e.g. "2.1.282 (Claude Code)") must keep the exact
     Docker capability contract: an image reporting the same bare version but
     a different wrapper/suffix must still fail closed, not pass via
     bare-token comparison."""
@@ -330,9 +330,9 @@ def test_full_image_pin_rejects_matching_version_with_unexpected_suffix(
     monkeypatch.setattr(
         docker_image.runtime_cli,
         "image_claude_version",
-        lambda *_args, **_kwargs: "2.1.207 (unexpected wrapper)",
+        lambda *_args, **_kwargs: "2.1.282 (unexpected wrapper)",
     )
-    config = {"lp2": {"isolation": {"image_pin": "2.1.207 (Claude Code)"}}}
+    config = {"lp2": {"isolation": {"image_pin": "2.1.282 (Claude Code)"}}}
 
     with pytest.raises(docker_image.DockerImageError, match="image_pin mismatch"):
         docker_image.ensure_scenario_image(config, tmp_path)
@@ -351,7 +351,7 @@ def test_bare_semver_image_pin_still_rejects_genuine_mismatch(
         "image_claude_version",
         lambda *_args, **_kwargs: "9.9.9 (Claude Code)",
     )
-    config = {"lp2": {"isolation": {"image_pin": "2.1.207"}}}
+    config = {"lp2": {"isolation": {"image_pin": "2.1.282"}}}
 
     with pytest.raises(docker_image.DockerImageError, match="image_pin mismatch"):
         docker_image.ensure_scenario_image(config, tmp_path)

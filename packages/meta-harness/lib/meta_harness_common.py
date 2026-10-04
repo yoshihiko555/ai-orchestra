@@ -62,9 +62,9 @@ CONFIG_PATCH_DANGEROUS_SEGMENTS = frozenset({"__proto__", "constructor"})
 # re-export these constants instead of repeating the literal strings. The
 # yaml config (config/meta-harness.yaml) is the config-data source of truth
 # and keeps its own copy of these values; parity is enforced by a test.
-DEFAULT_SCENARIO_IMAGE = "ai-orchestra/meta-harness-scenario:2.1.207"
+DEFAULT_SCENARIO_IMAGE = "ai-orchestra/meta-harness-scenario:2.1.282"
 DEFAULT_BROKER_IMAGE = "ai-orchestra/meta-harness-broker:0.1.0"
-DEFAULT_CLAUDE_VERSION_PIN = "2.1.207 (Claude Code)"
+DEFAULT_CLAUDE_VERSION_PIN = "2.1.282 (Claude Code)"
 BROKER_INPUT_BYTES_PER_TOKEN_KEY = "input_bytes_per_token"
 BROKER_MAX_TOTAL_TOKENS_KEY = "max_total_tokens"
 

@@ -55,8 +55,16 @@ _THIS_FILE = Path(__file__).resolve()
 _COMMON_FILE = _LIB_DIR / "meta_harness_common.py"
 _PACKAGE_DIR = _LIB_DIR.parent
 _DOCKER_RUNTIME_DIR = _PACKAGE_DIR.parent / "docker-runtime"
+_REPO_SCRIPTS_DIR = _PACKAGE_DIR.parent.parent / "scripts"
 _EVALUATOR_SOURCE_FILES: tuple[tuple[str, Path], ...] = (
     ("lib/evaluator.py", _THIS_FILE),
+    # 評価準備の `context sync` が評価環境の AGENTS.md 管理ブロックを生成するため、その実装を含める。
+    ("scripts/orchestra-manager.py", _REPO_SCRIPTS_DIR / "orchestra-manager.py"),
+    # orchestra-manager.py が import する scripts/lib 配下の全モジュール（facet/context 生成の実装）。
+    *(
+        (f"scripts/lib/{path.name}", path)
+        for path in sorted((_REPO_SCRIPTS_DIR / "lib").glob("*.py"))
+    ),
     ("lib/meta_harness_common.py", _COMMON_FILE),
     ("lib/claude_credentials.py", _LIB_DIR / "claude_credentials.py"),
     ("lib/scenario_docker.py", _LIB_DIR / "scenario_docker.py"),
@@ -1154,7 +1162,11 @@ def build_facet_and_context(
     source_commit: str | None = None,
     runner: SubprocessRunner = subprocess.run,
 ) -> None:
-    """`AI_ORCHESTRA_DIR=<worktree>` で facet build → context build を実行する（Sec2-1 手順4）。"""
+    """`AI_ORCHESTRA_DIR=<worktree>` で facet build → context build → context sync を実行する（Sec2-1 手順4）。
+
+    `context sync` は `templates/context/` の変更をルート `AGENTS.md` の管理ブロックへ反映する。
+    これを省くと、候補が指示書テンプレートを変えても評価環境の `AGENTS.md` が古いまま評価される。
+    """
     if _uses_docker_backend(config):
         if main_root is None:
             raise EvaluatorStageError("build", "build_error", "main_root is required for Docker")
@@ -1166,7 +1178,8 @@ def build_facet_and_context(
             "/bin/sh",
             "-c",
             "set -eu; python3 scripts/orchestra-manager.py facet build; "
-            "python3 scripts/orchestra-manager.py context build",
+            "python3 scripts/orchestra-manager.py context build; "
+            "python3 scripts/orchestra-manager.py context sync --project .",
         ]
         try:
             completed = siso.docker.run_preparation_command(
@@ -1191,7 +1204,11 @@ def build_facet_and_context(
         return
     orchestra_manager = worktree_dir / "scripts" / "orchestra-manager.py"
     env = {**os.environ, "AI_ORCHESTRA_DIR": str(worktree_dir)}
-    for args in (["facet", "build"], ["context", "build"]):
+    for args in (
+        ["facet", "build"],
+        ["context", "build"],
+        ["context", "sync", "--project", str(worktree_dir)],
+    ):
         _run_build_step(orchestra_manager, args, worktree_dir, env, runner=runner)
 
 

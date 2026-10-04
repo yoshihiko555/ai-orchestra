@@ -122,7 +122,7 @@ def test_routing_config_batch_threads_one_base_hash_to_all_attempt_metadata(
         own_scenarios=[(scenario_path, scenario)],
         holdout=False,
         repeat_override=2,
-        cli_capabilities={"claude_version": "2.1.207", "ok": True},
+        cli_capabilities={"claude_version": "2.1.282", "ok": True},
         runner=lambda *_args, **_kwargs: None,
     )
 
@@ -403,7 +403,7 @@ def _run_budget_latch_attempt(
         evaluator_hash="d" * 64,
         attempt=1,
         attempts_total=1,
-        cli_capabilities={"claude_version": "2.1.207", "ok": True},
+        cli_capabilities={"claude_version": "2.1.282", "ok": True},
     )
 
     run_dir = mh.runs_dir(tmp_path, mh.DEFAULTS) / result["run_id"]

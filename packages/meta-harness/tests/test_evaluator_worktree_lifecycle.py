@@ -65,6 +65,27 @@ class TestCreateWorktreeSuccess:
             ev.remove_worktree(git_project, worktree_dir)
 
 
+class TestBuildFacetAndContext:
+    def test_host_backend_runs_facet_build_context_build_then_context_sync(
+        self, tmp_path: Path
+    ) -> None:
+        commands: list[list[str]] = []
+
+        def fake_runner(args, **kwargs):
+            commands.append(args[1:])
+            assert kwargs["env"]["AI_ORCHESTRA_DIR"] == str(tmp_path)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        ev.build_facet_and_context(tmp_path, runner=fake_runner)
+
+        manager = str(tmp_path / "scripts" / "orchestra-manager.py")
+        assert commands == [
+            [manager, "facet", "build"],
+            [manager, "context", "build"],
+            [manager, "context", "sync", "--project", str(tmp_path)],
+        ]
+
+
 class TestCreateWorktreeFailure:
     def test_invalid_source_commit_raises_stage_error(self, git_project: Path) -> None:
         root = git_project / ".worktrees" / "meta"

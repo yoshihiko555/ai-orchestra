@@ -494,6 +494,10 @@ class OrchestraManager(ContextMixin, HooksMixin):
             dst = project_dir / entry_clean
             label = entry_clean
 
+            if self._has_symlink_in_path(project_dir, dst):
+                print(f"警告: symlink を含むためスキップしました: {label}", file=sys.stderr)
+                continue
+
             if is_dir:
                 if not src.is_dir():
                     continue
@@ -501,6 +505,12 @@ class OrchestraManager(ContextMixin, HooksMixin):
                     if not src_file.is_file():
                         continue
                     file_rel = src_file.relative_to(src)
+                    if self._has_symlink_in_path(project_dir, dst / file_rel):
+                        print(
+                            f"警告: symlink を含むためスキップしました: {label}/{file_rel}",
+                            file=sys.stderr,
+                        )
+                        continue
                     self._copy_template_if_missing(
                         src_file, dst / file_rel, f"{label}/{file_rel}", dry_run
                     )
@@ -508,6 +518,20 @@ class OrchestraManager(ContextMixin, HooksMixin):
                 if not src.is_file():
                     continue
                 self._copy_template_if_missing(src, dst, label, dry_run)
+
+    @staticmethod
+    def _has_symlink_in_path(project_dir: Path, dst: Path) -> bool:
+        """project_dir から dst までの経路（dst 自身を含む）に symlink（壊れたものも含む）があるか。"""
+        try:
+            parts = dst.relative_to(project_dir).parts
+        except ValueError:
+            return True
+        current = project_dir
+        for part in parts:
+            current = current / part
+            if current.is_symlink():
+                return True
+        return False
 
     def _copy_template_if_missing(
         self, src: Path, dst: Path, label: str, dry_run: bool = False
@@ -517,6 +541,12 @@ class OrchestraManager(ContextMixin, HooksMixin):
             return False
         if dst.exists():
             print(f"スキップ（既存）: {label}")
+            return False
+        if any(not parent.is_dir() for parent in dst.parents if parent.exists()):
+            # 配置先の親がディレクトリでなく通常ファイルの場合は、install を中断せずスキップする。
+            print(
+                f"警告: 親パスがディレクトリではないためスキップしました: {label}", file=sys.stderr
+            )
             return False
         if dry_run:
             print(f"[DRY-RUN] テンプレート配置: {label}")
@@ -595,6 +625,11 @@ class OrchestraManager(ContextMixin, HooksMixin):
             orch["installed_packages"] = sorted(installed_packages)
             orch["last_sync"] = datetime.datetime.now(datetime.UTC).isoformat()
             self.save_orchestra_json(project_dir, orch)
+
+        # init() はインストール済みパッケージしか見ないため、新規インストール分の初回配置テンプレート
+        # （.codex/config.toml 等）はここで配置する。既存ファイルは上書きしない。
+        if pkg.context_files:
+            self._install_context_init_files(pkg, project_dir, dry_run)
 
         self.context_sync(project, dry_run)
         self.run_initial_sync(project_dir, dry_run, force=force)

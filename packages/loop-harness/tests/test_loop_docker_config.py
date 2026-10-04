@@ -139,9 +139,9 @@ def test_auto_build_disabled_accepts_digest_pins_for_both_images() -> None:
 
 def test_image_pin_accepts_claude_version_output_with_spaces() -> None:
     config = _config()
-    config["lp2"]["isolation"]["image_pin"] = "2.1.207 (Claude Code)"
+    config["lp2"]["isolation"]["image_pin"] = "2.1.282 (Claude Code)"
 
-    assert docker_config.validate_isolation_config(config).image_pin == "2.1.207 (Claude Code)"
+    assert docker_config.validate_isolation_config(config).image_pin == "2.1.282 (Claude Code)"
 
 
 def test_synced_config_matches_source_broker_defaults() -> None:

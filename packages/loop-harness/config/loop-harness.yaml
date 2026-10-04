@@ -29,7 +29,7 @@ lp2:
     # by this string. `image_pin` (when set) is the source of truth for the
     # intended Claude Code version. Changing only this tag does not trigger
     # a rebuild.
-    image: ai-orchestra/loop-harness-scenario:2.1.207
+    image: ai-orchestra/loop-harness-scenario:2.1.282
     image_pin: null
     auto_build_images: true # false の場合 image は @sha256:<digest> 形式必須（タグ形式は DockerImageError）
     # Persistent, content-addressed image cache (packages/docker-runtime's
