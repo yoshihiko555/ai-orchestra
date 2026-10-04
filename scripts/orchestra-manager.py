@@ -542,6 +542,12 @@ class OrchestraManager(ContextMixin, HooksMixin):
         if dst.exists():
             print(f"スキップ（既存）: {label}")
             return False
+        if any(not parent.is_dir() for parent in dst.parents if parent.exists()):
+            # 配置先の親がディレクトリでなく通常ファイルの場合は、install を中断せずスキップする。
+            print(
+                f"警告: 親パスがディレクトリではないためスキップしました: {label}", file=sys.stderr
+            )
+            return False
         if dry_run:
             print(f"[DRY-RUN] テンプレート配置: {label}")
             return True

@@ -1028,6 +1028,29 @@ class TestInstallContextInitFiles:
 
         assert not (outside / "config.toml").exists()
 
+    def test_file_in_place_of_parent_directory_is_skipped(self, tmp_path: Path) -> None:
+        orchestra_dir = tmp_path / "orchestra"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir(parents=True)
+        (project_dir / ".codex").write_text("not a directory", encoding="utf-8")
+        template_dir = orchestra_dir / "templates" / "project"
+        template_dir.mkdir(parents=True)
+        (template_dir / "config.toml").write_text("toml content", encoding="utf-8")
+        _write_package_manifest(
+            orchestra_dir,
+            "core",
+            _core_context_files(init=[".codex/config.toml"]),
+        )
+        manager = OrchestraManager(orchestra_dir)
+
+        manager._install_context_init_files(
+            manager.load_packages()["core"],
+            project_dir,
+            dry_run=False,
+        )
+
+        assert (project_dir / ".codex").read_text(encoding="utf-8") == "not a directory"
+
     def test_directory_entry_is_copied_recursively(self, tmp_path: Path) -> None:
         orchestra_dir = tmp_path / "orchestra"
         project_dir = tmp_path / "project"

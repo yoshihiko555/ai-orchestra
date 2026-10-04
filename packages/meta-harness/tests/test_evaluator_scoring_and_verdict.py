@@ -83,6 +83,8 @@ class TestEvaluatorHash:
             "docker/scenario/Dockerfile",
             "scripts/orchestra-manager.py",
             "scripts/lib/orchestra_context.py",
+            "scripts/lib/facet_builder.py",
+            "scripts/lib/sync_engine.py",
         } <= labels
         assert all(path.is_file() for _label, path in ev._EVALUATOR_SOURCE_FILES)
 
