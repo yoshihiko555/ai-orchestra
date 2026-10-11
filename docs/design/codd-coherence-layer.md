@@ -301,7 +301,7 @@ dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱
 | **malformed_annotation**（Issue #98） | code_scope の注釈が不正（relation 注釈の参照先 value 欠落、`codd:kind` にソース非対応の値、`codd:<key>` 文法違反等） | error      |
 | **missing_frontmatter**               | scope 内なのに `codd:` ブロックが無い（H-5）                                                                         | warning    |
 | **orphan**（孤立）                    | 被参照ゼロ かつ 参照ゼロ（`roots` 指定 kind は除外）                                                                 | warning    |
-| **drift**（ドリフト疑い）             | 上流ノードの最終コミット時刻が下流より新しい                                                                         | warning    |
+| **drift**（ドリフト疑い）             | 追従すべきエッジ（4.5.2）で、上流に基準時刻より新しい実質変更（未コミットを含む）がある                              | warning    |
 
 - **drift の時刻ソース**（H-3）: `git log -1 --format=%ct -- <path>`（最終コミット時刻）を用いる。
   未コミット（ワーキングツリーのみ）の場合はファイルシステム mtime にフォールバックする。
@@ -326,7 +326,8 @@ dangling / duplicate / cycle / unknown / orphan / drift の各検査を特別扱
   （0 件扱いで mtime へ全面フォールバックしない）。
 - **missing_frontmatter** は Phase 1 では warning。将来 essential 運用が定着したら error 昇格を検討。
 - drift は「上流を変えたのに下流が追従していないかもしれない」という**素朴な Amber 相当**。
-  信頼度スコアによる本格的な impact 分析は Phase 2。
+  どのエッジを見るか・何を「上流が変わった」と数えるか・確認済みをどう表すかは 4.5.2 に従う。
+  信頼度スコアによる impact 分析は 4.5.1。
 
 ### 4.5.1 impact 分析（信頼度3帯域 / Issue #94）
 
@@ -419,6 +420,57 @@ relation 種別とグラフ距離のみ。codd-dev の Noisy-OR・エビデン�
 コード静的解析由来の多様な証拠を確率合成する設計であり、本レイヤーには証拠源が無く適用しない。
 Corroboration rule と testimony cap（co_changed）の思想のみ借用した。`must_review` エッジは将来フェーズ。
 
+### 4.5.2 drift の判定モデル（Issue #515）
+
+Phase 1 の drift は「上流の最終コミット時刻 > 下流の最終コミット時刻」だけで判定していたため、
+導入先では関係種別・変更内容・確認状況にかかわらず warning が飽和した（learno の実測: warning 171 件中
+drift 170 件。内訳は一覧 → 個票の整形コミット由来 103 件、ADR → 設計書 48 件、本当に見るべき候補 19 件）。
+drift は次の 4 段で判定し、メッセージに原因コミットを出す。
+
+| 段              | 判定                                                                                                                                                                                                                                                                                                            | 設定・宣言                       |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| 1. 対象エッジ   | relation が `drift.relations` に含まれ、下流 kind が `drift.exclude_downstream_kinds` に含まれないエッジだけを見る。既定は `derives_from` / `refines` / `implements` と `adr` 除外（`references` は `impact.relation_weights` でも弱い参照 0.3 として扱っている。ADR は確定記録で更新しない）                   | `codd.yaml` の `drift:`（4.6）   |
+| 2. 実質変更     | 上流の後続コミットを `git log -p -w --ignore-blank-lines -U0` で見て、`+` / `-` 行が無いコミットと、変更行が `\|` `-` `:` と空白だけ（Markdown 表の区切り行。prettier は列幅に合わせてダッシュ本数も変える）のコミットは「上流が変わった」と数えない                                                            | なし（常時）                     |
+| 3. 確認済みの印 | `depends_on[].synced: "<上流のコミット SHA>"` があれば、基準時刻を max(下流の最終コミット時刻, synced のコミット時刻) にする。`synced` 以降に実質変更が無ければ drift にならない。`codd ack <node_id>` が drift 中のエッジの `synced` を上流ファイルの最新コミットへ更新する（`--all` で drift 対象の全エッジ） | frontmatter（`codd ack` が書く） |
+| 4. 行単位の依存 | `depends_on[].anchor: "API-010"` があれば、変更行に anchor を含むコミットだけを数える。未指定はファイル全体                                                                                                                                                                                                     | frontmatter                      |
+
+- **基準時刻と候補絞り込み**: 下流の最終コミット時刻（H-3 の時刻ソース）を基準とし、`synced` があれば
+  そのコミット時刻との大きい方を使う（`synced` は drift を減らす方向にしか働かない）。上流の最終コミット
+  時刻（内容を問わない上限）が基準時刻以下のエッジは git を追加で呼ばずに非 drift とし、候補になった
+  上流パスにだけ `git log -p`（`--since=<基準時刻>` で打ち切り）を 1 回ずつ実行する。時刻上の候補が
+  無いリポジトリでは Issue #98 で削った呼び出し回数（`git status` 1 回 + `git log --name-only` 1 回）
+  のまま（`synced` の解決に使う最大 2 回の呼び出しは別）。整形だけのコミットや anchor に無関係な
+  コミットで時刻上の候補になったエッジは、drift に数えなくても履歴の確認が走る。
+- **`synced` の解決**: 値は `git cat-file --batch-check` で commit に解決し、`git log --no-walk` で
+  コミット時刻を得る。git に渡すのは 7〜40 桁の 16 進 SHA だけで、`HEAD` / ブランチ名 / タグ名は
+  動く参照として drift を永久に消しうるため解決しない。解決できない値（squash merge で消えた
+  ブランチ上の SHA、typo、参照名）は
+  未指定として下流のコミット時刻で判定し、メッセージにその旨
+  （`synced '<値>' は解決できないため下流のコミット時刻で判定`）を添える。同じ PR で上流変更と ack を
+  行い squash merge した場合は SHA が消えるが、下流も同じコミットで更新されているため drift にはならない。
+- **未コミットの上流**: dirty な上流は `git diff HEAD -w --ignore-blank-lines` で実質変更を判定し
+  （時刻は mtime）、未追跡の上流は整形以外の全行（空行と表の区切り行を除く）を実質変更として扱う。
+  原因が未コミットのときメッセージは
+  `未コミットの変更`。
+- **メッセージ**: `docs/x.md: 上流 'design:api-list' が 61ba71d (2026-10-09) で変更（追従漏れの疑い）`。
+  anchor 指定時は `anchor 'API-010' を含む行。` を付記する。日付はローカル時刻（`git log` の表示と同じ）。
+- **`codd ack`**: frontmatter を YAML として dump し直さず、`depends_on` の該当項目に `synced:` 行を
+  テキストで挿入・置換する（コメント・キー順・本文を保つ）。書き換え後に再パースして反映を確認できた
+  場合だけ書き込む。コード注釈ノード（1 行注釈）と flow style の項目はスキップとして報告する。
+  リポジトリ全体の一括 ack は設けない（見ずに消すことを防ぐ）。
+- **確認できない変更は drift に倒す（fail-closed）**: 上流の diff が git に binary 判定される、または
+  候補パスの `git log -p` が失敗して履歴を取得できない場合は、整形だけの変更かどうかを判定できないので
+  `上流 '<id>' の変更内容を確認できない（バイナリ差分 / 履歴を取得できない）` として drift を出す
+  （anchor の有無にかかわらず）。
+- **既知の制限**: rename 後の上流は `--follow` を使わないため rename コミットが実質変更として数えられる
+  （従来と同じ）。`-w` は行内の空白の有無も無視するため、`foobar` → `foo bar` のような変更は実質変更に
+  数えない。時刻比較は秒精度のため、下流のコミットと同じ秒に入った上流コミット（rebase や bot の
+  連続コミット）は取りこぼす（H-3 から同じ制限）。整形行の判定（`|` `-` `:` と空白だけ）は Markdown 以外の
+  上流（YAML の空要素、水平線 `---`、コード）にも同じ規則で適用される。候補パスの `git log -p` 出力は
+  メモリに保持する（`--since` / `-U0` / `-w` で小さくなるが、巨大な履歴では時間とメモリを使う）。
+  frontmatter の `synced` は引用符で囲む（YAML 1.1 は引用符なしの数字だけの値を数値として読む。
+  `codd ack` は常に引用符付きで書く）。
+
 ### 4.6 config（codd.yaml）
 
 ```yaml
@@ -455,6 +507,9 @@ checks:
   missing_frontmatter: warning
   orphan: warning
   drift: warning
+drift: # drift の対象エッジ（4.5.2 / Issue #515）
+  relations: [derives_from, refines, implements]
+  exclude_downstream_kinds: [adr]
 ```
 
 導入先固有の上書きは `codd.local.yaml`（`config-loading` ルール準拠、同期対象外）。
@@ -863,7 +918,8 @@ hook 導入がホスト側の commit/edit フローをブロックしないこ�
 | 2        | error が 0 件で、Green / Amber の影響先に `co_changed == false` がある、または `deleted_upstream` が非空 | `CONDITIONAL` |
 | 3        | 上記以外（影響なし・影響先がすべて追従済み・Gray のみ・warning のみ）                                    | `APPROVE`     |
 
-**warning を判定から除外する理由**: 既存ドキュメントには drift warning が多数あり、
+**warning を判定から除外する理由**: 既存ドキュメントには drift warning が多数出うるため
+（4.5.2 の既定と `synced` で減らせるが、ゼロは前提にしない）、
 warning を条件に含めると、変更の内容にかかわらず毎回の PR が `CONDITIONAL` になってしまう。
 件数と一覧は表示し、Markdown の一覧は `<details>` 内で `VERDICT_WARNING_LIMIT`（20 件）まで
 に制限する。Gray は参考情報として帯域別件数に含める。
@@ -901,7 +957,7 @@ CODD 無効時は JSON の `disabled` で検出し、output を空にして無�
 | `fail-on`        | `reject`                        | 判定によるジョブ失敗条件                                            |
 | `config`         | `.claude/config/codd/codd.yaml` | 未導入の場合は action 同梱の `../config/codd.yaml` にフォールバック |
 | `comment`        | `'true'`                        | PR コメントの投稿・更新を有効化                                     |
-| `comment-author` | `''`                            | GitHub App token を使う場合は `<app-slug>[bot]` を指定                |
+| `comment-author` | `''`                            | GitHub App token を使う場合は `<app-slug>[bot]` を指定              |
 | `github-token`   | `${{ github.token }}`           | fetch とコメント API の認証（ログには出さない）                     |
 | `python-version` | `'3.12'`                        | 実行 Python                                                         |
 
@@ -976,7 +1032,7 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | フロントマターのプロパティ不足                   | 5プロパティで全検査が成立することを 4.5 で確認済み。不足時は後方互換で追加                                                                                                                               |
 | 既存ドキュメントへのフロントマター一括付与コスト | Phase 1 は対象を docs/・.claude/rules/・Plans.md・templates/context/ に限定                                                                                                                              |
-| drift 検査の誤検知                               | warning 止まり。コミット時刻ベースと明示し、本格判定は Phase 2                                                                                                                                           |
+| drift 検査の誤検知                               | warning 止まり。relation / kind の絞り込み・整形だけのコミットの無視・`synced` / `anchor`（4.5.2 / Issue #515）で誤検知を減らし、メッセージに原因コミットを出す                                          |
 | essential 化による全導入先への影響               | hook の**登録**は essential で自動展開されるが、**実動作**は `codd.yaml` の `hooks.scan_on_edit`（既定 false）/ `hooks.validate_on_commit`（既定 warn）による二段構え opt-in で制御（Issue #95 / 4.8.1） |
 | frontmatter parser の誤検出                      | 先頭ブロックのみ読む実装に限定（M-1）                                                                                                                                                                    |
 
@@ -996,6 +1052,13 @@ AI Orchestra 自身の `.claude/orchestra.json` に `codd` を追加し、最初
   ではなく `codd:<key> <value>` の軽量記法を採用し、`code_scope.include`（既定空）による opt-in
   スコープとする。全コードへのフロントマター強制は行わず、注釈の有無で confidence
   （既定 1.0 vs 0.7）を差別化することで、doc の確定宣言とコードの軽量宣言を区別する。
+- **D10**（Issue #515）: drift は「追従すべきエッジ」（既定 `derives_from` / `refines` / `implements`、
+  下流が ADR 以外）だけを対象にし、整形だけのコミットは上流の変更に数えない。確認済みの印は
+  frontmatter の `depends_on[].synced`（上流のコミット SHA）で表し、行単位の依存は `depends_on[].anchor`
+  で表す。どちらも外部ファイルではなく宣言元の frontmatter に置く（D3 と整合）。既定の対象を狭める
+  のは挙動変更だが、`drift:` の上書きで従来の全エッジ判定に戻せる。設定は Issue #515 の提案
+  （`checks.drift_relations` 等）とは異なりトップレベル `drift:` に置く（`checks` の値は
+  `normalize_check_level` で error / warning / off に限定されるため、リストを置けない）。
 
 ---
 

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`codd`: drift を「見たら消せる」ものにする（Issue #515）**: frontmatter の `depends_on[].synced`（確認済みの上流コミット）と `depends_on[].anchor`（上流の特定の行だけに依存）を宣言でき、`codd ack <node_id>` が drift 中のエッジの `synced` を上流の最新コミットに更新する（`--all` はそのノードの drift 対象の全エッジ）。drift の warning に原因コミットの短 SHA と日付が出る。
 - **`codd`: PR の CI ガードレールを追加**: `codd verdict` が validate と impact から APPROVE / CONDITIONAL / REJECT を判定する。
   composite action で PR コメントとジョブ要約に出力し、`fail-on` に応じて CI を失敗させられる。
   GHES に対応し、GitHub App token では `comment-author` で投稿者を指定できる。
@@ -16,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`codd`: drift の既定の判定範囲を変更（Issue #515）**: relation が `references` / `supersedes` のエッジと、下流が ADR のエッジは既定で drift の対象外になり、空白・空行・Markdown 表の区切り行だけの上流コミットは「上流が変わった」と数えない。従来の対象範囲（全 relation・全 kind）に戻すには `codd.local.yaml` の `drift.relations` に 5 つの relation を全部書き、`drift.exclude_downstream_kinds: []` にする（整形だけのコミットの無視は設定で戻せない）。
 - **meta-harness / loop-harness: Docker 内 Claude Code の pin を 2.1.282 に更新**: コンテナ内の Claude が `AGENTS.md` を読めるようになる。
   既存の Docker イメージは再ビルドが必要で、meta-harness の baseline は作り直しになる。
 - **meta-harness: 評価・昇格のビルドで `context sync` も実行**: 候補が `templates/context/` を変えると、評価環境と昇格 PR のルート `AGENTS.md` の管理ブロックに反映される。
