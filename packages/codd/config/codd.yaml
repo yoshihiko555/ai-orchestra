@@ -88,6 +88,23 @@ checks:
   orphan: warning
   drift: warning
 
+# drift 検査（Issue #515）の対象と判定
+# - relations: 「下流が上流に追従すべき」relation だけを drift の対象にする。
+#   references（弱い参照）と supersedes（置換）は既定で対象外。
+# - exclude_downstream_kinds: 追従する側として扱わない kind。ADR は確定記録なので既定で除外。
+# 旧挙動（全 relation・全 kind を対象）に戻すには relations に 5 つ全部を書き、
+# exclude_downstream_kinds を [] にする（リストは .local.yaml で丸ごと置き換わる）。
+# 上流コミットのうち空白・空行・Markdown 表の区切り行だけの変更は「上流が変わった」と数えない。
+# depends_on[].synced（確認済みの上流コミット）と depends_on[].anchor（行単位の依存）は
+# frontmatter 側で宣言する（codd-frontmatter-policy ルール参照）。
+drift:
+  relations:
+    - derives_from
+    - refines
+    - implements
+  exclude_downstream_kinds:
+    - adr
+
 # impact 分析（codd impact --diff <ref>）の信頼度スコア設定。
 # 変更ノードの下流を Green（自動更新可）/ Amber（要確認）/ Gray（参考）に分類する。
 # path_score = min(経路上の relation 重み) × decay^(hops-1)、ノードは全経路の最良値を採る。
