@@ -76,7 +76,7 @@ codd:
 - `synced` が解決できない SHA（squash merge で消えた等）のときは未指定として扱われ、drift メッセージにその旨が出る。`codd ack` で付け直す。
 - `synced` に解決されるのは 7〜40 桁の 16 進 SHA だけ。`HEAD` やブランチ名・タグ名を書いても解決されず、drift を消す手段にはならない。引用符なしの数字だけの SHA は YAML が数値として読むので必ず引用符で囲む。
 - 上流の変更内容を確認できない場合（diff が binary 判定される、履歴を取得できない）は drift になる（確認できない変更は追従漏れ側に倒す）。
-- `codd ack` は、上流に未コミットの変更があると最後のコミットまでを `synced` に書いて WARN を出す。コミットの無い上流、コード注釈ノード、flow style の `depends_on` 項目は SKIP として報告する（SKIP があっても終了コードは 0。未知の node_id だけが exit 1）。
+- `codd ack` は、上流に未コミットの変更があると最後のコミットまでを `synced` に書いて WARN を出す。コミットの無い上流、コード注釈ノード、flow style の `depends_on` 項目は SKIP として報告する（SKIP があっても終了コードは 0。未知・重複の node_id、上流履歴の取得失敗、ack 中のファイル変更、書き込み失敗は exit 1 で書き込まない）。
 - コード注釈（`codd:<key> <value>` の 1 行形式）には `synced` / `anchor` を書けない。
 
 ## 運用ルール

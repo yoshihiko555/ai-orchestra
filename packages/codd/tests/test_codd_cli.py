@@ -501,6 +501,43 @@ def test_git_output_bytes_keep_partial_on_error_returns_partial_stdout(
     assert cli._git_output_bytes(tmp_path, ["log"]) is None
 
 
+@pytest.mark.parametrize("input_bytes", [None, b"", b"commit\n"])
+@pytest.mark.parametrize(
+    ("returncode", "stdout"), [(0, b""), (0, b"history"), (128, b"partial"), (128, b"")]
+)
+def test_git_output_bytes_with_status_preserves_stdout_and_optional_input(
+    tmp_path, monkeypatch, input_bytes, returncode, stdout
+) -> None:
+    def fake_run(args, **kwargs):
+        expected = {"cwd": tmp_path, "capture_output": True, "check": False}
+        if input_bytes is not None:
+            expected["input"] = input_bytes
+        assert args == ["git", "log"]
+        assert kwargs == expected
+        return subprocess.CompletedProcess(args, returncode, stdout, b"error")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    assert cli._git_output_bytes_with_status(tmp_path, ["log"], input_bytes=input_bytes) == (
+        stdout,
+        returncode == 0,
+    )
+    assert cli._git_output_bytes(tmp_path, ["log"], input_bytes=input_bytes) == (
+        stdout if returncode == 0 else None
+    )
+    assert cli._git_output_bytes(
+        tmp_path, ["log"], input_bytes=input_bytes, keep_partial_on_error=True
+    ) == (stdout if returncode == 0 or stdout else None)
+
+
+def test_git_output_bytes_with_status_reports_start_failure(tmp_path, monkeypatch) -> None:
+    def unavailable_run(*args, **kwargs):
+        raise OSError("git を起動できない")
+
+    monkeypatch.setattr(cli.subprocess, "run", unavailable_run)
+    assert cli._git_output_bytes_with_status(tmp_path, ["log"]) == (None, False)
+    assert cli._git_output_bytes(tmp_path, ["log"], keep_partial_on_error=True) is None
+
+
 def test_log_commit_times_uses_partial_output_on_nonzero_git_log_exit(
     monkeypatch, tmp_path
 ) -> None:
@@ -3417,14 +3454,14 @@ def test_drift_reports_binary_upstream_commits_even_with_anchor(tmp_path, anchor
 def test_drift_reports_unavailable_history_even_with_anchor(tmp_path, monkeypatch, anchor) -> None:
     _drift_repo(tmp_path, **({"anchor": anchor} if anchor is not None else {}))
     _replace_upstream(tmp_path, "old", "new", 10)
-    real_output = cli._git_output_bytes
+    real_output = cli._git_output_bytes_with_status
 
     def unavailable_history(root, args, **kwargs):
         if "log" in args and "-p" in args:
-            return None
+            return None, False
         return real_output(root, args, **kwargs)
 
-    monkeypatch.setattr(cli, "_git_output_bytes", unavailable_history)
+    monkeypatch.setattr(cli, "_git_output_bytes_with_status", unavailable_history)
     (hit,) = _drift_hits(tmp_path)
     assert hit.cause_sha is None
     assert hit.cause_time == _DRIFT_BASE_TIME + 10
@@ -3435,14 +3472,14 @@ def test_drift_reports_unavailable_history_even_with_anchor(tmp_path, monkeypatc
 def test_drift_empty_successful_history_has_no_drift(tmp_path, monkeypatch) -> None:
     _drift_repo(tmp_path)
     _replace_upstream(tmp_path, "old", "new", 10)
-    real_output = cli._git_output_bytes
+    real_output = cli._git_output_bytes_with_status
 
     def empty_history(root, args, **kwargs):
         if "log" in args and "-p" in args:
-            return b""
+            return b"", True
         return real_output(root, args, **kwargs)
 
-    monkeypatch.setattr(cli, "_git_output_bytes", empty_history)
+    monkeypatch.setattr(cli, "_git_output_bytes_with_status", empty_history)
     assert _drift_hits(tmp_path) == []
 
 
@@ -3604,6 +3641,90 @@ def test_ack_all_stamps_non_drifting_edges_and_never_outside_scope(tmp_path) -> 
     assert (tmp_path / "docs/design.md").read_text() == expected
 
 
+def test_ack_preserves_nested_metadata_synced_and_appends_direct_synced(tmp_path) -> None:
+    _drift_repo(tmp_path, relation="refines")
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    text = _doc("design:d", "design", deps=[("req:r", "refines")]).replace(
+        "      relation: refines\n",
+        "      relation: refines\n      metadata:\n        synced: internal\n",
+    )
+    downstream = _write(tmp_path, "docs/design.md", text)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 0
+    updated = downstream.read_text()
+    assert updated == text.replace(
+        "        synced: internal\n", f'        synced: internal\n      synced: "{sha}"\n'
+    )
+    assert cc.parse_codd_frontmatter(updated)["depends_on"][0]["metadata"] == {"synced": "internal"}
+
+
+def test_ack_preserves_comments_before_and_between_indentless_items(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    _write(tmp_path, "docs/other.md", _doc("req:other", "requirement"))
+    text = """---
+codd:
+  node_id: design:d
+  kind: design
+  status: draft
+  depends_on:
+  # 最初の項目の前
+  - id: req:r
+    relation: derives_from
+
+  # 項目の間
+  - id: req:other
+    relation: refines
+  owner: team
+---
+本文
+"""
+    downstream = _write(tmp_path, "docs/design.md", text)
+    _save_commit(tmp_path, "indentless dependencies", 5)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 0
+    assert downstream.read_text() == text.replace(
+        "    relation: derives_from\n", f'    relation: derives_from\n    synced: "{sha}"\n'
+    )
+
+
+def test_ack_inserts_synced_before_trailing_list_comment(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    text = _doc("design:d", "design", deps=[("req:r", "derives_from")]).replace(
+        "    - id: req:r\n      relation: derives_from\n",
+        "  - id: req:r\n    relation: derives_from\n\n  # trailing\n  owner: team\n",
+    )
+    downstream = _write(tmp_path, "docs/design.md", text)
+    _save_commit(tmp_path, "trailing list comment", 5)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 0
+    assert downstream.read_text() == text.replace(
+        "    relation: derives_from\n", f'    relation: derives_from\n    synced: "{sha}"\n'
+    )
+
+
+def test_ack_expands_dependency_merge_alias_with_whole_frontmatter(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    text = """---
+defaults: &dep_defaults
+  relation: derives_from
+codd:
+  node_id: design:d
+  kind: design
+  status: draft
+  depends_on:
+    - id: req:r
+      <<: *dep_defaults
+---
+"""
+    downstream = _write(tmp_path, "docs/design.md", text)
+    _save_commit(tmp_path, "dependency merge alias", 5)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 0
+    assert downstream.read_text() == text.replace(
+        "      <<: *dep_defaults\n", f'      <<: *dep_defaults\n      synced: "{sha}"\n'
+    )
+    assert _drift_hits(tmp_path) == []
+
+
 def test_ack_unchanged_edges_are_counted_without_rewriting(tmp_path, monkeypatch, capsys) -> None:
     _ack_repo(tmp_path)
     args = ["--root", str(tmp_path), "ack", "design:d", "--all"]
@@ -3744,6 +3865,96 @@ def test_ack_continues_after_unknown_node_and_skips_code(tmp_path, capsys) -> No
     assert "ERROR: node_id 'design:missing' が見つかりません" in output.err
     assert "コード注釈ノードは ack 非対応" in output.out
     assert f"synced → {latest[:7]}" in output.out
+
+
+def test_ack_refuses_duplicate_node_id_without_changing_either_file(tmp_path, capsys) -> None:
+    text, _, _ = _ack_repo(tmp_path)
+    duplicate = _write(tmp_path, "docs/duplicate.md", text + "別ファイルの本文\n")
+    before_duplicate = duplicate.read_bytes()
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 1
+    output = capsys.readouterr()
+    assert output.err == (
+        "[codd ack] ERROR: node_id 'design:d' が複数のファイルで定義されています: "
+        "docs/design.md, docs/duplicate.md\n"
+    )
+    assert "updated=0 skipped=0" in output.out
+    assert (tmp_path / "docs/design.md").read_text() == text
+    assert duplicate.read_bytes() == before_duplicate
+
+
+def test_ack_reports_upstream_history_failure_without_stamping(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _drift_repo(tmp_path)
+    _replace_upstream(tmp_path, "old", "new", 10)
+    downstream = tmp_path / "docs/design.md"
+    before = downstream.read_bytes()
+    real_output = cli._git_output
+
+    def unavailable_history(root, args):
+        if "log" in args and "-1" in args:
+            return None
+        return real_output(root, args)
+
+    monkeypatch.setattr(cli, "_git_output", unavailable_history)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 1
+    output = capsys.readouterr()
+    assert output.err == (
+        "[codd ack] ERROR docs/design.md: 上流 'req:r' のコミット履歴を取得できません\n"
+    )
+    assert "updated=0 skipped=1" in output.out
+    assert downstream.read_bytes() == before
+
+
+def test_ack_preserves_concurrent_edit_and_counts_all_node_stamps(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    text, _, _ = _ack_repo(tmp_path)
+    downstream = tmp_path / "docs/design.md"
+    concurrent_text = text + "同時に追加された本文\n"
+    real_latest = cli._latest_upstream_sha
+
+    def latest_after_edit(root, paths):
+        downstream.write_text(concurrent_text, encoding="utf-8")
+        return real_latest(root, paths)
+
+    monkeypatch.setattr(cli, "_latest_upstream_sha", latest_after_edit)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 1
+    output = capsys.readouterr()
+    assert output.err == (
+        "[codd ack] ERROR docs/design.md: ack 中にファイルが変更されたため書き込みを中止しました\n"
+    )
+    assert "updated=0 skipped=2" in output.out
+    assert downstream.read_text() == concurrent_text
+    assert "synced:" not in downstream.read_text()
+
+
+def test_ack_aborts_when_target_cannot_be_reread(tmp_path, monkeypatch, capsys) -> None:
+    _ack_repo(tmp_path)
+    downstream = tmp_path / "docs/design.md"
+    before = downstream.read_bytes()
+    real_latest = cli._latest_upstream_sha
+    real_open = Path.open
+
+    def denied_open(path, *args, **kwargs):
+        if path == downstream:
+            raise OSError("再読み込み不可")
+        return real_open(path, *args, **kwargs)
+
+    def latest_before_read_failure(root, paths):
+        sha = real_latest(root, paths)
+        monkeypatch.setattr(Path, "open", denied_open)
+        return sha
+
+    monkeypatch.setattr(cli, "_latest_upstream_sha", latest_before_read_failure)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 1
+    output = capsys.readouterr()
+    assert output.err == (
+        "[codd ack] ERROR docs/design.md: ack 中にファイルが変更されたため書き込みを中止しました\n"
+    )
+    assert "updated=0 skipped=2" in output.out
+    monkeypatch.setattr(Path, "open", real_open)
+    assert downstream.read_bytes() == before
 
 
 def test_ack_runs_when_drift_check_is_off_and_respects_disabled(tmp_path, capsys) -> None:
@@ -3916,6 +4127,48 @@ def test_drift_keeps_partial_patch_history_on_git_error(tmp_path, monkeypatch) -
     monkeypatch.setattr(cli.subprocess, "run", partial_run)
     (hit,) = _drift_hits(tmp_path)
     assert hit.cause_sha == sha
+
+
+@pytest.mark.parametrize("anchor", [None, "NO-MATCH"])
+def test_drift_reports_incomplete_formatting_only_history(tmp_path, monkeypatch, anchor) -> None:
+    _drift_repo(tmp_path, **({"anchor": anchor} if anchor is not None else {}))
+    sha = _replace_upstream(tmp_path, "| --- | :-: |", "| ----- | :---: |", 10)
+    patch = (
+        f"\x01{sha}\x00{sha[:7]}\x00{_DRIFT_BASE_TIME + 10}\n"
+        "diff --git a/docs/req.md b/docs/req.md\n"
+        "--- a/docs/req.md\n+++ b/docs/req.md\n@@ -10 +10 @@\n"
+        "-| --- | :-: |\n+| ----- | :---: |\n"
+    ).encode()
+    assert cli._parse_change_records(patch)[0].changed_lines == ()
+    real_output = cli._git_output_bytes_with_status
+
+    def incomplete_history(root, args, **kwargs):
+        if "log" in args and "-p" in args:
+            return patch, False
+        return real_output(root, args, **kwargs)
+
+    monkeypatch.setattr(cli, "_git_output_bytes_with_status", incomplete_history)
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha is None
+    assert hit.cause_time == _DRIFT_BASE_TIME + 10
+    assert "の変更内容を確認できない（履歴が不完全）" in hit.message
+
+
+def test_drift_prefers_commit_over_unavailable_marker_on_time_tie(tmp_path, monkeypatch) -> None:
+    _drift_repo(tmp_path)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    timestamp = _DRIFT_BASE_TIME + 10
+    monkeypatch.setattr(
+        cli,
+        "_path_changes",
+        lambda *args: [
+            cli.ChangeRecord(None, None, timestamp, ("<unavailable>",), "履歴が不完全"),
+            cli.ChangeRecord(sha, sha[:7], timestamp, ("new",)),
+        ],
+    )
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha == sha
+    assert "履歴が不完全" not in hit.message
 
 
 @pytest.mark.parametrize("ending", ["\n", "\r\n"])

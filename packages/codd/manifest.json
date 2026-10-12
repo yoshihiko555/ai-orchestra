@@ -1,7 +1,7 @@
 {
   "name": "codd",
   "version": "0.3.0",
-  "description": "CODD 整合性レイヤー（ドキュメント依存グラフの scan / validate / impact + コード⇔ドキュメントのトレーサビリティ。core 依存）",
+  "description": "CODD 整合性レイヤー（ドキュメント依存グラフの scan / validate / ack / impact + コード⇔ドキュメントのトレーサビリティ。core 依存）",
   "depends": ["core"],
   "hooks": {
     "PreToolUse": [
@@ -18,7 +18,7 @@
   "scripts": [
     {
       "path": "scripts/codd.py",
-      "description": "CODD CLI: scan（依存グラフ構築）/ validate（整合性検証）/ graph（可視化）/ impact（変更影響の信頼度分類）/ verdict（CI の PR 整合性判定）"
+      "description": "CODD CLI: scan（依存グラフ構築）/ validate（整合性検証）/ graph（可視化）/ ack（ドリフトの確認済み記録）/ impact（変更影響の信頼度分類）/ verdict（CI の PR 整合性判定）"
     }
   ],
   "config": ["config/codd.yaml"]

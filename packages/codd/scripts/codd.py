@@ -19,7 +19,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import textwrap
 import tokenize
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
@@ -301,6 +300,26 @@ def _git_output(root: Path, args: list[str]) -> str | None:
     return completed.stdout
 
 
+def _git_output_bytes_with_status(
+    root: Path,
+    args: list[str],
+    *,
+    input_bytes: bytes | None = None,
+) -> tuple[bytes | None, bool]:
+    """git の stdout と成功状態を返す。起動できなければ (None, False)。"""
+    # `input` は stdin を使う呼び出し（`git cat-file --batch-check`）でだけ渡す。
+    # 常に渡すと、`run(args, cwd, capture_output, check)` だけを受ける既存のテスト用
+    # フェイクと互換が無くなる。
+    run_kwargs: dict[str, Any] = {"cwd": root, "capture_output": True, "check": False}
+    if input_bytes is not None:
+        run_kwargs["input"] = input_bytes
+    try:
+        completed = subprocess.run(["git", *args], **run_kwargs)
+    except OSError:
+        return None, False
+    return completed.stdout, completed.returncode == 0
+
+
 def _git_output_bytes(
     root: Path,
     args: list[str],
@@ -323,21 +342,12 @@ def _git_output_bytes(
     のように「取得できた分だけでも使いたい」呼び出しでは True を指定し、stdout が
     空でなければ nonzero 終了でもそれを返す（レビュー対応: codd.py:394）。
     """
-    # `input` は stdin を使う呼び出し（`git cat-file --batch-check`）でだけ渡す。
-    # 常に渡すと、`run(args, cwd, capture_output, check)` だけを受ける既存のテスト用
-    # フェイクと互換が無くなる。
-    run_kwargs: dict[str, Any] = {"cwd": root, "capture_output": True, "check": False}
-    if input_bytes is not None:
-        run_kwargs["input"] = input_bytes
-    try:
-        completed = subprocess.run(["git", *args], **run_kwargs)
-    except OSError:
+    out, succeeded = _git_output_bytes_with_status(root, args, input_bytes=input_bytes)
+    if not succeeded:
+        if keep_partial_on_error and out:
+            return out
         return None
-    if completed.returncode != 0:
-        if keep_partial_on_error and completed.stdout:
-            return completed.stdout
-        return None
-    return completed.stdout
+    return out
 
 
 def commit_time(root: Path, rel_path: str) -> float:
@@ -924,7 +934,7 @@ def _path_changes(
     root: Path, rel: str, baseline: float, is_dirty: bool, fallback_time: float
 ) -> list[ChangeRecord]:
     """候補パスの必要な履歴と、dirty の場合だけ作業ツリー差分を読む。"""
-    out = _git_output_bytes(
+    out, succeeded = _git_output_bytes_with_status(
         root,
         [
             "-c",
@@ -937,11 +947,12 @@ def _path_changes(
             "--",
             f":(literal){rel}",
         ],
-        keep_partial_on_error=True,
     )
     if out is None:
         return [ChangeRecord(None, None, fallback_time, ("<unavailable>",), "履歴を取得できない")]
     records = _parse_change_records(out)
+    if not succeeded:
+        records.append(ChangeRecord(None, None, fallback_time, ("<unavailable>",), "履歴が不完全"))
     if is_dirty:
         records.append(_working_change(root, rel))
     return sorted(records, key=lambda record: record.time, reverse=True)
@@ -1020,7 +1031,7 @@ def collect_drift(result: ScanResult, config: cc.CoddConfig, root: Path) -> list
         ]
         if not matches:
             continue
-        cause = max(matches, key=lambda record: record.time)
+        cause = max(matches, key=lambda record: (record.time, record.sha is not None))
         unresolved = edge.dep.synced is not None and edge.dep.synced not in synced_times
         hits.append(
             DriftHit(
@@ -1145,21 +1156,30 @@ def _dependency_item_spans(lines: list[str], start: int, end: int) -> list[tuple
     key_indent = _line_indent(lines[start])
     item_indent: int | None = None
     item_start: int | None = None
+    item_end = start + 1
     spans: list[tuple[int, int]] = []
     for index in range(start + 1, end):
         line = lines[index]
-        dash = re.match(r"^([ \t]*)-(\s|$)", line)
+        if not line.strip():
+            continue
         indent = _line_indent(line)
+        if line.lstrip().startswith("#"):
+            if item_start is not None and indent > key_indent:
+                item_end = index + 1
+            continue
+        dash = re.match(r"^([ \t]*)-(\s|$)", line)
         if dash and indent >= key_indent and (item_indent is None or indent == item_indent):
             if item_start is not None:
-                spans.append((item_start, index))
+                spans.append((item_start, item_end))
             item_start = index
             item_indent = indent
-        elif line.strip() and indent <= key_indent:
-            end = index
+            item_end = index + 1
+        elif indent <= key_indent:
             break
+        elif item_start is not None:
+            item_end = index + 1
     if item_start is not None:
-        spans.append((item_start, end))
+        spans.append((item_start, item_end))
     return spans
 
 
@@ -1172,7 +1192,7 @@ def _stamp_dependency_item(lines: list[str], sha: str) -> list[str] | None:
         return None
     key_indent = _line_indent(id_line)
     for index, line in enumerate(mapping_lines):
-        if not re.match(r"^\s*synced\s*:", line):
+        if _line_indent(line) != key_indent or not re.match(r"^\s*synced\s*:", line):
             continue
         original = lines[index]
         suffix = _synced_trailing_comment(original)
@@ -1229,16 +1249,15 @@ def _apply_synced_to_frontmatter(
     spans = _dependency_item_spans(lines, list_line, closing)
     if not spans:
         return None, ["flow style / 解析不能"]
+    raw_items = original.get("depends_on")
+    if not isinstance(raw_items, list) or len(raw_items) != len(spans):
+        return None, ["flow style / 解析不能"]
     reasons: list[str] = []
     applied: dict[str, str] = {}
-    for start, end in reversed(spans):
+    for item_index, (start, end) in reversed(list(enumerate(spans))):
         item_lines = lines[start:end]
         dash_indent = _line_indent(item_lines[0])
-        mapping = item_lines[0][:dash_indent] + " " + item_lines[0][dash_indent + 1 :]
-        try:
-            item = yaml.safe_load(textwrap.dedent(mapping + "".join(item_lines[1:])))
-        except yaml.YAMLError:
-            item = None
+        item = raw_items[item_index]
         if not isinstance(item, dict):
             reasons.append("flow style / 解析不能")
             continue
@@ -1300,7 +1319,7 @@ def _latest_upstream_sha(root: Path, paths: tuple[str, ...]) -> str | None:
     out = _git_output(
         root, ["log", "-1", "--format=%H", "--", *[f":(literal){path}" for path in paths]]
     )
-    return out.strip() if out and out.strip() else None
+    return out.strip() if out is not None else None
 
 
 def cmd_ack(root: Path, config: cc.CoddConfig, node_ids: list[str], all_edges: bool = False) -> int:
@@ -1316,6 +1335,14 @@ def cmd_ack(root: Path, config: cc.CoddConfig, node_ids: list[str], all_edges: b
     updated = skipped = 0
     has_error = False
     for node_id in dict.fromkeys(node_ids):
+        if node_id in result.graph.duplicate_paths:
+            paths = ", ".join(result.graph.duplicate_paths[node_id])
+            print(
+                f"[codd ack] ERROR: node_id '{node_id}' が複数のファイルで定義されています: {paths}",
+                file=sys.stderr,
+            )
+            has_error = True
+            continue
         node = result.graph.nodes.get(node_id)
         if node is None:
             print(f"[codd ack] ERROR: node_id '{node_id}' が見つかりません", file=sys.stderr)
@@ -1346,6 +1373,14 @@ def cmd_ack(root: Path, config: cc.CoddConfig, node_ids: list[str], all_edges: b
             sha = sha_cache[paths]
             if sha is None:
                 print(
+                    f"[codd ack] ERROR {node.path}: 上流 '{edge.dep.id}' のコミット履歴を取得できません",
+                    file=sys.stderr,
+                )
+                has_error = True
+                skipped += 1
+                continue
+            if sha == "":
+                print(
                     f"[codd ack] SKIP {node.path}: 上流 '{edge.dep.id}' が未コミットのため ack できません"
                 )
                 skipped += 1
@@ -1362,6 +1397,19 @@ def cmd_ack(root: Path, config: cc.CoddConfig, node_ids: list[str], all_edges: b
         applied = cc.build_node(after, node.path).depends_on if after is not None else ()
         unchanged = new_text == text
         if new_text is not None and not unchanged:
+            try:
+                with path.open(encoding="utf-8", newline="") as source:
+                    current_text = source.read()
+            except OSError:
+                current_text = None
+            if current_text != text:
+                print(
+                    f"[codd ack] ERROR {node.path}: ack 中にファイルが変更されたため書き込みを中止しました",
+                    file=sys.stderr,
+                )
+                has_error = True
+                skipped += sum(edge.dep.id in stamps for edge in node_edges)
+                continue
             try:
                 _write_acked_text(path, new_text)
             except OSError as exc:
