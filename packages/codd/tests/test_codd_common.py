@@ -32,6 +32,19 @@ def test_extract_frontmatter_block_none_when_unterminated() -> None:
     assert codd.extract_frontmatter_block(text) is None
 
 
+@pytest.mark.parametrize("ending", ["\n", "\r\n"])
+def test_extract_frontmatter_block_keeps_indented_delimiter_in_scalar(ending) -> None:
+    block = (
+        "codd:\n  node_id: design:d\n  depends_on:\n    - id: req:r\n"
+        "      anchor: |\n        API-010\n        ---\n        OTHER\n      relation: refines"
+    )
+    text = ("---\n" + block + "\n--- \t\nbody\n").replace("\n", ending)
+    assert codd.extract_frontmatter_block(text) == block
+    parsed = codd.parse_codd_frontmatter(text)
+    assert parsed["depends_on"][0]["anchor"] == "API-010\n---\nOTHER\n"
+    assert parsed["depends_on"][0]["relation"] == "refines"
+
+
 def test_parse_codd_frontmatter_returns_codd_dict() -> None:
     text = "---\ncodd:\n  node_id: design:x\n  kind: design\n---\n# body\n"
     result = codd.parse_codd_frontmatter(text)
@@ -595,3 +608,86 @@ def test_codd_config_accepts_legacy_constructor_without_code_scope_fields() -> N
     assert config.code_include == []
     assert config.code_exclude == []
     assert config.inline_confidence == codd.DEFAULT_INLINE_CONFIDENCE
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (" abc123 ", "abc123"),
+        (1234567, "1234567"),
+        ("", None),
+        (None, None),
+        (True, None),
+        (False, None),
+        (1.5, None),
+        ([], None),
+        ({}, None),
+    ],
+)
+def test_build_node_normalizes_synced(value, expected) -> None:
+    node = codd.build_node({"depends_on": [{"id": "req:r", "synced": value}]}, "docs/d.md")
+    assert node.depends_on[0].synced == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(" API-010 ", "API-010"), ("", None), (None, None), (123, None), (True, None), ([], None)],
+)
+def test_build_node_normalizes_anchor(value, expected) -> None:
+    node = codd.build_node({"depends_on": [{"id": "req:r", "anchor": value}]}, "docs/d.md")
+    assert node.depends_on[0].anchor == expected
+
+
+def test_drift_config_defaults_overrides_and_empty_lists() -> None:
+    config = codd.CoddConfig.from_dict({})
+    assert config.drift.relations == ["derives_from", "refines", "implements"]
+    assert config.drift.exclude_downstream_kinds == ["adr"]
+    assert (
+        codd.DriftConfig.from_dict({"relations": None, "exclude_downstream_kinds": None})
+        == config.drift
+    )
+    override = codd.CoddConfig.from_dict(
+        {"drift": {"relations": [" references "], "exclude_downstream_kinds": []}}
+    )
+    assert override.drift.relations == ["references"]
+    assert override.drift.exclude_downstream_kinds == []
+    assert codd.DriftConfig.from_dict({"relations": []}).relations == []
+    assert codd.DriftConfig.from_dict({"relations": [123, " refines "]}).relations == [
+        "123",
+        "refines",
+    ]
+    config.drift.relations.clear()
+    assert codd.CoddConfig.from_dict({}).drift.relations == codd.DEFAULT_DRIFT_RELATIONS
+
+
+@pytest.mark.parametrize("key", ["relations", "exclude_downstream_kinds"])
+@pytest.mark.parametrize("value", ["refines", 123, {}, [True], [False], [None], [{}], [[]]])
+def test_drift_config_rejects_invalid_lists_with_key(key, value) -> None:
+    with pytest.raises(ValueError, match=f"drift.{key}"):
+        codd.CoddConfig.from_dict({"drift": {key: value}})
+
+
+def test_drift_config_rejects_non_mapping_block() -> None:
+    with pytest.raises(ValueError, match="drift"):
+        codd.CoddConfig.from_dict({"drift": []})
+
+
+def test_drift_config_accepts_legacy_positional_constructor() -> None:
+    config = codd.CoddConfig(
+        True, [], [], [], [], [], "jsonl", "graph.jsonl", {}, codd.ImpactConfig.from_dict({}), {}
+    )
+    assert config.drift == codd.DriftConfig.from_dict({})
+
+
+def test_drift_config_local_lists_replace_defaults(tmp_path) -> None:
+    _write(
+        tmp_path / "codd.yaml",
+        "drift:\n  relations: [derives_from, refines, implements]\n  exclude_downstream_kinds: [adr]\n",
+    )
+    _write(
+        tmp_path / "codd.local.yaml",
+        "drift:\n  relations: [references]\n  exclude_downstream_kinds: []\n",
+    )
+    config = codd.load_config(tmp_path / "codd.yaml")
+    assert config.drift.relations == ["references"]
+    assert config.drift.exclude_downstream_kinds == []

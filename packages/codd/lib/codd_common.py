@@ -10,6 +10,7 @@ import functools
 import math
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -90,7 +91,7 @@ def extract_frontmatter_block(text: str) -> str | None:
     if not lines or lines[0].strip() != FRONTMATTER_DELIMITER:
         return None
     for index in range(1, len(lines)):
-        if lines[index].strip() == FRONTMATTER_DELIMITER:
+        if lines[index].rstrip() == FRONTMATTER_DELIMITER:
             return "\n".join(lines[1:index])
     return None
 
@@ -132,6 +133,8 @@ class Dependency:
     id: str
     relation: str
     confidence: float = 1.0
+    synced: str | None = None
+    anchor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -223,11 +226,17 @@ def build_node(codd: dict[str, Any], path: str) -> CoddNode:
     if isinstance(raw_deps, list):
         for entry in raw_deps:
             if isinstance(entry, dict):
+                synced = entry.get("synced")
+                anchor = entry.get("anchor")
                 deps.append(
                     Dependency(
                         id=_as_text(entry.get("id")),
                         relation=_as_text(entry.get("relation")),
                         confidence=_as_confidence(entry.get("confidence")),
+                        synced=(str(synced).strip() or None)
+                        if isinstance(synced, (str, int)) and not isinstance(synced, bool)
+                        else None,
+                        anchor=(anchor.strip() or None) if isinstance(anchor, str) else None,
                     )
                 )
     owner = codd.get("owner")
@@ -371,6 +380,44 @@ DEFAULT_CORROBORATION_MIN_ORIGINS = 2
 DEFAULT_EVIDENCE_BONUS = 0.05
 # 未知 relation のフォールバック重み（弱依存扱い）。
 UNKNOWN_RELATION_WEIGHT = 0.3
+
+
+DEFAULT_DRIFT_RELATIONS = ["derives_from", "refines", "implements"]
+DEFAULT_DRIFT_EXCLUDE_DOWNSTREAM_KINDS = ["adr"]
+
+
+def _as_drift_list(value: Any, default: list[str], field_name: str) -> list[str]:
+    """drift の対象リストを検証し、未指定時だけ既定値を補う。"""
+    if value is None:
+        return list(default)
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} はリストである必要があります: {value!r}")
+    if any(isinstance(item, bool) for item in value):
+        raise ValueError(f"{field_name} の要素に bool は使用できません: {value!r}")
+    if any(item is None or isinstance(item, (Mapping, list)) for item in value):
+        raise ValueError(f"{field_name} の要素に null・mapping・list は使用できません: {value!r}")
+    return [str(item).strip() for item in value]
+
+
+@dataclass
+class DriftConfig:
+    """drift 検査の対象 relation と除外する下流 kind。"""
+
+    relations: list[str]
+    exclude_downstream_kinds: list[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DriftConfig:
+        return cls(
+            relations=_as_drift_list(
+                data.get("relations"), DEFAULT_DRIFT_RELATIONS, "drift.relations"
+            ),
+            exclude_downstream_kinds=_as_drift_list(
+                data.get("exclude_downstream_kinds"),
+                DEFAULT_DRIFT_EXCLUDE_DOWNSTREAM_KINDS,
+                "drift.exclude_downstream_kinds",
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -804,6 +851,12 @@ class CoddConfig:
             validate_on_commit=DEFAULT_VALIDATE_ON_COMMIT,
         )
     )
+    drift: DriftConfig = field(
+        default_factory=lambda: DriftConfig(
+            relations=list(DEFAULT_DRIFT_RELATIONS),
+            exclude_downstream_kinds=list(DEFAULT_DRIFT_EXCLUDE_DOWNSTREAM_KINDS),
+        )
+    )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CoddConfig:
@@ -832,6 +885,7 @@ class CoddConfig:
             code_exclude=_as_glob_list(code_scope.get("exclude"), "code_scope.exclude"),
             inline_confidence=_load_inline_confidence(data),
             hooks=HooksConfig.from_dict(_as_mapping(data.get("hooks"), "hooks")),
+            drift=DriftConfig.from_dict(_as_mapping(data.get("drift"), "drift")),
             raw=data,
         )
 

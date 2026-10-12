@@ -28,7 +28,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [antigravity-suggestions](#antigravity-suggestions) | Web 検索時の Antigravity リサーチ提案                                                            | 提案         |
 | [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                                                 | ワークフロー |
 | [loop-harness](#loop-harness)                       | Issue 起点の Maker/Checker 反復と PR レビュー対応を安全駆動                                      | ハーネス     |
-| [codd](#codd)                                       | ドキュメント依存グラフの scan/validate/impact（整合性レイヤー）                                  | 整合性       |
+| [codd](#codd)                                       | ドキュメント依存グラフの scan/validate/ack/impact（整合性レイヤー）                              | 整合性       |
 | [codex-harness](#codex-harness)                     | Codex CLI 向け repo-local ハーネス（hooks + 非対話 run/review）                                  | ハーネス     |
 | [fail-logs](#fail-logs)                             | AI の失敗イベント記録基盤（学習ループの入力）                                                    | 学習         |
 | [image-generation](#image-generation)               | Codex 組み込み image_gen による画像生成                                                          | 生成         |
@@ -275,23 +275,23 @@ Issue 起点の反復ループを、永続 state / journal、lease fencing、two
 
 ## codd
 
-ドキュメント間の依存関係をフロントマター（`codd:` ブロック）で宣言し、`scan` で依存グラフを構築、`validate` で整合性（リンク切れ・重複・循環・孤立・ドリフト・欠落・不正なコード注釈）を検証、`impact` で変更影響を分類する整合性レイヤー。`code_scope`（opt-in）でコード⇔ドキュメントのトレーサビリティにも対応する。`essential` プリセットに含まれ常時有効。
+ドキュメント間の依存関係をフロントマター（`codd:` ブロック）で宣言し、`scan` で依存グラフを構築、`validate` で整合性（リンク切れ・重複・循環・孤立・ドリフト・欠落・不正なコード注釈）を検証、`ack` でドリフトを確認済みにし（`depends_on[].synced` に上流コミットを記録）、`impact` で変更影響を分類する整合性レイヤー。`code_scope`（opt-in）でコード⇔ドキュメントのトレーサビリティにも対応する。`essential` プリセットに含まれ常時有効。
 
 - **バージョン**: 0.3.0
 - **依存**: core
 
 ### コンポーネント
 
-| 種別   | 名前                                        | 説明                                                                                                                                                                                                                       |
-| ------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| hook   | `codd-scan-postedit.py`                     | PostToolUse(Edit/Write): scope 内編集時に `scan` を実行し graph を再構築（opt-in、`hooks.scan_on_edit` 既定 `false`）。timeout 90 秒                                                                                       |
-| hook   | `codd-validate-precommit.py`                | PreToolUse(Bash): `git commit` 検出時に `validate` を実行し warn/block（opt-in、`hooks.validate_on_commit` 既定 `warn`）。timeout 90 秒                                                                                    |
-| lib    | `codd_common.py`                            | フロントマター parser・グラフモデル・config ローダー                                                                                                                                                                       |
-| lib    | `codd_code.py`                              | `code_scope` のコード注釈（1行形式 `codd:<key> <value>`）から code/test ノードを抽出                                                                                                                                       |
-| script | `codd.py`                                   | `scan` / `validate` / `graph`（可視化）/ `impact`（変更影響分類）                                                                                                                                                          |
-| skill  | `codd-scan`, `codd-validate`, `codd-impact` | scan / validate / impact のスキル化                                                                                                                                                                                        |
-| rule   | `codd-frontmatter-policy`                   | `codd:` フロントマター記法ポリシー                                                                                                                                                                                         |
-| config | `codd.yaml`                                 | scope / `code_scope` glob・`inline_confidence`（コード注釈由来リンクの既定信頼度）・kind/relation 語彙・検査レベル（`malformed_annotation` 含む）・グラフ保存先・`hooks.scan_on_edit` / `hooks.validate_on_commit`（下記） |
+| 種別   | 名前                                        | 説明                                                                                                                                                                                                                                                                                                                                                                   |
+| ------ | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| hook   | `codd-scan-postedit.py`                     | PostToolUse(Edit/Write): scope 内編集時に `scan` を実行し graph を再構築（opt-in、`hooks.scan_on_edit` 既定 `false`）。timeout 90 秒                                                                                                                                                                                                                                   |
+| hook   | `codd-validate-precommit.py`                | PreToolUse(Bash): `git commit` 検出時に `validate` を実行し warn/block（opt-in、`hooks.validate_on_commit` 既定 `warn`）。timeout 90 秒                                                                                                                                                                                                                                |
+| lib    | `codd_common.py`                            | フロントマター parser・グラフモデル・config ローダー                                                                                                                                                                                                                                                                                                                   |
+| lib    | `codd_code.py`                              | `code_scope` のコード注釈（1行形式 `codd:<key> <value>`）から code/test ノードを抽出                                                                                                                                                                                                                                                                                   |
+| script | `codd.py`                                   | `scan` / `validate` / `graph`（可視化）/ `ack`（ドリフトの確認済み記録）/ `impact`（変更影響分類）/ `verdict`（CI の PR 判定）                                                                                                                                                                                                                                         |
+| skill  | `codd-scan`, `codd-validate`, `codd-impact` | scan / validate / impact のスキル化                                                                                                                                                                                                                                                                                                                                    |
+| rule   | `codd-frontmatter-policy`                   | `codd:` フロントマター記法ポリシー                                                                                                                                                                                                                                                                                                                                     |
+| config | `codd.yaml`                                 | scope / `code_scope` glob・`inline_confidence`（コード注釈由来リンクの既定信頼度）・kind/relation 語彙・検査レベル（`malformed_annotation` 含む）・グラフ保存先・`hooks.scan_on_edit` / `hooks.validate_on_commit`（下記）・`drift.relations` / `drift.exclude_downstream_kinds`（ドリフト検査の対象。既定は `derives_from` / `refines` / `implements` と `adr` 除外） |
 
 ### hook の実動作（opt-in）
 

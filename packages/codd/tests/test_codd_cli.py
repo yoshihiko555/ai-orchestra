@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest.mock
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -55,14 +56,19 @@ def _doc(
     node_id: str,
     kind: str,
     status: str = "draft",
-    deps: list[tuple[str, str]] | None = None,
+    deps: list[tuple[str, str] | dict[str, str]] | None = None,
 ) -> str:
     lines = ["---", "codd:", f"  node_id: {node_id}", f"  kind: {kind}", f"  status: {status}"]
     if deps:
         lines.append("  depends_on:")
-        for dep_id, relation in deps:
+        for dep in deps:
+            dep_id, relation = (dep["id"], dep["relation"]) if isinstance(dep, dict) else dep
             lines.append(f"    - id: {dep_id}")
             lines.append(f"      relation: {relation}")
+            if isinstance(dep, dict):
+                for key in ("synced", "anchor"):
+                    if key in dep:
+                        lines.append(f"      {key}: {json.dumps(dep[key], ensure_ascii=False)}")
     lines += ["---", "", "# 本文", ""]
     return "\n".join(lines)
 
@@ -493,6 +499,43 @@ def test_git_output_bytes_keep_partial_on_error_returns_partial_stdout(
 
     assert cli._git_output_bytes(tmp_path, ["log"], keep_partial_on_error=True) == b"partial-bytes"
     assert cli._git_output_bytes(tmp_path, ["log"]) is None
+
+
+@pytest.mark.parametrize("input_bytes", [None, b"", b"commit\n"])
+@pytest.mark.parametrize(
+    ("returncode", "stdout"), [(0, b""), (0, b"history"), (128, b"partial"), (128, b"")]
+)
+def test_git_output_bytes_with_status_preserves_stdout_and_optional_input(
+    tmp_path, monkeypatch, input_bytes, returncode, stdout
+) -> None:
+    def fake_run(args, **kwargs):
+        expected = {"cwd": tmp_path, "capture_output": True, "check": False}
+        if input_bytes is not None:
+            expected["input"] = input_bytes
+        assert args == ["git", "log"]
+        assert kwargs == expected
+        return subprocess.CompletedProcess(args, returncode, stdout, b"error")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    assert cli._git_output_bytes_with_status(tmp_path, ["log"], input_bytes=input_bytes) == (
+        stdout,
+        returncode == 0,
+    )
+    assert cli._git_output_bytes(tmp_path, ["log"], input_bytes=input_bytes) == (
+        stdout if returncode == 0 else None
+    )
+    assert cli._git_output_bytes(
+        tmp_path, ["log"], input_bytes=input_bytes, keep_partial_on_error=True
+    ) == (stdout if returncode == 0 or stdout else None)
+
+
+def test_git_output_bytes_with_status_reports_start_failure(tmp_path, monkeypatch) -> None:
+    def unavailable_run(*args, **kwargs):
+        raise OSError("git を起動できない")
+
+    monkeypatch.setattr(cli.subprocess, "run", unavailable_run)
+    assert cli._git_output_bytes_with_status(tmp_path, ["log"]) == (None, False)
+    assert cli._git_output_bytes(tmp_path, ["log"], keep_partial_on_error=True) is None
 
 
 def test_log_commit_times_uses_partial_output_on_nonzero_git_log_exit(
@@ -3104,3 +3147,1098 @@ def test_codd_action_enforces_fail_on_after_reporting(
     )
     assert completed.returncode == exit_code, completed.stderr
     assert ("::error::" in completed.stdout) == bool(exit_code)
+
+
+# ---------------------------------------------------------------------------
+# Issue #515: 内容に基づく drift と確認済みマーカー
+# ---------------------------------------------------------------------------
+
+_DRIFT_BASE_TIME = 1700000000
+
+
+def _save_commit(root: Path, message: str, offset: int) -> str:
+    _git(root, "add", "-A")
+    _commit_at(root, message, f"@{_DRIFT_BASE_TIME + offset} +0000")
+    return cli._git_output(root, ["rev-parse", "HEAD"]).strip()
+
+
+def _drift_repo(
+    root: Path, relation: str = "derives_from", kind: str = "design", **dep_fields: str
+) -> None:
+    _init_repo(root)
+    _write(
+        root,
+        "docs/req.md",
+        _doc("req:r", "requirement") + "API-010: old\nOTHER: old\n| --- | :-: |\n",
+    )
+    _write(
+        root,
+        "docs/design.md",
+        _doc(
+            "design:d",
+            kind,
+            status="accepted" if kind == "adr" else "draft",
+            deps=[{"id": "req:r", "relation": relation, **dep_fields}],
+        ),
+    )
+    _save_commit(root, "initial", 0)
+
+
+def _drift_hits(root: Path, config: cc.CoddConfig | None = None) -> list[cli.DriftHit]:
+    config = config or _config()
+    return cli.collect_drift(cli.scan_project(root, config), config, root)
+
+
+def _replace_upstream(root: Path, before: str, after: str, offset: int) -> str:
+    path = root / "docs/req.md"
+    path.write_text(path.read_text(encoding="utf-8").replace(before, after), encoding="utf-8")
+    return _save_commit(root, "update upstream", offset)
+
+
+@pytest.mark.parametrize("relation", ["references", "supersedes"])
+def test_drift_relations_are_opt_in(tmp_path, relation) -> None:
+    _drift_repo(tmp_path, relation=relation)
+    _replace_upstream(tmp_path, "old", "new", 10)
+    assert _drift_hits(tmp_path) == []
+    assert len(_drift_hits(tmp_path, _config(drift={"relations": [relation]}))) == 1
+    assert _drift_hits(tmp_path, _config(drift={"relations": []})) == []
+
+
+def test_drift_excludes_adr_downstream_by_default(tmp_path) -> None:
+    _drift_repo(tmp_path, kind="adr")
+    _replace_upstream(tmp_path, "old", "new", 10)
+    assert _drift_hits(tmp_path) == []
+    assert len(_drift_hits(tmp_path, _config(drift={"exclude_downstream_kinds": []}))) == 1
+
+
+def test_drift_without_eligible_edges_never_runs_git(tmp_path, monkeypatch) -> None:
+    _drift_repo(tmp_path, relation="references")
+    scan = cli.scan_project(tmp_path, _config())
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("対象外の drift で git を呼び出した"),
+    )
+    assert cli.collect_drift(scan, _config(), tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ("API-010: old", "API-010:   old  "),
+        ("| --- | :-: |", "| ------- | :----: |"),
+        ("OTHER: old\n", "OTHER: old\n\n\n"),
+    ],
+)
+def test_drift_ignores_formatting_only_commits(tmp_path, before, after) -> None:
+    _drift_repo(tmp_path)
+    _replace_upstream(tmp_path, before, after, 10)
+    assert _drift_hits(tmp_path) == []
+
+
+def test_drift_names_latest_substantive_commit_before_formatting(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    sha = _replace_upstream(tmp_path, "API-010: old", "API-010: new", 10)
+    short = cli._git_output(tmp_path, ["rev-parse", "--short", sha]).strip()
+    _replace_upstream(tmp_path, "| --- |", "| ------- |", 20)
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha == sha
+    date = datetime.fromtimestamp(_DRIFT_BASE_TIME + 10).strftime("%Y-%m-%d")
+    assert f"{short} ({date})" in hit.message
+
+
+def test_drift_ignores_content_changes_older_than_downstream(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    _replace_upstream(tmp_path, "API-010: old", "API-010: new", 10)
+    path = tmp_path / "docs/design.md"
+    path.write_text(path.read_text() + "追従済み\n")
+    _save_commit(tmp_path, "catch up", 20)
+    _replace_upstream(tmp_path, "| --- |", "| ------- |", 30)
+    assert _drift_hits(tmp_path) == []
+
+
+def test_drift_prefilter_keeps_existing_git_calls_without_patch_history(
+    tmp_path, monkeypatch
+) -> None:
+    _drift_repo(tmp_path)
+    real_run = cli.subprocess.run
+    calls = []
+
+    def counting_run(args, **kwargs):
+        calls.append(args)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", counting_run)
+    assert _drift_hits(tmp_path) == []
+    assert calls == [
+        ["git", "rev-parse", "--show-prefix"],
+        ["git", "status", "--porcelain", "-z"],
+        [
+            "git",
+            "log",
+            "-z",
+            "--name-only",
+            "--format=%x00%ct",
+            "--",
+            ":(literal)docs/design.md",
+            ":(literal)docs/req.md",
+        ],
+    ]
+
+
+@pytest.mark.parametrize("sha_length", [7, 40])
+@pytest.mark.parametrize("further", [None, "format", "substantive"])
+def test_drift_synced_baseline_and_later_changes(tmp_path, sha_length, further) -> None:
+    _drift_repo(tmp_path)
+    sha = _replace_upstream(tmp_path, "API-010: old", "API-010: new", 10)
+    down = tmp_path / "docs/design.md"
+    down.write_text(
+        _doc(
+            "design:d",
+            "design",
+            deps=[
+                {
+                    "id": "req:r",
+                    "relation": "derives_from",
+                    "synced": sha[:sha_length],
+                }
+            ],
+        )
+    )
+    # dirty 下流の時刻が synced の効果を隠さないよう、元の commit 時刻に戻す。
+    os.utime(down, (_DRIFT_BASE_TIME, _DRIFT_BASE_TIME))
+    if further is not None:
+        upstream = tmp_path / "docs/req.md"
+        upstream.write_text(
+            upstream.read_text().replace(
+                "API-010: new", "API-010: newer" if further == "substantive" else "API-010:   new  "
+            )
+        )
+        _git(tmp_path, "add", "docs/req.md")
+        _commit_at(tmp_path, "later upstream", f"@{_DRIFT_BASE_TIME + 20} +0000")
+    hits = _drift_hits(tmp_path)
+    assert len(hits) == (1 if further == "substantive" else 0)
+
+
+@pytest.mark.parametrize("synced", ["deadbeef" * 5, "garbage\nHEAD", "HEAD:docs/req.md"])
+def test_drift_unresolved_synced_falls_back_to_downstream(tmp_path, synced) -> None:
+    _drift_repo(tmp_path, synced=synced)
+    _replace_upstream(tmp_path, "old", "new", 10)
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.synced_unresolved
+    assert "解決できないため下流のコミット時刻で判定" in hit.message
+
+
+@pytest.mark.parametrize("synced", ["HEAD", "main", "v1"])
+def test_drift_synced_moving_refs_do_not_suppress_drift(tmp_path, synced) -> None:
+    _drift_repo(tmp_path, synced=synced)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    _git(tmp_path, "update-ref", "refs/heads/main", sha)
+    _git(tmp_path, "tag", "-a", "v1", "-m", "確認用タグ", sha)
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha == sha
+    assert hit.synced_unresolved
+    assert f"synced '{synced}' は解決できないため下流のコミット時刻で判定" in hit.message
+
+
+def test_synced_resolution_never_sends_non_sha_values_to_git(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_git_output_bytes",
+        lambda *args, **kwargs: pytest.fail("SHA 以外の synced が git に渡された"),
+    )
+    assert (
+        cli._resolve_synced_times(
+            tmp_path,
+            ["HEAD", "main", "v1", "HEAD~1", ":/text", "HEAD:path", "abc def", "a" * 6, "a" * 41],
+        )
+        == {}
+    )
+
+
+@pytest.mark.parametrize("object_ref", ["HEAD:docs/req.md", "HEAD^{tree}", "v1"])
+def test_synced_resolution_rejects_hex_non_commit_objects(tmp_path, object_ref) -> None:
+    _drift_repo(tmp_path)
+    _git(tmp_path, "tag", "-a", "v1", "-m", "確認用タグ")
+    sha = cli._git_output(tmp_path, ["rev-parse", object_ref]).strip()
+    assert cli._resolve_synced_times(tmp_path, [sha]) == {}
+
+
+def test_drift_old_synced_never_adds_drift(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    old = cli._git_output(tmp_path, ["rev-parse", "HEAD"]).strip()
+    _replace_upstream(tmp_path, "old", "new", 10)
+    _write(
+        tmp_path,
+        "docs/design.md",
+        _doc(
+            "design:d", "design", deps=[{"id": "req:r", "relation": "derives_from", "synced": old}]
+        ),
+    )
+    _save_commit(tmp_path, "review upstream", 20)
+    _replace_upstream(tmp_path, "| --- |", "| ------- |", 30)
+    assert _drift_hits(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "drifts"),
+    [
+        ("OTHER: old", "OTHER: new", False),
+        ("API-010: old", "API-010: new", True),
+        ("API-010: old\n", "", True),
+        ("API-010: old", "api-010: new", True),
+    ],
+)
+def test_drift_anchor_matches_added_and_removed_lines(tmp_path, before, after, drifts) -> None:
+    _drift_repo(tmp_path, anchor="API-010")
+    _replace_upstream(tmp_path, before, after, 10)
+    hits = _drift_hits(tmp_path)
+    assert len(hits) == int(drifts)
+    if drifts:
+        assert "anchor 'API-010' を含む行。" in hits[0].message
+
+
+def test_drift_anchor_and_synced_together(tmp_path) -> None:
+    _drift_repo(tmp_path, anchor="API-010")
+    sha = _replace_upstream(tmp_path, "API-010: old", "API-010: new", 10)
+    down = _write(
+        tmp_path,
+        "docs/design.md",
+        _doc(
+            "design:d",
+            "design",
+            deps=[{"id": "req:r", "relation": "derives_from", "synced": sha, "anchor": "API-010"}],
+        ),
+    )
+    os.utime(down, (_DRIFT_BASE_TIME, _DRIFT_BASE_TIME))
+    assert _drift_hits(tmp_path) == []
+    up = tmp_path / "docs/req.md"
+    up.write_text(up.read_text().replace("OTHER: old", "OTHER: new"))
+    _git(tmp_path, "add", "docs/req.md")
+    _commit_at(tmp_path, "unrelated change", f"@{_DRIFT_BASE_TIME + 20} +0000")
+    assert _drift_hits(tmp_path) == []
+    up.write_text(up.read_text().replace("API-010: new", "API-010: newest"))
+    _git(tmp_path, "add", "docs/req.md")
+    _commit_at(tmp_path, "anchored change", f"@{_DRIFT_BASE_TIME + 30} +0000")
+    assert len(_drift_hits(tmp_path)) == 1
+
+
+@pytest.mark.parametrize("anchor", [None, "API-010"])
+def test_drift_names_latest_anchor_matching_substantive_commit(tmp_path, anchor) -> None:
+    _drift_repo(tmp_path, **({"anchor": anchor} if anchor is not None else {}))
+    first = _replace_upstream(tmp_path, "API-010: old", "API-010: new", 10)
+    second = _replace_upstream(tmp_path, "OTHER: old", "OTHER: new", 20)
+    expected = first if anchor is not None else second
+    other = second if anchor is not None else first
+    short = cli._git_output(tmp_path, ["rev-parse", "--short", expected]).strip()
+    other_short = cli._git_output(tmp_path, ["rev-parse", "--short", other]).strip()
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha == expected
+    assert short in hit.message
+    assert other_short not in hit.message
+
+
+@pytest.mark.parametrize("anchor", [None, "NO-MATCH"])
+def test_drift_reports_binary_upstream_commits_even_with_anchor(tmp_path, anchor) -> None:
+    _drift_repo(tmp_path, **({"anchor": anchor} if anchor is not None else {}))
+    upstream = tmp_path / "docs/req.md"
+    upstream.write_bytes(upstream.read_bytes() + b"\0")
+    sha = _save_commit(tmp_path, "バイナリ差分", 10)
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha == sha
+    assert "上流 'req:r' の変更内容を確認できない（バイナリ差分）" in hit.message
+    assert "追従漏れの疑い" in hit.message
+
+
+@pytest.mark.parametrize("anchor", [None, "NO-MATCH"])
+def test_drift_reports_unavailable_history_even_with_anchor(tmp_path, monkeypatch, anchor) -> None:
+    _drift_repo(tmp_path, **({"anchor": anchor} if anchor is not None else {}))
+    _replace_upstream(tmp_path, "old", "new", 10)
+    real_output = cli._git_output_bytes_with_status
+
+    def unavailable_history(root, args, **kwargs):
+        if "log" in args and "-p" in args:
+            return None, False
+        return real_output(root, args, **kwargs)
+
+    monkeypatch.setattr(cli, "_git_output_bytes_with_status", unavailable_history)
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha is None
+    assert hit.cause_time == _DRIFT_BASE_TIME + 10
+    assert "上流 'req:r' の変更内容を確認できない（履歴を取得できない）" in hit.message
+    assert "未コミットの変更" not in hit.message
+
+
+def test_drift_empty_successful_history_has_no_drift(tmp_path, monkeypatch) -> None:
+    _drift_repo(tmp_path)
+    _replace_upstream(tmp_path, "old", "new", 10)
+    real_output = cli._git_output_bytes_with_status
+
+    def empty_history(root, args, **kwargs):
+        if "log" in args and "-p" in args:
+            return b"", True
+        return real_output(root, args, **kwargs)
+
+    monkeypatch.setattr(cli, "_git_output_bytes_with_status", empty_history)
+    assert _drift_hits(tmp_path) == []
+
+
+@pytest.mark.parametrize(("anchor_length", "synced_length"), [(80, 48), (81, 49), (800, 480)])
+def test_drift_message_bounds_anchor_and_unresolved_synced(
+    tmp_path, anchor_length, synced_length
+) -> None:
+    anchor = "A" * anchor_length
+    synced = "s" * synced_length
+    _drift_repo(tmp_path, anchor=anchor, synced=synced)
+    _replace_upstream(tmp_path, "API-010: old", f"{anchor}: new", 10)
+    (hit,) = _drift_hits(tmp_path)
+    shown_anchor = anchor[:80] + ("…" if anchor_length > 80 else "")
+    shown_synced = synced[:48] + ("…" if synced_length > 48 else "")
+    assert f"anchor '{shown_anchor}' を含む行。" in hit.message
+    assert f"synced '{shown_synced}' は解決できないため" in hit.message
+    if anchor_length > 80:
+        assert anchor not in hit.message
+    if synced_length > 48:
+        assert synced not in hit.message
+
+
+@pytest.mark.parametrize("staged", [False, True])
+@pytest.mark.parametrize("substantive", [False, True])
+def test_drift_uncommitted_changes_ignore_whitespace(tmp_path, staged, substantive) -> None:
+    _drift_repo(tmp_path)
+    path = tmp_path / "docs/req.md"
+    path.write_text(
+        path.read_text().replace(
+            "API-010: old", "API-010: new" if substantive else "API-010:   old  "
+        )
+    )
+    os.utime(path, (_DRIFT_BASE_TIME + 10, _DRIFT_BASE_TIME + 10))
+    if staged:
+        _git(tmp_path, "add", "docs/req.md")
+    hits = _drift_hits(tmp_path)
+    assert len(hits) == int(substantive)
+    if substantive:
+        assert hits[0].cause_sha is None
+        assert "未コミットの変更" in hits[0].message
+
+
+def test_drift_untracked_upstream_uses_substantive_file_contents(tmp_path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "docs/design.md", _doc("design:d", "design", deps=[("req:r", "derives_from")]))
+    _save_commit(tmp_path, "downstream only", 0)
+    path = _write(tmp_path, "docs/req.md", _doc("req:r", "requirement"))
+    os.utime(path, (_DRIFT_BASE_TIME + 10, _DRIFT_BASE_TIME + 10))
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha is None
+    assert "未コミットの変更" in hit.message
+
+
+def test_dependency_jsonl_optional_fields_and_graph_text(tmp_path, capsys) -> None:
+    assert cli._dependency_to_record(cc.Dependency("req:r", "refines")) == {
+        "id": "req:r",
+        "relation": "refines",
+    }
+    dep = cc.Dependency("req:r", "refines", synced="a" * 40, anchor="API-010")
+    assert cli._dependency_to_record(dep) == {
+        "id": "req:r",
+        "relation": "refines",
+        "synced": "a" * 40,
+        "anchor": "API-010",
+    }
+    _drift_repo(tmp_path, synced="a" * 40, anchor="API-010")
+    result = cli.scan_project(tmp_path, _config())
+    output = tmp_path / "graph.jsonl"
+    cli.write_graph_jsonl(result, output)
+    records = [json.loads(line) for line in output.read_text().splitlines()]
+    assert records[0]["depends_on"][0]["anchor"] == "API-010"
+    cli.cmd_graph(tmp_path, _config())
+    assert "[synced aaaaaaa] [anchor 'API-010']" in capsys.readouterr().out
+
+
+def _ack_repo(root: Path) -> tuple[str, str, str]:
+    _init_repo(root)
+    _write(root, ".claude/config/codd/codd.yaml", yaml.safe_dump(BASE_CONFIG, sort_keys=False))
+    _write(root, "docs/req.md", _doc("req:r", "requirement"))
+    _write(root, "docs/other.md", _doc("req:other", "requirement"))
+    text = """---
+title: Keep me  # title comment
+codd:
+  node_id: design:d
+  kind: design
+  status: draft
+  depends_on:
+    - id: req:r  # upstream comment
+      relation: derives_from
+      anchor: API-010
+    - id: req:other
+      relation: refines  # unchanged upstream
+    - id: req:r
+      relation: references  # outside drift scope
+  owner: team  # owner comment
+---
+
+# 本文
+本文もそのまま。
+"""
+    # 非 drift の上流を、対象 relation と対象外 relation の両方で参照する。
+    text = text.replace(
+        "    - id: req:r\n      relation: references  # outside drift scope\n",
+        "    - id: req:other\n      relation: references  # outside drift scope\n",
+    )
+    _write(root, "docs/design.md", text)
+    initial = _save_commit(root, "initial", 0)
+    up = root / "docs/req.md"
+    up.write_text(up.read_text() + "API-010: changed\n")
+    latest = _save_commit(root, "upstream changes", 10)
+    return text, initial, latest
+
+
+def test_ack_updates_only_drifting_edges_and_preserves_whole_document(tmp_path, capsys) -> None:
+    text, _, sha = _ack_repo(tmp_path)
+    assert cli.main(["--root", str(tmp_path), "ack", "design:d"]) == 0
+    expected = text.replace(
+        "      anchor: API-010\n", f'      anchor: API-010\n      synced: "{sha}"\n'
+    )
+    assert (tmp_path / "docs/design.md").read_text() == expected
+    assert "updated=1 skipped=0" in capsys.readouterr().out
+    assert _drift_hits(tmp_path) == []
+    assert cli.cmd_validate(tmp_path, _config()) == 0
+    assert "[drift]" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n"])
+def test_ack_stamps_after_block_scalar_and_keeps_indented_delimiter(tmp_path, ending) -> None:
+    _drift_repo(tmp_path)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    text = _doc("design:d", "design", deps=[("req:r", "derives_from")]).replace(
+        "      relation: derives_from\n",
+        "      relation: derives_from\n      anchor: |\n        API-010\n        ---\n        OTHER\n",
+    )
+    text = text.replace("\n", ending)
+    downstream = tmp_path / "docs/design.md"
+    downstream.write_bytes(text.encode("utf-8"))
+    before = cc.build_node(cc.parse_codd_frontmatter(text), "docs/design.md")
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 0
+    updated_text = downstream.read_bytes().decode("utf-8")
+    assert updated_text == text.replace(
+        f"        OTHER{ending}", f'        OTHER{ending}      synced: "{sha}"{ending}'
+    )
+    after = cc.build_node(cc.parse_codd_frontmatter(updated_text), "docs/design.md")
+    assert before.depends_on[0].anchor == "API-010\n---\nOTHER"
+    assert after.depends_on[0].anchor == before.depends_on[0].anchor
+    assert after.depends_on[0].synced == sha
+
+
+def test_ack_all_stamps_non_drifting_edges_and_never_outside_scope(tmp_path) -> None:
+    text, initial, latest = _ack_repo(tmp_path)
+    assert cli.main(["--root", str(tmp_path), "ack", "design:d", "--all"]) == 0
+    expected = text.replace(
+        "      anchor: API-010\n", f'      anchor: API-010\n      synced: "{latest}"\n'
+    ).replace(
+        "      relation: refines  # unchanged upstream\n",
+        f'      relation: refines  # unchanged upstream\n      synced: "{initial}"\n',
+    )
+    assert (tmp_path / "docs/design.md").read_text() == expected
+
+
+def test_ack_preserves_nested_metadata_synced_and_appends_direct_synced(tmp_path) -> None:
+    _drift_repo(tmp_path, relation="refines")
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    text = _doc("design:d", "design", deps=[("req:r", "refines")]).replace(
+        "      relation: refines\n",
+        "      relation: refines\n      metadata:\n        synced: internal\n",
+    )
+    downstream = _write(tmp_path, "docs/design.md", text)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 0
+    updated = downstream.read_text()
+    assert updated == text.replace(
+        "        synced: internal\n", f'        synced: internal\n      synced: "{sha}"\n'
+    )
+    assert cc.parse_codd_frontmatter(updated)["depends_on"][0]["metadata"] == {"synced": "internal"}
+
+
+def test_ack_preserves_comments_before_and_between_indentless_items(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    _write(tmp_path, "docs/other.md", _doc("req:other", "requirement"))
+    text = """---
+codd:
+  node_id: design:d
+  kind: design
+  status: draft
+  depends_on:
+  # 最初の項目の前
+  - id: req:r
+    relation: derives_from
+
+  # 項目の間
+  - id: req:other
+    relation: refines
+  owner: team
+---
+本文
+"""
+    downstream = _write(tmp_path, "docs/design.md", text)
+    _save_commit(tmp_path, "indentless dependencies", 5)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 0
+    assert downstream.read_text() == text.replace(
+        "    relation: derives_from\n", f'    relation: derives_from\n    synced: "{sha}"\n'
+    )
+
+
+def test_ack_inserts_synced_before_trailing_list_comment(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    text = _doc("design:d", "design", deps=[("req:r", "derives_from")]).replace(
+        "    - id: req:r\n      relation: derives_from\n",
+        "  - id: req:r\n    relation: derives_from\n\n  # trailing\n  owner: team\n",
+    )
+    downstream = _write(tmp_path, "docs/design.md", text)
+    _save_commit(tmp_path, "trailing list comment", 5)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 0
+    assert downstream.read_text() == text.replace(
+        "    relation: derives_from\n", f'    relation: derives_from\n    synced: "{sha}"\n'
+    )
+
+
+def test_ack_expands_dependency_merge_alias_with_whole_frontmatter(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    text = """---
+defaults: &dep_defaults
+  relation: derives_from
+codd:
+  node_id: design:d
+  kind: design
+  status: draft
+  depends_on:
+    - id: req:r
+      <<: *dep_defaults
+---
+"""
+    downstream = _write(tmp_path, "docs/design.md", text)
+    _save_commit(tmp_path, "dependency merge alias", 5)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 0
+    assert downstream.read_text() == text.replace(
+        "      <<: *dep_defaults\n", f'      <<: *dep_defaults\n      synced: "{sha}"\n'
+    )
+    assert _drift_hits(tmp_path) == []
+
+
+def test_ack_unchanged_edges_are_counted_without_rewriting(tmp_path, monkeypatch, capsys) -> None:
+    _ack_repo(tmp_path)
+    args = ["--root", str(tmp_path), "ack", "design:d", "--all"]
+    assert cli.main(args) == 0
+    capsys.readouterr()
+    downstream = tmp_path / "docs/design.md"
+    before = downstream.read_bytes()
+    before_stat = downstream.stat()
+    monkeypatch.setattr(
+        cli,
+        "_write_acked_text",
+        lambda *args: pytest.fail("変更なしの ack でファイルを書き直した"),
+    )
+    assert cli.main(args) == 0
+    output = capsys.readouterr().out
+    assert output.count(" (変更なし)") == 2
+    assert "updated=2 skipped=0" in output
+    assert downstream.read_bytes() == before
+    assert downstream.stat().st_mtime_ns == before_stat.st_mtime_ns
+    assert downstream.stat().st_ino == before_stat.st_ino
+
+
+def test_ack_write_failure_skips_node_edges_and_continues(tmp_path, monkeypatch, capsys) -> None:
+    text, _, sha = _ack_repo(tmp_path)
+    second_text = _doc("design:second", "design", deps=[("req:r", "derives_from")])
+    second_path = _write(tmp_path, "docs/second.md", second_text)
+    real_write = cli._write_acked_text
+
+    def denied_write(path, new_text):
+        if path == tmp_path / "docs/design.md":
+            raise PermissionError("書き込み不可")
+        real_write(path, new_text)
+
+    monkeypatch.setattr(cli, "_write_acked_text", denied_write)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d", "design:second"], all_edges=True) == 1
+    output = capsys.readouterr()
+    assert output.err == "[codd ack] ERROR docs/design.md: 書き込みに失敗しました: 書き込み不可\n"
+    assert "[codd ack] docs/design.md: 'req:r' synced →" not in output.out
+    assert f"[codd ack] docs/second.md: 'req:r' synced → {sha[:7]}" in output.out
+    assert "updated=1 skipped=2" in output.out
+    assert (tmp_path / "docs/design.md").read_text() == text
+    assert second_path.read_text() == second_text.replace(
+        "      relation: derives_from\n", f'      relation: derives_from\n      synced: "{sha}"\n'
+    )
+
+
+def test_ack_same_id_outside_scope_synced_does_not_count_flow_dependency(tmp_path, capsys) -> None:
+    text, initial, sha = _ack_repo(tmp_path)
+    text = text.replace(
+        "    - id: req:r  # upstream comment\n      relation: derives_from\n      anchor: API-010\n",
+        "    - {id: req:r, relation: derives_from, anchor: API-010}\n",
+    ).replace(
+        "    - id: req:other\n      relation: references  # outside drift scope\n",
+        f'    - id: req:r\n      relation: references  # outside drift scope\n      synced: "{sha}"\n',
+    )
+    _write(tmp_path, "docs/design.md", text)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 0
+    output = capsys.readouterr().out
+    assert output.count("synced →") == 1
+    assert "[codd ack] SKIP docs/design.md: 'req:r': flow style / 解析不能\n" in output
+    assert "updated=1 skipped=1" in output
+    assert (tmp_path / "docs/design.md").read_text() == text.replace(
+        "      relation: refines  # unchanged upstream\n",
+        f'      relation: refines  # unchanged upstream\n      synced: "{initial}"\n',
+    )
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n"])
+@pytest.mark.parametrize("trailing_newline", [False, True])
+def test_apply_synced_preserves_comments_order_and_newline_state(ending, trailing_newline) -> None:
+    text = "---\ncodd:\n  node_id: design:d\n  kind: design\n  depends_on:\n    - id: req:r\n      synced: 'old'  # reviewed\n      relation: refines\n\n  owner: team\n---\nbody"
+    if trailing_newline:
+        text += "\n"
+    text = text.replace("\n", ending)
+    new_text, reasons = cli.apply_synced_to_frontmatter(text, {"req:r": "a" * 40})
+    assert new_text == text.replace("synced: 'old'", 'synced: "' + "a" * 40 + '"')
+    assert reasons == []
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "  - id: req:r\n    relation: refines\n",
+        "    -\n      relation: refines\n      id: req:r\n",
+        "    - synced: old # comment\n      relation: refines\n      id: req:r\n",
+    ],
+)
+def test_apply_synced_supports_indentless_lists_dash_only_and_synced_first(item) -> None:
+    text = (
+        "---\ncodd:\n  node_id: design:d\n  kind: design\n  depends_on:\n"
+        + item
+        + "  owner: team\n---\nbody\n"
+    )
+    new_text, reasons = cli.apply_synced_to_frontmatter(text, {"req:r": "a" * 40})
+    assert reasons == []
+    assert cc.build_node(cc.parse_codd_frontmatter(new_text), "").depends_on[0].synced == "a" * 40
+    assert new_text.endswith("  owner: team\n---\nbody\n")
+
+
+@pytest.mark.parametrize("flow", ["    - {id: req:r, relation: derives_from}\n", "inline"])
+def test_ack_skips_flow_style_without_changing_file(tmp_path, capsys, flow) -> None:
+    _drift_repo(tmp_path)
+    _replace_upstream(tmp_path, "old", "new", 10)
+    text = _doc("design:d", "design", deps=[("req:r", "derives_from")])
+    if flow == "inline":
+        text = text.replace(
+            "  depends_on:\n    - id: req:r\n      relation: derives_from\n",
+            "  depends_on: [{id: req:r, relation: derives_from}]\n",
+        )
+    else:
+        text = text.replace("    - id: req:r\n      relation: derives_from\n", flow)
+    _write(tmp_path, "docs/design.md", text)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 0
+    assert (tmp_path / "docs/design.md").read_text() == text
+    assert "flow style / 解析不能" in capsys.readouterr().out
+
+
+def test_ack_replaces_existing_synced_in_place(tmp_path, capsys) -> None:
+    text, initial, latest = _ack_repo(tmp_path)
+    text = text.replace(
+        "      anchor: API-010\n", f'      anchor: API-010\n      synced: "{initial}"  # reviewed\n'
+    )
+    _write(tmp_path, "docs/design.md", text)
+    os.utime(tmp_path / "docs/design.md", (_DRIFT_BASE_TIME, _DRIFT_BASE_TIME))
+    assert cli.main(["--root", str(tmp_path), "ack", "design:d"]) == 0
+    assert (tmp_path / "docs/design.md").read_text() == text.replace(
+        f'synced: "{initial}"', f'synced: "{latest}"'
+    )
+    assert "updated=1" in capsys.readouterr().out
+
+
+def test_ack_continues_after_unknown_node_and_skips_code(tmp_path, capsys) -> None:
+    _, _, latest = _ack_repo(tmp_path)
+    _write(tmp_path, "src/mod.py", _py(["codd:implements req:r", "codd:node_id code:mod"]))
+    config = _config(code_scope={"include": ["src/*.py"]})
+    assert cli.cmd_ack(tmp_path, config, ["design:missing", "code:mod", "design:d"]) == 1
+    output = capsys.readouterr()
+    assert "ERROR: node_id 'design:missing' が見つかりません" in output.err
+    assert "コード注釈ノードは ack 非対応" in output.out
+    assert f"synced → {latest[:7]}" in output.out
+
+
+def test_ack_refuses_duplicate_node_id_without_changing_either_file(tmp_path, capsys) -> None:
+    text, _, _ = _ack_repo(tmp_path)
+    duplicate = _write(tmp_path, "docs/duplicate.md", text + "別ファイルの本文\n")
+    before_duplicate = duplicate.read_bytes()
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 1
+    output = capsys.readouterr()
+    assert output.err == (
+        "[codd ack] ERROR: node_id 'design:d' が複数のファイルで定義されています: "
+        "docs/design.md, docs/duplicate.md\n"
+    )
+    assert "updated=0 skipped=0" in output.out
+    assert (tmp_path / "docs/design.md").read_text() == text
+    assert duplicate.read_bytes() == before_duplicate
+
+
+def test_ack_reports_upstream_history_failure_without_stamping(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _drift_repo(tmp_path)
+    _replace_upstream(tmp_path, "old", "new", 10)
+    downstream = tmp_path / "docs/design.md"
+    before = downstream.read_bytes()
+    real_output = cli._git_output
+
+    def unavailable_history(root, args):
+        if "log" in args and "-1" in args:
+            return None
+        return real_output(root, args)
+
+    monkeypatch.setattr(cli, "_git_output", unavailable_history)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 1
+    output = capsys.readouterr()
+    assert output.err == (
+        "[codd ack] ERROR docs/design.md: 上流 'req:r' のコミット履歴を取得できません\n"
+    )
+    assert "updated=0 skipped=1" in output.out
+    assert downstream.read_bytes() == before
+
+
+def test_ack_preserves_concurrent_edit_and_counts_all_node_stamps(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    text, _, _ = _ack_repo(tmp_path)
+    downstream = tmp_path / "docs/design.md"
+    concurrent_text = text + "同時に追加された本文\n"
+    real_latest = cli._latest_upstream_sha
+
+    def latest_after_edit(root, paths):
+        downstream.write_text(concurrent_text, encoding="utf-8")
+        return real_latest(root, paths)
+
+    monkeypatch.setattr(cli, "_latest_upstream_sha", latest_after_edit)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 1
+    output = capsys.readouterr()
+    assert output.err == (
+        "[codd ack] ERROR docs/design.md: ack 中にファイルが変更されたため書き込みを中止しました\n"
+    )
+    assert "updated=0 skipped=2" in output.out
+    assert downstream.read_text() == concurrent_text
+    assert "synced:" not in downstream.read_text()
+
+
+def test_ack_aborts_when_target_cannot_be_reread(tmp_path, monkeypatch, capsys) -> None:
+    _ack_repo(tmp_path)
+    downstream = tmp_path / "docs/design.md"
+    before = downstream.read_bytes()
+    real_latest = cli._latest_upstream_sha
+    real_open = Path.open
+
+    def denied_open(path, *args, **kwargs):
+        if path == downstream:
+            raise OSError("再読み込み不可")
+        return real_open(path, *args, **kwargs)
+
+    def latest_before_read_failure(root, paths):
+        sha = real_latest(root, paths)
+        monkeypatch.setattr(Path, "open", denied_open)
+        return sha
+
+    monkeypatch.setattr(cli, "_latest_upstream_sha", latest_before_read_failure)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"], all_edges=True) == 1
+    output = capsys.readouterr()
+    assert output.err == (
+        "[codd ack] ERROR docs/design.md: ack 中にファイルが変更されたため書き込みを中止しました\n"
+    )
+    assert "updated=0 skipped=2" in output.out
+    monkeypatch.setattr(Path, "open", real_open)
+    assert downstream.read_bytes() == before
+
+
+def test_ack_runs_when_drift_check_is_off_and_respects_disabled(tmp_path, capsys) -> None:
+    _ack_repo(tmp_path)
+    config_path = tmp_path / ".claude/config/codd/codd.yaml"
+    data = {**BASE_CONFIG, "checks": {"drift": "off"}}
+    config_path.write_text(yaml.safe_dump(data))
+    assert cli.main(["--root", str(tmp_path), "ack", "design:d"]) == 0
+    assert "updated=1" in capsys.readouterr().out
+    before = (tmp_path / "docs/design.md").read_bytes()
+    config_path.write_text("enabled: false\n")
+    assert cli.main(["--root", str(tmp_path), "ack", "design:d", "--all"]) == 0
+    assert "disabled" in capsys.readouterr().out
+    assert (tmp_path / "docs/design.md").read_bytes() == before
+
+
+def test_ack_warns_on_dirty_upstream_and_skips_untracked_upstream(tmp_path, capsys) -> None:
+    _, _, latest = _ack_repo(tmp_path)
+    upstream = tmp_path / "docs/req.md"
+    upstream.write_text(upstream.read_text() + "API-010: uncommitted\n")
+    assert cli.main(["--root", str(tmp_path), "ack", "design:d"]) == 0
+    output = capsys.readouterr().out
+    assert "WARN" in output and "synced には含まれません" in output
+    assert f"synced → {latest[:7]}" in output
+    _write(tmp_path, "docs/new.md", _doc("req:new", "requirement"))
+    down = _write(
+        tmp_path,
+        "docs/new-design.md",
+        _doc("design:new", "design", deps=[("req:new", "derives_from")]),
+    )
+    before = down.read_bytes()
+    assert cli.main(["--root", str(tmp_path), "ack", "design:new", "--all"]) == 0
+    assert "未コミットのため ack できません" in capsys.readouterr().out
+    assert down.read_bytes() == before
+
+
+def test_ack_duplicate_target_id_does_not_stamp_outside_scope(tmp_path, capsys) -> None:
+    text, _, _ = _ack_repo(tmp_path)
+    assert cli.main(["--root", str(tmp_path), "ack", "design:d", "--all"]) == 0
+    output = capsys.readouterr().out
+    assert "updated=2 skipped=0" in output
+    deps = cc.build_node(
+        cc.parse_codd_frontmatter((tmp_path / "docs/design.md").read_text()), ""
+    ).depends_on
+    assert deps[0].synced is not None
+    assert deps[1].synced is not None and deps[2].synced is None
+
+
+def test_apply_synced_refuses_invalid_result(tmp_path, monkeypatch) -> None:
+    text = _doc("design:d", "design", deps=[("req:r", "derives_from")])
+    real_build_node = cc.build_node
+
+    def invalid_build_node(codd, path):
+        node = real_build_node(codd, path)
+        if any(dep.synced for dep in node.depends_on):
+            return real_build_node({**codd, "depends_on": []}, path)
+        return node
+
+    monkeypatch.setattr(cli.cc, "build_node", invalid_build_node)
+    updated, reasons = cli.apply_synced_to_frontmatter(text, {"req:r": "a" * 40})
+    assert updated is None
+    assert "検証に失敗（frontmatter を書き換えません）" in reasons
+
+
+def test_drift_history_cache_and_synced_resolution_are_batched(tmp_path, monkeypatch) -> None:
+    _drift_repo(tmp_path, synced="deadbeef" * 5)
+    initial = cli._git_output(tmp_path, ["rev-parse", "HEAD"]).strip()
+    _write(
+        tmp_path,
+        "docs/second.md",
+        _doc(
+            "design:second",
+            "design",
+            deps=[{"id": "req:r", "relation": "refines", "synced": initial[:8]}],
+        ),
+    )
+    _write(
+        tmp_path,
+        "docs/third.md",
+        _doc(
+            "design:third",
+            "design",
+            deps=[{"id": "req:r", "relation": "implements", "synced": initial}],
+        ),
+    )
+    _save_commit(tmp_path, "more downstream", 5)
+    _replace_upstream(tmp_path, "old", "new", 10)
+    calls = []
+    real_run = cli.subprocess.run
+
+    def counting_run(args, **kwargs):
+        calls.append(args)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", counting_run)
+    hits = _drift_hits(tmp_path)
+    assert [hit.edge.node.node_id for hit in hits] == ["design:d", "design:second", "design:third"]
+    assert len([args for args in calls if "cat-file" in args]) == 1
+    assert len([args for args in calls if "--no-walk=unsorted" in args]) == 1
+    history_calls = [args for args in calls if "-p" in args]
+    assert len(history_calls) == 1
+    assert f"--since=@{_DRIFT_BASE_TIME}" in history_calls[0]
+
+
+def test_drift_and_ack_follow_upstream_symlink_history(tmp_path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "shared/req.md", _doc("req:r", "requirement") + "API-010: old\n")
+    (tmp_path / "docs").mkdir()
+    alias = tmp_path / "docs/req.md"
+    alias.symlink_to("../shared/req.md")
+    _write(tmp_path, "docs/design.md", _doc("design:d", "design", deps=[("req:r", "derives_from")]))
+    _save_commit(tmp_path, "initial", 0)
+    target = tmp_path / "shared/req.md"
+    target.write_text(target.read_text().replace("old", "new"))
+    sha = _save_commit(tmp_path, "change symlink target", 10)
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha == sha
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 0
+    down = cc.build_node(cc.parse_codd_frontmatter((tmp_path / "docs/design.md").read_text()), "")
+    assert down.depends_on[0].synced == sha
+    assert alias.is_symlink()
+    assert _drift_hits(tmp_path) == []
+
+
+def test_drift_dirty_paths_are_normalized_inside_subdirectory(tmp_path) -> None:
+    _init_repo(tmp_path)
+    root = tmp_path / "sub"
+    _write(root, "docs/req.md", _doc("req:r", "requirement") + "API-010: old\n")
+    _write(root, "docs/design.md", _doc("design:d", "design", deps=[("req:r", "derives_from")]))
+    _write(tmp_path, "docs/req.md", "outside\n")
+    _save_commit(tmp_path, "initial", 0)
+    outside = tmp_path / "docs/req.md"
+    outside.write_text("outside changed\n")
+    assert _drift_hits(root) == []
+    inside = root / "docs/req.md"
+    inside.write_text(inside.read_text().replace("old", "new"))
+    os.utime(inside, (_DRIFT_BASE_TIME + 10, _DRIFT_BASE_TIME + 10))
+    (hit,) = _drift_hits(root)
+    assert hit.cause_sha is None
+
+
+def test_patch_parser_skips_metadata_and_formatting_but_keeps_content_headers() -> None:
+    patch = b"\x01full\x00short\x001700000010\ndiff --git a/a b/a\nindex 123..456\n--- a/a\n+++ b/a\n@@ -1 +1,3 @@\n-old\n+new\n+--- content heading\n+| ------- | :-: |\n+  \n\\ No newline at end of file\ndiff --git a/b b/b\nBinary files differ\n\x01format\x00fmt\x001700000020\n"
+    records = cli._parse_change_records(patch)
+    assert records[0].changed_lines == ("old", "new", "--- content heading", "<binary>")
+    assert records[0].note == "バイナリ差分"
+    assert records[1].changed_lines == ()
+    assert records[1].note is None
+
+
+@pytest.mark.parametrize("marker", [b"Binary files a/a and b/a differ", b"GIT binary patch"])
+def test_patch_parser_records_binary_diffs_without_hunks(marker) -> None:
+    patch = b"\x01full\x00short\x001700000010\ndiff --git a/a b/a\n" + marker + b"\n"
+    assert cli._parse_change_records(patch) == [
+        cli.ChangeRecord("full", "short", _DRIFT_BASE_TIME + 10, ("<binary>",), "バイナリ差分")
+    ]
+
+
+def test_drift_keeps_partial_patch_history_on_git_error(tmp_path, monkeypatch) -> None:
+    _drift_repo(tmp_path)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    real_run = cli.subprocess.run
+
+    def partial_run(args, **kwargs):
+        completed = real_run(args, **kwargs)
+        if "-p" in args:
+            return subprocess.CompletedProcess(args, 128, completed.stdout, b"missing tree")
+        return completed
+
+    monkeypatch.setattr(cli.subprocess, "run", partial_run)
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha == sha
+
+
+@pytest.mark.parametrize("anchor", [None, "NO-MATCH"])
+def test_drift_reports_incomplete_formatting_only_history(tmp_path, monkeypatch, anchor) -> None:
+    _drift_repo(tmp_path, **({"anchor": anchor} if anchor is not None else {}))
+    sha = _replace_upstream(tmp_path, "| --- | :-: |", "| ----- | :---: |", 10)
+    patch = (
+        f"\x01{sha}\x00{sha[:7]}\x00{_DRIFT_BASE_TIME + 10}\n"
+        "diff --git a/docs/req.md b/docs/req.md\n"
+        "--- a/docs/req.md\n+++ b/docs/req.md\n@@ -10 +10 @@\n"
+        "-| --- | :-: |\n+| ----- | :---: |\n"
+    ).encode()
+    assert cli._parse_change_records(patch)[0].changed_lines == ()
+    real_output = cli._git_output_bytes_with_status
+
+    def incomplete_history(root, args, **kwargs):
+        if "log" in args and "-p" in args:
+            return patch, False
+        return real_output(root, args, **kwargs)
+
+    monkeypatch.setattr(cli, "_git_output_bytes_with_status", incomplete_history)
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha is None
+    assert hit.cause_time == _DRIFT_BASE_TIME + 10
+    assert "の変更内容を確認できない（履歴が不完全）" in hit.message
+
+
+def test_drift_prefers_commit_over_unavailable_marker_on_time_tie(tmp_path, monkeypatch) -> None:
+    _drift_repo(tmp_path)
+    sha = _replace_upstream(tmp_path, "old", "new", 10)
+    timestamp = _DRIFT_BASE_TIME + 10
+    monkeypatch.setattr(
+        cli,
+        "_path_changes",
+        lambda *args: [
+            cli.ChangeRecord(None, None, timestamp, ("<unavailable>",), "履歴が不完全"),
+            cli.ChangeRecord(sha, sha[:7], timestamp, ("new",)),
+        ],
+    )
+    (hit,) = _drift_hits(tmp_path)
+    assert hit.cause_sha == sha
+    assert "履歴が不完全" not in hit.message
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n"])
+@pytest.mark.parametrize("trailing_newline", [False, True])
+def test_ack_atomic_write_preserves_newlines_symlink_and_permissions(
+    tmp_path, ending, trailing_newline
+) -> None:
+    text, _, sha = _ack_repo(tmp_path)
+    text = text.rstrip("\n") + ("\n" if trailing_newline else "")
+    text = text.replace("\n", ending)
+    target = tmp_path / "shared/design.md"
+    target.parent.mkdir()
+    target.write_bytes(text.encode("utf-8"))
+    target.chmod(0o640)
+    downstream = tmp_path / "docs/design.md"
+    downstream.unlink()
+    downstream.symlink_to("../shared/design.md")
+    assert cli.main(["--root", str(tmp_path), "ack", "design:d", "--all"]) == 0
+    expected = text.replace(
+        f"      anchor: API-010{ending}",
+        f'      anchor: API-010{ending}      synced: "{sha}"{ending}',
+    )
+    # --all は req:other にも確認済みマーカーを書く。
+    initial = cli._git_output(
+        tmp_path, ["log", "-1", "--format=%H", "--", ":(literal)docs/other.md"]
+    ).strip()
+    expected = expected.replace(
+        f"      relation: refines  # unchanged upstream{ending}",
+        f'      relation: refines  # unchanged upstream{ending}      synced: "{initial}"{ending}',
+    )
+    assert target.read_bytes() == expected.encode("utf-8")
+    assert target.stat().st_mode & 0o777 == 0o640
+    assert downstream.is_symlink()
+    assert list(target.parent.glob(".design.md.*.tmp")) == []
+
+
+def test_ack_drifting_anchor_does_not_stamp_other_anchor_on_same_id(tmp_path) -> None:
+    _drift_repo(tmp_path)
+    text = _doc(
+        "design:d",
+        "design",
+        deps=[
+            {"id": "req:r", "relation": "derives_from", "anchor": "API-010"},
+            {"id": "req:r", "relation": "refines", "anchor": "OTHER"},
+        ],
+    )
+    _write(tmp_path, "docs/design.md", text)
+    _save_commit(tmp_path, "depend on individual lines", 5)
+    sha = _replace_upstream(tmp_path, "API-010: old", "API-010: new", 10)
+    assert cli.cmd_ack(tmp_path, _config(), ["design:d"]) == 0
+    expected = text.replace(
+        '      anchor: "API-010"\n', f'      anchor: "API-010"\n      synced: "{sha}"\n'
+    )
+    assert (tmp_path / "docs/design.md").read_text() == expected
+
+
+def test_codd_package_config_matches_synced_copy() -> None:
+    assert (_REPO_ROOT / "packages/codd/config/codd.yaml").read_bytes() == (
+        _REPO_ROOT / ".claude/config/codd/codd.yaml"
+    ).read_bytes()
+
+
+@pytest.mark.parametrize(
+    "old_value", ['"value # inside"', "'value # inside'", '"escaped \\" # inside"', "null"]
+)
+def test_apply_synced_preserves_only_comment_after_value(old_value) -> None:
+    text = _doc("design:d", "design", deps=[("req:r", "derives_from")]).replace(
+        "      relation: derives_from\n",
+        f"      relation: derives_from\n      synced: {old_value}  # reviewed upstream\n",
+    )
+    updated, reasons = cli.apply_synced_to_frontmatter(text, {"req:r": "a" * 40})
+    assert reasons == []
+    assert updated == text.replace(f"synced: {old_value}", 'synced: "' + "a" * 40 + '"')

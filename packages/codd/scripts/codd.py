@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CODD CLI: scan / validate / graph / impact / verdict。
+"""CODD CLI: scan / validate / graph / ack / impact / verdict。
 
 `orchex run codd codd -- <subcommand>` から、または直接実行する。
 プロジェクトルート（cwd）を基準に scope を走査し、依存グラフの構築・整合性検証・
@@ -12,6 +12,7 @@ import argparse
 import html
 import io
 import json
+import math
 import os
 import posixpath
 import re
@@ -19,9 +20,12 @@ import subprocess
 import sys
 import tempfile
 import tokenize
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 # lib/ を import パスへ追加（scripts/ と lib/ は同一パッケージ配下）。
 _LIB_DIR = Path(__file__).resolve().parent.parent / "lib"
@@ -222,6 +226,10 @@ def _dependency_to_record(dep: cc.Dependency) -> dict[str, Any]:
     record: dict[str, Any] = {"id": dep.id, "relation": dep.relation}
     if dep.confidence != 1.0:
         record["confidence"] = dep.confidence
+    if dep.synced is not None:
+        record["synced"] = dep.synced
+    if dep.anchor is not None:
+        record["anchor"] = dep.anchor
     return record
 
 
@@ -292,8 +300,32 @@ def _git_output(root: Path, args: list[str]) -> str | None:
     return completed.stdout
 
 
+def _git_output_bytes_with_status(
+    root: Path,
+    args: list[str],
+    *,
+    input_bytes: bytes | None = None,
+) -> tuple[bytes | None, bool]:
+    """git の stdout と成功状態を返す。起動できなければ (None, False)。"""
+    # `input` は stdin を使う呼び出し（`git cat-file --batch-check`）でだけ渡す。
+    # 常に渡すと、`run(args, cwd, capture_output, check)` だけを受ける既存のテスト用
+    # フェイクと互換が無くなる。
+    run_kwargs: dict[str, Any] = {"cwd": root, "capture_output": True, "check": False}
+    if input_bytes is not None:
+        run_kwargs["input"] = input_bytes
+    try:
+        completed = subprocess.run(["git", *args], **run_kwargs)
+    except OSError:
+        return None, False
+    return completed.stdout, completed.returncode == 0
+
+
 def _git_output_bytes(
-    root: Path, args: list[str], *, keep_partial_on_error: bool = False
+    root: Path,
+    args: list[str],
+    *,
+    keep_partial_on_error: bool = False,
+    input_bytes: bytes | None = None,
 ) -> bytes | None:
     """git コマンドを実行し stdout を生バイト列で返す。失敗時は None。
 
@@ -310,20 +342,12 @@ def _git_output_bytes(
     のように「取得できた分だけでも使いたい」呼び出しでは True を指定し、stdout が
     空でなければ nonzero 終了でもそれを返す（レビュー対応: codd.py:394）。
     """
-    try:
-        completed = subprocess.run(
-            ["git", *args],
-            cwd=root,
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
+    out, succeeded = _git_output_bytes_with_status(root, args, input_bytes=input_bytes)
+    if not succeeded:
+        if keep_partial_on_error and out:
+            return out
         return None
-    if completed.returncode != 0:
-        if keep_partial_on_error and completed.stdout:
-            return completed.stdout
-        return None
-    return completed.stdout
+    return out
 
 
 def commit_time(root: Path, rel_path: str) -> float:
@@ -722,24 +746,246 @@ def _check_orphan(result: ScanResult, config: cc.CoddConfig) -> list[Finding]:
     return findings
 
 
-def _check_drift(result: ScanResult, root: Path) -> list[Finding]:
-    """drift 検査。ノードの最終更新時刻は `batch_commit_times()` で一括取得する。
+@dataclass(frozen=True)
+class DriftEdge:
+    """drift の対象となる下流・依存宣言・上流。"""
 
-    ノードごとに `commit_time()` を呼ぶと、1,000 ノード規模で git プロセスを
-    ノード数に比例して起動してしまい著しく遅い（Issue #98 レビュー対応）。
+    node: cc.CoddNode
+    dep: cc.Dependency
+    upstream: cc.CoddNode
 
-    symlink ノード（`code_scope` の alias 等）は、alias 自体ではなくリンクチェーンの
-    実体（最終ターゲット）の更新時刻も考慮する。scan はリンク先の内容を dereference
-    して注釈を読むため、drift 判定も同じ実体を見る必要がある。ただし最終ターゲットの
-    時刻だけを使うと、alias を既存の古いターゲットへ張り替えた（= alias 自体は
-    新しいコミットで変更されたが、ターゲットの内容自体は変わっていない）直後に
-    誤って drift warning になる（alias 自体の更新は「追従済み」の意思表示だが、
-    ターゲットの古い時刻だけで比較すると見えない。Issue #98 レビュー対応: 11巡目
-    codd.py:675）。そのため alias 自身の更新時刻とチェーン上の全 hop の更新時刻の
-    うち、最も新しいものをノードの実効更新時刻として扱う（片方だけを見ると、alias
-    再結線・ターゲット内容更新のどちらのシナリオでも取りこぼしうるため）。
-    """
-    findings: list[Finding] = []
+
+@dataclass(frozen=True)
+class DriftHit:
+    """追従漏れの原因となった変更と報告文。"""
+
+    edge: DriftEdge
+    cause_sha: str | None
+    cause_short: str | None
+    cause_time: float
+    synced_unresolved: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class ChangeRecord:
+    """上流の変更履歴と、内容を確認できない場合の理由。"""
+
+    sha: str | None
+    short: str | None
+    time: float
+    changed_lines: tuple[str, ...]
+    note: str | None = None
+
+
+_SUBSTANTIVE_DIFF_ARGS = [
+    "-w",
+    "--ignore-blank-lines",
+    "-U0",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+]
+_DRIFT_ANCHOR_MESSAGE_LIMIT = 80
+_DRIFT_SYNCED_MESSAGE_LIMIT = 48
+
+
+def drift_edges(result: ScanResult, config: cc.CoddConfig) -> list[DriftEdge]:
+    """追従すべき relation/kind の解決済み依存だけを、宣言順に返す。"""
+    return [
+        DriftEdge(node, dep, upstream)
+        for node in result.nodes
+        if node.kind not in config.drift.exclude_downstream_kinds
+        for dep in node.depends_on
+        if dep.relation in config.drift.relations
+        if (upstream := result.graph.nodes.get(dep.id)) is not None
+    ]
+
+
+def _resolve_synced_times(root: Path, values: list[str]) -> dict[str, float]:
+    """確認済みコミットを最大 2 回の git 呼び出しで解決する。"""
+    values = [value for value in dict.fromkeys(values) if re.fullmatch(r"[0-9a-fA-F]{7,40}", value)]
+    if not values:
+        return {}
+    out = _git_output_bytes(
+        root,
+        ["cat-file", "--batch-check"],
+        input_bytes=("\n".join(values) + "\n").encode("utf-8", errors="surrogateescape"),
+    )
+    if out is None:
+        return {}
+    resolved: dict[str, str] = {}
+    for value, line in zip(values, out.decode("utf-8", errors="surrogateescape").split("\n")):
+        fields = line.split()
+        if len(fields) == 3 and fields[1] == "commit":
+            resolved[value] = fields[0]
+    if not resolved:
+        return {}
+    out = _git_output_bytes(
+        root,
+        ["log", "--no-walk=unsorted", "--format=%H%x00%ct", *dict.fromkeys(resolved.values())],
+    )
+    if out is None:
+        return {}
+    times: dict[str, float] = {}
+    for line in out.decode("utf-8", errors="surrogateescape").split("\n"):
+        sha, separator, timestamp = line.partition("\0")
+        if separator:
+            try:
+                times[sha] = float(timestamp)
+            except ValueError:
+                continue
+    return {value: times[sha] for value, sha in resolved.items() if sha in times}
+
+
+def _is_substantive_line(line: str) -> bool:
+    """空白・空行・Markdown 表の区切り行以外を内容の変更とする。"""
+    return any(char not in "|-:" and not char.isspace() for char in line)
+
+
+def _parse_change_records(out: bytes, working_time: float | None = None) -> list[ChangeRecord]:
+    """git の patch を状態機械で読み、コミットごとの変更内容を返す。"""
+    records: list[ChangeRecord] = []
+    sha: str | None = None
+    short: str | None = None
+    timestamp = working_time
+    changed_lines: list[str] = []
+    note: str | None = None
+    in_diff = False
+    in_hunk = False
+    for raw_line in out.decode("utf-8", errors="surrogateescape").split("\n"):
+        line = raw_line.removesuffix("\r")
+        if line.startswith("\x01"):
+            if timestamp is not None:
+                records.append(ChangeRecord(sha, short, timestamp, tuple(changed_lines), note))
+            changed_lines = []
+            note = None
+            in_diff = False
+            in_hunk = False
+            try:
+                sha, short, time_text = line[1:].split("\0")
+                timestamp = float(time_text)
+            except ValueError:
+                timestamp = None
+            continue
+        if line.startswith("diff --git "):
+            in_diff = True
+            in_hunk = False
+        elif in_diff and line.startswith(("Binary files ", "GIT binary patch")):
+            changed_lines.append("<binary>")
+            note = "バイナリ差分"
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line.startswith(("+", "-")) and _is_substantive_line(line[1:]):
+            changed_lines.append(line[1:])
+    if timestamp is not None:
+        records.append(ChangeRecord(sha, short, timestamp, tuple(changed_lines), note))
+    return records
+
+
+def _root_dirty_paths(root: Path) -> set[str] | None:
+    """dirty パスを batch_commit_times と同じ root 相対表記へ変換する。"""
+    dirty = _dirty_paths(root)
+    if dirty is None:
+        return None
+    prefix = _repo_root_prefix(root)
+    return {
+        stripped for path in dirty if (stripped := _strip_repo_prefix(path, prefix)) is not None
+    }
+
+
+def _working_change(root: Path, rel: str) -> ChangeRecord:
+    """staged と unstaged の両方を含む、未コミット変更の内容を返す。"""
+    path = root / rel
+    try:
+        timestamp = path.stat().st_mtime
+    except OSError:
+        timestamp = 0.0
+    out = _git_output_bytes(
+        root,
+        [
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "HEAD",
+            *_SUBSTANTIVE_DIFF_ARGS,
+            "--",
+            f":(literal){rel}",
+        ],
+    )
+    if out:
+        return _parse_change_records(out, timestamp)[0]
+    if (
+        out is not None
+        and _git_output_bytes(root, ["ls-files", "--error-unmatch", "--", f":(literal){rel}"])
+        is not None
+    ):
+        return ChangeRecord(None, None, timestamp, ())
+    try:
+        lines = path.read_text(encoding="utf-8", errors="surrogateescape").split("\n")
+    except OSError:
+        lines = []
+    return ChangeRecord(
+        None, None, timestamp, tuple(line for line in lines if _is_substantive_line(line))
+    )
+
+
+def _path_changes(
+    root: Path, rel: str, baseline: float, is_dirty: bool, fallback_time: float
+) -> list[ChangeRecord]:
+    """候補パスの必要な履歴と、dirty の場合だけ作業ツリー差分を読む。"""
+    out, succeeded = _git_output_bytes_with_status(
+        root,
+        [
+            "-c",
+            "core.quotePath=false",
+            "log",
+            "-p",
+            *_SUBSTANTIVE_DIFF_ARGS,
+            "--format=%x01%H%x00%h%x00%ct",
+            f"--since=@{math.floor(baseline)}",
+            "--",
+            f":(literal){rel}",
+        ],
+    )
+    if out is None:
+        return [ChangeRecord(None, None, fallback_time, ("<unavailable>",), "履歴を取得できない")]
+    records = _parse_change_records(out)
+    if not succeeded:
+        records.append(ChangeRecord(None, None, fallback_time, ("<unavailable>",), "履歴が不完全"))
+    if is_dirty:
+        records.append(_working_change(root, rel))
+    return sorted(records, key=lambda record: record.time, reverse=True)
+
+
+def _drift_message(edge: DriftEdge, cause: ChangeRecord, synced_unresolved: bool) -> str:
+    """原因コミット・anchor・synced の解決失敗を警告文に含める。"""
+    prefix = f"{edge.node.path}: 上流 '{edge.dep.id}'"
+    if cause.note is not None:
+        prefix += f" の変更内容を確認できない（{cause.note}）"
+    elif cause.sha is None:
+        prefix += " に未コミットの変更"
+    else:
+        date = datetime.fromtimestamp(cause.time).strftime("%Y-%m-%d")
+        prefix += f" が {cause.short} ({date}) で変更"
+    anchor = edge.dep.anchor
+    if anchor is not None and len(anchor) > _DRIFT_ANCHOR_MESSAGE_LIMIT:
+        anchor = anchor[:_DRIFT_ANCHOR_MESSAGE_LIMIT] + "…"
+    detail = f"anchor '{anchor}' を含む行。" if anchor is not None else ""
+    detail += "追従漏れの疑い"
+    if synced_unresolved:
+        synced = edge.dep.synced
+        if synced is not None and len(synced) > _DRIFT_SYNCED_MESSAGE_LIMIT:
+            synced = synced[:_DRIFT_SYNCED_MESSAGE_LIMIT] + "…"
+        detail += f"。synced '{synced}' は解決できないため下流のコミット時刻で判定"
+    return f"{prefix}（{detail}）"
+
+
+def collect_drift(result: ScanResult, config: cc.CoddConfig, root: Path) -> list[DriftHit]:
+    """時刻で候補を絞り、整形を除いた変更内容から追従漏れを判定する。"""
+    edges = drift_edges(result, config)
+    if not edges:
+        return []
     effective_paths = {
         node.path: [node.path, *_symlink_chain_relpaths(root, node.path)] for node in result.nodes
     }
@@ -750,21 +996,61 @@ def _check_drift(result: ScanResult, root: Path) -> list[Finding]:
         paths = effective_paths.get(rel, [rel])
         return max((time_cache.get(p, 0.0) for p in paths), default=0.0)
 
-    for node in result.nodes:
-        downstream_time = time_of(node.path)
-        for dep in node.depends_on:
-            upstream = result.graph.nodes.get(dep.id)
-            if upstream is None:
-                continue
-            if time_of(upstream.path) > downstream_time:
-                findings.append(
-                    Finding(
-                        "drift",
-                        cc.LEVEL_WARNING,
-                        f"{node.path}: 上流 '{dep.id}' が下流より新しい（追従漏れの疑い）",
-                    )
-                )
-    return findings
+    synced_times = _resolve_synced_times(
+        root, [edge.dep.synced for edge in edges if edge.dep.synced is not None]
+    )
+    candidates: list[tuple[DriftEdge, float]] = []
+    path_baselines: dict[str, float] = {}
+    for edge in edges:
+        downstream_time = time_of(edge.node.path)
+        synced_time = synced_times.get(edge.dep.synced)
+        baseline = max(downstream_time, synced_time) if synced_time is not None else downstream_time
+        if time_of(edge.upstream.path) <= baseline:
+            continue
+        candidates.append((edge, baseline))
+        for path in effective_paths[edge.upstream.path]:
+            path_baselines[path] = min(path_baselines.get(path, baseline), baseline)
+    if not candidates:
+        return []
+    dirty = _root_dirty_paths(root)
+    histories = {
+        path: _path_changes(root, path, baseline, dirty is None or path in dirty, time_of(path))
+        for path, baseline in path_baselines.items()
+    }
+    hits: list[DriftHit] = []
+    for edge, baseline in candidates:
+        matches = [
+            record
+            for path in effective_paths[edge.upstream.path]
+            for record in histories[path]
+            if record.time > baseline
+            if record.changed_lines
+            if record.note is not None
+            or edge.dep.anchor is None
+            or any(edge.dep.anchor in line for line in record.changed_lines)
+        ]
+        if not matches:
+            continue
+        cause = max(matches, key=lambda record: (record.time, record.sha is not None))
+        unresolved = edge.dep.synced is not None and edge.dep.synced not in synced_times
+        hits.append(
+            DriftHit(
+                edge,
+                cause.sha,
+                cause.short,
+                cause.time,
+                unresolved,
+                _drift_message(edge, cause, unresolved),
+            )
+        )
+    return hits
+
+
+def _check_drift(result: ScanResult, config: cc.CoddConfig, root: Path) -> list[Finding]:
+    return [
+        Finding("drift", cc.LEVEL_WARNING, hit.message)
+        for hit in collect_drift(result, config, root)
+    ]
 
 
 def run_checks(result: ScanResult, config: cc.CoddConfig, root: Path) -> list[Finding]:
@@ -779,7 +1065,7 @@ def run_checks(result: ScanResult, config: cc.CoddConfig, root: Path) -> list[Fi
     raw.extend(_check_orphan(result, config))
     # drift は git/stat 呼び出しを伴うため、off のときは実行自体をスキップする。
     if config.checks.get("drift", cc.LEVEL_WARNING) != cc.LEVEL_OFF:
-        raw.extend(_check_drift(result, root))
+        raw.extend(_check_drift(result, config, root))
 
     applied: list[Finding] = []
     for finding in raw:
@@ -816,6 +1102,10 @@ def cmd_graph(root: Path, config: cc.CoddConfig) -> int:
         print(f"{node.node_id} ({node.kind}/{node.status})")
         for dep in node.depends_on:
             mark = "" if result.graph.has(dep.id) else "  [missing]"
+            if dep.synced is not None:
+                mark += f" [synced {dep.synced[:7]}]"
+            if dep.anchor is not None:
+                mark += f" [anchor '{dep.anchor}']"
             print(f"  --{dep.relation}--> {dep.id}{mark}")
     return 0
 
@@ -833,6 +1123,316 @@ def cmd_validate(root: Path, config: cc.CoddConfig) -> int:
 
     print(f"[codd validate] errors={len(errors)} warnings={len(warnings)}")
     return 1 if errors else 0
+
+
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _line_ending(line: str) -> str:
+    return "\r\n" if line.endswith("\r\n") else "\n"
+
+
+def _synced_trailing_comment(line: str) -> str:
+    """引用符内の # はコメントとして引き継がない。"""
+    value = line.partition(":")[2].rstrip("\r\n")
+    try:
+        value_end = next(
+            (
+                token.end_mark.index
+                for token in yaml.scan(value)
+                if isinstance(token, yaml.ScalarToken)
+            ),
+            0,
+        )
+    except yaml.YAMLError:
+        return ""
+    comment = re.search(r"([ \t]+#.*)$", value[value_end:])
+    return comment.group(1) if comment else ""
+
+
+def _dependency_item_spans(lines: list[str], start: int, end: int) -> list[tuple[int, int]]:
+    """depends_on の block list の項目範囲を返す。"""
+    key_indent = _line_indent(lines[start])
+    item_indent: int | None = None
+    item_start: int | None = None
+    item_end = start + 1
+    spans: list[tuple[int, int]] = []
+    for index in range(start + 1, end):
+        line = lines[index]
+        if not line.strip():
+            continue
+        indent = _line_indent(line)
+        if line.lstrip().startswith("#"):
+            if item_start is not None and indent > key_indent:
+                item_end = index + 1
+            continue
+        dash = re.match(r"^([ \t]*)-(\s|$)", line)
+        if dash and indent >= key_indent and (item_indent is None or indent == item_indent):
+            if item_start is not None:
+                spans.append((item_start, item_end))
+            item_start = index
+            item_indent = indent
+            item_end = index + 1
+        elif indent <= key_indent:
+            break
+        elif item_start is not None:
+            item_end = index + 1
+    if item_start is not None:
+        spans.append((item_start, item_end))
+    return spans
+
+
+def _stamp_dependency_item(lines: list[str], sha: str) -> list[str] | None:
+    """block mapping の synced 行を更新する。id 行の字下げを引き継ぐ。"""
+    dash_indent = _line_indent(lines[0])
+    mapping_lines = [lines[0][:dash_indent] + " " + lines[0][dash_indent + 1 :], *lines[1:]]
+    id_line = next((line for line in mapping_lines if re.match(r"^\s*id\s*:", line)), None)
+    if id_line is None:
+        return None
+    key_indent = _line_indent(id_line)
+    for index, line in enumerate(mapping_lines):
+        if _line_indent(line) != key_indent or not re.match(r"^\s*synced\s*:", line):
+            continue
+        original = lines[index]
+        suffix = _synced_trailing_comment(original)
+        prefix = lines[0][:dash_indent] + "- " if index == 0 else " " * key_indent
+        return [
+            *lines[:index],
+            f'{prefix}synced: "{sha}"{suffix}{_line_ending(original)}',
+            *lines[index + 1 :],
+        ]
+    last = max(index for index, line in enumerate(lines) if line.strip())
+    return [
+        *lines[: last + 1],
+        f'{" " * key_indent}synced: "{sha}"{_line_ending(lines[last])}',
+        *lines[last + 1 :],
+    ]
+
+
+def apply_synced_to_frontmatter(
+    text: str, synced_by_dep_id: dict[str, str]
+) -> tuple[str | None, list[str]]:
+    """コメント・順序・改行を保ったまま depends_on の synced だけを書き換える。"""
+    return _apply_synced_to_frontmatter(text, synced_by_dep_id)
+
+
+def _apply_synced_to_frontmatter(
+    text: str,
+    synced_by_dep_id: dict[str, str],
+    target_deps: set[cc.Dependency] | None = None,
+) -> tuple[str | None, list[str]]:
+    """ack では同じ id の対象外 relation/anchor も書き換えない。"""
+    original = cc.parse_codd_frontmatter(text)
+    if original is None:
+        return None, ["codd: frontmatter がありません"]
+    lines = text.splitlines(keepends=True)
+    closing = next(index for index in range(1, len(lines)) if lines[index].rstrip() == "---")
+    codd_line = next(
+        (index for index in range(1, closing) if re.match(r"^\s*codd\s*:", lines[index])), None
+    )
+    if codd_line is None:
+        return None, ["flow style / 解析不能"]
+    codd_indent = _line_indent(lines[codd_line])
+    list_line: int | None = None
+    for index in range(codd_line + 1, closing):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if _line_indent(line) <= codd_indent:
+            break
+        if line.strip().startswith("depends_on:"):
+            list_line = index
+            break
+    if list_line is None:
+        return None, ["depends_on: の block list がありません（flow style / 解析不能）"]
+    spans = _dependency_item_spans(lines, list_line, closing)
+    if not spans:
+        return None, ["flow style / 解析不能"]
+    raw_items = original.get("depends_on")
+    if not isinstance(raw_items, list) or len(raw_items) != len(spans):
+        return None, ["flow style / 解析不能"]
+    reasons: list[str] = []
+    applied: dict[str, str] = {}
+    for item_index, (start, end) in reversed(list(enumerate(spans))):
+        item_lines = lines[start:end]
+        dash_indent = _line_indent(item_lines[0])
+        item = raw_items[item_index]
+        if not isinstance(item, dict):
+            reasons.append("flow style / 解析不能")
+            continue
+        dep_id = str(item.get("id"))
+        if dep_id not in synced_by_dep_id:
+            continue
+        dep = cc.build_node({"depends_on": [item]}, "").depends_on[0]
+        if target_deps is not None and dep not in target_deps:
+            continue
+        if item_lines[0][dash_indent + 1 :].lstrip().startswith("{"):
+            reasons.append(f"'{dep_id}': flow style / 解析不能")
+            continue
+        sha = synced_by_dep_id[dep_id]
+        replacement = _stamp_dependency_item(item_lines, sha)
+        if replacement is None:
+            reasons.append(f"'{dep_id}': flow style / 解析不能")
+            continue
+        lines[start:end] = replacement
+        applied[dep_id] = sha
+    if not applied:
+        return None, reasons
+    new_text = "".join(lines)
+    parsed = cc.parse_codd_frontmatter(new_text)
+    if parsed is not None:
+        before = cc.build_node(original, "")
+        after = cc.build_node(parsed, "")
+        expected = tuple(
+            replace(dep, synced=applied[dep.id])
+            if dep.id in applied and (target_deps is None or dep in target_deps)
+            else dep
+            for dep in before.depends_on
+        )
+        if (
+            len(original.get("depends_on", [])) == len(parsed.get("depends_on", []))
+            and after.depends_on == expected
+        ):
+            return new_text, reasons
+    return None, [*reasons, "検証に失敗（frontmatter を書き換えません）"]
+
+
+def _write_acked_text(path: Path, text: str) -> None:
+    """symlink を保ち、同じディレクトリの一時ファイルから atomic に保存する。"""
+    path = path.resolve()
+    mode = path.stat().st_mode
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp_file:
+            tmp_file.write(text)
+            os.fchmod(tmp_file.fileno(), mode)
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _latest_upstream_sha(root: Path, paths: tuple[str, ...]) -> str | None:
+    """alias とリンク先のいずれかに触れた最新コミットを返す。"""
+    out = _git_output(
+        root, ["log", "-1", "--format=%H", "--", *[f":(literal){path}" for path in paths]]
+    )
+    return out.strip() if out is not None else None
+
+
+def cmd_ack(root: Path, config: cc.CoddConfig, node_ids: list[str], all_edges: bool = False) -> int:
+    """指定した下流の依存を、上流の最新コミットで確認済みにする。"""
+    result = scan_project(root, config)
+    targets = (
+        drift_edges(result, config)
+        if all_edges
+        else [hit.edge for hit in collect_drift(result, config, root)]
+    )
+    dirty = _root_dirty_paths(root) if targets else set()
+    sha_cache: dict[tuple[str, ...], str | None] = {}
+    updated = skipped = 0
+    has_error = False
+    for node_id in dict.fromkeys(node_ids):
+        if node_id in result.graph.duplicate_paths:
+            paths = ", ".join(result.graph.duplicate_paths[node_id])
+            print(
+                f"[codd ack] ERROR: node_id '{node_id}' が複数のファイルで定義されています: {paths}",
+                file=sys.stderr,
+            )
+            has_error = True
+            continue
+        node = result.graph.nodes.get(node_id)
+        if node is None:
+            print(f"[codd ack] ERROR: node_id '{node_id}' が見つかりません", file=sys.stderr)
+            has_error = True
+            continue
+        path = root / node.path
+        text: str | None = None
+        if node.kind not in ("code", "test"):
+            with path.open(encoding="utf-8", newline="") as source:
+                text = source.read()
+        if text is None or cc.parse_codd_frontmatter(text) is None:
+            print(
+                f"[codd ack] SKIP {node.path}: コード注釈ノードは ack 非対応（synced は frontmatter の depends_on にのみ書ける）"
+            )
+            skipped += 1
+            continue
+        node_edges = [edge for edge in targets if edge.node == node]
+        if not node_edges:
+            hint = "" if all_edges else "（--all で drift 対象の全エッジに付けられます）"
+            print(f"[codd ack] {node.path}: 対象のエッジがありません{hint}")
+            continue
+        target_deps = {edge.dep for edge in node_edges}
+        stamps: dict[str, str] = {}
+        for edge in node_edges:
+            paths = (edge.upstream.path, *_symlink_chain_relpaths(root, edge.upstream.path))
+            if paths not in sha_cache:
+                sha_cache[paths] = _latest_upstream_sha(root, paths)
+            sha = sha_cache[paths]
+            if sha is None:
+                print(
+                    f"[codd ack] ERROR {node.path}: 上流 '{edge.dep.id}' のコミット履歴を取得できません",
+                    file=sys.stderr,
+                )
+                has_error = True
+                skipped += 1
+                continue
+            if sha == "":
+                print(
+                    f"[codd ack] SKIP {node.path}: 上流 '{edge.dep.id}' が未コミットのため ack できません"
+                )
+                skipped += 1
+                continue
+            if dirty is None or any(path in dirty for path in paths):
+                print(
+                    f"[codd ack] WARN {node.path}: 上流 '{edge.dep.id}' に未コミットの変更があり、synced には含まれません"
+                )
+            stamps[edge.dep.id] = sha
+        if not stamps:
+            continue
+        new_text, reasons = _apply_synced_to_frontmatter(text, stamps, target_deps)
+        after = cc.parse_codd_frontmatter(new_text) if new_text is not None else None
+        applied = cc.build_node(after, node.path).depends_on if after is not None else ()
+        unchanged = new_text == text
+        if new_text is not None and not unchanged:
+            try:
+                with path.open(encoding="utf-8", newline="") as source:
+                    current_text = source.read()
+            except OSError:
+                current_text = None
+            if current_text != text:
+                print(
+                    f"[codd ack] ERROR {node.path}: ack 中にファイルが変更されたため書き込みを中止しました",
+                    file=sys.stderr,
+                )
+                has_error = True
+                skipped += sum(edge.dep.id in stamps for edge in node_edges)
+                continue
+            try:
+                _write_acked_text(path, new_text)
+            except OSError as exc:
+                print(
+                    f"[codd ack] ERROR {node.path}: 書き込みに失敗しました: {exc}", file=sys.stderr
+                )
+                skipped += sum(edge.dep.id in stamps for edge in node_edges)
+                has_error = True
+                continue
+        for edge in node_edges:
+            sha = stamps.get(edge.dep.id)
+            if sha is None:
+                continue
+            if replace(edge.dep, synced=sha) in applied:
+                suffix = " (変更なし)" if unchanged else ""
+                print(f"[codd ack] {node.path}: '{edge.dep.id}' synced → {sha[:7]}{suffix}")
+                updated += 1
+            else:
+                reason = " / ".join(reasons) or "flow style / 解析不能"
+                print(f"[codd ack] SKIP {node.path}: {reason}")
+                skipped += 1
+    print(f"[codd ack] updated={updated} skipped={skipped}")
+    return int(has_error)
 
 
 # ---------------------------------------------------------------------------
@@ -1608,6 +2208,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("scan", help="依存グラフを構築し JSONL 出力")
     sub.add_parser("graph", help="依存グラフをテキスト表示")
     sub.add_parser("validate", help="整合性を検証")
+    ack = sub.add_parser(
+        "ack", help="drift を確認済みとして depends_on[].synced を上流の最新コミットに更新"
+    )
+    ack.add_argument("node_ids", nargs="+", metavar="node_id")
+    ack.add_argument(
+        "--all",
+        dest="all_edges",
+        action="store_true",
+        help="drift 中のエッジだけでなく、drift 対象の全エッジに synced を付ける",
+    )
     impact = sub.add_parser("impact", help="変更 diff から下流影響を信頼度帯域で分類")
     impact.add_argument(
         "--diff",
@@ -1656,6 +2266,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_impact(root, config, args.diff, args.json)
         if args.command == "verdict":
             return cmd_verdict(root, config, args.diff, args.format, args.fail_on)
+        if args.command == "ack":
+            return cmd_ack(root, config, args.node_ids, args.all_edges)
 
         handlers = {"scan": cmd_scan, "graph": cmd_graph, "validate": cmd_validate}
         return handlers[args.command](root, config)
