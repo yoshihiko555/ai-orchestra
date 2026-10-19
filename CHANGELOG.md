@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **meta-harness / loop-harness: Docker 内 Claude Code の pin を 2.1.282 に更新**: コンテナ内の Claude が `AGENTS.md` を読めるようになる。
   既存の Docker イメージは再ビルドが必要で、meta-harness の baseline は作り直しになる。
 - **meta-harness: 評価・昇格のビルドで `context sync` も実行**: 候補が `templates/context/` を変えると、評価環境と昇格 PR のルート `AGENTS.md` の管理ブロックに反映される。
+- **`agent-routing`: Antigravity の既定モデルを `gemini-4-argon-high` に変更**: `cli-tools.yaml` の `antigravity.model` の既定値を `gemini-3.8-flash-high` から `gemini-4-argon-high` に変えた。従来のモデルを使い続ける場合は `cli-tools.local.yaml` で `antigravity.model: gemini-3.8-flash-high` を指定する。
+- **`agent-routing`: `cli-tools.yaml` の `antigravity.model_allowlist` を現行の `agy models`（agy 1.3.5）に合わせて更新**: Gemini 4 Argon と Claude Opus / Sonnet 5.5 を追加し、表示されなくなった Gemini 3.1 Pro・Gemini 3.6 / 3.7 Flash・Claude 4.6 系（`claude-sonnet-4-6` / `claude-opus-4-6-thinking`）を外した。`antigravity.model` にこれらを指定している場合は警告が出るので、`agy models` に表示される名前に変更する。
 
 ### Fixed
 

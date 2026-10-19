@@ -188,7 +188,7 @@ WebSearch/WebFetch の前に Antigravity CLI でのリサーチを提案する�
 
 ```
 [Antigravity Suggestion] Consider using Antigravity CLI for research:
-`agy -p "..." --model gemini-3.8-flash-high 2>/dev/null`
+`agy -p "..." --model gemini-4-argon-high 2>/dev/null`
 ```
 
 **例外:**
