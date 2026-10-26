@@ -47,7 +47,7 @@ Codex の組み込み `image_gen` は ChatGPT 認証で動くため **`OPENAI_AP
 確定呼び出し（`$IMG_FEATURE` はフラグ名の実行時解決結果。次項参照）:
 
 ```bash
-codex exec --model gpt-5.5 \
+codex exec --model gpt-6.1-sol \
   --sandbox workspace-write \
   -c sandbox_workspace_write.network_access=true \
   --enable "$IMG_FEATURE" \
@@ -73,18 +73,18 @@ codex exec --model gpt-5.5 \
   境界を維持）。
 - **`--full-auto` は廃止**: codex 0.140.0 で deprecated（`--sandbox` に統合）。
 - **保存先**: `image_gen` は `~/.codex/generated_images/<session>/` に保存する
-  （ファイル名はモデルで異なり、`gpt-5.5` は `call_*.png`、sol 系は `exec-*.png`、
+  （ファイル名はモデルで異なり、sol 系は `exec-*.png`、`gpt-5.5` 等の旧モデルは `call_*.png`、
   旧 codex は `ig_*.png`）。エージェントは `codex exec` が stderr に出す `session id:` から
   その実行のセッションのフォルダを特定し、そのフォルダの中で生成直前のマーカー時刻より
   **新しい**ファイルだけを採用して出力先へコピーする（古い画像や、並行して動く別の
   Codex セッションの画像を誤って成功扱いしない鮮度ガード）。session id が取れない場合や
   対象なしの場合は失敗として報告し、手動でディレクトリを漁って最新ファイルを掴むのは
   **禁止**（虚偽成功の原因）。
-- `image_model`（既定 `gpt-5.5`）は `image_gen` ツールを呼び出す Codex エージェントの
+- `image_model`（既定 `gpt-6.1-sol`）は `image_gen` ツールを呼び出す Codex エージェントの
   モデルで、画像を描画するモデルではない（描画は OpenAI の gpt-image で、選択できない）。
   `codex.model` とは分けて `config/image-generation.yaml` の `image_model` で指定する。
-  `gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応。`gpt-6.1-sol` でも生成できる
-  （codex 0.160.0 で確認）
+  `gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応。従来の既定 `gpt-5.5` は
+  ChatGPT アカウントの Codex で使えなくなった（codex 0.164.0 で確認）
 - 画像内の見出し・ラベル等は `output_language`（既定 `ja`）に従う。技術用語・固有名詞は
   英語のままでもよく、ユーザープロンプトに画像内テキストの言語を明記した場合はその指定を優先する。
   恒久的な変更は `.claude/config/image-generation/image-generation.local.yaml` で上書きできる。

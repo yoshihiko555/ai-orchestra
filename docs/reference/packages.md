@@ -359,7 +359,7 @@ Codex CLI の組み込み `image_gen` スキル（OpenAI gpt-image、ChatGPT 認
 | ------ | ----------------------- | ----------------------------------------------------------- |
 | skill  | `image-gen`             | `/image-gen <プロンプト>` によるプロンプト→画像ワークフロー |
 | agent  | `image-generator.md`    | Codex `image_gen` 呼び出し + 鮮度ガード付き検証             |
-| config | `image-generation.yaml` | `image_model`（既定 `gpt-5.5`）                             |
+| config | `image-generation.yaml` | `image_model`（既定 `gpt-6.1-sol`）                         |
 
 ---
 

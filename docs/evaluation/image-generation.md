@@ -3,7 +3,7 @@
 **パッケージ**: `packages/image-generation`
 **類型**: スキル型（`/image-gen` スキル + `image-generator` エージェント）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-10-02（EV-05 の探索対象をセッションのフォルダ・任意の `*.png` に改め、EV-22 を追加。人間レビュー待ち（本 PR）。前回 2026-09-29: EV-16 に kill-switch チェックの起動インタプリタを追記）
+**最終レビュー日**: 2026-10-27（EV-08 のフォールバック先を `gpt-6.1-sol` に変更。人間レビュー待ち（本 PR）。前回 2026-10-02: EV-05 の探索対象をセッションのフォルダ・任意の `*.png` に改め、EV-22 を追加）
 **情報源**: packages/image-generation/README.md, docs/adr/ADR-20260605-023.md, facets/instructions/image-gen.md（`/image-gen` スキル指示書）, packages/image-generation/agents/image-generator.md（エージェント指示書）, packages/image-generation/config/image-generation.yaml, packages/image-generation/manifest.json（補助参照: 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -38,7 +38,7 @@
 - [ ] EV-22（境界 / must）: Step 3.5 の鮮度ガードは、`codex exec` が stderr のヘッダに出す `session id: <uuid>` を Step 3 で取得したログのヘッダ部分（echo されたプロンプトより前）から読み取り、UUID 形式 `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` に一致することを機械的に確認したうえで、探索を `~/.codex/generated_images/<session id>/` に限定する。`~/.codex/generated_images` 全体は探索しない（並行して動く別の Codex セッション（TUI や並列の `/image-gen`）の画像を自分の成果物として採用しないため）。session id が取得できない・形式に一致しない場合は全体探索に戻さず FAILURE として報告する。sandbox 無効の Step 3 は Codex の stderr を、Codex 起動前に開いたファイル記述子から表示し、ログのパスを開き直して読まない（実行中に Codex がパスを symlink に差し替えても、sandbox 外でリポジトリ外のファイルを読まないため） — 根拠: packages/image-generation/agents/image-generator.md（Step 3, Step 3.5）, docs/adr/ADR-20260605-023.md（Update 2026-10-02）
 - [ ] EV-06（異常 / must）: 出力ファイルが PNG マジックバイトを持たない、サイズが閾値未満、または Codex 出力ログにレートリミット/Pillow/PIL/ImageMagick/matplotlib 等のフォールバックマーカー（英日双方）を含む場合、成功として扱わず FAILURE 報告する — 根拠: packages/image-generation/agents/image-generator.md（Step 4）
 - [ ] EV-07（異常 / must）: Codex CLI が未インストール・未認証・実行エラーの場合、画像生成は利用不可として報告し、Pillow 等での自前代替描画は行わない — 根拠: packages/image-generation/agents/image-generator.md（Fallback）, packages/image-generation/README.md（CLI連携）
-- [ ] EV-08（境界 / should）: `image_model` は `config/image-generation.yaml`（+ `.local.yaml`）の値を正とし、キー自体が存在しない場合のみ `gpt-5.5` にフォールバックし、その旨を報告する — 根拠: packages/image-generation/agents/image-generator.md（Configuration）
+- [ ] EV-08（境界 / should）: `image_model` は `config/image-generation.yaml`（+ `.local.yaml`）の値を正とし、キー自体が存在しない場合のみ `gpt-6.1-sol` にフォールバックし、その旨を報告する — 根拠: packages/image-generation/agents/image-generator.md（Configuration）
 - [ ] EV-09（境界 / must）: `image_model` に `gpt-5.3-codex` 等のコーディングモデルを使用しない（ChatGPT アカウントで image_gen 非対応） — 根拠: packages/image-generation/agents/image-generator.md（Configuration）, packages/image-generation/config/image-generation.yaml（コメント）
 - [ ] EV-10（正常 / must）: 1 リクエストにつき Codex 呼び出しは 1 回のみで、レートリミット回避のためループ・リトライ・連打をしない — 根拠: packages/image-generation/agents/image-generator.md（Step 3）, docs/adr/ADR-20260605-023.md（決定4）
 - [ ] EV-11（境界 / should）: Codex 呼び出しコマンドが、実行時解決された image-generation feature を `--enable "$IMG_FEATURE"` で有効化していること（codex 0.140.0 時点の旧名は `imagegenext`。0.144.6 で `[features].image_generation` へ改称、既定 stable/true。固定名ではなく `codex features list`／`codex --version` の minor 番号で判定した名前を使う） / `-c sandbox_workspace_write.network_access=true` / `-c model_reasoning_effort=low` / `--skip-git-repo-check` が含まれる（欠落時は保存回帰・app-server起動失敗・自己検閲ハングが再発する） — 根拠: docs/adr/ADR-20260605-023.md（Update 2026-06-17, 2026-06-17 #2）, packages/image-generation/agents/image-generator.md（Step 3, Issue #291）

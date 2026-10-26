@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`image-generation`: `image_model` の既定値を `gpt-5.5` から `gpt-6.1-sol` に変更**: `gpt-5.5` が ChatGPT アカウントの Codex で使えなくなり（`model_not_found`）、`/image-gen` が失敗していた。`image-generation.local.yaml` で `image_model: gpt-5.5` を指定している場合は、削除するか `gpt-6.1-sol` に変更する。
 - **`codd`: drift の既定の判定範囲を変更（Issue #515）**: relation が `references` / `supersedes` のエッジと、下流が ADR のエッジは既定で drift の対象外になり、空白・空行・Markdown 表の区切り行だけの上流コミットは「上流が変わった」と数えない。従来の対象範囲（全 relation・全 kind）に戻すには `codd.local.yaml` の `drift.relations` に 5 つの relation を全部書き、`drift.exclude_downstream_kinds: []` にする（整形だけのコミットの無視は設定で戻せない）。
 - **meta-harness / loop-harness: Docker 内 Claude Code の pin を 2.1.282 に更新**: コンテナ内の Claude が `AGENTS.md` を読めるようになる。
   既存の Docker イメージは再ビルドが必要で、meta-harness の baseline は作り直しになる。
@@ -27,7 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`orchex install` / `setup` で `.codex/config.toml` と `.codex/skills/context-loader/` が配置されない問題を修正**: `codex-suggestions` を後から導入しても初回テンプレートが配置される（既存ファイルは上書きしない）。
-- **`image-generation`: `image_model` に sol 系モデル（`gpt-6.1-sol` 等）を指定すると、生成に成功しても失敗と報告される問題を修正**: 保存名が `exec-*.png` になるモデルでも生成した画像を受け取れる。既定値は `gpt-5.5` のまま。
+- **`image-generation`: `image_model` に sol 系モデル（`gpt-6.1-sol` 等）を指定すると、生成に成功しても失敗と報告される問題を修正**: 保存名が `exec-*.png` になるモデルでも生成した画像を受け取れる。
 - **`image-generation`: 並行して動く別の Codex セッションの画像を、自分の生成結果として取り違えることがある問題を修正**: 探索をその実行のセッションのフォルダに限定した。
 
 ## [0.3.6] - 2026-09-30
