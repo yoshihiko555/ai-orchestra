@@ -87,7 +87,7 @@
       "agents/data-modeler.md": "7ea023eb2b83ea66ef2b19833767bcb4e5fc9a135a00609e00e82ffa8df05c82",
       "agents/debugger.md": "bd772d779561b701e3bee73ff78fdfd12cc30b30cc6167c5c350b637a71033da",
       "agents/docs-writer.md": "387b272ccefd506197562f9da9b10de3f360355e2ae8dd07754e5dca8f2d0d95",
-      "agents/frontend-dev.md": "9296865b4c735963a986048e73ea497dd9f10b8247584b1d02c860e9c991faa1",
+      "agents/frontend-dev.md": "6874d8292180a204d7e9f891bc6b38affde690c6ea0aa55cc3ba789c8e0bb57f",
       "agents/general-purpose.md": "3c452337d1e74bd9172bda078b94b56fdb9b92541275878255eed3a0bd83a250",
       "agents/performance-reviewer.md": "bb3e0d227fd27971158168dc96cec003688a353f7cbe2c1a6009865a3dadf4eb",
       "agents/planner.md": "e820cc5b6e9e42b106edad324ab927edc9b53b13dc1dde62c456620736ac4079",
@@ -102,7 +102,7 @@
       "agents/spec-writer.md": "0ed8fa11b1f66b1d610e59cd3066484a3345f303963607425853cc7eef147782",
       "agents/tester.md": "5f7f7acf7ffaf98f590dd5e60a8e470cfe75425aeedb4b2ee5ef2f9d3e9383a4",
       "agents/testing-reality-checker.md": "999f8925e2f27680e4d36a6818fe644c0f473c44bcc29b693b0557ac5217eb27",
-      "agents/ux-reviewer.md": "1514f2a5640ad0e7b9d447ec31293a1680478b0f765d82b9ca6a8892cc267538",
+      "agents/ux-reviewer.md": "7add48f0d79497fe701ca97f642c5c346ce69657442a35a8a716e81369a4cbf1",
       "agents/adversarial-reviewer.md": "bc1747da5f84cfca2c45d51c9c45e9878ca285aae06259a6e676b29a4be9a960",
       "agents/finding-verifier.md": "6c2622006f2179a4a9d214e0b053013206248599b59aaf16b0455539829efcfa"
     },

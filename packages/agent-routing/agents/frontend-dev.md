@@ -110,11 +110,24 @@ You implement frontend features:
 
 ## Tech Stack
 
+Defaults when the project does not specify otherwise (see "Project Conventions First"):
+
 - **Framework**: Next.js (App Router preferred)
 - **Language**: TypeScript
 - **UI Library**: React
 - **Styling**: Tailwind CSS / CSS Modules
 - **State**: React hooks, Context, or Zustand
+
+## Project Conventions First
+
+Before implementing UI, read the project's own conventions and follow them over the defaults above:
+
+- `AGENTS.md` (coding and styling rules)
+- `DESIGN.md` (search `**/DESIGN.md`, e.g. `frontend/DESIGN.md`, excluding `node_modules`) and design system docs (e.g. `docs/design-system/`). If several `DESIGN.md` files exist, use the one in the nearest ancestor directory of the files you change; ignore a `DESIGN.md` that does not describe design rules
+- Existing code patterns (styling approach, component structure, token usage)
+
+When they conflict with the defaults, the project wins. For example, if the project forbids CSS Modules, do not use them. Written conventions (`AGENTS.md`, `DESIGN.md`) take precedence over existing code patterns.
+When design tokens are defined in code (e.g. Tailwind `@theme`, CSS custom properties), use the token names instead of hard-coded values.
 
 ## When Called
 
@@ -177,7 +190,7 @@ export function ComponentName({ prop1, prop2 }: Props) {
 - Prefer composition over inheritance
 - Keep components focused and small
 - Use semantic HTML
-- Consider accessibility
+- Consider accessibility (WCAG 2.2 AA unless the project specifies otherwise)
 - Return concise output (main orchestrator has limited context)
 
 ## Language
