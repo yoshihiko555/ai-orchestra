@@ -57,7 +57,7 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260717-042 | proposer へ routing config patch を段階解放する                                                                                   | accepted   | 2026-07-17 |
 | ADR-20260718-043 | Docker action の cleanup 失敗と実行取消を安全停止として扱う                                                                       | accepted   | 2026-07-18 |
 | ADR-20260720-044 | 予算 latch を frontier 回帰判定で評価不能として中立化する                                                                         | accepted   | 2026-07-20 |
-| ADR-20260726-045 | 永続イメージライフサイクルの脅威モデル再評価と異常系 stale cleanup の追加                                                         | proposed   | 2026-07-26 |
+| ADR-20260726-045 | 永続イメージライフサイクルの脅威モデル再評価と異常系 stale cleanup の追加                                                         | accepted   | 2026-07-26 |
 | ADR-20260728-046 | 蓄積型ログの root worktree 解決と配置規約                                                                                         | accepted   | 2026-07-28 |
 | ADR-20260802-047 | agent-routing e2e テストを実効 config 追従の 2 階層構成にする                                                                     | accepted   | 2026-08-02 |
 | ADR-20260814-048 | 品質軸の飽和は own suite の行動ベースシナリオ + gate/graded critical 分離で解消する（支配ルールは変更しない）                     | accepted   | 2026-08-14 |
