@@ -24,6 +24,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **meta-harness: 評価・昇格のビルドで `context sync` も実行**: 候補が `templates/context/` を変えると、評価環境と昇格 PR のルート `AGENTS.md` の管理ブロックに反映される。
 - **`agent-routing`: Antigravity の既定モデルを `gemini-4-argon-high` に変更**: `cli-tools.yaml` の `antigravity.model` の既定値を `gemini-3.8-flash-high` から `gemini-4-argon-high` に変えた。従来のモデルを使い続ける場合は `cli-tools.local.yaml` で `antigravity.model: gemini-3.8-flash-high` を指定する。
 - **`agent-routing`: `cli-tools.yaml` の `antigravity.model_allowlist` を現行の `agy models`（agy 1.3.5）に合わせて更新**: Gemini 4 Argon と Claude Opus / Sonnet 5.5 を追加し、表示されなくなった Gemini 3.1 Pro・Gemini 3.6 / 3.7 Flash・Claude 4.6 系（`claude-sonnet-4-6` / `claude-opus-4-6-thinking`）を外した。`antigravity.model` にこれらを指定している場合は警告が出るので、`agy models` に表示される名前に変更する。
+- **`agent-routing`: `ux-reviewer` の基準を WCAG 2.2 AA に更新（Issue #514）**: 2.2 で増えた達成基準（フォーカスの非隠蔽・ターゲットの大きさ 24×24 CSS px・冗長な入力・認証など）で確認する。44×44pt は HIG の推奨値として扱い、未満でも WCAG 違反としては指摘しない。プロジェクトに `DESIGN.md` や design system の文書があれば最初に読み、その基準を優先する。
+- **`agent-routing`: `frontend-dev` がプロジェクトの規約を優先（Issue #514）**: Tech Stack（Tailwind CSS / CSS Modules 等）は既定値とし、`AGENTS.md`・`DESIGN.md`・既存コードの規約と食い違う場合はプロジェクト側に従う。
+- **`/design`: デザインシステムのトラックに「トークンをコードで持つ」運用を追加（Issue #514）**: Tailwind の `@theme` などで値を持つプロジェクト向けに、値は文書に写さず名前と使い分けだけを書き、入口の `DESIGN.md` 1 ファイルに台帳をまとめる書き方を選べる。従来の `tokens.md` / `CMP-{ID}.md` の書き方はそのまま使える。
 
 ### Fixed
 

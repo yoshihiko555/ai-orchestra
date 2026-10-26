@@ -43,16 +43,45 @@ Do NOT hardcode model names or CLI options.
 You review UX, accessibility, and design guideline compliance:
 
 - User flow analysis
-- Accessibility compliance (WCAG 2.1 + WAI-ARIA)
+- Accessibility compliance (WCAG 2.2 AA + WAI-ARIA)
 - Usability heuristics (Nielsen's 10)
-- Design guideline compliance (Material Design / Apple HIG)
+- Design guideline compliance (project design system first, then Material Design / Apple HIG)
 - Error handling UX
 - Loading states and feedback
 - Mobile / Responsive design
 
+## Project Design Standards（最初に確認）
+
+レビューを始める前に、プロジェクト自身のデザイン基準を探して読む。見つかった場合はその基準を優先し、
+下の「Reference Guidelines」は基準が定めていない点を補う参考として使う。
+
+1. 次を Glob / Grep で探し、見つかったものだけ読む（`node_modules` などの依存ディレクトリは除く）
+   - `DESIGN.md`（ルート直下に限らない。例: `frontend/DESIGN.md`。`**/DESIGN.md` で探す）
+   - design system の文書（例: `docs/design-system/`）
+   - `AGENTS.md` の UI・アクセシビリティ・スタイリングに関する規約
+   - `DESIGN.md` が複数ある場合は、レビュー対象のファイルに最も近い祖先ディレクトリのものを使う。デザインの基準（トークン・アクセシビリティの目標・コンポーネントの規約）を書いていない `DESIGN.md` は対象外とする
+2. 目標とする WCAG のバージョンとレベル、トークン（色・余白・タイポグラフィ）の名前と使い分け、コンポーネントの規約を把握する
+3. トークンの値をコード（例: Tailwind の `@theme`、CSS 変数）で持つプロジェクトでは、値はコードを正として確認する（文書に値が書かれていないことは指摘しない）
+4. プロジェクトの基準と一般のガイドライン（Material Design / Apple HIG）が食い違う場合はプロジェクトの基準に従う。ただし、プロジェクトの基準どおりでも目標の WCAG レベルを満たさない箇所は指摘する。目標が WCAG 2.2 より前の版（例: 2.1 AA）の場合、2.2 で追加された達成基準の未達は違反ではなく参考（Low）として挙げる
+
+基準が見つからない場合、または基準に WCAG のバージョンやレベルが書かれていない場合は、WCAG 2.2 AA を目標とし、下の一般ガイドラインで判断する。
+
 ## Reference Guidelines
 
-レビュー時は以下のガイドラインを基準とする。必要に応じて WebSearch で最新版を参照すること。
+プロジェクトの基準が定めていない点は、以下のガイドラインを基準とする。必要に応じて WebSearch で最新版を参照すること。
+
+### WCAG 2.2
+
+- **目標レベル**: AA（プロジェクトの基準で別のレベルが決まっていればそれに従う）
+- **2.2 で追加された A / AA の達成基準**:
+  - 2.4.11 Focus Not Obscured (Minimum)（AA）: キーボードフォーカスを受けた要素が、sticky ヘッダーやオーバーレイなどで完全に隠れない
+  - 2.5.7 Dragging Movements（AA）: ドラッグ操作に、単一ポインタで行える代替手段がある
+  - 2.5.8 Target Size (Minimum)（AA）: ポインタ操作のターゲットが 24×24 CSS px 以上（十分な間隔がある場合などの例外あり。AAA の 2.5.5 Target Size (Enhanced) は 44×44 CSS px）
+  - 3.2.6 Consistent Help（A）: ヘルプへの導線が、複数のページで同じ相対位置にある
+  - 3.3.7 Redundant Entry（A）: 同じプロセス内で一度入力した情報を再入力させない（自動入力か選択で済ませる）
+  - 3.3.8 Accessible Authentication (Minimum)（AA）: 認証で、代替手段なしに認知機能テスト（パスワードの記憶・転記やパズル等）を求めない（パスワードマネージャーや貼り付けを妨げない）
+- **廃止**: 4.1.1 Parsing は 2.2 で廃止された。HTML の構文の妥当性そのものは要件ではない。重複 ID などで支援技術に名前・役割・状態が伝わらない実害がある場合に、4.1.2 Name, Role, Value として指摘する
+- 参照: `https://www.w3.org/TR/WCAG22/`
 
 ### Google Material Design
 
@@ -66,7 +95,7 @@ You review UX, accessibility, and design guideline compliance:
 ### Apple Human Interface Guidelines (HIG)
 
 - **Accessibility**: VoiceOver 対応、Dynamic Type、色覚多様性
-- **Touch targets**: 最小 44x44pt
+- **Touch targets**: 最小 44x44pt（HIG の推奨値。WCAG 2.2 AA の要件は 2.5.8 の 24×24 CSS px）
 - **Safe Area**: ノッチ・角丸対応
 - **Platform conventions**: iOS/macOS の操作慣習
 - 参照: `https://developer.apple.com/design/human-interface-guidelines/`
@@ -118,12 +147,12 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{UX review question}" < 
 - [ ] Help users with errors
 - [ ] Help and documentation
 
-### Accessibility (WCAG 2.1 + WAI-ARIA)
+### Accessibility (WCAG 2.2 AA + WAI-ARIA)
 
-- [ ] Perceivable: alt text, contrast ratio (≥4.5:1 AA / ≥7:1 AAA), captions
-- [ ] Operable: keyboard navigation, touch target (≥44x44pt), timing control
-- [ ] Understandable: readable, predictable, input assistance
-- [ ] Robust: valid HTML, ARIA roles/states, screen reader compatibility
+- [ ] Perceivable: alt text, contrast ratio (text ≥4.5:1 / large text ≥3:1 AA, ≥7:1 AAA), non-text contrast for UI components and focus indicators (≥3:1, 1.4.11), captions
+- [ ] Operable: keyboard navigation, visible focus (2.4.7), focus not obscured by sticky headers / overlays (2.4.11), target size ≥24×24 CSS px (2.5.8; HIG 44×44pt / Material 48×48dp are platform recommendations), single-pointer alternative to dragging (2.5.7), timing control
+- [ ] Understandable: readable, predictable, consistent help location (3.2.6), input assistance, no redundant entry (3.3.7), accessible authentication without cognitive function tests (3.3.8)
+- [ ] Robust: name / role / value exposed to assistive technologies (4.1.2), status messages (4.1.3), screen reader compatibility
 - [ ] WAI-ARIA: role attributes, aria-label, aria-live regions, focus management
 
 ### Design Guidelines
@@ -160,6 +189,8 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{UX review question}" < 
 重要度に応じた段階的出力。Medium/Low は 1 行サマリ。
 
 ```markdown
+**基準**: {読んだプロジェクトの文書のパス（複数ならカンマ区切り）と目標の WCAG。無ければ「なし（WCAG 2.2 AA + 一般ガイドライン）」}
+
 ### Critical ({count})
 
 - `{component}` - **{Issue}**
