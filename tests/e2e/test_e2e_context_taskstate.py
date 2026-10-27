@@ -1,4 +1,4 @@
-"""Context Sharing / Task State / Plans.md アーカイブの E2E テスト。
+"""Context Sharing / Task State / plan ファイルの E2E テスト。
 
 テスト計画: .claude/docs/test-plans/context-taskstate-test-plan.md
 git 初期化不要のため e2e_project fixture ではなく tmp_path を直接使用する。
@@ -78,9 +78,9 @@ class TestTaskStateSummary:
 
     def test_summary_with_all_states(self, tmp_path: Path) -> None:
         """#1: Plans.md に WIP/TODO/done タスクがある状態でサマリー出力"""
-        plans_dir = tmp_path / ".claude"
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text(
+        (plans_dir / "example.md").write_text(
             "# Plans\n\n"
             "## Project: Test\n"
             "### Phase 1: Dev `cc:WIP`\n"
@@ -90,16 +90,16 @@ class TestTaskStateSummary:
             encoding="utf-8",
         )
         result = _run_load_task_state(tmp_path)
-        assert "[task-memory] 3 tasks" in result.stdout
+        assert "■ example (3 tasks:" in result.stdout
         assert "done: 1" in result.stdout
         assert "WIP: 1" in result.stdout
         assert "TODO: 1" in result.stdout
 
     def test_nested_cwd_initializes_root_context_only(self, tmp_path: Path) -> None:
         """SessionStart の cwd がサブディレクトリでも root の context を初期化する。"""
-        plans_dir = tmp_path / ".claude"
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text("# Plans\n\n- `cc:TODO` test\n", encoding="utf-8")
+        (plans_dir / "example.md").write_text("# Plans\n\n- `cc:TODO` test\n", encoding="utf-8")
         nested_cwd = tmp_path / ".claude" / "config" / "agent-routing"
         nested_cwd.mkdir(parents=True)
 
@@ -111,9 +111,9 @@ class TestTaskStateSummary:
 
     def test_wip_displayed_before_todo(self, tmp_path: Path) -> None:
         """#2: WIP が TODO より先に表示される"""
-        plans_dir = tmp_path / ".claude"
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text(
+        (plans_dir / "example.md").write_text(
             "# Plans\n\n## Project: Test\n### Phase 1\n- `cc:WIP` working\n- `cc:TODO` pending\n",
             encoding="utf-8",
         )
@@ -124,9 +124,9 @@ class TestTaskStateSummary:
 
     def test_blocked_with_reason(self, tmp_path: Path) -> None:
         """#3: blocked タスクに理由が表示される"""
-        plans_dir = tmp_path / ".claude"
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text(
+        (plans_dir / "example.md").write_text(
             "# Plans\n\n"
             "## Project: Test\n"
             "### Phase 1\n"
@@ -146,19 +146,20 @@ class TestTaskStateSummary:
 
     def test_empty_plans_file(self, tmp_path: Path) -> None:
         """#5: Plans.md が空の場合"""
-        plans_dir = tmp_path / ".claude"
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text("", encoding="utf-8")
+        (plans_dir / "example.md").write_text("", encoding="utf-8")
         result = _run_load_task_state(tmp_path)
         assert result.returncode == 0
-        assert result.stdout.strip() == ""
+        assert "未完了 1 / 完了 0" in result.stdout
+        assert "■ example (0 tasks)" in result.stdout
 
     def test_max_display_truncation(self, tmp_path: Path) -> None:
         """#6: max_display_tasks を超えるタスク数で省略表示"""
-        plans_dir = tmp_path / ".claude"
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         tasks = "\n".join(f"- `cc:TODO` task {i}" for i in range(25))
-        (plans_dir / "Plans.md").write_text(
+        (plans_dir / "example.md").write_text(
             f"# Plans\n\n## Project: Big\n### Phase 1\n{tasks}\n",
             encoding="utf-8",
         )
@@ -172,16 +173,15 @@ class TestTaskStateCustomMarkers:
 
     def test_duplicate_markers_fallback(self, tmp_path: Path) -> None:
         """#8: 重複マーカー設定でデフォルトにフォールバック"""
-        plans_dir = tmp_path / ".claude"
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text(
+        (plans_dir / "example.md").write_text(
             "# Plans\n\n## Project: Test\n### Phase 1\n- `cc:TODO` task\n",
             encoding="utf-8",
         )
-        config_dir = plans_dir / "config" / "core"
+        config_dir = tmp_path / ".claude" / "config" / "core"
         config_dir.mkdir(parents=True)
         (config_dir / "task-memory.yaml").write_text(
-            "plans_file: .claude/Plans.md\n"
             "show_summary_on_start: true\n"
             "max_display_tasks: 20\n"
             "markers:\n"
@@ -264,7 +264,7 @@ class TestUpdateWorkingContext:
             "update-working-context.py",
             {
                 "tool_name": "Edit",
-                "tool_input": {"file_path": str(tmp_path / ".claude" / "Plans.md")},
+                "tool_input": {"file_path": str(tmp_path / ".claude" / "plans" / "example.md")},
             },
             project=tmp_path,
         )

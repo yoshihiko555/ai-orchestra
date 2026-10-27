@@ -3,14 +3,14 @@ id: create-handoff
 target: skill:handoff
 description: Generate a restartable Codex handoff from an in-progress implementation task.
 prompt: |
-  /handoff --message "Continue the parser implementation. Run python3 -m pytest -q tests/test_parser.py, then inspect git diff. Do not push."
+  /handoff --plan meta-harness-eval-fixture --message "Continue the parser implementation. Run python3 -m pytest -q tests/test_parser.py, then inspect git diff. Do not push."
 
   Treat the quoted message as the current task. Generate the handoff now without asking a follow-up question.
 setup:
-  - "mkdir -p .meta-harness .claude/handoffs"
+  - "mkdir -p .meta-harness .claude/handoffs .claude/plans"
   - >-
-    printf '# Plans\n\n- `cc:WIP` Continue parser implementation\n- `cc:TODO` Run parser validation\n'
-    > .claude/Plans.md
+    printf '## Project: meta-harness-eval-fixture\n\n### Phase 1: Implementation `cc:WIP`\n\n#### Tasks\n\n- `cc:WIP` Continue parser implementation\n- `cc:TODO` Run parser validation\n'
+    > .claude/plans/meta-harness-eval-fixture.md
   # PR #273 最終レビュー: `touch -t 200001010000`（2000年固定）だと `.claude/handoffs/` に
   # 実在する pre-existing tracked file（例: 20260707-051549-loop-harness-phase1.md、checkout
   # 時の mtime は当然 2000 年より新しい）が「候補は何もしていないのに newer と誤判定」される
@@ -37,7 +37,7 @@ allowed_tools:
 # 拒否されうるため、task-state と同じ理由で bypassPermissions が必要（allow ルールでは protected
 # path を解除できない）。この scenario は Bash も公開しているため bypass で Bash の承認確認まで
 # 無効化される点がリスク増分であり、防衛線として collateral-scope oracle（tracked file の変更が
-# .claude/Plans.md 以外に無いこと + 新規 untracked file が .claude/handoffs/ 配下に限られること）
+# .claude/plans/meta-harness-eval-fixture.md 以外に無いこと + 新規 untracked file が .claude/handoffs/ 配下に限られること）
 # を必ず併設する。
 permission_mode: bypassPermissions
 command_timeout_ms: 60000
@@ -81,7 +81,7 @@ critical:
     command: >-
       python3 -c "import subprocess; from pathlib import Path; baseline=set(subprocess.run(['git','ls-tree','-r','--name-only','HEAD','--','.claude/handoffs/'],capture_output=True,text=True,check=True).stdout.splitlines()); ps=[p for p in Path('.claude/handoffs').glob('*.md') if not p.is_symlink() and str(p) not in baseline]; assert ps, 'no non-symlink, non-preexisting handoff file was created'; contents=[p.read_text(encoding='utf-8') for p in ps]; assert any('Current Task State' in s and ('Next Up' in s or 'TODO' in s) and ('pytest' in s or 'Validation' in s) for s in contents), 'no candidate handoff file satisfied the required keywords'"
   - id: no-collateral-damage-outside-handoffs
-    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更が .claude/Plans.md 以外に無く、新規 untracked file も .claude/handoffs/ 配下以外に生成されていないことを検証する"
+    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更が .claude/plans/meta-harness-eval-fixture.md 以外に無く、新規 untracked file も .claude/handoffs/ 配下以外に生成されていないことを検証する"
     oracle: command_exit
     # `--ignored-scan-prefix .claude`: plain `git status` は gitignore 対象パスを一切報告しない
     # ため、これが無いと bypassPermissions 下の候補が root .gitignore 済みの `.claude/meta-harness/`
@@ -90,12 +90,12 @@ critical:
     # 評価者自身が書く bridge artifact（CANDIDATE_FINAL_REPORT_RELATIVE_PATH）も明示的に --allow
     # へ加える。
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --allow-new-prefix .claude/handoffs/ --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
-  - id: plans-md-input-unchanged
-    text: "handoff.py の入力である .claude/Plans.md が seed 内容から改変されていないことを検証する（.claude/Plans.md は repo .gitignore 対象のため collateral-scope の diff/untracked 検査の死角になる。PR #273 bot レビュー4巡目対応）"
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/plans/meta-harness-eval-fixture.md --allow .claude/meta-harness-oracle/final-report.md --allow-new-prefix .claude/handoffs/ --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
+  - id: plan-file-input-unchanged
+    text: "handoff.py の入力である .claude/plans/meta-harness-eval-fixture.md が seed 内容から改変されていないことを検証する（.claude/plans/meta-harness-eval-fixture.md は repo .gitignore 対象のため collateral-scope の diff/untracked 検査の死角になる。PR #273 bot レビュー4巡目対応）"
     oracle: command_exit
     command: >-
-      python3 -c 'expected = "# Plans\n\n- `cc:WIP` Continue parser implementation\n- `cc:TODO` Run parser validation\n"; actual = open(".claude/Plans.md", encoding="utf-8").read(); assert actual == expected, f"Plans.md changed from seed: {actual!r}"'
+      python3 -c 'expected = "## Project: meta-harness-eval-fixture\n\n### Phase 1: Implementation `cc:WIP`\n\n#### Tasks\n\n- `cc:WIP` Continue parser implementation\n- `cc:TODO` Run parser validation\n"; actual = open(".claude/plans/meta-harness-eval-fixture.md", encoding="utf-8").read(); assert actual == expected, f"plan file changed from seed: {actual!r}"'
 checks:
   - id: handoff-content-quality
     text: "引き継ぎ文書が簡潔で、次の担当者が追加の会話なしに行動できる"

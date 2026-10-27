@@ -71,7 +71,7 @@
   "last_sync": "2026-09-27T09:22:45.543207+00:00",
   "file_hashes": {
     "core": {
-      "config/core/task-memory.yaml": "081c101ad10526344e4fe7831babbe6ef661d0a4ae7e49fad4eb3967c030b7d8"
+      "config/core/task-memory.yaml": "c059d1d84cd186fcf7f20bb9ffcb7475b3355784a3a0c890f1a39312f4ffe9b1"
     },
     "agent-routing": {
       "config/agent-routing/cli-tools.yaml": "74234600badb2bba17b53dde31191480e49deba6ccba62c05ecdfa9e97c6c91f",
@@ -111,7 +111,7 @@
       "config/audit/audit-flags.json": "b39f2cba905759c88c29db260ea940ee71a9202a4b4794b56d6f43f9edbbc399"
     },
     "codd": {
-      "config/codd/codd.yaml": "917848efe39fa7b961b2a4f1ac713b0f7130f4c0aa7c0f394fc640beb73a7521"
+      "config/codd/codd.yaml": "cae91ecf120cfa1be382a5d1303a1ffdd208d59033d5fb062ffa4353c0a9a7c9"
     },
     "git-workflow": {
       "config/git-workflow/sandbox-requirements.json": "4b2f9366201ed8f90d3f2f5e418502f75d977b4ca659f8dfc91b8369e5971e5e"

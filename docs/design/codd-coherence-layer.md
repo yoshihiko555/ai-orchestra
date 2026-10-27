@@ -171,7 +171,7 @@ codd:
 | requirement | `req:feature-list`, `req:non-functional` | `docs/requirements/*.md`（FT 群を含む集約ファイル全体で1ノード）           |
 | design      | `design:architecture`, `design:API-001`  | `docs/architecture/*.md`, `docs/api/API-001.md`（個別設計は元々1ファイル） |
 | adr         | `adr:ADR-20260624-010`                   | `docs/adr/ADR-*.md`                                                        |
-| plan        | `plan:codd-coherence-layer`              | `.claude/Plans.md`（プロジェクト単位で1ノード）                            |
+| plan        | `plan:codd-coherence-layer`              | `.claude/plans/*.md`（既定の scope 外。`codd.local.yaml` で足した場合に 1 ファイル 1 ノード。ADR-20261027-059） |
 | rule        | `rule:config-loading`                    | `.claude/rules/*.md`                                                       |
 | instruction | `instruction:claude-md`                  | `templates/context/*.md`                                                   |
 
@@ -484,7 +484,6 @@ scope:
   include:
     - "docs/**/*.md"
     - ".claude/rules/*.md"
-    - ".claude/Plans.md"
     - "templates/context/*.md"
   exclude:
     - "docs/adr/_template.md"
@@ -540,7 +539,7 @@ codd は essential（常時有効）のため、**条件分岐は不要**で常�
 | ---------------- | -------------------------------------------------------------------------------------------- |
 | `design`         | Phase 1-3 の各成果物（ファイル）先頭に `codd:` ブロックを生成。`derives_from` で上流へリンク |
 | `design-tracker` | ADR に `codd:` ブロックを付与。`関連:` を `depends_on`（references/supersedes）へ移行        |
-| `task-state`     | Plans.md に `plan:` node_id を1つ付け、実装対象の `design:` ノードへ `implements` リンク     |
+| `task-state`     | frontmatter を付けない（plan ファイルは既定の scope 外。ADR-20261027-059）                    |
 
 > 改修対象は facet composition のソース（`facets/compositions/skills/*.yaml` 等）。
 > 生成物 `.agents/skills/*/SKILL.md` は直接編集しない（L-2）。

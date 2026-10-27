@@ -446,10 +446,10 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 | `/issue-fix`          | Issue ベースの計画→実装→テスト→レビューフロー                 |
 | `/codex-system`       | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven）   |
 | `/antigravity-system` | Antigravity CLI（agy）でのリサーチ・マルチモーダル処理        |
-| `/order`              | 対話の結論を発注書（Plans.md / Issue）に書き出す              |
+| `/order`              | 対話の結論を発注書（plan ファイル / Issue）に書き出す         |
 | `/design`             | 設計テンプレート                                              |
 | `/design-tracker`     | 設計記録                                                      |
-| `/task-state`         | Plans.md の作成・更新                                         |
+| `/task-state`         | plan ファイル（`.claude/plans/<slug>.md`）の作成・更新・片付け |
 | `/release-readiness`  | マージ前の最終チェック                                        |
 | `/tdd`                | テスト駆動開発ワークフロー                                    |
 | `/code-comments`      | コード・テスト・コミットログ・コードコメントの書き分け        |

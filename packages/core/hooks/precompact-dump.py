@@ -2,12 +2,12 @@
 """PreCompact hook: コンテキスト圧縮前に重要情報を Markdown ファイルへ退避する。
 
 Claude Code がコンテキスト圧縮を実行する直前に発火する。
-圧縮で失われる可能性のある作業コンテキスト・Plans.md スナップショットを
+圧縮で失われる可能性のある作業コンテキスト・plan ファイルの要約を
 `.claude/context/shared/precompact-{timestamp}.md` に書き出す。
 
 退避内容:
 - working-context.json の modified_files / current_phase / decisions
-- Plans.md 本体（そのままコピー）
+- plan ファイルの要約と未完了ファイルのパス
 - セッション ID と圧縮トリガー種別（manual / auto）
 
 副作用:
@@ -18,6 +18,7 @@ Claude Code がコンテキスト圧縮を実行する直前に発火する。
 from __future__ import annotations
 
 import datetime
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -57,14 +58,27 @@ def _now_stamp() -> str:
     return now.strftime("%Y%m%dT%H%M%S") + f"-{now.microsecond:06d}Z"
 
 
-def _read_plans(project_dir: str) -> str:
-    """Plans.md の内容を読み込む。存在しない場合は空文字を返す。"""
-    plans_path = os.path.join(project_dir, ".claude", "Plans.md")
+def _summarize_plans(project_dir: str) -> str:
+    """共通パーサで要約と未完了パスを作る。失敗しても退避を続ける。"""
+    module_name = "precompact_load_task_state"
     try:
-        with open(plans_path, encoding="utf-8") as f:
-            return f.read()
-    except OSError:
-        return ""
+        module_path = Path(_hook_dir) / "load-task-state.py"
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec is None or spec.loader is None:
+            raise ImportError("load-task-state.py を読み込めません")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        config = module.load_config(project_dir)
+        collection = module.collect_plans(project_dir, config)
+        summary = module.build_plans_summary(project_dir, config, collection=collection)
+        paths = [
+            f"- `.claude/plans/{plan['slug']}.md`" for plan in collection[0] if not plan["complete"]
+        ]
+        return "\n".join(part for part in (summary, "\n".join(paths)) if part)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        return "_(plans unavailable)_"
 
 
 def _format_working_context(ctx: dict) -> str:
@@ -119,14 +133,12 @@ def build_dump_text(
     parts.append("## Working Context")
     parts.append("")
     parts.append(_format_working_context(working_ctx))
-    parts.append("## Plans.md Snapshot")
+    parts.append("## Plans")
     parts.append("")
     if plans_text:
-        parts.append("```markdown")
         parts.append(plans_text.rstrip())
-        parts.append("```")
     else:
-        parts.append("_(Plans.md not found)_")
+        parts.append("_(no plans)_")
     parts.append("")
     return "\n".join(parts)
 
@@ -189,7 +201,7 @@ def main() -> None:
     trigger = str(data.get("trigger") or "")
 
     working_ctx = read_working_context(project_dir)
-    plans_text = _read_plans(project_dir)
+    plans_text = _summarize_plans(project_dir)
 
     text = build_dump_text(
         session_id=session_id,

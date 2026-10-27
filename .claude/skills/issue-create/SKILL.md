@@ -179,7 +179,7 @@ Step 4 / Step 5 の検査（件数・記法・プレースホルダ）は省略�
 3. **最低 1 件は必須**。ユーザーが「わからない」と答えた場合も、AI がタイトル・本文の内容から候補（verify/judge どちらか）を提示し、ユーザーの合意を取ってから確定する。空欄のまま Step 4 に進まない。
 4. 登録時は全条件を未チェック `- [ ]` で記載する。
 
-> 記法の正本は `.claude/rules/task-memory-usage.md`。ここで確定した AC はそのまま Plans.md の `#### Acceptance Criteria` へ転記できる形式にする。
+> 記法の正本は `.claude/rules/task-memory-usage.md`。ここで確定した AC はそのまま plan ファイルの `#### Acceptance Criteria` へ転記できる形式にする。
 
 ### Step 4: プレビューと確認
 

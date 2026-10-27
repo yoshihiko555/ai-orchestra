@@ -27,6 +27,7 @@ from facets.scripts.handoff import (
     get_untracked_files,
     handoff_file_path,
     load_cli_tools,
+    main,
     parse_decisions,
     parse_order_sections,
     parse_tasks,
@@ -64,8 +65,18 @@ class TestParseTasks:
         assert len(tasks["WIP"]) == 1
         assert "done" not in tasks
 
+    def test_includes_done_tasks_for_completion_without_changing_default_shape(self) -> None:
+        content = "- `cc:done` Old task\n- `cc:WIP` Current task"
+
+        tasks = parse_tasks(content, include_done=True)
+
+        assert tasks["done"] == [
+            {"task": "Old task", "reason": None, "project": None, "project_index": None}
+        ]
+        assert set(tasks) == {"WIP", "TODO", "blocked", "done"}
+
     def test_ignores_non_task_lines(self) -> None:
-        content = "# Plans\n## Project: test\nSome text\n- `cc:WIP` Real task"
+        content = "## Project: test\nSome text\n- `cc:WIP` Real task"
         tasks = parse_tasks(content)
         assert len(tasks["WIP"]) == 1
 
@@ -443,7 +454,7 @@ class TestParseDecisions:
         assert len(decisions) == 1
 
     def test_no_decisions_section(self) -> None:
-        content = "# Plans\n## Project: test\n- `cc:TODO` task"
+        content = "## Project: test\n- `cc:TODO` task"
         decisions = parse_decisions(content)
         assert decisions == []
 
@@ -504,17 +515,22 @@ class TestFindProjectRoot:
 
 
 class TestCollectHandoffData:
-    def test_error_when_no_plans(self, tmp_path: Path) -> None:
+    def test_no_plan_directory_returns_empty_selection(self, tmp_path: Path) -> None:
         (tmp_path / ".claude").mkdir()
         data = collect_handoff_data(tmp_path)
-        assert "error" in data
+        assert data["plan_file"] is None
+        assert data["plan_candidates"] == []
+        assert data["tasks"] == {"WIP": [], "TODO": [], "blocked": []}
+        assert data["order"] == []
+        assert data["decisions"] == []
+        assert data["order_markdown"] == ""
+        assert data["plans_content"] == ""
 
     def test_collects_tasks_from_plans(self, tmp_path: Path) -> None:
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        plans = claude_dir / "Plans.md"
+        claude_dir = tmp_path / ".claude" / "plans"
+        claude_dir.mkdir(parents=True)
+        plans = claude_dir / "fixture.md"
         plans.write_text(
-            "# Plans\n\n"
             "## Project: Test\n\n"
             "### Phase 1: Setup `cc:WIP`\n\n"
             "- `cc:WIP` Task A\n"
@@ -548,11 +564,10 @@ class TestCollectHandoffData:
         assert "timestamp" in data
 
     def test_collects_order_sections_and_markdown(self, tmp_path: Path) -> None:
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        plans = claude_dir / "Plans.md"
+        claude_dir = tmp_path / ".claude" / "plans"
+        claude_dir.mkdir(parents=True)
+        plans = claude_dir / "fixture.md"
         plans.write_text(
-            "# Plans\n\n"
             "## Project: Test\n\n"
             "#### Goal\n"
             "- Ship v2\n\n"
@@ -596,11 +611,10 @@ class TestCollectHandoffData:
         )
 
     def test_associates_tasks_with_correct_project_only(self, tmp_path: Path) -> None:
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        plans = claude_dir / "Plans.md"
+        claude_dir = tmp_path / ".claude" / "plans"
+        claude_dir.mkdir(parents=True)
+        plans = claude_dir / "fixture.md"
         plans.write_text(
-            "# Plans\n\n"
             "## Project: Alpha\n\n"
             "#### Goal\n"
             "- Ship alpha\n\n"
@@ -886,8 +900,10 @@ class TestCollectHandoffLaunchFields:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
-        (tmp_path / ".claude").mkdir()
-        (tmp_path / ".claude" / "Plans.md").write_text("# Plans\n", encoding="utf-8")
+        (tmp_path / ".claude" / "plans").mkdir(parents=True)
+        (tmp_path / ".claude" / "plans" / "fixture.md").write_text(
+            "## Project: Test\n", encoding="utf-8"
+        )
 
         with patch("facets.scripts.handoff.run_git", return_value=None):
             data = collect_handoff_data(tmp_path)
@@ -906,8 +922,10 @@ class TestCollectHandoffLaunchFields:
         assert data["untracked_truncated"] is False
 
     def test_launch_command_reads_the_reported_handoff_path(self, tmp_path: Path) -> None:
-        (tmp_path / ".claude").mkdir()
-        (tmp_path / ".claude" / "Plans.md").write_text("# Plans\n", encoding="utf-8")
+        (tmp_path / ".claude" / "plans").mkdir(parents=True)
+        (tmp_path / ".claude" / "plans" / "fixture.md").write_text(
+            "## Project: Test\n", encoding="utf-8"
+        )
 
         with (
             patch("facets.scripts.handoff.run_git", return_value=None),
@@ -927,3 +945,279 @@ class TestCollectHandoffLaunchFields:
         path = handoff_file_path(tmp_path, now)
 
         assert path == tmp_path.resolve() / ".claude" / "handoffs" / "20260927-010203-2.md"
+
+
+def _write_plan(project: Path, slug: str, content: str) -> Path:
+    path = project / ".claude" / "plans" / f"{slug}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+class TestPlanSelection:
+    @pytest.fixture(autouse=True)
+    def _isolate_context(self):
+        with (
+            patch("facets.scripts.handoff.run_git", return_value=None),
+            patch("facets.scripts.handoff.get_untracked_files", return_value=([], False)),
+            patch("facets.scripts.handoff.load_cli_tools", return_value=None),
+            patch("facets.scripts.handoff.load_working_context", return_value={}),
+        ):
+            yield
+
+    @pytest.mark.parametrize("slug", ["../x", "Foo", "a b", "", "a/b", "a\n", "-a"])
+    def test_invalid_slug_returns_error_without_reading_files(self, tmp_path: Path, slug: str):
+        with (
+            patch.object(Path, "read_text", side_effect=AssertionError("ファイル読込は禁止")),
+            patch.object(Path, "read_bytes", side_effect=AssertionError("ファイル読込は禁止")),
+            patch.object(Path, "iterdir", side_effect=AssertionError("列挙は禁止")),
+        ):
+            assert "error" in collect_handoff_data(tmp_path, plan=slug)
+
+    @pytest.mark.parametrize("slug", ["../x", "Foo", "a b"])
+    def test_cli_rejects_invalid_slug_before_project_discovery(self, slug: str, capsys):
+        with (
+            patch.object(sys, "argv", ["handoff.py", "--plan", slug]),
+            patch("facets.scripts.handoff.find_project_root", side_effect=AssertionError),
+            patch.object(Path, "read_text", side_effect=AssertionError),
+        ):
+            main()
+        assert "error" in json.loads(capsys.readouterr().out)
+
+    def test_cli_selects_requested_plan(self, tmp_path: Path, capsys):
+        _write_plan(tmp_path, "fixture", "- `cc:TODO` Selected task\n")
+        with patch.object(
+            sys, "argv", ["handoff.py", "--project-dir", str(tmp_path), "--plan", "fixture"]
+        ):
+            main()
+        assert json.loads(capsys.readouterr().out)["plan_file"] == ".claude/plans/fixture.md"
+
+    def test_missing_requested_file_returns_error(self, tmp_path: Path):
+        _write_plan(tmp_path, "other", "- `cc:TODO` Other task\n")
+        assert "error" in collect_handoff_data(tmp_path, plan="missing")
+
+    def test_requested_plan_with_missing_directory_returns_error(self, tmp_path: Path):
+        assert "error" in collect_handoff_data(tmp_path, plan="missing")
+
+    @pytest.mark.parametrize("kind", ["symlink", "broken-symlink", "directory"])
+    def test_non_regular_plan_is_never_read(self, tmp_path: Path, kind: str):
+        plans = tmp_path / ".claude" / "plans"
+        plans.mkdir(parents=True)
+        path = plans / "fixture.md"
+        if kind == "directory":
+            path.mkdir()
+        else:
+            target = tmp_path / "outside.md"
+            if kind == "symlink":
+                target.write_text("- `cc:WIP` Outside task\n", encoding="utf-8")
+            path.symlink_to(target)
+        with patch.object(Path, "read_text", side_effect=AssertionError):
+            data = collect_handoff_data(tmp_path)
+            assert data["plan_file"] is None
+            assert data["plan_candidates"] == []
+            assert "error" in collect_handoff_data(tmp_path, plan="fixture")
+
+    @pytest.mark.parametrize("kind", ["symlink", "file"])
+    def test_non_directory_plans_path_is_never_read(self, tmp_path: Path, kind: str):
+        plans = tmp_path / ".claude" / "plans"
+        plans.parent.mkdir()
+        if kind == "symlink":
+            outside = tmp_path / "outside"
+            outside.mkdir()
+            (outside / "fixture.md").write_text("- `cc:WIP` Outside task\n", encoding="utf-8")
+            plans.symlink_to(outside, target_is_directory=True)
+        else:
+            plans.write_text("- `cc:WIP` Outside task\n", encoding="utf-8")
+        with patch.object(Path, "read_text", side_effect=AssertionError):
+            assert collect_handoff_data(tmp_path)["plan_candidates"] == []
+            assert "error" in collect_handoff_data(tmp_path, plan="fixture")
+
+    def test_multiple_unfinished_plans_return_ordered_candidates_and_empty_content(self, tmp_path):
+        _write_plan(tmp_path, "a-todo", "- `cc:TODO` First TODO\n")
+        _write_plan(tmp_path, "z-wip", "- `cc:WIP` Last WIP\n")
+        _write_plan(tmp_path, "b-wip", "- `cc:WIP` First WIP\n")
+        _write_plan(tmp_path, "b-blocked", "- `cc:blocked` Waiting\n")
+        _write_plan(tmp_path, "complete", "- `cc:done` Finished\n")
+
+        data = collect_handoff_data(tmp_path)
+
+        assert data["plan_file"] is None
+        assert data["plan_candidates"] == ["b-wip", "z-wip", "a-todo", "b-blocked"]
+        assert data["tasks"] == {"WIP": [], "TODO": [], "blocked": []}
+        assert data["order"] == []
+        assert data["decisions"] == []
+        assert data["order_markdown"] == ""
+        assert data["plans_content"] == ""
+
+    def test_only_unfinished_plan_is_selected_and_other_content_does_not_leak(self, tmp_path):
+        content = (
+            "## Project: Current\n#### Goal\n- Current goal\n"
+            "### Phase 1: Build\n#### Tasks\n- `cc:TODO` Current task\n"
+            "## Decisions\n- Current decision\n"
+        )
+        _write_plan(tmp_path, "current", content)
+        _write_plan(
+            tmp_path,
+            "complete",
+            content.replace("Current", "Completed").replace("cc:TODO", "cc:done"),
+        )
+
+        data = collect_handoff_data(tmp_path)
+
+        assert data["plan_file"] == ".claude/plans/current.md"
+        assert data["plan_candidates"] == []
+        assert data["plans_content"] == content
+        assert data["decisions"] == ["Current decision"]
+        assert "Current task" in data["order_markdown"]
+        assert "Completed" not in json.dumps(data["order"])
+        assert set(data["tasks"]) == {"WIP", "TODO", "blocked"}
+
+    def test_explicit_plan_selects_completed_file_among_other_candidates(self, tmp_path):
+        content = "## Project: Complete\n### Phase 1: Build\n- `cc:done` Finished\n"
+        _write_plan(tmp_path, "complete", content)
+        _write_plan(tmp_path, "current", "- `cc:WIP` Current task\n")
+
+        data = collect_handoff_data(tmp_path, plan="complete")
+
+        assert data["plan_file"] == ".claude/plans/complete.md"
+        assert data["plan_candidates"] == []
+        assert data["plans_content"] == content
+        assert data["tasks"] == {"WIP": [], "TODO": [], "blocked": []}
+
+    @pytest.mark.parametrize("filename", ["Foo.md", "a b.md", "a.MD", ".hidden.md", "a.txt"])
+    def test_invalid_filename_is_not_read(self, tmp_path, filename):
+        valid = _write_plan(tmp_path, "valid", "- `cc:TODO` Real task\n")
+        (valid.parent / filename).write_bytes(b"\xff")
+        nested = valid.parent / "nested"
+        nested.mkdir()
+        (nested / "other.md").write_text("- `cc:WIP` Nested task\n", encoding="utf-8")
+        assert collect_handoff_data(tmp_path)["plan_file"] == ".claude/plans/valid.md"
+
+    @pytest.mark.parametrize("failure", ["utf8", "oserror"])
+    def test_unreadable_file_is_skipped_but_explicit_selection_returns_error(
+        self, tmp_path, monkeypatch, failure
+    ):
+        bad = _write_plan(tmp_path, "bad", "- `cc:WIP` Unreadable task\n")
+        _write_plan(tmp_path, "good", "- `cc:TODO` Readable task\n")
+        if failure == "utf8":
+            bad.write_bytes(b"\xff")
+        else:
+            original_read = Path.read_text
+
+            def read_plan(path, *args, **kwargs):
+                if path == bad:
+                    raise OSError("読込失敗")
+                return original_read(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "read_text", read_plan)
+
+        assert collect_handoff_data(tmp_path)["plan_file"] == ".claude/plans/good.md"
+        assert "error" in collect_handoff_data(tmp_path, plan="bad")
+
+    def test_legacy_plan_is_never_read(self, tmp_path):
+        legacy = tmp_path / ".claude" / "Plans.md"
+        legacy.parent.mkdir()
+        legacy.write_text("- `cc:WIP` Legacy task\n", encoding="utf-8")
+        with patch.object(Path, "read_text", side_effect=AssertionError):
+            data = collect_handoff_data(tmp_path)
+        assert data["plan_file"] is None
+        assert data["plan_candidates"] == []
+        assert data["tasks"] == {"WIP": [], "TODO": [], "blocked": []}
+
+
+_COMPLETION_CASES = [
+    pytest.param("## Project: Empty\n", False, id="zero-tasks"),
+    pytest.param("- `cc:done` Finished\n", True, id="all-done-without-ac"),
+    pytest.param("- `cc:done` Finished\n- `cc:WIP` Working\n", False, id="wip-remains"),
+    pytest.param("- `cc:done` Finished\n- `cc:TODO` Pending\n", False, id="todo-remains"),
+    pytest.param("- `cc:done` Finished\n- `cc:blocked` Waiting\n", False, id="blocked-remains"),
+    pytest.param(
+        "#### Acceptance Criteria\n- [ ] Pending\n#### Tasks\n- `cc:done` Finished\n",
+        False,
+        id="unchecked-ac",
+    ),
+    pytest.param(
+        "#### Acceptance Criteria\n- [x] First\n- [X] Second\n#### Tasks\n- `cc:done` Finished\n",
+        True,
+        id="checked-ac-both-cases",
+    ),
+    pytest.param(
+        "#### Acceptance Criteria\n- [x] Passed\n##### Nested\n- [ ] Pending\n"
+        "#### Tasks\n- `cc:done` Finished\n",
+        False,
+        id="nested-ac-heading-does-not-end-section",
+    ),
+    *[
+        pytest.param(
+            f"#### Acceptance Criteria\n- [x] Passed\n{heading} Other\n- [ ] Not AC\n"
+            "- `cc:done` Finished\n",
+            True,
+            id=f"ac-ends-at-level-{len(heading)}",
+        )
+        for heading in ("#", "##", "###", "####")
+    ],
+    pytest.param(
+        "#### Acceptance Criteria\n```markdown\n- [ ] Fenced AC\n"
+        "- `cc:TODO` Fenced task\n```\n- [X] Passed\n#### Tasks\n- `cc:done` Finished\n",
+        True,
+        id="fenced-ac-and-task-ignored",
+    ),
+    pytest.param(
+        "---\n#### Acceptance Criteria\n- [ ] Frontmatter AC\n- `cc:WIP` Fake\n---\n"
+        "## Project: Fixture\n### Phase 1: Build\n"
+        "#### Acceptance Criteria\n<!--\n- [ ] Comment AC\n- `cc:WIP` Fake\n-->\n"
+        "- [x] Passed\n#### Tasks\n- `cc:done` Finished\n",
+        True,
+        id="frontmatter-and-comments-ignored",
+    ),
+    pytest.param(
+        "#### Acceptance Criteria\n- [X] `cc:TODO` AC is not a task\n"
+        "#### Tasks\n- `cc:done` Finished\n",
+        True,
+        id="marker-in-ac-is-not-task",
+    ),
+    pytest.param(
+        "## Project: First\n### Phase 1\n- `cc:done` Finished\n"
+        "## Project: Second\n### Phase 2\n#### Acceptance Criteria\n- [ ] Pending\n"
+        "#### Tasks\n- `cc:done` Also finished\n",
+        False,
+        id="all-projects-contribute-to-completion",
+    ),
+    pytest.param(
+        "---\ncodd: {}\n---\n## Project: Fixture\n#### Acceptance Criteria\n"
+        "- [ ] Outside any Phase\n### Phase 1: Build\n#### Tasks\n- `cc:done` Finished\n",
+        True,
+        id="ac-outside-phase-is-not-ac",
+    ),
+]
+
+
+@pytest.mark.parametrize(("body", "complete"), _COMPLETION_CASES)
+def test_completion_boundaries_match_session_start(tmp_path: Path, body: str, complete: bool):
+    content = (
+        body if body.startswith("---\n") else "## Project: Fixture\n### Phase 1: Build\n" + body
+    )
+    _write_plan(tmp_path, "fixture", content)
+    with (
+        patch("facets.scripts.handoff.run_git", return_value=None),
+        patch("facets.scripts.handoff.get_untracked_files", return_value=([], False)),
+        patch("facets.scripts.handoff.load_cli_tools", return_value=None),
+    ):
+        data = collect_handoff_data(tmp_path)
+
+    assert data["plan_file"] == (None if complete else ".claude/plans/fixture.md")
+    assert data["plan_candidates"] == []
+    assert data["plans_content"] == ("" if complete else content)
+
+    hooks = str(REPO_ROOT / "packages" / "core" / "hooks")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    spec = importlib.util.spec_from_file_location(
+        "handoff_completion_hook", Path(hooks) / "load-task-state.py"
+    )
+    assert spec is not None and spec.loader is not None
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    plans, _ = hook.collect_plans(str(tmp_path), config={})
+    assert len(plans) == 1
+    assert plans[0]["complete"] is complete

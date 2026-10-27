@@ -284,7 +284,6 @@ class TestMainAdditionalScenarios:
             _mod,
             "load_config",
             lambda _: {
-                "plans_file": ".claude/Plans.md",
                 "show_summary_on_start": True,
                 "max_display_tasks": 20,
                 "markers": dict(DEFAULT_MARKERS),
@@ -296,18 +295,17 @@ class TestMainAdditionalScenarios:
         _mod.main()
         assert out.getvalue() == ""
 
-    def test_empty_plans_file_exits_silently(self, tmp_path: Path, monkeypatch) -> None:
-        """Plans.md が空の場合は何も出力しない。"""
-        plans_dir = tmp_path / ".claude"
+    def test_empty_plan_is_unfinished(self, tmp_path: Path, monkeypatch) -> None:
+        """空の plan ファイルも未完了として表示する。"""
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text("", encoding="utf-8")
+        (plans_dir / "example.md").write_text("", encoding="utf-8")
 
         monkeypatch.setattr(_mod, "read_hook_input", lambda: {"cwd": str(tmp_path)})
         monkeypatch.setattr(
             _mod,
             "load_config",
             lambda _: {
-                "plans_file": ".claude/Plans.md",
                 "show_summary_on_start": True,
                 "max_display_tasks": 20,
                 "markers": dict(DEFAULT_MARKERS),
@@ -317,13 +315,14 @@ class TestMainAdditionalScenarios:
         monkeypatch.setattr(sys, "stdout", out)
 
         _mod.main()
-        assert out.getvalue() == ""
+        assert "未完了 1 / 完了 0" in out.getvalue()
+        assert "■ example (0 tasks)" in out.getvalue()
 
     def test_summary_output_with_tasks(self, tmp_path: Path, monkeypatch) -> None:
         """タスクがある場合にサマリーが出力される。"""
-        plans_dir = tmp_path / ".claude"
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text(
+        (plans_dir / "example.md").write_text(
             "# Plans\n\n"
             "## Project: Test\n"
             "### Phase 1: Dev `cc:WIP`\n"
@@ -338,7 +337,6 @@ class TestMainAdditionalScenarios:
             _mod,
             "load_config",
             lambda _: {
-                "plans_file": ".claude/Plans.md",
                 "show_summary_on_start": True,
                 "max_display_tasks": 20,
                 "markers": dict(DEFAULT_MARKERS),
@@ -354,11 +352,11 @@ class TestMainAdditionalScenarios:
         assert "implement feature" in output
         assert "write tests" in output
 
-    def test_no_tasks_in_plans_exits_silently(self, tmp_path: Path, monkeypatch) -> None:
-        """Plans.md にマーカー付きタスクがない場合は何も出力しない。"""
-        plans_dir = tmp_path / ".claude"
+    def test_plan_without_tasks_is_unfinished(self, tmp_path: Path, monkeypatch) -> None:
+        """タスク未登録の plan ファイルを未完了として表示する。"""
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text(
+        (plans_dir / "example.md").write_text(
             "# Plans\n\n## Project: Test\n### Phase 1\nSome notes\n",
             encoding="utf-8",
         )
@@ -368,7 +366,6 @@ class TestMainAdditionalScenarios:
             _mod,
             "load_config",
             lambda _: {
-                "plans_file": ".claude/Plans.md",
                 "show_summary_on_start": True,
                 "max_display_tasks": 20,
                 "markers": dict(DEFAULT_MARKERS),
@@ -378,13 +375,14 @@ class TestMainAdditionalScenarios:
         monkeypatch.setattr(sys, "stdout", out)
 
         _mod.main()
-        assert out.getvalue() == ""
+        assert "未完了 1 / 完了 0" in out.getvalue()
+        assert "■ example (0 tasks)" in out.getvalue()
 
     def test_invalid_markers_falls_back_to_defaults(self, tmp_path: Path, monkeypatch) -> None:
         """重複マーカー設定時にデフォルトにフォールバックする。"""
-        plans_dir = tmp_path / ".claude"
+        plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
-        (plans_dir / "Plans.md").write_text(
+        (plans_dir / "example.md").write_text(
             "# Plans\n\n## Project: Test\n### Phase 1\n- `cc:TODO` task\n",
             encoding="utf-8",
         )
@@ -394,7 +392,6 @@ class TestMainAdditionalScenarios:
             _mod,
             "load_config",
             lambda _: {
-                "plans_file": ".claude/Plans.md",
                 "show_summary_on_start": True,
                 "max_display_tasks": 20,
                 "markers": {"todo": "dup", "wip": "dup", "done": "done", "blocked": "blocked"},

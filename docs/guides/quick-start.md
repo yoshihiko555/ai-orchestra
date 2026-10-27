@@ -116,7 +116,7 @@ Task(subagent_type="architect", prompt="マイクロサービス構成を設計�
 /review all          # 全 7 レビュアー並列実行
 /review code         # コードレビューのみ
 /tdd                 # テスト駆動開発ワークフロー
-/order               # 対話の結論を発注書（Plans.md / Issue）に書き出す（git-workflow パッケージ）
+/order               # 対話の結論を発注書（plan ファイル `.claude/plans/<slug>.md` / Issue）に書き出す（git-workflow パッケージ）
 ```
 
 ### レビュー

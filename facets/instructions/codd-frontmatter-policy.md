@@ -36,7 +36,7 @@ codd:
 | requirement | `req:feature-list`          | `docs/requirements/*.md`                          |
 | design      | `design:architecture`       | `docs/architecture/*.md`                          |
 | adr         | `adr:ADR-20260624-010`      | `docs/adr/ADR-*.md`                               |
-| plan        | `plan:codd-coherence-layer` | `.claude/Plans.md`                                |
+| plan        | `plan:codd-coherence-layer` | `.claude/plans/*.md`（既定の scope 外。`codd.local.yaml` で足す） |
 | rule        | `rule:config-loading`       | `.claude/rules/*.md`                              |
 | instruction | `instruction:claude-md`     | `templates/context/*.md`                          |
 | code        | `code:codd-scan`            | `code_scope.include` 内のソースファイル（opt-in） |

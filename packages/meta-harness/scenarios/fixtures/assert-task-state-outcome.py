@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Assert task-state Plans.md outcomes by diffing the whole document against the canonical fixture.
+"""Assert task-state plan file outcomes by diffing the whole document against the canonical fixture.
 
-All four task-state scenarios seed a fixed ``.claude/Plans.md`` fixture (see
+All four task-state scenarios seed a fixed ``.claude/plans/meta-harness-eval-fixture.md`` fixture (see
 ``scenarios/skill/task-state/*.yaml``) and ask Claude to apply exactly one edit (a task status
 change, a new Decisions entry, or a new phase inserted before the existing project separator).
 Rather than checking sections/lines piecemeal (which could miss e.g. a deleted heading or an
@@ -41,22 +41,10 @@ import re
 import subprocess
 from pathlib import Path
 
-# The exact `.claude/Plans.md` content every task-state scenario's `setup:` step writes (see
+# The exact `.claude/plans/meta-harness-eval-fixture.md` content every task-state scenario's `setup:` step writes (see
 # `scenarios/skill/task-state/*.yaml`). This is the only trusted "before" state: it is a literal
 # constant in this script, never read from the writable workspace.
 _CANONICAL_PLANS_FIXTURE = (
-    "---\n"
-    "codd:\n"
-    '  node_id: "plan:meta-harness-eval-fixture"\n'
-    "  kind: plan\n"
-    "  status: active\n"
-    "  depends_on:\n"
-    '    - id: "design:meta-harness"\n'
-    "      relation: implements\n"
-    "---\n"
-    "\n"
-    "# Plans\n"
-    "\n"
     "## Project: meta-harness-eval-fixture\n"
     "\n"
     "### Phase 2: 実装 `cc:WIP`\n"
@@ -136,7 +124,7 @@ def _is_ac_section_heading_effective(line: str) -> bool:
     internal-whitespace-collapsing `_is_ac_section_heading_like()` above. A with-AC candidate
     that writes `"#### Acceptance  Criteria"` (extra internal whitespace) would pass this
     fixture's earlier, looser check while `parse_tasks()` fails to recognize the heading in
-    real Plans.md automation (AC-line exclusion in the SessionStart summary and completion gating
+    real plan file automation (AC-line exclusion in the SessionStart summary and completion gating
     in `/goal`): the seeded verify/judge items
     would never actually gate anything, silently defeating the whole point of Acceptance Criteria
     (PR #326 review round 5, Codex P2). `assert_add_phase_with_ac()` must therefore require the
@@ -157,11 +145,11 @@ def _read_plans_text_preserving_line_endings(plans_path: Path) -> str:
     """Read `plans_path` without `Path.read_text()`'s universal-newline translation.
 
     `Path.read_text()` opens the file in text mode, which silently normalizes `\\r\\n` to `\\n`
-    (Python's universal newlines). A candidate that rewrites the *entire* seeded Plans.md to
+    (Python's universal newlines). A candidate that rewrites the *entire* seeded plan file to
     CRLF line endings while otherwise inserting exactly the expected content would therefore
     still compare byte-for-byte equal against the canonical fixture's LF-only lines, defeating
     every "rest of the document is byte-identical" assertion in this module -- and since
-    `.claude/Plans.md` is gitignored, the `collateral-scope` oracle cannot catch this rewrite
+    `.claude/plans/meta-harness-eval-fixture.md` is gitignored, the `collateral-scope` oracle cannot catch this rewrite
     either (PR #326 review round 4, Codex P2). Decoding raw bytes instead preserves any `\\r`
     immediately before each `\\n`, so `.split("\\n")` yields lines still carrying a trailing
     `\\r` that will not match the canonical (LF-only) lines, causing the affected assertions to
@@ -188,13 +176,13 @@ def _find_unique_line_index(
 def assert_mark_task_done(plans_path: Path, *, target_task: str, target_status: str) -> None:
     """Assert the whole document is identical to the canonical fixture except that the target
     task's marker line changed to `target_status` -- no other line may differ (added, removed,
-    reordered, or edited), which inherently covers frontmatter/headings/Decisions/Notes/every
+    reordered, or edited), which inherently covers headings/Decisions/Notes/every
     other task without needing separate section-scoped checks."""
     text = _read_plans_text_preserving_line_endings(plans_path)
     actual_lines = text.split("\n")
 
     assert len(actual_lines) == len(_CANONICAL_LINES), (
-        "Plans.md must have exactly the same line count as the seeded fixture (mark-task-done "
+        "plan file must have exactly the same line count as the seeded fixture (mark-task-done "
         f"only ever changes one line's content): expected {len(_CANONICAL_LINES)} lines, "
         f"got {len(actual_lines)}"
     )
@@ -211,7 +199,7 @@ def assert_mark_task_done(plans_path: Path, *, target_task: str, target_status: 
         idx for idx in range(len(_CANONICAL_LINES)) if actual_lines[idx] != _CANONICAL_LINES[idx]
     ]
     assert diff_indices == [target_index], (
-        "Plans.md must differ from the seeded fixture at exactly the target task's line and "
+        "plan file must differ from the seeded fixture at exactly the target task's line and "
         f"nowhere else: expected the only diff at line {target_index} "
         f"({_CANONICAL_LINES[target_index]!r}), got diffs at {diff_indices!r} "
         f"(actual content there: {[actual_lines[i] for i in diff_indices]!r})"
@@ -228,7 +216,7 @@ def assert_decision_recorded(plans_path: Path, *, expected_decision: str) -> Non
     actual_lines = text.split("\n")
 
     assert len(actual_lines) == len(_CANONICAL_LINES) + 1, (
-        "Plans.md must differ from the seeded fixture by exactly one inserted line (a new "
+        "plan file must differ from the seeded fixture by exactly one inserted line (a new "
         f"Decisions entry): expected {len(_CANONICAL_LINES) + 1} lines, got {len(actual_lines)}"
     )
 
@@ -245,11 +233,11 @@ def assert_decision_recorded(plans_path: Path, *, expected_decision: str) -> Non
     actual_after = actual_lines[insert_at + 1 :]
 
     assert actual_before == before_expected, (
-        "Plans.md content before the new Decisions entry must be byte-identical to the seeded "
+        "plan file content before the new Decisions entry must be byte-identical to the seeded "
         f"fixture:\nexpected={before_expected!r}\nactual={actual_before!r}"
     )
     assert actual_after == after_expected, (
-        "Plans.md content after the new Decisions entry must be byte-identical to the seeded "
+        "plan file content after the new Decisions entry must be byte-identical to the seeded "
         f"fixture:\nexpected={after_expected!r}\nactual={actual_after!r}"
     )
 
@@ -274,7 +262,7 @@ def assert_decision_recorded(plans_path: Path, *, expected_decision: str) -> Non
 
 def _extract_inserted_phase_block(plans_path: Path) -> list[str]:
     """Return the lines `add-phase` inserted, asserting everything else in the document --
-    earlier phases, the project separator, Decisions, Notes, and the CODD frontmatter -- stayed
+    earlier phases, the project separator, Decisions, and Notes -- stayed
     byte-identical to the canonical fixture.
 
     `add-phase` only ever inserts a brand-new phase block right before the existing project
@@ -285,11 +273,6 @@ def _extract_inserted_phase_block(plans_path: Path) -> list[str]:
     separator's canonical index must match the canonical prefix, and everything from that same
     separator onward (by canonical suffix length, counted from the end of the actual document)
     must match the canonical suffix.
-
-    The canonical fixture's frontmatter also opens and closes with a bare `---` line, so the
-    project separator cannot be located by `line == "---"` alone (that matches 3 lines, not 1) --
-    it is instead identified as the `---` line immediately preceding the unique `## Decisions`
-    line.
     """
     text = _read_plans_text_preserving_line_endings(plans_path)
     actual_lines = text.split("\n")

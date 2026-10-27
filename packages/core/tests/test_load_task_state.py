@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -25,14 +27,13 @@ def test_load_config_uses_project_override_without_ai_orchestra_dir(tmp_path, mo
     config_dir = tmp_path / ".claude" / "config" / "core"
     config_dir.mkdir(parents=True)
     (config_dir / "task-memory.yaml").write_text(
-        'plans_file: ".claude/MyPlans.md"\nshow_summary_on_start: false\nmax_display_tasks: 7\n',
+        "show_summary_on_start: false\nmax_display_tasks: 7\n",
         encoding="utf-8",
     )
 
     config = load_task_state.load_config(str(tmp_path))
 
     assert config == {
-        "plans_file": ".claude/MyPlans.md",
         "show_summary_on_start": False,
         "max_display_tasks": 7,
     }
@@ -44,7 +45,6 @@ def test_load_config_returns_defaults_when_config_not_found(tmp_path, monkeypatc
     config = load_task_state.load_config(str(tmp_path))
 
     assert config == {
-        "plans_file": ".claude/Plans.md",
         "show_summary_on_start": True,
         "max_display_tasks": 20,
         "markers": {
@@ -64,13 +64,13 @@ def test_load_config_falls_back_to_repo_hook_common_when_orchestra_dir_is_invali
     config_dir = tmp_path / ".claude" / "config" / "core"
     config_dir.mkdir(parents=True)
     (config_dir / "task-memory.yaml").write_text(
-        'plans_file: ".claude/PlanB.md"\nshow_summary_on_start: true\nmax_display_tasks: 3\n',
+        "show_summary_on_start: true\nmax_display_tasks: 3\n",
         encoding="utf-8",
     )
 
     config = load_task_state.load_config(str(tmp_path))
 
-    assert config["plans_file"] == ".claude/PlanB.md"
+    assert "plans_file" not in config
     assert config["show_summary_on_start"] is True
     assert config["max_display_tasks"] == 3
 
@@ -158,51 +158,23 @@ def test_format_summary_limited_shows_blocked_when_budget_remains() -> None:
     assert "    ... and 1 more" in summary
 
 
-def test_main_uses_unlimited_when_configured_max_display_is_zero(tmp_path, monkeypatch) -> None:
-    plans_path = tmp_path / ".claude" / "Plans.md"
+@pytest.mark.parametrize(
+    ("limit", "shown"), [(0, 25), ("0", 25), ("invalid", 20), (-1, 20), (None, 20), (1, 1)]
+)
+def test_main_applies_display_limit(tmp_path, monkeypatch, capsys, limit, shown) -> None:
+    plans_path = tmp_path / ".claude" / "plans" / "example.md"
     plans_path.parent.mkdir(parents=True)
-    plans_path.write_text("- `cc:TODO` task", encoding="utf-8")
-
+    plans_path.write_text("\n".join(f"- `cc:TODO` task {i}" for i in range(25)), encoding="utf-8")
     monkeypatch.setattr(load_task_state, "read_hook_input", lambda: {"cwd": str(tmp_path)})
-    monkeypatch.setattr(
-        load_task_state,
-        "load_config",
-        lambda _project_dir: {
-            "plans_file": ".claude/Plans.md",
-            "show_summary_on_start": True,
-            "max_display_tasks": 0,
-        },
-    )
-    monkeypatch.setattr(
-        load_task_state,
-        "parse_tasks",
-        lambda _content, *_args: {
-            "WIP": [],
-            "TODO": [{"task": "task", "reason": None}],
-            "done": [],
-            "blocked": [],
-        },
-    )
-
-    called = {"max_display": "unset"}
-    monkeypatch.setattr(
-        load_task_state,
-        "format_summary",
-        lambda _tasks, max_display, **_kwargs: (
-            called.update({"max_display": max_display}) or "summary"
-        ),
-    )
-    printed: list[str] = []
-    monkeypatch.setattr("builtins.print", lambda message: printed.append(message))
+    monkeypatch.setattr(load_task_state, "load_config", lambda _: {"max_display_tasks": limit})
 
     load_task_state.main()
 
-    assert called["max_display"] is None
-    assert printed == ["summary"]
+    assert capsys.readouterr().out.count("\n    - ") == shown
 
 
 def test_main_prints_summary_when_only_orders_exist_and_no_tasks(tmp_path, monkeypatch) -> None:
-    plans_path = tmp_path / ".claude" / "Plans.md"
+    plans_path = tmp_path / ".claude" / "plans" / "example.md"
     plans_path.parent.mkdir(parents=True)
     plans_path.write_text(
         """# Plans
@@ -222,7 +194,6 @@ def test_main_prints_summary_when_only_orders_exist_and_no_tasks(tmp_path, monke
         load_task_state,
         "load_config",
         lambda _project_dir: {
-            "plans_file": ".claude/Plans.md",
             "show_summary_on_start": True,
             "max_display_tasks": 20,
         },
@@ -236,96 +207,8 @@ def test_main_prints_summary_when_only_orders_exist_and_no_tasks(tmp_path, monke
     assert "Goal: Ship it later" in printed[0]
 
 
-def test_main_falls_back_to_default_max_display_for_invalid_value(tmp_path, monkeypatch) -> None:
-    plans_path = tmp_path / ".claude" / "Plans.md"
-    plans_path.parent.mkdir(parents=True)
-    plans_path.write_text("- `cc:TODO` task", encoding="utf-8")
-
-    monkeypatch.setattr(load_task_state, "read_hook_input", lambda: {"cwd": str(tmp_path)})
-    monkeypatch.setattr(
-        load_task_state,
-        "load_config",
-        lambda _project_dir: {
-            "plans_file": ".claude/Plans.md",
-            "show_summary_on_start": True,
-            "max_display_tasks": "invalid",
-        },
-    )
-    monkeypatch.setattr(
-        load_task_state,
-        "parse_tasks",
-        lambda _content, *_args: {
-            "WIP": [],
-            "TODO": [{"task": "task", "reason": None}],
-            "done": [],
-            "blocked": [],
-        },
-    )
-
-    called = {"max_display": "unset"}
-    monkeypatch.setattr(
-        load_task_state,
-        "format_summary",
-        lambda _tasks, max_display, **_kwargs: (
-            called.update({"max_display": max_display}) or "summary"
-        ),
-    )
-    monkeypatch.setattr("builtins.print", lambda _message: None)
-
-    load_task_state.main()
-
-    assert called["max_display"] == 20
-
-
-def test_main_treats_string_zero_max_display_as_unlimited(tmp_path, monkeypatch) -> None:
-    plans_path = tmp_path / ".claude" / "Plans.md"
-    plans_path.parent.mkdir(parents=True)
-    plans_path.write_text("- `cc:TODO` task", encoding="utf-8")
-
-    monkeypatch.setattr(load_task_state, "read_hook_input", lambda: {"cwd": str(tmp_path)})
-    monkeypatch.setattr(
-        load_task_state,
-        "load_config",
-        lambda _project_dir: {
-            "plans_file": ".claude/Plans.md",
-            "show_summary_on_start": True,
-            "max_display_tasks": "0",
-            "markers": {
-                "todo": "cc:TODO",
-                "wip": "cc:WIP",
-                "done": "cc:done",
-                "blocked": "cc:blocked",
-            },
-        },
-    )
-    monkeypatch.setattr(
-        load_task_state,
-        "parse_tasks",
-        lambda _content, *_args: {
-            "WIP": [],
-            "TODO": [{"task": "task", "reason": None}],
-            "done": [],
-            "blocked": [],
-        },
-    )
-
-    called = {"max_display": "unset"}
-    monkeypatch.setattr(
-        load_task_state,
-        "format_summary",
-        lambda _tasks, max_display, **_kwargs: (
-            called.update({"max_display": max_display}) or "summary"
-        ),
-    )
-    monkeypatch.setattr("builtins.print", lambda _message: None)
-
-    load_task_state.main()
-
-    assert called["max_display"] is None
-
-
 def test_main_passes_custom_marker_mapping_to_parse_tasks(tmp_path, monkeypatch) -> None:
-    plans_path = tmp_path / ".claude" / "Plans.md"
+    plans_path = tmp_path / ".claude" / "plans" / "example.md"
     plans_path.parent.mkdir(parents=True)
     plans_path.write_text("- `x:todo` task", encoding="utf-8")
 
@@ -334,7 +217,6 @@ def test_main_passes_custom_marker_mapping_to_parse_tasks(tmp_path, monkeypatch)
         load_task_state,
         "load_config",
         lambda _project_dir: {
-            "plans_file": ".claude/Plans.md",
             "show_summary_on_start": True,
             "max_display_tasks": 1,
             "markers": {"todo": "x:todo", "wip": "x:wip", "done": "x:done", "blocked": "x:blocked"},
@@ -363,82 +245,42 @@ def test_main_passes_custom_marker_mapping_to_parse_tasks(tmp_path, monkeypatch)
     }
 
 
-def test_main_never_archives_completed_projects_or_touches_plans_file(
-    tmp_path, monkeypatch
+def test_main_preserves_completed_unfinished_and_legacy_files(
+    tmp_path, monkeypatch, capsys
 ) -> None:
-    """core EV-50: 全 Phase 完了済みの Project があっても Plans.md からの除去・
-    Plans.archive.md への書き出しをせず、サマリー出力だけを行う。"""
-    claude_dir = tmp_path / ".claude"
-    claude_dir.mkdir(parents=True)
-    plans_path = claude_dir / "Plans.md"
-    original_content = """# Plans
-
-## Project: Completed
-
-#### Goal
-- Ship the completed feature
-
-### Phase 1: Build `cc:done`
-
-#### Acceptance Criteria
-
-- [x] condition met — verify: `echo ok`
-
-#### Tasks
-
-- `cc:done` Finished task
-
----
-
-## Project: Active
-
-### Phase 1: Work `cc:TODO`
-
-#### Tasks
-
-- `cc:TODO` Pending task
-
----
-
-## Decisions
-
-- 2026-09-28: some decision
-
-## Notes
-
-- some note
-"""
-    plans_path.write_text(original_content, encoding="utf-8")
-
-    def _tracked_files() -> list[str]:
-        return sorted(
-            str(p.relative_to(tmp_path))
-            for p in claude_dir.rglob("*")
-            if p.is_file() and "context" not in p.parts
-        )
-
-    before_files = _tracked_files()
-
+    """EV-50: 完了・未完了・旧ファイルの本文、Decisions / Notes を保持する。"""
+    plans_dir = tmp_path / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    contents = {
+        plans_dir / "completed.md": (
+            "## Project: Completed\n#### Goal\n- Completed goal\n"
+            "### Phase 1\n#### Acceptance Criteria\n- [x] passed\n"
+            "#### Tasks\n- `cc:done` Finished task\n"
+            "## Decisions\n- Completed decision\n## Notes\n- Completed note\n"
+        ),
+        plans_dir / "active.md": (
+            "## Project: Active\n### Phase 1\n- `cc:TODO` Pending task\n"
+            "## Decisions\n- Active decision\n## Notes\n- Active note\n"
+        ),
+        tmp_path / ".claude" / "Plans.md": "Legacy content\n",
+    }
+    for path, content in contents.items():
+        path.write_text(content, encoding="utf-8")
+    before = {path: path.read_bytes() for path in contents}
     monkeypatch.setattr(load_task_state, "read_hook_input", lambda: {"cwd": str(tmp_path)})
-    monkeypatch.setattr(
-        load_task_state,
-        "load_config",
-        lambda _project_dir: {
-            "plans_file": ".claude/Plans.md",
-            "show_summary_on_start": True,
-            "max_display_tasks": 20,
-        },
-    )
-    printed: list[str] = []
-    monkeypatch.setattr("builtins.print", lambda message: printed.append(message))
+    monkeypatch.setattr(load_task_state, "load_config", lambda _: {})
 
     load_task_state.main()
 
-    assert plans_path.read_text(encoding="utf-8") == original_content
-    assert not (claude_dir / "Plans.archive.md").exists()
-    assert _tracked_files() == before_files
-    assert printed
-    assert "Pending task" in printed[0]
+    output = capsys.readouterr().out
+    assert "未完了 1 / 完了 1" in output
+    assert "Pending task" in output
+    assert "/task-state close <slug>" in output
+    assert "Completed goal" not in output
+    assert "Finished task" not in output
+    assert {path: path.read_bytes() for path in contents} == before
+    assert set(plans_dir.iterdir()) == {path for path in contents if path.parent == plans_dir}
+    assert not (tmp_path / ".claude" / "Plans.archive.md").exists()
 
 
 def test_parse_tasks_skips_ac_checkbox_line_even_with_marker_like_text_in_body() -> None:
@@ -523,7 +365,7 @@ def test_structural_exclusions_frontmatter_closing_requires_unindented_delimiter
 
 
 def test_main_falls_back_to_default_markers_when_duplicates_exist(tmp_path, monkeypatch) -> None:
-    plans_path = tmp_path / ".claude" / "Plans.md"
+    plans_path = tmp_path / ".claude" / "plans" / "example.md"
     plans_path.parent.mkdir(parents=True)
     plans_path.write_text("- `dup:task` task", encoding="utf-8")
 
@@ -532,7 +374,6 @@ def test_main_falls_back_to_default_markers_when_duplicates_exist(tmp_path, monk
         load_task_state,
         "load_config",
         lambda _project_dir: {
-            "plans_file": ".claude/Plans.md",
             "show_summary_on_start": True,
             "max_display_tasks": 1,
             "markers": {
@@ -946,3 +787,345 @@ codd:
     assert load_task_state.parse_orders(frontmatter_content) == load_task_state.parse_orders(
         plain_content
     )
+
+
+def _write_plan(project: Path, slug: str, content: str) -> Path:
+    path = project / ".claude" / "plans" / f"{slug}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("content", "complete"),
+    [
+        ("## Project: Empty\n#### Goal\n- Draft goal\n", False),
+        ("", False),
+        ("- `cc:done` Finished\n- `cc:WIP` Pending\n", False),
+        ("- `cc:done` Finished\n- `cc:TODO` Pending\n", False),
+        ("- `cc:done` Finished\n- `cc:blocked` Pending\n", False),
+        (
+            "### Phase 1\n#### Tasks\n- `cc:done` Finished\n"
+            "#### Acceptance Criteria\n- [x] passed\n- [ ] missing\n",
+            False,
+        ),
+        ("- `cc:done` Finished\n", True),
+        (
+            "### Phase 1\n#### Acceptance Criteria\n- [x] passed\n- [X] passed too\n"
+            "#### Tasks\n- `cc:done` Finished\n",
+            True,
+        ),
+        (
+            "### Phase 1\n#### Acceptance Criteria\n- [X] passed\n"
+            "##### Details\n- [ ] nested requirement\n#### Tasks\n- `cc:done` Finished\n",
+            False,
+        ),
+        (
+            "### Phase 1\n#### Acceptance Criteria\n- [X] passed\n"
+            "#### Tasks\n- [ ] ordinary checklist\n- `cc:done` Finished\n",
+            True,
+        ),
+        (
+            "## Project: A\n### Phase 1\n- `cc:done` Finished\n"
+            "## Project: B\n### Phase 1\n- `cc:TODO` Pending\n",
+            False,
+        ),
+        (
+            "## Project: A\n### Phase 1\n- `cc:done` First\n"
+            "## Project: B\n### Phase 1\n- `cc:done` Second\n",
+            True,
+        ),
+        (
+            "#### Acceptance Criteria\n- [ ] outside phase\n### Phase 1\n- `cc:done` Finished\n",
+            True,
+        ),
+    ],
+)
+def test_completion_requires_tasks_all_done_and_checked_ac(tmp_path, content, complete) -> None:
+    path = _write_plan(tmp_path, "example", content)
+
+    plans, invalid_names = load_task_state.collect_plans(str(tmp_path), {})
+    summary = load_task_state.build_plans_summary(str(tmp_path), {})
+
+    assert invalid_names == []
+    assert len(plans) == 1
+    assert plans[0]["path"] == path
+    assert plans[0]["slug"] == "example"
+    assert plans[0]["complete"] is complete
+    assert ("■ example" in summary) is not complete
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        "```markdown\n{body}\n```\n",
+        "~~~~markdown\n{body}\n~~~\n~~~~\n",
+        "<!--\n{body}\n-->\n",
+        "---\n{body}\n---\n",
+    ],
+)
+def test_excluded_ac_headings_and_tasks_do_not_affect_completion(tmp_path, wrapper) -> None:
+    excluded = wrapper.format(
+        body="### Phase Fake\n#### Acceptance Criteria\n- [ ] fake\n- `cc:WIP` fake task"
+    )
+    _write_plan(tmp_path, "example", excluded + "### Phase 1\n- `cc:done` Finished\n")
+
+    plans, _ = load_task_state.collect_plans(str(tmp_path), {})
+
+    assert plans[0]["complete"] is True
+    assert plans[0]["tasks"]["WIP"] == []
+
+
+@pytest.mark.parametrize("wrapper", ["```\n{body}\n```\n", "<!--\n{body}\n-->\n"])
+def test_excluded_heading_does_not_end_real_unchecked_ac(tmp_path, wrapper) -> None:
+    _write_plan(
+        tmp_path,
+        "example",
+        "### Phase 1\n#### Tasks\n- `cc:done` Finished\n#### Acceptance Criteria\n"
+        + wrapper.format(body="#### Other section")
+        + "- [ ] still required\n",
+    )
+
+    plans, _ = load_task_state.collect_plans(str(tmp_path), {})
+
+    assert plans[0]["complete"] is False
+
+
+@pytest.mark.parametrize("first_tasks", [2, 3])
+def test_shared_cap_keeps_later_files_as_single_lines(tmp_path, first_tasks) -> None:
+    _write_plan(
+        tmp_path,
+        "a-first",
+        "## Project: First\n#### Goal\n- First goal\n#### Open Questions\n- First question\n"
+        "### Phase 1\n" + "\n".join(f"- `cc:TODO` first task {i}" for i in range(first_tasks)),
+    )
+    _write_plan(tmp_path, "b-later", "- `cc:TODO` hidden second task\n")
+    _write_plan(tmp_path, "c-later", "- `cc:blocked` hidden third task — 理由: waiting\n")
+
+    summary = load_task_state.build_plans_summary(str(tmp_path), {"max_display_tasks": 2})
+
+    assert summary.count("\n    - ") == 2
+    assert "Goal: First goal" in summary
+    assert "Open Questions: 1" in summary
+    assert "■ b-later — WIP: 0, TODO: 1, blocked: 0 (表示上限のため省略)" in summary.splitlines()
+    assert "■ c-later — WIP: 0, TODO: 0, blocked: 1 (表示上限のため省略)" in summary.splitlines()
+    assert "hidden second task" not in summary
+    assert "hidden third task" not in summary
+    assert ("... and 1 more" in summary) is (first_tasks == 3)
+
+
+def test_partial_file_keeps_goal_questions_and_all_omitted_counts(tmp_path) -> None:
+    _write_plan(
+        tmp_path, "a-idle", "## Project: Idle\n#### Goal\n- Hidden goal\n- `cc:TODO` excluded\n"
+    )
+    _write_plan(
+        tmp_path,
+        "z-active",
+        "## Project: Active\n#### Goal\n- Active goal\n#### Open Questions\n- Pending question\n"
+        "### Phase 1\n- `cc:TODO` next one\n- `cc:WIP` working\n- `cc:TODO` next two\n"
+        "- `cc:blocked` waiting — 理由: external\n",
+    )
+
+    summary = load_task_state.build_plans_summary(str(tmp_path), {"max_display_tasks": 2})
+
+    assert summary.index("■ z-active") < summary.index("■ a-idle")
+    assert "Goal: Active goal" in summary
+    assert "Open Questions: 1" in summary
+    assert summary.index("    - working") < summary.index("    - next one")
+    assert "... and 1 more" in summary
+    assert "Blocked: (上限のため 1 件省略)" in summary
+    assert "Hidden goal" not in summary
+    assert "next two" not in summary
+
+
+def test_wip_files_then_other_files_are_sorted_and_keep_their_own_orders(tmp_path) -> None:
+    for slug, state in [
+        ("z-idle", "TODO"),
+        ("y-active", "WIP"),
+        ("a-idle", "TODO"),
+        ("b-active", "WIP"),
+    ]:
+        _write_plan(
+            tmp_path,
+            slug,
+            f"## Project: {slug}\n#### Goal\n- {slug} goal\n"
+            f"### Phase 1\n- `cc:{state}` {slug} task\n",
+        )
+    summary = load_task_state.build_plans_summary(str(tmp_path), {"max_display_tasks": 0})
+    blocks = summary.split("■ ")[1:]
+
+    assert [block.split(" ")[0] for block in blocks] == ["b-active", "y-active", "a-idle", "z-idle"]
+    for slug, block in zip(["b-active", "y-active", "a-idle", "z-idle"], blocks, strict=True):
+        assert f"Goal: {slug} goal" in block
+        assert f"    - {slug} task" in block
+
+
+@pytest.mark.parametrize("has_plans_dir", [False, True])
+def test_legacy_warning_does_not_read_legacy_content(tmp_path, has_plans_dir) -> None:
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    if has_plans_dir:
+        (claude_dir / "plans").mkdir()
+    (claude_dir / "Plans.md").write_bytes(b"\xff- `cc:WIP` legacy unique text")
+
+    summary = load_task_state.build_plans_summary(str(tmp_path), {})
+
+    assert summary == (
+        "[task-memory] 警告: .claude/Plans.md は読み込まれません。"
+        "Project ごとに .claude/plans/<slug>.md へ移してください"
+    )
+    assert "legacy unique text" not in summary
+
+
+def test_broken_legacy_symlink_still_warns(tmp_path) -> None:
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "Plans.md").symlink_to(tmp_path / "missing.md")
+
+    assert "警告" in load_task_state.build_plans_summary(str(tmp_path), {})
+
+
+def test_summary_disabled_emits_neither_summary_nor_diagnostics(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _write_plan(tmp_path, "example", "- `cc:TODO` Pending\n")
+    _write_plan(tmp_path, "Invalid", "- `cc:TODO` Invalid task\n")
+    (tmp_path / ".claude" / "Plans.md").write_text("legacy")
+    monkeypatch.setattr(load_task_state, "read_hook_input", lambda: {"cwd": str(tmp_path)})
+    monkeypatch.setattr(
+        load_task_state,
+        "load_config",
+        lambda _: {"show_summary_on_start": False, "markers": {"todo": "dup", "wip": "dup"}},
+    )
+
+    load_task_state.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_plans_file_setting_is_ignored_and_local_markers_control_completion(tmp_path) -> None:
+    _write_plan(tmp_path, "done", "- `local:done` Finished\n")
+    _write_plan(tmp_path, "active", "- `local:todo` Pending\n")
+    config_dir = tmp_path / ".claude" / "config" / "core"
+    config_dir.mkdir(parents=True)
+    (config_dir / "task-memory.yaml").write_text(
+        "plans_file: .claude/custom.md\nmarkers:\n  todo: base:todo\n  done: base:done\n",
+        encoding="utf-8",
+    )
+    (config_dir / "task-memory.local.yaml").write_text(
+        "plans_file: [invalid, ignored]\nmarkers:\n  todo: local:todo\n  done: local:done\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".claude" / "custom.md").write_text("- `local:todo` Never read this\n")
+    config = load_task_state.load_config(str(tmp_path))
+
+    summary = load_task_state.build_plans_summary(str(tmp_path), config)
+
+    assert "未完了 1 / 完了 1" in summary
+    assert "Pending" in summary
+    assert "Never read this" not in summary
+    assert "Finished" not in summary
+
+
+@pytest.mark.parametrize("kind", ["missing", "empty", "file", "symlink"])
+def test_invalid_or_empty_plans_dir_has_no_plans(tmp_path, kind) -> None:
+    (tmp_path / ".claude").mkdir()
+    plans_dir = tmp_path / ".claude" / "plans"
+    if kind == "empty":
+        plans_dir.mkdir()
+    elif kind == "file":
+        plans_dir.write_text("- `cc:TODO` not a directory\n")
+    elif kind == "symlink":
+        outside = tmp_path / "external"
+        outside.mkdir()
+        (outside / "external.md").write_text("- `cc:TODO` outside unique text\n")
+        plans_dir.symlink_to(outside, target_is_directory=True)
+
+    assert load_task_state.collect_plans(str(tmp_path), {}) == ([], [])
+    assert load_task_state.build_plans_summary(str(tmp_path), {}) == ""
+
+
+def test_discovery_ignores_symlinks_nested_dotfiles_and_invalid_markdown_names(tmp_path) -> None:
+    _write_plan(tmp_path, "valid-1", "- `cc:TODO` visible task\n")
+    plans_dir = tmp_path / ".claude" / "plans"
+    for name in ["Foo.md", "a b.md", "x.MD", "-bad.md", "日本語.md", ".hidden.md", "notes.txt"]:
+        (plans_dir / name).write_text("- `cc:WIP` hidden task\n")
+    nested = plans_dir / "subdirectory.md"
+    nested.mkdir()
+    (nested / "nested.md").write_text("- `cc:WIP` nested task\n")
+    outside = tmp_path / "outside.md"
+    outside.write_text("- `cc:WIP` external unique text\n")
+    (plans_dir / "external.md").symlink_to(outside)
+    (plans_dir / "broken.md").symlink_to(tmp_path / "missing.md")
+
+    plans, invalid_names = load_task_state.collect_plans(str(tmp_path), {})
+    summary = load_task_state.build_plans_summary(str(tmp_path), {})
+
+    assert [plan["slug"] for plan in plans] == ["valid-1"]
+    assert invalid_names == ["-bad.md", "Foo.md", "a b.md", "x.MD", "日本語.md"]
+    assert summary.splitlines()[-1] == (
+        "[task-memory] 命名規則（<slug>.md, slug は [a-z0-9-]）に合わず読まなかったファイル: "
+        "-bad.md, Foo.md, a b.md, x.MD, 日本語.md"
+    )
+    assert "visible task" in summary
+    assert "hidden task" not in summary
+    assert "nested task" not in summary
+    assert "external unique text" not in summary
+
+
+def test_non_utf8_plan_is_skipped_without_losing_other_files(tmp_path) -> None:
+    _write_plan(tmp_path, "good", "- `cc:WIP` survives\n")
+    bad = _write_plan(tmp_path, "bad", "")
+    bad.write_bytes(b"\xff\xfe\x00")
+
+    summary = load_task_state.build_plans_summary(str(tmp_path), {})
+
+    assert "未完了 1 / 完了 0" in summary
+    assert "survives" in summary
+    assert "■ bad" not in summary
+
+
+@pytest.mark.parametrize("failure", [PermissionError, FileNotFoundError])
+def test_unreadable_or_disappeared_plan_does_not_hide_other_files(
+    tmp_path, monkeypatch, failure
+) -> None:
+    _write_plan(tmp_path, "bad", "- `cc:WIP` unreadable\n")
+    _write_plan(tmp_path, "good", "- `cc:TODO` survives\n")
+    original_read = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path.name == "bad.md":
+            raise failure("unreadable")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    summary = load_task_state.build_plans_summary(str(tmp_path), {})
+
+    assert "survives" in summary
+    assert "■ bad" not in summary
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "## Project: Draft\n#### Goal\n- Goal only\n",
+        "- `cc:done` Finished\n",
+        "- `cc:done` Finished\n- `cc:TODO` Pending\n",
+        "### Phase 1\n#### Acceptance Criteria\n- [ ] missing\n#### Tasks\n- `cc:done` Finished\n",
+        "### Phase 1\n#### Acceptance Criteria\n- [X] passed\n#### Tasks\n- `cc:done` Finished\n",
+        "```\n#### Acceptance Criteria\n- [ ] fake\n```\n### Phase 1\n- `cc:done` Finished\n",
+        "<!--\n#### Acceptance Criteria\n- [ ] fake\n-->\n### Phase 1\n- `cc:done` Finished\n",
+        "---\n#### Acceptance Criteria\n- [ ] fake\n---\n### Phase 1\n- `cc:done` Finished\n",
+    ],
+)
+def test_completion_agrees_with_handoff_for_shared_boundary_cases(tmp_path, content) -> None:
+    """評価セット §5: 独立した 2 つのパーサで主要な完了境界を照合する。"""
+    handoff = load_module("core_test_handoff", "facets/scripts/handoff.py")
+    _write_plan(tmp_path, "example", content)
+
+    plans, _ = load_task_state.collect_plans(str(tmp_path), {})
+    handoff_tasks = handoff.parse_tasks(content, include_done=True)
+
+    assert plans[0]["complete"] is handoff.plan_is_complete(content, handoff_tasks)

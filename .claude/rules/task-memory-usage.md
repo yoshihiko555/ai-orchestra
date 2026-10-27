@@ -1,12 +1,19 @@
-# Task Memory — SSOT によるタスク管理
+# Task Memory — plan ファイルによるタスク管理
 
-**`Plans.md` をタスクの Single Source of Truth（SSOT）として使用し、セッション間のコンテキストを維持する。**
+**Project ごとの plan ファイル `.claude/plans/<slug>.md` を、その作業の発注書と状態の Single Source of Truth（SSOT）として使い、セッション間のコンテキストを維持する（ADR-20261027-059）。**
 
-## Plans.md フォーマット
+## 置き場所とファイル名
+
+- 1 Project = 1 ファイル。`.claude/plans/<slug>.md` に平置きする（サブディレクトリは読まれない）
+- slug は Project 名から作る `[a-z0-9][a-z0-9-]*`（ASCII 小文字・数字・ハイフン）。例: `plans-dir-split`
+- 名前が `<slug>.md` の規則に合わないファイル（大文字・空白を含む、`.MD` 等）と symlink は読まれない
+- 1 つのファイルに `## Project:` を複数書かない。別の作業は別のファイルにする
+- plan ファイルはローカル管理とし、git にはコミットしない（配布する `.gitignore` 管理ブロックに `.claude/plans/` が入る）
+- 旧形式の `.claude/Plans.md` は読まれない。残っていると SessionStart が警告を出すので、中の Project をそれぞれ `.claude/plans/<slug>.md` に移してから消す
+
+## plan ファイルのフォーマット
 
 ```markdown
-# Plans
-
 ## Project: {プロジェクト名}
 
 #### Goal
@@ -62,9 +69,11 @@
 - {補足情報}
 ```
 
+雛形は `templates/project/plan.md`。`## Decisions` と `## Notes` はファイルごとに持ち、その Project の判断と気づきだけを書く。
+
 ## 発注書の節（Project 直下）
 
-Plans.md は「発注書（何をするか + 受け入れ条件）」と「状態（どこまで進んだか）」を 1 つの Project に
+plan ファイルは「発注書（何をするか + 受け入れ条件）」と「状態（どこまで進んだか）」を 1 つの Project に
 まとめて持つ（ADR-20260926-056）。階層は Project → Phase → Task の 3 段で、AC は Phase の属性。
 Project 直下の 5 節が発注書にあたる。
 
@@ -76,11 +85,21 @@ Project 直下の 5 節が発注書にあたる。
 | `Constraints`    | 規約、触らないファイル、使ってはいけない手段、互換性条件                          |
 | `Open Questions` | 未決事項。決まったら `## Decisions` に移して消す。件数が注入に載る                |
 
-- 5 節は任意。無い Project は従来どおり動く（後方互換）。節内の行は `cc:` マーカーがあってもタスクとして扱われない。タスクは `#### Tasks` 等の Phase 配下だけに書く
+- 5 節は任意。節内の行は `cc:` マーカーがあってもタスクとして扱われない。タスクは `#### Tasks` 等の Phase 配下だけに書く
 - 雛形のプレースホルダ（`{...}` で始まる行）は注入・件数に含めない。埋めるまで残してよい
-- 対話（grill-me 等）で確定した計画は、5 節と Phase の AC・Tasks をそろえて **1 回で** 書き出す。以後の修正は Plans.md への差分編集で行い、対話に差し戻さない
+- 対話（grill-me 等）で確定した計画は、5 節と Phase の AC・Tasks をそろえて新しい plan ファイルに **1 回で** 書き出す（`/order --to plans`）。以後の修正はそのファイルへの差分編集で行い、対話に差し戻さない
 - タスク行は `{何をするか} — 対象: \`{ファイル}\` / 確認: {方法}`の形を標準とする。「確認」は`cc:done` にしてよい根拠（絞ったテスト・静的チェック・grep で消えたことを見る・手動観察）。省略可（`確認: なし`）。Phase の AC verify はフェーズ全体の合格判定、Task の確認は実装者がその場で回す自己チェック
-- Plans.md は `/goal` と Codex 直接（`/handoff`）の発注書。`/loop-issue` と TAKT に渡す作業は Issue 本文を発注書にし、Plans.md を持たない。Plans.md の Project を Issue に出したら、その Project は Plans.md から取り除き、二重に状態を持たない。Open Questions が残る Project は自律エンジン（`/loop-issue` / TAKT）へ出さない
+- plan ファイルは `/goal` と Codex 直接（`/handoff`）の発注書。`/loop-issue` と TAKT に渡す作業は Issue 本文を発注書にし、plan ファイルを持たない。plan ファイルの Project を Issue に出したら、そのファイルは削除し、二重に状態を持たない。Open Questions が残る Project は自律エンジン（`/loop-issue` / TAKT）へ出さない
+
+## 対象ファイルの決め方
+
+plan ファイルを読み書きするスキル（`/task-state`・`/handoff`・`/order --from-plans`・`/grasp-check plan`）は、対象を slug で指定する。slug を省略したときは次のとおりに決める。
+
+| 未完了の plan ファイル | 対象                                         |
+| ---------------------- | -------------------------------------------- |
+| 1 つ                   | そのファイル                                 |
+| 2 つ以上               | AskUserQuestion で利用者に選ばせる           |
+| 0                      | 対象が無いことを伝え、作り方を案内して終える |
 
 ## 状態マーカー
 
@@ -100,7 +119,7 @@ Project 直下の 5 節が発注書にあたる。
 
 ## 受け入れ条件（Acceptance Criteria）
 
-フェーズ単位で「完了」を定義する任意（後方互換）のセクション。AC セクションがないフェーズは `cc:` マーカーのみで完了判定される。
+フェーズ単位で「完了」を定義する任意のセクション。AC セクションがないフェーズは `cc:` マーカーのみで完了判定される。
 
 ### 記法
 
@@ -121,6 +140,7 @@ Project 直下の 5 節が発注書にあたる。
 - フェーズ完了 = タスク全て `cc:done` **かつ** AC 全て `[x]`
 - フェーズ見出しに `cc:done` が付与されていても、未チェック `- [ ]` の AC が残っていれば未完了として扱う
 - AC セクションのないフェーズは、タスクが全て `cc:done` であれば完了とみなす
+- plan ファイルの完了 = タスクが 1 件以上あり、すべて `cc:done` で、ファイル内の AC がすべて `[x]`。タスクが 0 件のファイル（発注書だけを書いた段階など）は未完了
 
 ### チェック更新責務
 
@@ -130,22 +150,26 @@ Project 直下の 5 節が発注書にあたる。
 
 ### 自律ループ運用
 
-- goal 等の自律ループ実行時は、Plans.md の AC を合否判定の根拠とする
+- goal 等の自律ループ実行時は、対象の plan ファイルの AC を合否判定の根拠とする
 - ループの継続/停止は AC の充足状況で判断する
 
 ## セッション開始時の動作
 
-SessionStart hook は `.claude/Plans.md` を読むだけで書き換えない。完了した Project も Decisions / Notes も
-Plans.md に残る（ADR-20260928-058）。
+SessionStart hook は `.claude/plans/*.md` を読むだけで、書き換えも移動も削除もしない（ADR-20260928-058）。
 
 ### タスクサマリー注入
 
-Plans.md から以下をコンテキストに注入する:
+未完了の plan ファイルごとに、slug を見出しにして以下を注入する:
 
 1. **Goal の先頭 1 行と Open Questions の件数** — 何のための作業か、未決が残っているか（節がない Project では省略）
 2. **WIP タスクの一覧** — 前回セッションで中断した作業
 3. **次の TODO タスク** — 優先度の高い未着手タスク
 4. **blocked タスクの一覧** — 対処が必要なブロッカー
+
+- WIP タスクを持つファイルを先に、同じ順位の中ではファイル名順に並べる
+- 表示するタスクの合計は `task-memory.yaml` の `max_display_tasks`（既定 20）まで。上限に達した後のファイルは slug と件数だけの 1 行になる
+- 完了したファイルは中身を出さず、件数と片付けの案内（`/task-state close <slug>`）だけを出す
+- 旧 `.claude/Plans.md` があれば、移行を促す 1 行の警告を出す（中身は注入しない）
 
 ## 運用ルール
 
@@ -158,25 +182,23 @@ Plans.md から以下をコンテキストに注入する:
 - Acceptance Criteria の `verify` 条件は、コマンドを実行して pass を確認した実行者のみが `[x]` に更新できる。検証なしでのチェックは禁止する
 - `judge` 条件は、判定基準と照合した結果を確認したうえで `[x]` に更新する
 
-### Plans.md の管理
+### plan ファイルの管理
 
-- Plans.md はプロジェクトの `.claude/Plans.md` に配置する
-- `/task-state` スキルで Plans.md の作成・更新ができる
+- `/order --to plans` で新しい plan ファイルを作り、`/task-state` で状態を更新する
 - 手動編集も可能（フォーマットに従うこと）
-- Plans.md はローカル管理とし、git にはコミットしない（`.gitignore` に追加する）
-- git worktree で作業する場合は、**作業中の worktree の `.claude/Plans.md` が正本（SSOT）**。root（main チェックアウト）側の Plans.md を worktree の作業から参照・更新しない
+- git worktree で作業する場合は、**作業中の worktree の `.claude/plans/` が正本（SSOT）**。root（main チェックアウト）側の plan ファイルを worktree の作業から参照・更新しない
 - 計画は worktree ごとに起こし、タスク状態の更新もその worktree 内で完結させる
-- 進行状態は Plans.md に書き、auto-memory には書かない（auto-memory は全 worktree で共有されるため）。記憶の層の分担は `memory-layers` ルールに従う
+- 進行状態は plan ファイルに書き、auto-memory には書かない（auto-memory は全 worktree で共有されるため）。記憶の層の分担は `memory-layers` ルールに従う
 
-### 完了した Project
+### 完了したファイルの片付け
 
-- 完了した Project は自動では移動も削除もされない。worktree で作業している場合は worktree ごと消えるので片付けは要らない
-- root で Plans.md を使い回す場合は、不要になった Project を手動で消す
-- タスクが終わった後も参照する記録は、Plans.md ではなく PR 本文・Issue・ADR に書く（`memory-layers` ルール参照）
+- 完了したファイルは自動では移動も削除もされない。worktree で作業している場合は worktree ごと消えるので片付けは要らない
+- worktree を切らずに作業している場合は、`/task-state close <slug>` で片付ける。完了しているかを確認し、`## Decisions` のうち後から参照するものを ADR か PR 本文に残すか確認してから、ファイルを削除する。未完了のときは利用者が「未完了のまま片付ける」を選んだ場合だけ削除する。利用者が確認を取り消したとき、記録の書き込みに失敗したときは削除しない。archive には移さない
+- タスクが終わった後も参照する記録は、plan ファイルではなく PR 本文・Issue・ADR に書く（`memory-layers` ルール参照）
 
 ### 設計判断の記録
 
-大きな設計判断は `## Decisions` セクションに日付付きで記録する:
+大きな設計判断は、その plan ファイルの `## Decisions` セクションに日付付きで記録する:
 
 ```markdown
 ## Decisions
@@ -185,4 +207,4 @@ Plans.md から以下をコンテキストに注入する:
 - 2026-02-20: PostgreSQL を選定（理由: JSON サポートと拡張性）
 ```
 
-Plans.md の Decisions は worktree と一緒に消える。タスクが終わった後も参照する判断は ADR にも残す（`memory-layers` ルール参照）。
+plan ファイルの Decisions は、worktree と一緒に、または `/task-state close` で消える。タスクが終わった後も参照する判断は ADR にも残す（`memory-layers` ルール参照）。

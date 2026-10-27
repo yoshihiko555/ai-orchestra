@@ -71,3 +71,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260926-056 | 開発プロセスを「対話 → 発注書 → 4 実行エンジン」に組み直し、Plans.md を発注書として拡張する                                       | accepted   | 2026-09-26 |
 | ADR-20260927-057 | 記憶の層の分担を memory-layers ルールで定め、全 CLI に必要な知見は手動の棚卸しで AGENTS.md に昇格する                             | accepted   | 2026-09-27 |
 | ADR-20260928-058 | Plans.archive.md と SessionStart の自動アーカイブを廃止する（ADR-056 の部分 supersede）                                           | accepted   | 2026-09-28 |
+| ADR-20261027-059 | Plans.md を Project ごとの plan ファイル `.claude/plans/<slug>.md` に分割する（ADR-056 / 058 の部分 supersede）                  | accepted   | 2026-10-27 |

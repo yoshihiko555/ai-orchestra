@@ -15,7 +15,7 @@
    - `Critical` が未解消でないか
    - `High` の扱いが運用方針どおりに処理されているか
 3. **タスク状態**
-   - `Plans.md` に未解消の `cc:blocked` がないか
+   - 対象の plan ファイル（`.claude/plans/<slug>.md`。決め方は `task-memory-usage` ルール）に未解消の `cc:blocked` がないか
    - `cc:TODO` が残っている場合、マージ対象外として合意済みか
    - 対象フェーズの `#### Acceptance Criteria` に未チェック `- [ ]` が残っていないか（残っていれば BLOCKED）
 4. **差分健全性**
@@ -42,7 +42,7 @@
 1. `git diff --stat` と `git diff` でマージ対象の差分を取得
 2. 直近のテスト実行結果を確認
 3. 直近の `/review` 結果を確認
-4. `.claude/Plans.md` の状態を確認
+4. 対象の plan ファイル（`.claude/plans/<slug>.md`）の状態を確認（plan ファイルを持たないエンジンなら n/a）
 5. 差分に対応するドキュメント更新を確認（README / CHANGELOG / API ドキュメント）
 6. 変更コードパスに対するテストカバレッジを確認
    - カバレッジツール出力が利用可能ならそれを使用

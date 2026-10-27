@@ -49,7 +49,7 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 
 | フック                       | イベント         | 対象       | 説明                                                                                   |
 | ---------------------------- | ---------------- | ---------- | -------------------------------------------------------------------------------------- |
-| `load-task-state.py`         | SessionStart     | —          | Plans.md からタスク状態を読み込みサマリーを出力                                        |
+| `load-task-state.py`         | SessionStart     | —          | plan ファイル（`.claude/plans/*.md`）からタスク状態を読み込みサマリーを出力            |
 | `set-plan-gate.py`           | PostToolUse      | Agent/Task | プラン完了後にプランゲートを設定                                                       |
 | `check-plan-gate.py`         | PreToolUse       | Agent/Task | プランゲート確認（実装エージェントをブロック）                                         |
 | `clear-plan-gate.py`         | UserPromptSubmit | —          | ユーザー入力時にプランゲートをクリア                                                   |
@@ -115,24 +115,30 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 
 ### load-task-state.py（core）
 
-Plans.md からタスク状態を読み込み、セッション開始時にサマリーを出力する。
+plan ファイル（`.claude/plans/<slug>.md`。Project ごとに 1 ファイル）からタスク状態を読み込み、セッション開始時にサマリーを出力する（ADR-20261027-059）。
 
 **処理フロー:**
 
-1. `.claude/Plans.md` の存在を確認
-2. `task-memory.yaml` から設定を読み込み（マーカー定義等）
-3. 状態マーカー（`cc:TODO` / `cc:WIP` / `cc:done` / `cc:blocked`）を解析
-4. WIP / 次の TODO / blocked タスクをサマリーとして stdout に出力
+1. `task-memory.yaml` から設定を読み込み（マーカー定義・表示上限等）
+2. `.claude/plans/` 直下の `<slug>.md` を列挙（symlink と命名規則に合わないファイルは読まない）
+3. ファイルごとに状態マーカー（`cc:TODO` / `cc:WIP` / `cc:done` / `cc:blocked`）と AC を解析し、完了かどうかを判定
+4. 未完了のファイルごとに Goal / Open Questions / WIP / 次の TODO / blocked を stdout に出力。完了したファイルは件数と `/task-state close` の案内だけを出す
+5. 旧形式の `.claude/Plans.md` があれば、移行を促す警告を 1 行出す（中身は読まない）
 
-Plans.md は読むだけで書き換えない。完了したプロジェクトもそのまま残る（ADR-20260928-058）。
+plan ファイルは読むだけで書き換えない（ADR-20260928-058）。表示するタスクの合計は `max_display_tasks` までで、上限を超えたファイルは件数だけの 1 行になる。
 
 **出力例:**
 
 ```
-[task-memory] 11 tasks (done: 9, TODO: 2)
+[task-memory] .claude/plans/: 未完了 2 / 完了 1
+[task-memory] 完了したファイルは /task-state close <slug> で片付けられます
+■ plans-dir-split (12 tasks: done: 3, WIP: 1, TODO: 8)
+  Goal: Plans.md をタスクごとのファイルに分割する
+  WIP:
+    - パーサの対応
   Next TODO:
-    - タスク1
-    - タスク2
+    - スキルの対応
+■ codd-ack — WIP: 0, TODO: 4, blocked: 0 (表示上限のため省略)
 ```
 
 ### agent-router.py（agent-routing）

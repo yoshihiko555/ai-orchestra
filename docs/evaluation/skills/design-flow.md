@@ -3,7 +3,7 @@
 **対象スキル群**: `design` と、その下流の発注書スキル `/order`（ADR-20260926-056 で新設）。`preflight` / `startproject` は同 ADR で廃止済み（正本: `facets/instructions/design.md`, `facets/knowledge/design-review.md` ほか knowledge 6 本）
 **単位**: スキルフロー（設計 → タスク分解 → 実装の一連の振る舞い）
 **作成日**: 2026-07-04
-**最終レビュー日**: 2026-09-26（ADR-20260926-056 §決定 6 の 5: `preflight` / `startproject` の実ファイル削除に伴い EV-14〜EV-23 を欠番化し、移管先を「廃止した観点」に残す。前回: 同日、廃止決定に伴い EV-14〜EV-21 を廃止予定とし、新フロー用に EV-25・EV-26 を追加。`/order` 自体の観点は `docs/evaluation/skills/order.md`）
+**最終レビュー日**: 2026-10-27（ADR-20261027-059 に合わせ EV-07 のタスク化先を「plan ファイル」に改めた（文言のみ）。2026-10-27 人間レビュー済み。前回 2026-09-26: ADR-20260926-056 §決定 6 の 5: `preflight` / `startproject` の実ファイル削除に伴い EV-14〜EV-23 を欠番化し、移管先を「廃止した観点」に残す。前回: 同日、廃止決定に伴い EV-14〜EV-21 を廃止予定とし、新フロー用に EV-25・EV-26 を追加。`/order` 自体の観点は `docs/evaluation/skills/order.md`）
 **情報源**: docs/adr/ADR-20260926-056.md, facets/instructions/design.md, facets/knowledge/design-review.md, .claude/rules/skill-review-policy.md, .claude/rules/codd-frontmatter-policy.md, PR #144
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
@@ -42,7 +42,7 @@
 - [ ] EV-04（正常 / must）: Phase 1-3 の受け入れ確認前に Stage 2 自動レビューをフェーズ対応レビュアー（Phase 1 = `requirements`、Phase 2 = `architecture-reviewer`、Phase 3 = `spec-reviewer`）で実施し、Tiered Output（Critical/High/Medium/Low）で受け取る — 根拠: facets/knowledge/design-review.md / 検証: 実行観察
 - [ ] EV-05（正常 / must）: Phase 2 で認証認可・秘密情報/PII・決済・テナント分離・外部連携・公開 API のいずれかに該当する場合、`security-reviewer` を並列起動する — 根拠: facets/knowledge/design-review.md / 検証: PR レビュー
 - [ ] EV-06（異常 / must）: Critical 指摘が残っている間は受け入れ確認に進まない。修正後は該当レビュアーの再レビューで解消を確認する — 根拠: facets/knowledge/design-review.md「ゲート通過条件」 / 検証: 実行観察
-- [ ] EV-07（異常 / must）: High 指摘は「今すぐ修正 / 理由付きリスク受容 / タスク化（Plans.md に cc:TODO 登録）」のいずれかで処理し、記録を残す — 根拠: facets/knowledge/design-review.md / 検証: 実行観察
+- [ ] EV-07（異常 / must）: High 指摘は「今すぐ修正 / 理由付きリスク受容 / タスク化（plan ファイルに cc:TODO 登録）」のいずれかで処理し、記録を残す — 根拠: facets/knowledge/design-review.md / 検証: 実行観察
 - [ ] EV-08（異常 / must）: 下流フェーズの変更が上流ドキュメントと矛盾した場合、上流を先に更新して該当ゲートを再実行する（ドリフトプロトコル） — 根拠: facets/knowledge/design-review.md / 検証: 実行観察
 - [ ] EV-09（正常 / must）: 受け入れ確認時にレビュー結果サマリと成果物マニフェスト（作成済み / スキップ + 理由 / 未解決課題）を提示する — 根拠: facets/knowledge/design-review.md / 検証: 実行観察
 - [ ] EV-10（正常 / must）: 各フェーズの受け入れ確認は AskUserQuestion で行い、明示的合意なしに次フェーズへ進まない — 根拠: facets/policies/dialog-rules.md / 検証: 実行観察
