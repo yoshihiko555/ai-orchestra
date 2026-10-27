@@ -52,7 +52,7 @@
 `--to` が無ければ AskUserQuestion で出力先を選ぶ。
 
 - **plans**: 新しいファイル `.claude/plans/<slug>.md` に `task-memory-usage` ルールの書式で `## Project:` + 5 節 +
-  Phase（AC と Tasks）+ `## Decisions` / `## Notes` を 1 回で書く（雛形は配布元の `templates/project/plan.md`）。
+  Phase（AC と Tasks）+ `## Decisions` / `## Notes` を 1 回で書く（書式は `task-memory-usage` ルールの「plan ファイルのフォーマット」に従う）。
   1 つの発注書につき 1 ファイルで、既存の plan ファイルには追記しない。`.claude/plans/` が無ければ作る。書く直前に
   同じ名前のファイルがあれば上書きせず、使われていない slug を示して「別の slug にする / 上書きする」を
   AskUserQuestion で確認する（上書きは利用者が選んだときだけ）。旧形式の `.claude/Plans.md` には書かない。
@@ -73,7 +73,7 @@ AC は対話で確定した内容を転記し、どちらの出力先でも聞�
 1. 対象の plan ファイルを決める。slug を省略したときは、未完了の plan ファイルが 1 つならそれ、複数なら
    AskUserQuestion で選ばせ、0 なら案内して終える（`task-memory-usage` ルールの「対象ファイルの決め方」）
 2. そのファイルを読み、Step 2 の issue と同じ写し方で Issue を作る（Open Questions のゲートも同じ）
-3. Issue の作成に成功したこと（Issue 番号が返ったこと）を確かめてから、その plan ファイルを削除する。発注書の
+3. Issue の作成に成功したこと（Issue 番号が返ったこと）を確かめてから、その plan ファイルを削除する。削除の前に、slug が `[a-z0-9][a-z0-9-]*` に完全一致し、`.claude/plans/<slug>.md` が symlink でない通常ファイルであることを確かめる（例: `test -f` かつ `! test -L`）。満たさなければ削除せずに止めて報告する。発注書の
    内容は Issue 本文に残るので、ほかの場所には写さない。状態を二重に持たない。Issue の作成に失敗した場合は
    ファイルを残して報告する
 

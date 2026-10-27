@@ -72,6 +72,18 @@ def structural_exclusions(lines: list[str]) -> set[int]:
       見出しに見える文字列（例: '#### Context'）が現れても、見出し/箇条書き判定より
       前にコメント行として除外することで、パーサの状態機械が誤って遷移しないようにする。
     """
+    excluded, _ = _scan_fences(lines)
+    return excluded | html_comment_line_indices(lines)
+
+
+def has_unclosed_fence(lines: list[str]) -> bool:
+    """frontmatter を除き、末尾まで閉じていないコードフェンスがあるか返す。"""
+    _, unclosed = _scan_fences(lines)
+    return unclosed
+
+
+def _scan_fences(lines: list[str]) -> tuple[set[int], bool]:
+    """frontmatter とコードフェンスの除外行、およびフェンスの未閉鎖状態を返す。"""
     excluded: set[int] = set()
 
     start = 0
@@ -108,8 +120,7 @@ def structural_exclusions(lines: list[str]) -> set[int]:
             fence_char = stripped[0]
             fence_len = len(open_match.group(1))
 
-    excluded |= html_comment_line_indices(lines)
-    return excluded
+    return excluded, fence_char is not None
 
 
 def html_comment_line_indices(lines: list[str]) -> set[int]:
@@ -538,6 +549,7 @@ def collect_plans(project_dir: str, config: dict | None = None) -> tuple[list[di
         complete = (
             total > 0
             and len(tasks["done"]) == total
+            and not has_unclosed_fence(lines)
             and not has_unchecked_ac(lines, structural_exclusions(lines))
         )
         plans.append(
@@ -609,9 +621,12 @@ def build_plans_summary(
             "Project ごとに .claude/plans/<slug>.md へ移してください"
         )
     if invalid_names:
+        printable_names = [
+            "".join(char if char.isprintable() else "?" for char in name) for name in invalid_names
+        ]
         parts.append(
             "[task-memory] 命名規則（<slug>.md, slug は [a-z0-9-]）に合わず読まなかったファイル: "
-            + ", ".join(invalid_names)
+            + ", ".join(printable_names)
         )
     return "\n".join(parts)
 

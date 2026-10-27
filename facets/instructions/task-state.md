@@ -54,7 +54,7 @@ slug は `[a-z0-9][a-z0-9-]*`（ASCII 小文字・数字・ハイフン）に完
 
 1. slug を確かめる（規則に合わない場合は Project 名から提案し直して承認を得る）
 2. `.claude/plans/<slug>.md` が既にあれば上書きせず、使われていない slug を提案して確認する
-3. `.claude/plans/` が無ければ作り、雛形（発注書の 5 節 Goal / Context / Out of Scope / Constraints / Open Questions 付き。配布元の `templates/project/plan.md` と同じ構成。下の例を参照）から作る
+3. `.claude/plans/` が無ければ作り、`task-memory-usage` ルールの「plan ファイルのフォーマット」（発注書の 5 節 Goal / Context / Out of Scope / Constraints / Open Questions 付き。下の例も参照）に従って作る
 4. 5 節は対話で確定した内容で埋める。未確定の点は Open Questions に残す（節ごと空にしない）
 
 対話で確定した計画を書き出すときは `/order --to plans` を使う（AC と Tasks までそろえて 1 回で書く）。
@@ -90,7 +90,8 @@ worktree で作業している場合は worktree ごと消えるので不要。w
    - PR 本文に残す: 対象の PR を確かめ、追記する文面を見せて承認を得てから `gh pr edit` で書く
    - 書き込みに失敗した場合は、ファイルを削除せずに止めて報告する
 4. 利用者が途中で取り消した場合は削除しない
-5. ファイルを削除する（archive には移さない）。削除したパスを報告する
+5. 削除の前に、slug が `[a-z0-9][a-z0-9-]*` に完全一致し、`.claude/plans/<slug>.md` が symlink でない通常ファイルであることを確かめる（例: `test -f` かつ `! test -L`）。満たさなければ削除せずに止めて報告する
+6. ファイルを削除する（archive には移さない）。削除したパスを報告する
 
 ## plan ファイルのフォーマット
 

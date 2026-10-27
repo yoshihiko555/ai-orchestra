@@ -75,6 +75,18 @@ def structural_exclusions(lines: list[str]) -> set[int]:
       見出しに見える文字列（例: '#### Context'）が現れても、見出し/箇条書き判定より
       前にコメント行として除外することで、パーサの状態機械が誤って遷移しないようにする。
     """
+    excluded, _ = _scan_fences(lines)
+    return excluded | html_comment_line_indices(lines)
+
+
+def has_unclosed_fence(lines: list[str]) -> bool:
+    """frontmatter を除き、末尾まで閉じていないコードフェンスがあるか返す。"""
+    _, unclosed = _scan_fences(lines)
+    return unclosed
+
+
+def _scan_fences(lines: list[str]) -> tuple[set[int], bool]:
+    """frontmatter とコードフェンスの除外行、およびフェンスの未閉鎖状態を返す。"""
     excluded: set[int] = set()
 
     start = 0
@@ -111,8 +123,7 @@ def structural_exclusions(lines: list[str]) -> set[int]:
             fence_char = stripped[0]
             fence_len = len(open_match.group(1))
 
-    excluded |= html_comment_line_indices(lines)
-    return excluded
+    return excluded, fence_char is not None
 
 
 def html_comment_line_indices(lines: list[str]) -> set[int]:
@@ -710,6 +721,7 @@ def plan_is_complete(content: str, tasks: dict[str, list[dict[str, str | None]]]
     return (
         task_count > 0
         and len(tasks["done"]) == task_count
+        and not has_unclosed_fence(lines)
         and all(parse_ac_checkboxes(lines, structural_exclusions(lines)).values())
     )
 

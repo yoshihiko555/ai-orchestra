@@ -1162,6 +1162,26 @@ _COMPLETION_CASES = [
         True,
         id="fenced-ac-and-task-ignored",
     ),
+    *[
+        pytest.param(
+            f"#### Tasks\n- `cc:done` Finished\n{opening}\n"
+            f"#### Acceptance Criteria\n- [ ] Hidden\n- `cc:TODO` Hidden task\n{closing}",
+            False,
+            id=f"unclosed-fence-{boundary}",
+        )
+        for opening, closing, boundary in (
+            ("```", "", "at-eof"),
+            ("~~~", "", "tilde-at-eof"),
+            ("````", "```\n", "shorter-closing"),
+            ("```", "~~~\n", "different-closing-char"),
+            ("```", "``` trailing\n", "closing-not-alone"),
+        )
+    ],
+    pytest.param(
+        "---\nexample: |\n  ```\n---\n### Phase 1\n- `cc:done` Finished\n",
+        True,
+        id="fence-in-frontmatter-ignored",
+    ),
     pytest.param(
         "---\n#### Acceptance Criteria\n- [ ] Frontmatter AC\n- `cc:WIP` Fake\n---\n"
         "## Project: Fixture\n### Phase 1: Build\n"

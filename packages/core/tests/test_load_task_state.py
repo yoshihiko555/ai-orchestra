@@ -876,6 +876,24 @@ def test_excluded_ac_headings_and_tasks_do_not_affect_completion(tmp_path, wrapp
     assert plans[0]["tasks"]["WIP"] == []
 
 
+@pytest.mark.parametrize(("opening", "closing"), [("```", "```"), ("```", "````"), ("~~~", "~~~~")])
+def test_closed_fence_keeps_otherwise_finished_plan_complete(
+    tmp_path: Path, opening: str, closing: str
+) -> None:
+    _write_plan(
+        tmp_path,
+        "example",
+        "### Phase 1\n#### Tasks\n- `cc:done` Finished\n"
+        f"{opening}\n#### Acceptance Criteria\n- [ ] Hidden\n- `cc:TODO` Hidden task\n"
+        f"{closing}\n#### Acceptance Criteria\n- [x] Passed\n",
+    )
+
+    plans, _ = load_task_state.collect_plans(str(tmp_path), {})
+
+    assert plans[0]["complete"] is True
+    assert plans[0]["tasks"]["TODO"] == []
+
+
 @pytest.mark.parametrize("wrapper", ["```\n{body}\n```\n", "<!--\n{body}\n-->\n"])
 def test_excluded_heading_does_not_end_real_unchecked_ac(tmp_path, wrapper) -> None:
     _write_plan(
@@ -1074,6 +1092,28 @@ def test_discovery_ignores_symlinks_nested_dotfiles_and_invalid_markdown_names(t
     assert "external unique text" not in summary
 
 
+@pytest.mark.parametrize("nonprintable", ["\n", "\r", "\t", "\x1b", "\x7f", "\u200b"])
+def test_invalid_filename_diagnostic_replaces_nonprintable_characters(
+    tmp_path: Path, nonprintable: str
+) -> None:
+    plans_dir = tmp_path / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    try:
+        (plans_dir / f"bad{nonprintable}injected日本語.md").write_text(
+            "- `cc:WIP` Hidden task\n", encoding="utf-8"
+        )
+    except (OSError, ValueError):
+        pytest.skip("ファイルシステムが制御文字入りのファイル名を許可しない")
+
+    summary = load_task_state.build_plans_summary(str(tmp_path), {})
+
+    assert summary.splitlines() == [
+        "[task-memory] 命名規則（<slug>.md, slug は [a-z0-9-]）に合わず読まなかったファイル: "
+        "bad?injected日本語.md"
+    ]
+    assert nonprintable not in summary
+
+
 def test_non_utf8_plan_is_skipped_without_losing_other_files(tmp_path) -> None:
     _write_plan(tmp_path, "good", "- `cc:WIP` survives\n")
     bad = _write_plan(tmp_path, "bad", "")
@@ -1115,6 +1155,7 @@ def test_unreadable_or_disappeared_plan_does_not_hide_other_files(
         "- `cc:done` Finished\n- `cc:TODO` Pending\n",
         "### Phase 1\n#### Acceptance Criteria\n- [ ] missing\n#### Tasks\n- `cc:done` Finished\n",
         "### Phase 1\n#### Acceptance Criteria\n- [X] passed\n#### Tasks\n- `cc:done` Finished\n",
+        "### Phase 1\n- `cc:done` Finished\n```\n#### Acceptance Criteria\n- [ ] Hidden\n",
         "```\n#### Acceptance Criteria\n- [ ] fake\n```\n### Phase 1\n- `cc:done` Finished\n",
         "<!--\n#### Acceptance Criteria\n- [ ] fake\n-->\n### Phase 1\n- `cc:done` Finished\n",
         "---\n#### Acceptance Criteria\n- [ ] fake\n---\n### Phase 1\n- `cc:done` Finished\n",
