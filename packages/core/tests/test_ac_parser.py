@@ -47,21 +47,66 @@ class TestClassifyCheckboxLine:
 
 
 class TestProjectTemplateDoesNotFalsePositiveAsUncheckedAc:
-    """Issue #297 PR #326 review (High): `orchex init`/scaffold copies
-    `templates/project/Plans.md` verbatim (`copy2`, no placeholder substitution) into every new
-    project's `.claude/Plans.md`. If the template's Phase 1 example contained literal
-    `#### Acceptance Criteria` / `- [ ]` placeholder lines, `/goal` and `/release-readiness`
-    would read them as a real unchecked Acceptance Criteria, blocking Phase 1 from ever being
-    considered complete. The template must therefore keep its
-    guidance out of ac_parser's literal line-matching (e.g. behind an HTML comment whose lines
-    never exactly equal the AC heading or start with a checkbox marker)."""
+    """未編集の雛形を実際の未チェック AC と誤認しない（Issue #297, PR #326）。"""
 
     def test_template_has_no_ac_heading_line(self) -> None:
-        text = (REPO_ROOT / "templates" / "project" / "Plans.md").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "templates" / "project" / "plan.md").read_text(encoding="utf-8")
         lines = text.splitlines()
         assert all(line.strip() != ac_parser.AC_SECTION_HEADING for line in lines)
 
     def test_template_has_no_unchecked_checkbox_line(self) -> None:
-        text = (REPO_ROOT / "templates" / "project" / "Plans.md").read_text(encoding="utf-8")
+        text = (REPO_ROOT / "templates" / "project" / "plan.md").read_text(encoding="utf-8")
         lines = text.splitlines()
         assert all(ac_parser.classify_checkbox_line(line.strip()) != "unchecked" for line in lines)
+
+
+class TestAcSections:
+    def test_unchecked_ac_is_found_under_deeper_headings(self) -> None:
+        lines = [
+            "### Phase 1",
+            "#### Acceptance Criteria",
+            "- [x] done",
+            "##### Details",
+            "- [ ] nested requirement",
+        ]
+        assert ac_parser.has_unchecked_ac(lines, set()) is True
+        assert ac_parser.ac_checkbox_line_indices(lines, set()) == {2, 4}
+
+    def test_checked_or_excluded_ac_does_not_block_completion(self) -> None:
+        lines = [
+            "### Phase 1",
+            "#### Acceptance Criteria",
+            "- [x] done",
+            "- [X] done",
+            "- [ ] ignored",
+        ]
+        assert ac_parser.has_unchecked_ac(lines, {4}) is False
+        assert ac_parser.ac_checkbox_line_indices(lines, {4}) == {2, 3}
+
+    def test_ac_outside_phase_and_checkboxes_outside_ac_are_ignored(self) -> None:
+        lines = [
+            "#### Acceptance Criteria",
+            "- [ ] outside phase",
+            "### Phase 1",
+            "- [ ] outside AC",
+            "#### Acceptance Criteria",
+            "- [x] passed",
+            "#### Tasks",
+            "- [ ] ordinary checklist",
+        ]
+        assert ac_parser.has_unchecked_ac(lines, set()) is False
+
+    def test_ac_ends_at_each_heading_of_same_or_higher_level(self) -> None:
+        for heading in ["# Notes", "## Notes", "### Phase 2", "#### Tasks"]:
+            lines = [
+                "### Phase 1",
+                "#### Acceptance Criteria",
+                "- [x] done",
+                heading,
+                "- [ ] outside",
+            ]
+            assert ac_parser.has_unchecked_ac(lines, set()) is False, heading
+
+    def test_excluded_heading_does_not_start_ac(self) -> None:
+        lines = ["### Phase 1", "#### Acceptance Criteria", "- [ ] outside AC"]
+        assert ac_parser.has_unchecked_ac(lines, {1}) is False

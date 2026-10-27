@@ -67,8 +67,12 @@ Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マー�
 
 ```
 /handoff
+/handoff --plan my-feature
 /handoff --message "Phase 2 の実装を続けて"
 ```
+
+引き継ぐのは plan ファイル（`.claude/plans/<slug>.md`）1 つ。`--plan` を省略したときは、未完了の plan ファイルが
+1 つならそれを使い、複数なら選ばせ、0 なら終える（`task-memory-usage` ルールの「対象ファイルの決め方」）。
 
 ## ワークフロー
 
@@ -79,16 +83,23 @@ Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マー�
 `scripts/handoff.py` を実行して構造化データを収集する:
 
 ```bash
-"${AI_ORCHESTRA_PYTHON:-python3}" .claude/skills/handoff/scripts/handoff.py
+"${AI_ORCHESTRA_PYTHON:-python3}" .claude/skills/handoff/scripts/handoff.py [--plan <slug>]
 ```
+
+対象の plan ファイルは次のとおりに決まる:
+
+- `error` キーがある（slug が不正・ファイルが無い・読めない）: 内容を表示して終了する
+- `plan_file` が null で `plan_candidates` が空: 未完了の plan ファイルが無いことを伝えて終了する
+- `plan_file` が null で `plan_candidates` が 2 つ以上: AskUserQuestion で slug を選ばせ、`--plan <slug>` を付けて再実行する
+- `plan_file` がある: そのファイルを引き継ぐ
 
 スクリプトが JSON を stdout に出力する。内容:
 
-- Plans.md の WIP/TODO/blocked タスク
-- Plans.md の Project ごとの Goal / Context / Constraints と、その Project に属する WIP / TODO / blocked タスク（`order_markdown` として整形済み。Project が複数あってもタスクは所属 Project の下に出る）
+- 対象の plan ファイルのパス（`plan_file`）と、その WIP/TODO/blocked タスク
+- 対象の plan ファイルの Project ごとの Goal / Context / Constraints と、その Project に属する WIP / TODO / blocked タスク（`order_markdown` として整形済み。Project が複数あってもタスクは所属 Project の下に出る）
 - 未コミット diff のサマリー（`git diff --stat`）と未追跡ファイルの一覧（`untracked_files`。機密パターンは除外、50 件を超えたら `untracked_truncated: true`）
 - ブランチ名、最近のコミット、`branch_status`（Git リポジトリか = `git_repository`、detached か、`origin/HEAD` の既定ブランチ、統合ブランチ上か = `on_integration_branch`）
-- Decisions セクション
+- 対象の plan ファイルの Decisions セクション
 - 引き継ぎファイルの保存先 `handoff_path`（絶対パス）と Codex の起動コマンド `launch`（`available` / `command` / `reason`）
 
 ### Step 2: 会話要約の生成
@@ -114,6 +125,7 @@ JSON の `handoff_path` に書き出す（`launch.command` はこのパスを読
 **Generated**: {YYYY-MM-DD HH:MM:SS UTC}
 **Branch**: {branch_name}{on_integration_branch が true なら " (integration branch — create a feature branch before committing)"}
 **Project**: {project directory (absolute path)}
+**Plan file**: {plan_file}
 
 ## Conversation Summary
 
@@ -186,21 +198,21 @@ Context before changing code.
 
 Key files to review:
 
-- .claude/Plans.md — Full task state (update markers as you complete tasks)
+- {plan_file} — Full task state of this work (update markers as you complete tasks)
 - {other relevant files from working context}
 
 Never commit on an integration branch. Before the first commit, run
 `git branch --show-current`: if it prints nothing (detached HEAD) or one of
 main / master / develop / staging / stage or the repository's default branch, create
 a feature branch first (`git switch -c <type>/<short-name>`).
-When you complete a task, update its marker in Plans.md from `cc:WIP` to `cc:done`.
+When you complete a task, update its marker in {plan_file} from `cc:WIP` to `cc:done`.
 When a Phase's Acceptance Criteria are met, check them (`- [ ]` → `- [x]`) only after
 you actually ran the `verify:` command and it passed, or confirmed the `judge:` criterion;
 never check an unverified criterion. Then commit that task's changes with a descriptive
 message. Check `git status --porcelain` first ("Uncommitted Changes" lists tracked
 changes only): stage by path (`git add <paths>`) only what belongs to the WIP tasks,
 never use `git add -A`, and before each commit review `git diff --cached`; if unrelated
-changes are already staged, unstage them (`git restore --staged <path>`) first. Do not stage `.claude/Plans.md` or `.claude/handoffs/` (local working
+changes are already staged, unstage them (`git restore --staged <path>`) first. Do not stage `.claude/plans/` or `.claude/handoffs/` (local working
 files, not part of the change). Do not push; Claude Code creates the PR with
 `/pr-create` from the committed work.
 ```
@@ -222,10 +234,11 @@ files, not part of the change). Do not push; Claude Code creates the PR with
 | フラグ            | 説明                                                   |
 | ----------------- | ------------------------------------------------------ |
 | `--message "..."` | Codex への追加指示メッセージを引き継ぎファイルに含める |
+| `--plan <slug>`   | 引き継ぐ plan ファイル（`.claude/plans/<slug>.md`）    |
 
 ## 注意事項
 
 - 引き継ぎファイルは `.claude/handoffs/` に蓄積される（ローカル管理。`.gitignore` に自動追加される（gitignore 同期の対象）。コミットに含めない）
-- Plans.md が存在しない場合はエラーメッセージを表示して終了
+- 引き継ぐ plan ファイルが決まらない場合（未完了の plan ファイルが無い等）はその旨を表示して終了。旧形式の `.claude/Plans.md` は読まない
 - diff が大きすぎる場合（100行超）は `--stat` のみに切り詰める
 - 機密情報（.env 等）は diff に含めない

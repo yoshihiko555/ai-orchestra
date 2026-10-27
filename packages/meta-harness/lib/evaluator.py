@@ -128,7 +128,7 @@ ROUTING_CONFIG_SSOT_RELATIVE = Path("packages/agent-routing/config/cli-tools.yam
 # 上のファイルしか参照できず、rubric がファイル名を明示しない限り候補の自然文応答を採点できな
 # かった）。このファイル1本だけを worktree 作成直後に `_ensure_bridge_artifact_ignored` が実行時
 # に ignore 対象へ加えるため、collateral-scope oracle の git diff ベース検査には現れない
-# （`.claude/Plans.md` と同様の扱い）。`.claude/meta-harness-oracle/` ディレクトリ自体は
+# （`.claude/plans/<slug>.md` と同様の扱い）。`.claude/meta-harness-oracle/` ディレクトリ自体は
 # root .gitignore で除外しない（候補が bypassPermissions で同じディレクトリ配下に書いた他の
 # ファイルを collateral-scope の untracked-file 検査から隠さないため。PR #326 レビュー round 4,
 # Codex P1）。

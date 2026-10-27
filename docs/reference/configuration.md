@@ -363,12 +363,10 @@ quality-gates の機能フラグと状態ディレクトリの管理。Issue #15
 **パス:** `.claude/config/core/task-memory.yaml`
 **パッケージ:** core
 
-Plans.md によるタスク管理の設定。
+plan ファイル（`.claude/plans/<slug>.md`）によるタスク管理の設定。plan ファイルの置き場所は固定で、設定では変えられない
+（旧キー `plans_file` は ADR-20261027-059 で廃止。残っていても読まれない）。
 
 ```yaml
-# Plans.md ファイルパス（プロジェクトルートからの相対パス）
-plans_file: ".claude/Plans.md"
-
 # SessionStart 時にタスク状態サマリーを出力するか
 show_summary_on_start: true
 

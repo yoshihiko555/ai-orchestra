@@ -847,6 +847,7 @@ class OrchestraManager(ContextMixin, HooksMixin):
             project_dir / ".claude" / "logs",
             project_dir / ".claude" / "logs" / "orchestration",
             project_dir / ".claude" / "state",
+            project_dir / ".claude" / "plans",
         ]
         for d in claude_dirs:
             if dry_run:
@@ -879,7 +880,6 @@ class OrchestraManager(ContextMixin, HooksMixin):
             / ".claude"
             / "state"
             / ".gitkeep",
-            templates_dir / "project" / "Plans.md": project_dir / ".claude" / "Plans.md",
         }
         for src, dst in project_templates.items():
             self._copy_template_if_missing(src, dst, str(dst.relative_to(project_dir)), dry_run)

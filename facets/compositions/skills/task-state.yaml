@@ -1,16 +1,17 @@
 # task-state スキルのファセット構成定義
 name: task-state
-description: Plans.md（SSOT）によるタスク状態管理
+description: plan ファイル（.claude/plans/<slug>.md、SSOT）によるタスク状態管理
 
 # フロントマター（生成される SKILL.md に付与）
 frontmatter:
   name: task-state
   description: |
-    Plans.md (SSOT) のタスク状態を管理する。
-    タスクの追加・状態更新・一覧表示・Plans.md の初期化が可能。
-  argument-hint: "[init|update|add-phase|decision] [args...]"
+    plan ファイル（.claude/plans/<slug>.md、Project ごとの SSOT）のタスク状態を管理する。
+    plan ファイルの一覧・新規作成・タスクの状態更新・フェーズ追加・設計判断の記録・
+    完了したファイルの片付け（close）が可能。
+  argument-hint: "[new|update|add-phase|decision|close] [args...] [--plan <slug>]"
   metadata:
-    short-description: SSOT タスク管理（Plans.md の作成・更新）
+    short-description: SSOT タスク管理（plan ファイルの作成・更新・片付け）
 
 # 参照するポリシー（なし）
 policies: []

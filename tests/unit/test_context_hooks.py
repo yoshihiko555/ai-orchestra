@@ -560,12 +560,12 @@ class TestIsOutsideProject:
         assert update_mod.is_outside_project("src/foo.py") is False
 
     def test_returns_false_for_claude_path_inside_project(self) -> None:
-        assert update_mod.is_outside_project(".claude/Plans.md") is False
+        assert update_mod.is_outside_project(".claude/plans/example.md") is False
 
 
 class TestIsClaudeInternal:
     def test_returns_true_for_claude_subpath(self) -> None:
-        assert update_mod.is_claude_internal(".claude/Plans.md") is True
+        assert update_mod.is_claude_internal(".claude/plans/example.md") is True
 
     def test_returns_true_for_dot_claude_only(self) -> None:
         assert update_mod.is_claude_internal(".claude") is True
@@ -577,7 +577,7 @@ class TestIsClaudeInternal:
         assert update_mod.is_claude_internal(".claude_backup/foo.py") is False
 
     def test_handles_windows_separators(self) -> None:
-        assert update_mod.is_claude_internal(".claude\\Plans.md") is True
+        assert update_mod.is_claude_internal(".claude\\plans\\example.md") is True
 
 
 class TestUpdateWorkingContextMain:
@@ -635,7 +635,7 @@ class TestUpdateWorkingContextMain:
             {
                 "tool_name": "Edit",
                 "cwd": str(tmp_path),
-                "tool_input": {"file_path": str(tmp_path / ".claude" / "Plans.md")},
+                "tool_input": {"file_path": str(tmp_path / ".claude" / "plans" / "example.md")},
             }
         )
 
@@ -677,8 +677,8 @@ class TestUpdateWorkingContextMain:
         assert not _working_context_path(tmp_path).exists()
 
     def test_skips_other_repo_claude_plans_outside_project(self, tmp_path: Path) -> None:
-        # Arrange — another repo's own .claude/Plans.md (absolute path outside project)
-        outside_path = tmp_path.parent / "other-repo" / ".claude" / "Plans.md"
+        # Arrange — another repo's own .claude/plans/example.md (absolute path outside project)
+        outside_path = tmp_path.parent / "other-repo" / ".claude" / "plans" / "example.md"
         stdin_data = json.dumps(
             {
                 "tool_name": "Edit",

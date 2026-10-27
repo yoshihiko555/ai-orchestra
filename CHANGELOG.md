@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/task-state close`: 完了した plan ファイルを片付ける**: 完了しているか確かめ、`## Decisions` を ADR か PR 本文に残すか選んでから plan ファイルを削除する。worktree を切らずに作業しているときに使う。
 - **`codd`: drift を「見たら消せる」ものにする（Issue #515）**: frontmatter の `depends_on[].synced`（確認済みの上流コミット）と `depends_on[].anchor`（上流の特定の行だけに依存）を宣言でき、`codd ack <node_id>` が drift 中のエッジの `synced` を上流の最新コミットに更新する（`--all` はそのノードの drift 対象の全エッジ）。drift の warning に原因コミットの短 SHA と日付が出る。
 - **`codd`: PR の CI ガードレールを追加**: `codd verdict` が validate と impact から APPROVE / CONDITIONAL / REJECT を判定する。
   composite action で PR コメントとジョブ要約に出力し、`fail-on` に応じて CI を失敗させられる。
@@ -17,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** **`core` / `task-state` / `order` / `handoff`: Plans.md を Project ごとの plan ファイル `.claude/plans/<slug>.md` に分割（ADR-20261027-059）**: `/order --to plans` は発注書ごとに新しいファイルを作り、SessionStart は未完了のファイルだけをファイルごとにまとめて注入する。`.claude/Plans.md` は読まれなくなり（残っていると警告が出る）、移行コマンドは無いので、中の Project を `.claude/plans/<slug>.md` に手で移す。`task-memory.yaml` の `plans_file` は廃止し、codd の既定 scope からも外した。
 - **`image-generation`: `image_model` の既定値を `gpt-5.5` から `gpt-6.1-sol` に変更**: `gpt-5.5` が ChatGPT アカウントの Codex で使えなくなり（`model_not_found`）、`/image-gen` が失敗していた。`image-generation.local.yaml` で `image_model: gpt-5.5` を指定している場合は、削除するか `gpt-6.1-sol` に変更する。
 - **`codd`: drift の既定の判定範囲を変更（Issue #515）**: relation が `references` / `supersedes` のエッジと、下流が ADR のエッジは既定で drift の対象外になり、空白・空行・Markdown 表の区切り行だけの上流コミットは「上流が変わった」と数えない。従来の対象範囲（全 relation・全 kind）に戻すには `codd.local.yaml` の `drift.relations` に 5 つの relation を全部書き、`drift.exclude_downstream_kinds: []` にする（整形だけのコミットの無視は設定で戻せない）。
 - **meta-harness / loop-harness: Docker 内 Claude Code の pin を 2.1.282 に更新**: コンテナ内の Claude が `AGENTS.md` を読めるようになる。

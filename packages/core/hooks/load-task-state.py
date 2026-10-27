@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""SessionStart hook: Plans.md からタスク状態を読み込み、セッション開始時にサマリーを出力する。
+"""SessionStart hook: plan ファイルから未完了の作業を要約する。
 
 処理フロー:
-1. .claude/Plans.md が存在するか確認
+1. .claude/plans/ 直下の通常ファイルを列挙
 2. 状態マーカー（cc:TODO / cc:WIP / cc:done / cc:blocked）を解析
 3. WIP / 次の TODO / blocked タスクをサマリーとして stdout に出力
 4. stdout はセッションのコンテキストに注入される
@@ -22,7 +22,10 @@ if str(_HOOK_DIR) not in sys.path:
 
 # AC (Acceptance Criteria) 解析ロジックは共有モジュールへ切り出し済み（Issue #299）。
 # task-state スキル支援ツール等、他コンポーネントからも ac_parser を直接 import して再利用できる。
-from ac_parser import AC_SECTION_HEADING, classify_checkbox_line  # noqa: E402
+from ac_parser import ac_checkbox_line_indices, has_unchecked_ac  # noqa: E402
+
+PLANS_DIR = Path(".claude/plans")
+_PLAN_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*\.md")
 
 # 状態マーカー定義
 DEFAULT_MARKERS = {
@@ -54,7 +57,7 @@ _HTML_COMMENT_ONLY_PATTERN = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
 
 
 def structural_exclusions(lines: list[str]) -> set[int]:
-    """Plans.md の構造解析（見出し / cc: マーカー行判定）から除外すべき行番号を返す。
+    """plan ファイルの構造解析（見出し / cc: マーカー行判定）から除外すべき行番号を返す。
 
     以下の 3 つの関心事を一箇所にまとめ、ファイル内の全パーサが同じ判定に従うようにする:
     - 先頭の YAML frontmatter（先頭行が '---' で始まり、次に現れる、インデントのない
@@ -69,6 +72,18 @@ def structural_exclusions(lines: list[str]) -> set[int]:
       見出しに見える文字列（例: '#### Context'）が現れても、見出し/箇条書き判定より
       前にコメント行として除外することで、パーサの状態機械が誤って遷移しないようにする。
     """
+    excluded, _ = _scan_fences(lines)
+    return excluded | html_comment_line_indices(lines)
+
+
+def has_unclosed_fence(lines: list[str]) -> bool:
+    """frontmatter を除き、末尾まで閉じていないコードフェンスがあるか返す。"""
+    _, unclosed = _scan_fences(lines)
+    return unclosed
+
+
+def _scan_fences(lines: list[str]) -> tuple[set[int], bool]:
+    """frontmatter とコードフェンスの除外行、およびフェンスの未閉鎖状態を返す。"""
     excluded: set[int] = set()
 
     start = 0
@@ -105,8 +120,7 @@ def structural_exclusions(lines: list[str]) -> set[int]:
             fence_char = stripped[0]
             fence_len = len(open_match.group(1))
 
-    excluded |= html_comment_line_indices(lines)
-    return excluded
+    return excluded, fence_char is not None
 
 
 def html_comment_line_indices(lines: list[str]) -> set[int]:
@@ -219,7 +233,7 @@ def order_section_line_indices(lines: list[str]) -> set[int]:
 
 
 def parse_orders(content: str) -> list[dict]:
-    """Plans.md の Project ごとに Goal と Open Questions を抽出する。"""
+    """plan ファイルの Project ごとに Goal と Open Questions を抽出する。"""
     lines = content.splitlines()
     excluded = structural_exclusions(lines)
     order_lines = order_section_line_indices(lines)
@@ -303,7 +317,6 @@ def get_project_dir(data: dict) -> str:
 def load_config(project_dir: str) -> dict:
     """task-memory 設定を読み込む。"""
     defaults = {
-        "plans_file": ".claude/Plans.md",
         "show_summary_on_start": True,
         "max_display_tasks": 20,
         "markers": dict(DEFAULT_MARKERS),
@@ -343,7 +356,7 @@ def parse_tasks(
     marker_pattern: re.Pattern[str] | None = None,
     marker_to_state: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, str | None]]]:
-    """Plans.md の内容からタスクを状態別に分類する。
+    """単一の plan ファイルの内容からタスクを状態別に分類する。
 
     Returns:
         {"WIP": [...], "TODO": [...], "done": [...], "blocked": [...]}
@@ -364,19 +377,12 @@ def parse_tasks(
     lines = content.splitlines()
     excluded = structural_exclusions(lines)
     order_lines = order_section_line_indices(lines)
-    in_ac_section = False
+    ac_lines = ac_checkbox_line_indices(lines, excluded)
     for line_index, line in enumerate(lines):
         if line_index in excluded:
             continue
 
         stripped = line.strip()
-
-        if stripped == AC_SECTION_HEADING:
-            in_ac_section = True
-            continue
-        if stripped.startswith(("#### ", "### ", "## ")):
-            in_ac_section = False
-            continue
 
         if not stripped.startswith("- "):
             continue
@@ -384,7 +390,7 @@ def parse_tasks(
         if line_index in order_lines:
             continue
 
-        if in_ac_section and classify_checkbox_line(stripped) is not None:
+        if line_index in ac_lines:
             # AC セクション内のチェックボックス行は cc: マーカーの有無にかかわらずタスクではない
             continue
 
@@ -421,6 +427,7 @@ def format_summary(
     max_display: int | None,
     *,
     orders: list[dict] | None = None,
+    slug: str | None = None,
 ) -> str:
     """タスク状態のサマリーをフォーマットする。"""
     parts: list[str] = []
@@ -432,7 +439,10 @@ def format_summary(
         count = len(tasks[state])
         if count > 0:
             stats.append(f"{state}: {count}")
-    if stats:
+    if slug is not None:
+        breakdown = f": {', '.join(stats)}" if stats else ""
+        parts.append(f"■ {slug} ({total} tasks{breakdown})")
+    elif stats:
         parts.append(f"[task-memory] {total} tasks ({', '.join(stats)})")
     else:
         parts.append(f"[task-memory] {total} tasks")
@@ -469,64 +479,56 @@ def format_summary(
         remaining -= len(shown_todo)
         shown_blocked = tasks["blocked"][:remaining]
 
-    # WIP タスク（最優先で表示）
-    if shown_wip:
-        parts.append("  WIP:")
-        for item in shown_wip:
-            parts.append(f"    - {item['task']}")
-        omitted_wip = len(tasks["WIP"]) - len(shown_wip)
-        if omitted_wip > 0:
-            parts.append(f"    ... and {omitted_wip} more")
-
-    # 次の TODO（WIP の次に優先表示）
-    if shown_todo:
-        parts.append("  Next TODO:")
-        for item in shown_todo:
-            parts.append(f"    - {item['task']}")
-        omitted_todo = len(tasks["TODO"]) - len(shown_todo)
-        if omitted_todo > 0:
-            parts.append(f"    ... and {omitted_todo} more")
-
-    # blocked タスク
-    if shown_blocked:
-        parts.append("  Blocked:")
-        for item in shown_blocked:
-            reason = f" (理由: {item['reason']})" if item["reason"] else ""
-            parts.append(f"    - {item['task']}{reason}")
-        omitted_blocked = len(tasks["blocked"]) - len(shown_blocked)
-        if omitted_blocked > 0:
-            parts.append(f"    ... and {omitted_blocked} more")
-    elif tasks["blocked"]:
-        parts.append(f"  Blocked: (上限のため {len(tasks['blocked'])} 件省略)")
+    for state, shown, label in (
+        ("WIP", shown_wip, "WIP"),
+        ("TODO", shown_todo, "Next TODO"),
+        ("blocked", shown_blocked, "Blocked"),
+    ):
+        if shown:
+            parts.append(f"  {label}:")
+            for item in shown:
+                reason = f" (理由: {item['reason']})" if item["reason"] else ""
+                parts.append(f"    - {item['task']}{reason}")
+            omitted = len(tasks[state]) - len(shown)
+            if omitted:
+                parts.append(f"    ... and {omitted} more")
+        elif tasks[state]:
+            parts.append(f"  {label}: (上限のため {len(tasks[state])} 件省略)")
 
     return "\n".join(parts)
 
 
-def main() -> None:
-    data = read_hook_input()
-    project_dir = get_project_dir(data)
-
-    # コンテキストディレクトリを初期化（冪等）
+def _discover_plan_files(project_dir: str) -> tuple[list[Path], list[str]]:
+    """直下の通常ファイルを、有効なパスと不正な Markdown 名に分ける。"""
+    plans_dir = Path(project_dir) / PLANS_DIR
+    paths: list[Path] = []
+    invalid_names: list[str] = []
     try:
-        from context_store import init_context_dir
-
-        init_context_dir(project_dir)
-    except Exception:
-        pass  # context_store が利用できなくてもタスク状態表示は続行
-
-    config = load_config(project_dir)
-
-    plans_file = config.get("plans_file", ".claude/Plans.md")
-    plans_path = Path(project_dir) / plans_file
-
-    if not plans_path.is_file():
-        return
-
-    try:
-        content = plans_path.read_text(encoding="utf-8")
+        if plans_dir.is_symlink() or not plans_dir.is_dir():
+            return paths, invalid_names
+        for path in sorted(plans_dir.iterdir()):
+            try:
+                if path.name.startswith(".") or path.is_symlink() or not path.is_file():
+                    continue
+                if _PLAN_NAME_PATTERN.fullmatch(path.name):
+                    paths.append(path)
+                elif path.suffix.lower() == ".md":
+                    invalid_names.append(path.name)
+            except OSError:
+                continue
     except OSError:
-        return
+        pass
+    return paths, invalid_names
 
+
+def collect_plans(project_dir: str, config: dict | None = None) -> tuple[list[dict], list[str]]:
+    """plan ごとの slug/path/tasks/orders/complete と不正なファイル名一覧を返す。
+
+    config の省略時は実効設定を読み込む。読み込めたファイルだけを返し、
+    WIP を持つものを先に、同順位はファイル名順に並べる。
+    """
+    if config is None:
+        config = load_config(project_dir)
     markers = resolve_markers(config)
     try:
         marker_pattern, marker_to_state = build_marker_parser(markers, strict=True)
@@ -534,22 +536,49 @@ def main() -> None:
         print(f"[task-memory] invalid markers config: {e}; fallback to defaults", file=sys.stderr)
         marker_pattern, marker_to_state = DEFAULT_MARKER_PATTERN, DEFAULT_MARKER_TO_STATE
 
+    paths, invalid_names = _discover_plan_files(project_dir)
+    plans: list[dict] = []
+    for path in paths:
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        tasks = parse_tasks(content, marker_pattern, marker_to_state)
+        lines = content.splitlines()
+        total = sum(len(items) for items in tasks.values())
+        complete = (
+            total > 0
+            and len(tasks["done"]) == total
+            and not has_unclosed_fence(lines)
+            and not has_unchecked_ac(lines, structural_exclusions(lines))
+        )
+        plans.append(
+            {
+                "slug": path.stem,
+                "path": path,
+                "tasks": tasks,
+                "orders": parse_orders(content),
+                "complete": complete,
+            }
+        )
+    plans.sort(key=lambda plan: (not bool(plan["tasks"]["WIP"]), plan["path"].name))
+    return plans, invalid_names
+
+
+def build_plans_summary(
+    project_dir: str,
+    config: dict,
+    *,
+    collection: tuple[list[dict], list[str]] | None = None,
+) -> str:
+    """未完了 plan の要約と診断を組み立てる。collection で解析結果を再利用できる。"""
     if not config.get("show_summary_on_start", True):
-        return
-
-    if not content.strip():
-        return
-
-    orders = parse_orders(content)
-    tasks = parse_tasks(content, marker_pattern, marker_to_state)
-
-    has_orders = any(
-        project_order.get("goal") or project_order.get("open_questions", 0) > 0
-        for project_order in orders
+        return ""
+    plans, invalid_names = (
+        collection if collection is not None else collect_plans(project_dir, config)
     )
-    if not any(tasks.values()) and not has_orders:
-        return
-
+    unfinished = [plan for plan in plans if not plan["complete"]]
+    completed_count = len(plans) - len(unfinished)
     configured_max_display = config.get("max_display_tasks", 20)
     if isinstance(configured_max_display, str):
         try:
@@ -562,8 +591,61 @@ def main() -> None:
         max_display = configured_max_display
     else:
         max_display = 20
-    summary = format_summary(tasks, max_display, orders=orders)
-    print(summary)
+    parts: list[str] = []
+    if plans:
+        parts.append(
+            f"[task-memory] .claude/plans/: 未完了 {len(unfinished)} / 完了 {completed_count}"
+        )
+        if completed_count:
+            parts.append(
+                "[task-memory] 完了したファイルは /task-state close <slug> で片付けられます"
+            )
+    remaining = max_display
+    for plan in unfinished:
+        tasks = plan["tasks"]
+        if remaining == 0:
+            counts = ", ".join(
+                f"{state}: {len(tasks[state])}" for state in ("WIP", "TODO", "blocked")
+            )
+            parts.append(f"■ {plan['slug']} — {counts} (表示上限のため省略)")
+            continue
+        parts.append(format_summary(tasks, remaining, orders=plan["orders"], slug=plan["slug"]))
+        if remaining is not None:
+            remaining = max(
+                remaining - sum(len(tasks[state]) for state in ("WIP", "TODO", "blocked")), 0
+            )
+
+    if os.path.lexists(Path(project_dir) / ".claude" / "Plans.md"):
+        parts.append(
+            "[task-memory] 警告: .claude/Plans.md は読み込まれません。"
+            "Project ごとに .claude/plans/<slug>.md へ移してください"
+        )
+    if invalid_names:
+        printable_names = [
+            "".join(char if char.isprintable() else "?" for char in name) for name in invalid_names
+        ]
+        parts.append(
+            "[task-memory] 命名規則（<slug>.md, slug は [a-z0-9-]）に合わず読まなかったファイル: "
+            + ", ".join(printable_names)
+        )
+    return "\n".join(parts)
+
+
+def main() -> None:
+    data = read_hook_input()
+    project_dir = get_project_dir(data)
+
+    # コンテキスト初期化の失敗でタスク状態表示を止めない。
+    try:
+        from context_store import init_context_dir
+
+        init_context_dir(project_dir)
+    except Exception:
+        pass
+
+    summary = build_plans_summary(project_dir, load_config(project_dir))
+    if summary:
+        print(summary)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,7 @@
 # task-memory パッケージ設定
 # プロジェクト固有の上書き: config/task-memory.local.yaml
 
-# Plans.md ファイルパス（プロジェクトルートからの相対パス）
-plans_file: ".claude/Plans.md"
+# plan ファイルは .claude/plans/<slug>.md に固定（ADR-20261027-059）。
 
 # SessionStart 時にタスク状態サマリーを出力するか
 show_summary_on_start: true

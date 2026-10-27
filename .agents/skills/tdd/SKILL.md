@@ -255,5 +255,5 @@ Target: 80%+ line coverage on the new module.
 
 ### Integration Notes
 
-- When implementing a work order from `/order` (Plans.md or Issue), derive the test case list from its Acceptance Criteria
+- When implementing a work order from `/order` (a plan file `.claude/plans/<slug>.md` or an Issue), derive the test case list from its Acceptance Criteria
 - When used with `issue-fix`, the test case list should be derived from the issue's acceptance criteria

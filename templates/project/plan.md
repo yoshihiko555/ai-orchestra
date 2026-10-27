@@ -1,5 +1,3 @@
-# Plans
-
 ## Project: {project-name}
 
 #### Goal
@@ -22,7 +20,7 @@
 
 - {未決事項。決まったら Decisions へ移して消す}
 
-### Phase 1: Setup `cc:TODO`
+### Phase 1: {フェーズ名} `cc:TODO`
 
 <!-- Optional: once this phase's Acceptance Criteria are agreed, add a
      `#### Acceptance Criteria` section here with `- [ ] {condition} — verify: \`{command}\`` /
@@ -32,15 +30,15 @@
 
 #### Tasks
 
-- `cc:TODO` 要件整理
-- `cc:TODO` 実装計画の作成
+- `cc:TODO` {タスク1} — 対象: `{ファイル}` / 確認: {方法}
+- `cc:TODO` {タスク2} — 対象: `{ファイル}` / 確認: {方法}
 
 ---
 
 ## Decisions
 
-- {YYYY-MM-DD}: 
+- {YYYY-MM-DD}: {設計判断の内容}
 
 ## Notes
 
--
+- {補足情報}
