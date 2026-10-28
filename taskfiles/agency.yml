@@ -1,0 +1,50 @@
+version: "3"
+
+# agency-agents（upstream）の取り込み（scripts/vendor-agency-agents.py）。
+# SOURCE は upstream のローカル clone（既定: ghq の配置）。値はシェルに直接埋め込まず env で渡す。
+
+vars:
+  AGENCY_SOURCE_DEFAULT: "{{.HOME}}/ghq/github.com/msitarzewski/agency-agents"
+
+tasks:
+  agency:fetch:
+    desc: upstream の clone を最新にする（git fetch origin）
+    env:
+      AGENCY_SOURCE: "{{.SOURCE | default .AGENCY_SOURCE_DEFAULT}}"
+    cmds:
+      - git -C "$AGENCY_SOURCE" fetch origin
+
+  agency:list:
+    desc: upstream のエージェントを一覧（REF=origin/main で最新、QUERY で絞り込み）
+    env:
+      AGENCY_ROOT: "{{.ROOT_DIR}}"
+      AGENCY_SOURCE: "{{.SOURCE | default .AGENCY_SOURCE_DEFAULT}}"
+      AGENCY_REF: "{{.REF}}"
+      AGENCY_QUERY: "{{.QUERY}}"
+    cmds:
+      - uv run --no-project --with-editable "$AGENCY_ROOT" python "$AGENCY_ROOT/scripts/vendor-agency-agents.py" list --source "$AGENCY_SOURCE"{{if .REF}} --ref "$AGENCY_REF"{{end}}{{if .QUERY}} --query "$AGENCY_QUERY"{{end}}
+
+  agency:sync:
+    desc: upstream.yaml に従って生成する
+    env:
+      AGENCY_ROOT: "{{.ROOT_DIR}}"
+      AGENCY_SOURCE: "{{.SOURCE | default .AGENCY_SOURCE_DEFAULT}}"
+    cmds:
+      - uv run --no-project --with-editable "$AGENCY_ROOT" python "$AGENCY_ROOT/scripts/vendor-agency-agents.py" sync --source "$AGENCY_SOURCE"
+
+  agency:check:
+    desc: 生成物が upstream.yaml と一致しているか確かめる（書き換えない）
+    env:
+      AGENCY_ROOT: "{{.ROOT_DIR}}"
+      AGENCY_SOURCE: "{{.SOURCE | default .AGENCY_SOURCE_DEFAULT}}"
+    cmds:
+      - uv run --no-project --with-editable "$AGENCY_ROOT" python "$AGENCY_ROOT/scripts/vendor-agency-agents.py" sync --source "$AGENCY_SOURCE" --check
+
+  agency:update:
+    desc: upstream に追従（TO 既定 origin/main。DRY_RUN=1 で報告のみ、要レビューを読んだら YES=1）
+    env:
+      AGENCY_ROOT: "{{.ROOT_DIR}}"
+      AGENCY_SOURCE: "{{.SOURCE | default .AGENCY_SOURCE_DEFAULT}}"
+      AGENCY_TO: '{{.TO | default "origin/main"}}'
+    cmds:
+      - uv run --no-project --with-editable "$AGENCY_ROOT" python "$AGENCY_ROOT/scripts/vendor-agency-agents.py" update --source "$AGENCY_SOURCE" --to "$AGENCY_TO"{{if eq .DRY_RUN "1"}} --dry-run{{end}}{{if eq .YES "1"}} --yes{{end}}
