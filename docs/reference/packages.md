@@ -157,6 +157,8 @@ OSS の [agency-agents](https://github.com/msitarzewski/agency-agents)（MIT）�
 | upstream に追従する              | `update --source <clone> --to origin/main`。要レビューの差分を読んでから `--yes` を付けて再実行      |
 | 生成物が正本と一致するか確かめる | `sync --source <clone> --check`                                                                        |
 
+Taskfile からも実行できる: `task agency:fetch`（clone を最新にする）/ `task agency:list REF=origin/main QUERY=<語>` / `task agency:sync` / `task agency:check` / `task agency:update DRY_RUN=1`（報告のみ）/ `task agency:update YES=1`。clone の場所は既定で `~/ghq/github.com/msitarzewski/agency-agents`、`SOURCE=<path>` で変えられる。
+
 `update` は、`Bash` / `Edit` / `Write` / `Agent` を持つエージェントの変更、description の変更、未対応の frontmatter キーの追加、危険なパターン（シェルへのパイプ、外部 URL、認証情報の語、指示の上書き等）・不可視文字・HTML コメントの追加、安全に関する記述の削除を「要レビュー」として差分全文を出す。要レビューがある限り `--yes` なしでは書き換えない。取り込み済みのエージェントが upstream で削除されていた場合、進め先が現在の commit の子孫でない場合、`--source` の origin が `repo` と違う場合は止まる。upstream の frontmatter から生成物に通すのは `description` と表示用のキーだけで、`hooks` / `mcpServers` / `permissionMode` 等は入れない。
 
 ---
