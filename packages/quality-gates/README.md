@@ -29,7 +29,7 @@
 | `lint-on-save.py`               | PostToolUse (Edit/Write)                       | ファイル種別ごとの formatter/linter を実行し結果を報告                                      |
 | `test-tampering-detector.py`    | PostToolUse (Edit/Write/Bash/Delete/MultiEdit) | skip 追加・抑制コメント・テストファイル削除を検知                                           |
 | `test-gate-checker.py`          | PostToolUse (Edit/Write)                       | 大きな変更後にテスト未実行を検知し実行を提案                                                |
-| `turn-end-summary.py`           | Stop                                           | working-context / Plans.md から次ターン向け `systemMessage` を生成                          |
+| `turn-end-summary.py`           | Stop                                           | working-context / plan ファイル（`.claude/plans/*.md`）から次ターン向け `systemMessage` を生成                          |
 | `evaluation-set-checker.py`     | PostToolUse (Edit/Write)                       | テストファイル変更時に評価セット（`docs/evaluation/<pkg>.md`）との突合を案内                |
 
 すべての hook は `main()` 内で例外を捕捉し、stderr にログを出して exit code 0 で終わる

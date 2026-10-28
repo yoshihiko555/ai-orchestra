@@ -16,6 +16,7 @@ def ensure_claude_scaffold(project_dir: Path, orchestra_path: Path) -> int:
         project_dir / ".claude" / "logs",
         project_dir / ".claude" / "logs" / "orchestration",
         project_dir / ".claude" / "state",
+        project_dir / ".claude" / "plans",
     ]
 
     for d in claude_dirs:
@@ -34,7 +35,6 @@ def ensure_claude_scaffold(project_dir: Path, orchestra_path: Path) -> int:
         ("docs/research/.gitkeep", ".claude/docs/research/.gitkeep"),
         ("logs/orchestration/.gitkeep", ".claude/logs/orchestration/.gitkeep"),
         ("state/.gitkeep", ".claude/state/.gitkeep"),
-        ("Plans.md", ".claude/Plans.md"),
     ]
 
     for src_rel, dst_rel in template_pairs:

@@ -2,14 +2,16 @@
 """Collect task state and git info for Codex CLI handoff.
 
 Outputs JSON to stdout with:
-- Plans.md tasks (WIP/TODO/blocked) and the per-Project order sections
-- Decisions from Plans.md
+- Selected plan file tasks (WIP/TODO/blocked) and the per-Project order sections
+- Decisions from the selected plan file
+- plan_file: project-relative path, or null when no plan is selected
+- plan_candidates: unfinished slugs in WIP/name order, empty when a plan is selected
 - Git branch, branch status, recent commits, uncommitted diff stat, untracked files
 - Working context (modified files)
 - The handoff file path and the Codex launch command (or why it is unavailable)
 
 Usage:
-    python3 handoff.py [--project-dir PATH]
+    python3 handoff.py [--project-dir PATH] [--plan SLUG]
 """
 
 from __future__ import annotations
@@ -23,7 +25,9 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Plans.md marker patterns (same as load-task-state.py)
+# plan ファイルのマーカーは load-task-state.py と同じ規則に従う。
+PLANS_DIR = Path(".claude/plans")
+PLAN_SLUG_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*")
 MARKER_PATTERN = re.compile(r"`(cc:TODO|cc:WIP|cc:done|cc:blocked)`")
 MARKER_TO_STATE = {
     "cc:TODO": "TODO",
@@ -34,6 +38,7 @@ MARKER_TO_STATE = {
 BLOCKED_REASON_PATTERN = re.compile(r"—\s*理由:\s*(.+)$")
 _AC_CHECKBOX_PATTERN = re.compile(r"^- \[([ xX])\]")
 AC_SECTION_HEADING = "#### Acceptance Criteria"
+_HEADING_PATTERN = re.compile(r"^(#{1,6})(?:\s|$)")
 ORDER_SECTION_HEADINGS = {
     "#### Goal",
     "#### Context",
@@ -55,7 +60,7 @@ _HTML_COMMENT_ONLY_PATTERN = re.compile(r"^(?:<!--.*?-->\s*)+$", re.DOTALL)
 
 
 def structural_exclusions(lines: list[str]) -> set[int]:
-    """Plans.md の構造解析（見出し / cc: マーカー行判定）から除外すべき行番号を返す。
+    """plan ファイルの構造解析（見出し / cc: マーカー行判定）から除外すべき行番号を返す。
 
     以下の 3 つの関心事を一箇所にまとめ、ファイル内の全パーサが同じ判定に従うようにする:
     - 先頭の YAML frontmatter（先頭行が '---' で始まり、次に現れる、インデントのない
@@ -70,6 +75,18 @@ def structural_exclusions(lines: list[str]) -> set[int]:
       見出しに見える文字列（例: '#### Context'）が現れても、見出し/箇条書き判定より
       前にコメント行として除外することで、パーサの状態機械が誤って遷移しないようにする。
     """
+    excluded, _ = _scan_fences(lines)
+    return excluded | html_comment_line_indices(lines)
+
+
+def has_unclosed_fence(lines: list[str]) -> bool:
+    """frontmatter を除き、末尾まで閉じていないコードフェンスがあるか返す。"""
+    _, unclosed = _scan_fences(lines)
+    return unclosed
+
+
+def _scan_fences(lines: list[str]) -> tuple[set[int], bool]:
+    """frontmatter とコードフェンスの除外行、およびフェンスの未閉鎖状態を返す。"""
     excluded: set[int] = set()
 
     start = 0
@@ -106,8 +123,7 @@ def structural_exclusions(lines: list[str]) -> set[int]:
             fence_char = stripped[0]
             fence_len = len(open_match.group(1))
 
-    excluded |= html_comment_line_indices(lines)
-    return excluded
+    return excluded, fence_char is not None
 
 
 def html_comment_line_indices(lines: list[str]) -> set[int]:
@@ -371,21 +387,53 @@ def render_order_markdown(orders: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
-    """Parse Plans.md content and extract tasks by state.
+def parse_ac_checkboxes(lines: list[str], excluded: set[int]) -> dict[int, bool]:
+    """構造解析の対象外を除き、Phase 配下の AC 行番号とチェック済みかどうかを返す。
+
+    AC は Phase（`###`）の属性なので、Phase の外にある AC 見出しは数えない
+    （load-task-state.py が使う ac_parser.ac_checkbox_line_indices と同じ範囲）。
+    """
+    checkboxes: dict[int, bool] = {}
+    in_phase = False
+    in_ac_section = False
+    for line_index, line in enumerate(lines):
+        if line_index in excluded:
+            continue
+        stripped = line.strip()
+        heading = _HEADING_PATTERN.match(stripped)
+        if heading:
+            level = len(heading.group(1))
+            if level <= 3:
+                in_phase = level == 3
+            if level <= 4:
+                in_ac_section = in_phase and stripped == AC_SECTION_HEADING
+        if in_ac_section:
+            checkbox = _AC_CHECKBOX_PATTERN.match(stripped)
+            if checkbox:
+                checkboxes[line_index] = checkbox.group(1) in {"x", "X"}
+    return checkboxes
+
+
+def parse_tasks(
+    content: str, *, include_done: bool = False
+) -> dict[str, list[dict[str, str | None]]]:
+    """Parse plan content and extract tasks by state.
 
     Each task dict also carries `project` and its 0-based `project_index`.
+    完了判定だけが include_done を指定し、既存 JSON の状態キーは維持する。
     """
     tasks: dict[str, list[dict[str, str | None]]] = {
         "WIP": [],
         "TODO": [],
         "blocked": [],
     }
+    if include_done:
+        tasks["done"] = []
 
     lines = content.splitlines()
     excluded = structural_exclusions(lines)
     order_lines = _order_section_line_indices(lines)
-    in_ac_section = False
+    ac_checkboxes = parse_ac_checkboxes(lines, excluded)
     current_project: str | None = None
     current_project_index: int | None = None
     project_ordinal = -1
@@ -396,7 +444,7 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
 
         stripped = line.strip()
 
-        if stripped.startswith(("## ", "### ", "#### ")):
+        if _HEADING_PATTERN.match(stripped):
             if stripped.startswith("## "):
                 if stripped.startswith("## Project:"):
                     project_ordinal += 1
@@ -405,14 +453,13 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
                 else:
                     current_project = None
                     current_project_index = None
-            in_ac_section = stripped == AC_SECTION_HEADING
             continue
 
         if not stripped.startswith("- "):
             continue
         if line_index in order_lines:
             continue
-        if in_ac_section and _AC_CHECKBOX_PATTERN.match(stripped):
+        if line_index in ac_checkboxes:
             continue
 
         match = MARKER_PATTERN.search(stripped)
@@ -421,7 +468,7 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
 
         marker = match.group(1)
         state = MARKER_TO_STATE.get(marker)
-        if not state or state == "done":
+        if state not in tasks:
             continue
 
         task_text = stripped[match.end() :].strip()
@@ -447,7 +494,7 @@ def parse_tasks(content: str) -> dict[str, list[dict[str, str | None]]]:
 
 
 def parse_decisions(content: str) -> list[str]:
-    """Extract decisions from Plans.md ## Decisions section."""
+    """Extract decisions from the plan file's ## Decisions section."""
     lines = content.splitlines()
     excluded = structural_exclusions(lines)
     decisions: list[str] = []
@@ -667,14 +714,76 @@ def load_working_context(project_root: Path) -> dict:
         return {}
 
 
-def collect_handoff_data(project_dir: Path) -> dict:
+def plan_is_complete(content: str, tasks: dict[str, list[dict[str, str | None]]]) -> bool:
+    """タスクが1件以上あり、全タスクと全ACが完了しているか判定する。"""
+    task_count = sum(len(items) for items in tasks.values())
+    lines = content.splitlines()
+    return (
+        task_count > 0
+        and len(tasks["done"]) == task_count
+        and not has_unclosed_fence(lines)
+        and all(parse_ac_checkboxes(lines, structural_exclusions(lines)).values())
+    )
+
+
+def select_plan(project_dir: Path, plan: str | None) -> dict:
+    """対象の本文・相対パス・未完了候補、または明示指定のエラーを返す。"""
+    if plan is not None and not PLAN_SLUG_PATTERN.fullmatch(plan):
+        return {"error": "Invalid plan slug: expected [a-z0-9][a-z0-9-]*"}
+
+    selection = {"plan_file": None, "plan_candidates": [], "plans_content": ""}
+    plans_dir = project_dir / PLANS_DIR
+    try:
+        if plans_dir.is_symlink() or not plans_dir.is_dir():
+            if plan is not None:
+                return {"error": f"Plan directory is unavailable: {PLANS_DIR}"}
+            return selection
+
+        if plan is not None:
+            path = plans_dir / f"{plan}.md"
+            if path.is_symlink() or not path.is_file():
+                return {"error": f"Plan is not a regular file: {PLANS_DIR / path.name}"}
+            content = path.read_text(encoding="utf-8")
+        else:
+            unfinished: list[tuple[Path, str, bool]] = []
+            for path in plans_dir.iterdir():
+                try:
+                    if (
+                        path.suffix != ".md"
+                        or not PLAN_SLUG_PATTERN.fullmatch(path.stem)
+                        or path.is_symlink()
+                        or not path.is_file()
+                    ):
+                        continue
+                    candidate_content = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                tasks = parse_tasks(candidate_content, include_done=True)
+                if not plan_is_complete(candidate_content, tasks):
+                    unfinished.append((path, candidate_content, bool(tasks["WIP"])))
+            unfinished.sort(key=lambda candidate: (not candidate[2], candidate[0].name))
+            if len(unfinished) != 1:
+                selection["plan_candidates"] = [path.stem for path, _, _ in unfinished]
+                return selection
+            path, content, _ = unfinished[0]
+    except (OSError, UnicodeDecodeError):
+        if plan is not None:
+            return {"error": f"Could not read plan: {PLANS_DIR / f'{plan}.md'}"}
+        return selection
+
+    return {
+        "plan_file": str(PLANS_DIR / path.name),
+        "plan_candidates": [],
+        "plans_content": content,
+    }
+
+
+def collect_handoff_data(project_dir: Path, plan: str | None = None) -> dict:
     """Collect all data needed for the handoff file."""
-    plans_path = project_dir / ".claude" / "Plans.md"
-
-    if not plans_path.is_file():
-        return {"error": "Plans.md not found at .claude/Plans.md"}
-
-    content = plans_path.read_text(encoding="utf-8")
+    selection = select_plan(project_dir, plan)
+    if "error" in selection:
+        return selection
+    content = selection["plans_content"]
     tasks = parse_tasks(content)
     decisions = parse_decisions(content)
     orders = parse_order_sections(content)
@@ -689,6 +798,7 @@ def collect_handoff_data(project_dir: Path) -> dict:
     handoff_path = handoff_file_path(project_dir, now)
 
     return {
+        **selection,
         "timestamp": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
         "project_dir": str(project_dir),
         "branch": branch,
@@ -704,7 +814,6 @@ def collect_handoff_data(project_dir: Path) -> dict:
         "untracked_files": untracked,
         "untracked_truncated": untracked_truncated,
         "working_context": working_ctx,
-        "plans_content": content,
     }
 
 
@@ -713,6 +822,10 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Collect handoff data for Codex CLI")
     parser.add_argument(
+        "--plan",
+        help="Plan slug under .claude/plans (default: the only unfinished plan)",
+    )
+    parser.add_argument(
         "--project-dir",
         type=Path,
         default=None,
@@ -720,8 +833,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    project_dir = args.project_dir or find_project_root()
-    data = collect_handoff_data(project_dir)
+    if args.plan is not None and not PLAN_SLUG_PATTERN.fullmatch(args.plan):
+        data = {"error": "Invalid plan slug: expected [a-z0-9][a-z0-9-]*"}
+    else:
+        project_dir = args.project_dir or find_project_root()
+        data = collect_handoff_data(project_dir, args.plan)
     json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
 
 

@@ -64,11 +64,13 @@ class TestBuildSummaryText:
             code_files=["a.py"],
             plans_counts={"WIP": 2, "TODO": 3, "blocked": 0, "done": 5},
             total_modified=4,
+            unfinished_files=2,
         )
         assert "Turn Summary" in text
         assert "4 files" in text
         assert "WIP 2" in text
         assert "TODO 3" in text
+        assert "- Plans: WIP 2, TODO 3 (未完了 2 ファイル)" in text
         # done は表示しない（運用ノイズ削減）
         assert "done 5" not in text
 
@@ -141,7 +143,10 @@ class TestMain:
                 }
             )
         )
-        (claude_dir / "Plans.md").write_text("# Plans\n- `cc:WIP` A task\n- `cc:TODO` B task\n")
+        (claude_dir / "plans").mkdir()
+        (claude_dir / "plans" / "example.md").write_text(
+            "# Plans\n- `cc:WIP` A task\n- `cc:TODO` B task\n"
+        )
 
         payload = {"session_id": "s1", "cwd": str(tmp_path)}
         output = self._invoke(payload, monkeypatch, capsys)
@@ -155,6 +160,7 @@ class TestMain:
         assert "code: 2" in text
         assert "WIP 1" in text
         assert "TODO 1" in text
+        assert "(未完了 1 ファイル)" in text
         # Stop hook は decision を一切返さない
         assert "decision" not in parsed
 
@@ -171,7 +177,8 @@ class TestMain:
         (claude_dir / "context" / "shared" / "working-context.json").write_text(
             json.dumps({"modified_files": ["main.py", "server.ts"]})
         )
-        (claude_dir / "Plans.md").write_text("# Plans\n- `cc:WIP` A task\n")
+        (claude_dir / "plans").mkdir()
+        (claude_dir / "plans" / "example.md").write_text("# Plans\n- `cc:WIP` A task\n")
 
         monkeypatch.setattr(
             turn_end,
@@ -216,3 +223,99 @@ class TestMain:
         assert captured.out == ""
         assert "Hook error" in captured.err
         assert "boom" in captured.err
+
+
+def test_completed_and_legacy_plans_are_excluded_from_summary_and_audit(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    plans_dir = tmp_path / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "completed.md").write_text("- `cc:done` Finished\n")
+    (plans_dir / "first.md").write_text("- `cc:WIP` First\n- `cc:TODO` Next\n")
+    (plans_dir / "second.md").write_text("- `cc:WIP` Second\n- `cc:blocked` Waiting\n")
+    (plans_dir / "unchecked.md").write_text(
+        "### Phase 1\n#### Acceptance Criteria\n- [ ] missing\n"
+        "#### Tasks\n- `cc:done` Almost finished\n"
+    )
+    (tmp_path / ".claude" / "Plans.md").write_bytes(b"\xff- `cc:WIP` Legacy\n")
+    events = []
+    monkeypatch.setattr(
+        turn_end, "_emit_event", lambda *args, **kwargs: events.append((args, kwargs))
+    )
+    monkeypatch.setattr(
+        turn_end, "read_hook_input", lambda: {"cwd": str(tmp_path), "session_id": "s1"}
+    )
+
+    turn_end.main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["systemMessage"] == (
+        "[Turn Summary]\n- Plans: WIP 2, TODO 1, blocked 1 (未完了 3 ファイル)"
+    )
+    assert len(events) == 1
+    assert events[0][0][1]["plans_counts"] == {"WIP": 2, "TODO": 1, "done": 1, "blocked": 1}
+
+
+def test_only_completed_plan_has_no_summary_or_counts(tmp_path, monkeypatch, capsys) -> None:
+    plans_dir = tmp_path / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "completed.md").write_text("- `cc:done` Finished\n")
+    monkeypatch.setattr(turn_end, "_emit_event", None)
+    monkeypatch.setattr(turn_end, "read_hook_input", lambda: {"cwd": str(tmp_path)})
+
+    turn_end.main()
+
+    assert capsys.readouterr().out == ""
+    assert turn_end._count_plans(str(tmp_path)) == ({}, 0)
+
+
+def test_stop_uses_effective_markers_from_common_parser(tmp_path) -> None:
+    plans_dir = tmp_path / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "completed.md").write_text("- `custom:done` Finished\n")
+    (plans_dir / "active.md").write_text("- `custom:wip` Working\n")
+    config_dir = tmp_path / ".claude" / "config" / "core"
+    config_dir.mkdir(parents=True)
+    (config_dir / "task-memory.yaml").write_text("markers:\n  done: custom:done\n")
+    (config_dir / "task-memory.local.yaml").write_text("markers:\n  wip: custom:wip\n")
+
+    counts, files = turn_end._count_plans(str(tmp_path))
+
+    assert counts == {"WIP": 1, "TODO": 0, "done": 0, "blocked": 0}
+    assert files == 1
+
+
+@pytest.mark.parametrize("unsafe", ["symlink-file", "symlink-dir", "non-utf8"])
+def test_stop_skips_unsafe_plan_sources(tmp_path, unsafe) -> None:
+    plans_dir = tmp_path / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    external = tmp_path / "external"
+    external.mkdir()
+    outside = external / "external.md"
+    outside.write_text("- `cc:WIP` External\n")
+    if unsafe == "symlink-dir":
+        plans_dir.rmdir()
+        plans_dir.symlink_to(external, target_is_directory=True)
+    else:
+        (plans_dir / "good.md").write_text("- `cc:TODO` visible\n")
+        if unsafe == "symlink-file":
+            (plans_dir / "bad.md").symlink_to(outside)
+        else:
+            (plans_dir / "bad.md").write_bytes(b"\xffexternal-unique-text")
+
+    counts, files = turn_end._count_plans(str(tmp_path))
+
+    if unsafe == "symlink-dir":
+        assert (counts, files) == ({}, 0)
+    else:
+        assert counts == {"WIP": 0, "TODO": 1, "done": 0, "blocked": 0}
+        assert files == 1
+
+
+def test_stop_continues_when_common_parser_fails(tmp_path, monkeypatch) -> None:
+    def fail_collect(_project_dir):
+        raise OSError("parser unavailable")
+
+    monkeypatch.setattr(turn_end, "collect_plans", fail_collect)
+
+    assert turn_end._count_plans(str(tmp_path)) == ({}, 0)

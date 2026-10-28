@@ -7,11 +7,11 @@
 enabled: true
 
 # scan が走査する対象ファイル（glob）。include から exclude を差し引く。
+# plan ファイルは既定の対象外。必要なら codd.local.yaml で .claude/plans/*.md を追加する。
 scope:
   include:
     - "docs/**/*.md"
     - ".claude/rules/*.md"
-    - ".claude/Plans.md"
     - "templates/context/*.md"
   exclude:
     - "docs/adr/_template.md"

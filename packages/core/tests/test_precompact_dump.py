@@ -60,24 +60,25 @@ class TestBuildDumpText:
             session_id="s1",
             trigger="auto",
             working_ctx={"current_phase": "design"},
-            plans_text="# Plans\n- cc:WIP task",
+            plans_text="■ example (1 tasks: WIP: 1)\n  WIP:\n    - task",
         )
         assert "session_id" in text
         assert "s1" in text
         assert "auto" in text
         assert "design" in text
-        assert "cc:WIP task" in text
-        assert "```markdown" in text
+        assert "■ example (1 tasks: WIP: 1)" in text
+        assert "## Plans\n" in text
+        assert "```markdown" not in text
 
     def test_missing_plans_uses_placeholder(self) -> None:
-        """Plans.md が無い場合はプレースホルダが入ることを確認する。"""
+        """plan ファイルが無い場合はプレースホルダが入ることを確認する。"""
         text = precompact.build_dump_text(
             session_id="s1",
             trigger="manual",
             working_ctx={},
             plans_text="",
         )
-        assert "Plans.md not found" in text
+        assert "_(no plans)_" in text
 
 
 class TestWriteDump:
@@ -178,10 +179,22 @@ class TestMain:
         precompact.main()
 
     def test_writes_dump_with_plans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Plans.md ありの入力で dump ファイルが生成されることを確認する。"""
+        """EV-56: 要約と未完了のパスだけを退避し、本文や旧ファイルは写さない。"""
         claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        (claude_dir / "Plans.md").write_text("# Plans\n- `cc:WIP` build feature\n")
+        (claude_dir / "plans").mkdir(parents=True)
+        (claude_dir / "plans" / "example.md").write_text(
+            "## Project: Feature\n#### Goal\n- Ship feature\n"
+            "#### Context\n- context-unique-private-text\n"
+            "#### Constraints\n- constraints-unique-private-text\n"
+            "### Phase 1\n- `cc:WIP` build feature\n"
+            "## Decisions\n- decisions-unique-private-text\n"
+            "## Notes\n- notes-unique-private-text\n",
+            encoding="utf-8",
+        )
+        (claude_dir / "plans" / "finished.md").write_text(
+            "- `cc:done` completed-unique-private-text\n", encoding="utf-8"
+        )
+        (claude_dir / "Plans.md").write_bytes(b"\xfflegacy-unique-private-text")
 
         # audit への副作用を遮断（テストは Markdown ダンプだけを検証する）
         emit_calls: list[tuple] = []
@@ -210,3 +223,72 @@ class TestMain:
         content = dumps[0].read_text(encoding="utf-8")
         assert "sess-x" in content
         assert "build feature" in content
+
+        assert "## Plans\n" in content
+        assert "Goal: Ship feature" in content
+        assert "- `.claude/plans/example.md`" in content
+        assert "`.claude/plans/finished.md`" not in content
+        for label in ("context", "constraints", "decisions", "notes", "completed", "legacy"):
+            assert f"{label}-unique-private-text" not in content
+
+
+def test_precompact_reuses_session_summary_and_keeps_paths_after_cap(tmp_path) -> None:
+    plans_dir = tmp_path / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "first.md").write_text("- `cc:WIP` visible\n- `cc:TODO` omitted\n")
+    (plans_dir / "second.md").write_text("- `cc:TODO` hidden\n")
+    config_dir = tmp_path / ".claude" / "config" / "core"
+    config_dir.mkdir(parents=True)
+    (config_dir / "task-memory.yaml").write_text("max_display_tasks: 1\n")
+    task_state = load_module("precompact_test_task_state", "packages/core/hooks/load-task-state.py")
+    summary = task_state.build_plans_summary(str(tmp_path), task_state.load_config(str(tmp_path)))
+
+    text = precompact._summarize_plans(str(tmp_path))
+
+    assert text.startswith(summary + "\n")
+    assert "- `.claude/plans/first.md`" in text
+    assert "- `.claude/plans/second.md`" in text
+    assert "    - omitted" not in text
+    assert "    - hidden" not in text
+
+
+def test_import_failure_writes_dump_and_continues(tmp_path, monkeypatch, capsys) -> None:
+    def fail_import(*_args, **_kwargs):
+        raise ImportError("unavailable parser")
+
+    monkeypatch.setattr(precompact.importlib.util, "spec_from_file_location", fail_import)
+    monkeypatch.setattr(precompact, "read_hook_input", lambda: {"cwd": str(tmp_path)})
+    monkeypatch.setattr(precompact, "_emit_event", None)
+
+    precompact.main()
+
+    dump = next((tmp_path / ".claude" / "context" / "shared").glob("precompact-*.md"))
+    assert "_(plans unavailable)_" in dump.read_text()
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("unsafe", ["symlink-file", "symlink-dir", "non-utf8"])
+def test_precompact_skips_unsafe_plan_sources(tmp_path, unsafe) -> None:
+    plans_dir = tmp_path / ".claude" / "plans"
+    plans_dir.mkdir(parents=True)
+    external = tmp_path / "external"
+    external.mkdir()
+    outside = external / "external.md"
+    outside.write_text("- `cc:WIP` external-unique-text\n")
+    if unsafe == "symlink-dir":
+        plans_dir.rmdir()
+        plans_dir.symlink_to(external, target_is_directory=True)
+    else:
+        (plans_dir / "good.md").write_text("- `cc:TODO` visible\n")
+        if unsafe == "symlink-file":
+            (plans_dir / "bad.md").symlink_to(outside)
+        else:
+            (plans_dir / "bad.md").write_bytes(b"\xffexternal-unique-text")
+
+    text = precompact._summarize_plans(str(tmp_path))
+
+    assert "external-unique-text" not in text
+    if unsafe == "symlink-dir":
+        assert text == ""
+    else:
+        assert "visible" in text

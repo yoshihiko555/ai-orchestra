@@ -1,6 +1,6 @@
 # task-memory-usage ルールのファセット構成定義
 name: task-memory-usage
-description: Plans.md タスク管理ルール
+description: plan ファイル（.claude/plans/<slug>.md）タスク管理ルール
 type: rule
 
 policies: []

@@ -54,10 +54,10 @@ codd は essential プリセットに含まれる。導入先で手を入れる�
 | PR           | GitHub Actions（`packages/codd/action`）        | action の `fail-on` 入力（`reject`） | validate は scope 全体、impact は merge-base との差分 |
 | 手動         | `/codd-validate`・`/codd-impact`                | —                                    | working tree                                          |
 
-- commit 時の検査は、hook 実行時点の git index を検証する（`-a` / `--all` は候補の index を再現して検証する）。未追跡ファイル（`.claude/Plans.md` 等）は対象にならない
+- commit 時の検査は、hook 実行時点の git index を検証する（`-a` / `--all` は候補の index を再現して検証する）。未追跡ファイル（`.claude/plans/*.md` 等）は対象にならない
 - commit 時の検査は Claude Code の PreToolUse(Bash) hook なので、**Claude Code セッション経由の `git commit` のみ**が対象になる。手動シェル・GUI Git クライアント・CI からの commit は対象外（設計書 §4.8.1 の既知の制限）。`validate_on_commit: block` も通常の git hook（pre-commit）相当ではない
 - PreToolUse hook はコマンド実行前に動くため、`git add ... && git commit` のような複合コマンドでは同じコマンド内の `git add` は反映されない。注記が表示されるのは、hook 実行時点の index で既に error が検出された場合のみである。index がクリーンなら注記も block も出ず、同じコマンド内の `git add` で入った error はそのまま commit される
-- 手動実行は working tree を見るため、未追跡の Plans.md や未ステージの変更も対象になる。手動と commit / CI で結果がずれる原因になる（7 節）
+- 手動実行は working tree を見るため、未追跡のファイルや未ステージの変更も対象になる。手動と commit / CI で結果がずれる原因になる（7 節）
 
 ---
 
@@ -98,7 +98,6 @@ frontmatter の欠落は warning なので、それだけでは block モード�
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `docs/**/*.md`           | frontmatter の無い既存ドキュメントはすべて `missing_frontmatter` warning になる                                                           |
 | `.claude/rules/*.md`     | orchex が同期する配布ルールには frontmatter が無く、すべて `missing_frontmatter` warning になる。導入先では編集できないので外すことを推奨 |
-| `.claude/Plans.md`       | `.gitignore` 対象。手動実行では対象、commit / CI では対象外となり結果がずれる。外すことを推奨                                             |
 | `templates/context/*.md` | ai-orchestra 固有。導入先には通常存在しないので外してよい                                                                                 |
 
 ### 設定例（最小構成）
@@ -181,7 +180,7 @@ workflow の例と入力一覧は [設計 §4.8.2](../design/codd-coherence-laye
 | warning が大量に出る                                | frontmatter の無い既存ドキュメントや配布ルール。scope を絞るか、段階 3 で少しずつ付ける                                                                                                                                                                                |
 | drift が消えない                                    | 中身を見て追従不要なら `codd ack <node_id>` で `synced` を付ける（5 節）。一覧 → 個票のように上流の一部にしか依存しないなら `anchor` を書く                                                                                                                            |
 | `scope.include` を足したら既定の対象が消えた        | リストは置き換えになる（4 節）。既定値も含めて全部書く                                                                                                                                                                                                                 |
-| 手動の `/codd-validate` と commit / CI で結果が違う | 手動は working tree、commit は index を見る。未追跡の `.claude/Plans.md` のほか、scope 内の未ステージ変更でもずれる（例: 壊れた内容を stage 後に working tree だけ直した）。Plans.md は scope から外す。`git diff` で未ステージの差分を確認し、直した内容を stage する |
+| 手動の `/codd-validate` と commit / CI で結果が違う | 手動は working tree、commit は index を見る。scope 内の未追跡ファイル（`codd.local.yaml` で `.claude/plans/*.md` を足した場合など）や未ステージ変更でずれる（例: 壊れた内容を stage 後に working tree だけ直した）。git に入らないファイルは scope に入れない。`git diff` で未ステージの差分を確認し、直した内容を stage する |
 | CI で local の設定が効かない                        | `codd.yaml` / `codd.local.yaml` がコミットされていない（6 節）                                                                                                                                                                                                         |
 | CI が「全履歴が必要」で失敗する                     | `actions/checkout` に `fetch-depth: 0` を指定する                                                                                                                                                                                                                      |
 | hook 自体を止めたい                                 | 実動作だけ止めるなら `hooks.scan_on_edit: false` と `hooks.validate_on_commit: off`。登録ごと外すなら `orchex disable codd --project .`                                                                                                                                |

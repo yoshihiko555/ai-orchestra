@@ -1,29 +1,17 @@
 schema_version: "1.0"
 id: mark-task-done
 target: skill:task-state
-description: Update a single task's status marker in an existing Plans.md without touching anything else.
+description: Update a single task's status marker in an existing plan file without touching anything else.
 prompt: |
   /task-state update "商品一覧API" --status done
 
   This is an offline evaluation harness with no interactive follow-up; there is exactly one
-  task named "商品一覧API" in `.claude/Plans.md`. Apply the status change directly and do not
-  touch any other task, the CODD frontmatter, or the Decisions/Notes sections.
+  task named "商品一覧API" in `.claude/plans/meta-harness-eval-fixture.md`. Apply the status change directly and do not
+  touch any other task or the Decisions/Notes sections.
 setup:
   - |
-    mkdir -p .claude
-    cat > .claude/Plans.md <<'PLANSEOF'
-    ---
-    codd:
-      node_id: "plan:meta-harness-eval-fixture"
-      kind: plan
-      status: active
-      depends_on:
-        - id: "design:meta-harness"
-          relation: implements
-    ---
-
-    # Plans
-
+    mkdir -p .claude/plans
+    cat > .claude/plans/meta-harness-eval-fixture.md <<'PLANSEOF'
     ## Project: meta-harness-eval-fixture
 
     ### Phase 2: 実装 `cc:WIP`
@@ -49,30 +37,30 @@ allowed_tools:
   - "Edit"
   - "Write"
 # Issue #261 PR6 bot レビュー対応: `.claude/` は Claude Code の protected path であり、
-# allow ルール（`Edit(.claude/Plans.md)` / `Write(.claude/Plans.md)` いずれの記法でも）では
+# allow ルール（`Edit(.claude/plans/meta-harness-eval-fixture.md)` / `Write(.claude/plans/meta-harness-eval-fixture.md)` いずれの記法でも）では
 # protected path への書込みを事前承認できない（protected-path チェックが allow ルール評価より
 # 先に実行される。公式 docs: code.claude.com/docs/en/permission-modes.md "Protected paths"）。
-# 実 backend 再検証では bare "Edit" のみでは .claude/Plans.md への Edit が拒否された（Read は成功）。
+# 実 backend 再検証では bare "Edit" のみでは .claude/plans/meta-harness-eval-fixture.md への Edit が拒否された（Read は成功）。
 # 非対話で解除する唯一の手段が --permission-mode bypassPermissions のため、このシナリオに限定して
 # 明示 opt-in する。防衛線: コンテナ隔離（ADR-20260712-035）+ --tools による tool 集合最小化
-# （Read/Edit/Write のみ、Bash 等は非公開）+ oracle の Plans.md 全文一致 assert
+# （Read/Edit/Write のみ、Bash 等は非公開）+ oracle の plan ファイル全文一致 assert
 # （collateral damage を含む differ を fail 化）+ collateral-scope oracle（bypass で書込み可能に
-# なった .claude/ 配下の Plans.md 以外の tracked file が一切変更されていないことを git diff で
+# なった .claude/ 配下の plan ファイル以外の tracked file が一切変更されていないことを git diff で
 # 検証。PR #273 bot レビュー追撃対応）+ Phase A の human merge review。
 permission_mode: bypassPermissions
 command_timeout_ms: 60000
 critical:
   - id: task-status-updated-without-collateral-damage
-    text: "Plans.md 全体を canonical fixture と突合し、対象タスクの marker 変更以外の差分が一切ないことを検証する（タスク一覧・Decisions・Notes・frontmatter・見出し・区切り線を包含）"
+    text: "plan ファイル全体を canonical fixture と突合し、対象タスクの marker 変更以外の差分が一切ないことを検証する（タスク一覧・Decisions・Notes・見出し・区切り線を包含）"
     oracle: command_exit
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py mark-task-done --plans .claude/Plans.md --target-task "商品一覧API" --target-status done
-  - id: no-collateral-damage-outside-plans-md
-    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更・新規 untracked file の生成がいずれも .claude/Plans.md 以外に一切ないこと、および symlink が一切生成されていないことを検証する（PR #273 最終レビュー時点で untracked 検査は常時実行される。untracked ファイルを対象外にする設計ではない）"
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py mark-task-done --plans .claude/plans/meta-harness-eval-fixture.md --target-task "商品一覧API" --target-status done
+  - id: no-collateral-damage-outside-plan-file
+    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更・新規 untracked file の生成がいずれも .claude/plans/meta-harness-eval-fixture.md 以外に一切ないこと、および symlink が一切生成されていないことを検証する（PR #273 最終レビュー時点で untracked 検査は常時実行される。untracked ファイルを対象外にする設計ではない）"
     oracle: command_exit
-    # 注: `--allow .claude/Plans.md` は .claude/Plans.md 自体が repo .gitignore 対象のため、
+    # 注: `--allow .claude/plans/meta-harness-eval-fixture.md` は .claude/plans/meta-harness-eval-fixture.md 自体が repo .gitignore 対象のため、
     # tracked diff 検査に対しては実質 no-op（gitignore 済みパスは git status/diff に一切現れない）。
-    # Plans.md の内容保証は上の task-status-updated-without-collateral-damage（全文一致 oracle）が
+    # plan ファイルの内容保証は上の task-status-updated-without-collateral-damage（全文一致 oracle）が
     # 担う。ここでの --allow は「万一将来 gitignore が外れた場合の安全弁」として残す。
     # `--ignored-scan-prefix .claude`: plain `git status` は gitignore 対象パスを一切報告しない
     # ため、これが無いと bypassPermissions 下の候補が root .gitignore 済みの `.claude/meta-harness/`
@@ -81,12 +69,12 @@ critical:
     # 評価者自身が書く bridge artifact（CANDIDATE_FINAL_REPORT_RELATIVE_PATH）も明示的に --allow
     # へ加える。
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/plans/meta-harness-eval-fixture.md --allow .claude/meta-harness-oracle/final-report.md --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
 checks:
   - id: update-summary-quality
     text: "更新内容がユーザー報告で正確に説明される"
     oracle: rubric_judge
-    rubric: "The final Japanese report must state which single task changed status and to what value, and it must not claim to have modified any other task, the CODD frontmatter, or the Decisions/Notes sections."
+    rubric: "The final Japanese report must state which single task changed status and to what value, and it must not claim to have modified any other task, the Decisions/Notes sections."
 holdout: false
 timeout_ms: 300000
 budget:

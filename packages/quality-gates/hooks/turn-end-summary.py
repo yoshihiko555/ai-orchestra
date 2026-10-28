@@ -4,7 +4,7 @@
 責務（A + B + E1 合成）:
 - A: audit v1 ログに `turn_end` イベントを追記（ファイル編集数、Plans 件数等の集計）
 - B: working-context の modified_files から lint/test 未実行の可能性があるファイルを抽出
-- E1: Plans.md の WIP / TODO / blocked 件数表示（SSOT への気付きを促す）
+- E1: 未完了 plan ファイルの WIP / TODO / blocked 件数表示（SSOT への気付きを促す）
 
 制約:
 - `decision: block` は一切使わない（UX 安全）
@@ -83,10 +83,10 @@ except ImportError:  # pragma: no cover - audit 未導入時のフォールバ�
     _emit_event = None  # type: ignore[assignment]
 
 
-def _load_parse_tasks() -> Callable[[str], dict] | None:
-    """`load-task-state.py` から `parse_tasks` を動的に取得する。
+def _load_collect_plans() -> Callable[[str], tuple[list[dict], list[str]]] | None:
+    """`load-task-state.py` から `collect_plans` を動的に取得する。
 
-    通常の `from load_task_state import parse_tasks` はファイル名にハイフンが
+    通常の `from load_task_state import collect_plans` はファイル名にハイフンが
     含まれるため成立しない。importlib で直接ロードし、`sys.modules` にも
     登録しておくことで内部の自己参照 import にも対応する。
     失敗時は `None` を返し、stderr に診断ログを残す。
@@ -111,14 +111,14 @@ def _load_parse_tasks() -> Callable[[str], dict] | None:
     try:
         spec.loader.exec_module(module)
     except Exception as e:  # pragma: no cover - 診断ログのみ
-        print(f"turn-end-summary: failed to load parse_tasks: {e}", file=sys.stderr)
+        print(f"turn-end-summary: failed to load collect_plans: {e}", file=sys.stderr)
         sys.modules.pop(module_name, None)
         return None
 
-    return getattr(module, "parse_tasks", None)
+    return getattr(module, "collect_plans", None)
 
 
-parse_tasks = _load_parse_tasks()
+collect_plans = _load_collect_plans()
 
 
 # 拡張子 → lint/test 対象判定に使うコード拡張子
@@ -138,29 +138,23 @@ _CODE_EXTENSIONS = {
 }
 
 
-def _read_plans(project_dir: str) -> str:
-    """Plans.md の内容を読み込む。存在しない場合は空文字を返す。"""
-    plans_path = os.path.join(project_dir, ".claude", "Plans.md")
+def _count_plans(project_dir: str) -> tuple[dict[str, int], int]:
+    """共通パーサから未完了ファイルのタスク件数とファイル数を集計する。"""
+    if collect_plans is None:
+        return {}, 0
     try:
-        with open(plans_path, encoding="utf-8") as f:
-            return f.read()
-    except OSError:
-        return ""
-
-
-def _count_plans(project_dir: str) -> dict[str, int]:
-    """Plans.md を parse してタスク件数を返す。"""
-    if parse_tasks is None:
-        return {}
-    content = _read_plans(project_dir)
-    if not content:
-        return {}
-    try:
-        tasks = parse_tasks(content)
+        plans, _invalid_names = collect_plans(project_dir)
+        unfinished = [plan for plan in plans if not plan["complete"]]
+        if not unfinished:
+            return {}, 0
+        counts = {
+            state: sum(len(plan["tasks"][state]) for plan in unfinished)
+            for state in ("WIP", "TODO", "done", "blocked")
+        }
+        return counts, len(unfinished)
     except Exception as exc:  # pragma: no cover - 診断ログのみ
-        print(f"turn-end-summary: failed to parse Plans.md: {exc}", file=sys.stderr)
-        return {}
-    return {state: len(items) for state, items in tasks.items()}
+        print(f"turn-end-summary: failed to collect plans: {exc}", file=sys.stderr)
+        return {}, 0
 
 
 def _extract_code_files(working_ctx: dict) -> list[str]:
@@ -183,6 +177,7 @@ def build_summary_text(
     code_files: list[str],
     plans_counts: dict[str, int],
     total_modified: int,
+    unfinished_files: int = 0,
 ) -> str:
     """turn-end サマリーの Markdown を組み立てる。空なら空文字を返す。"""
     lines: list[str] = []
@@ -197,7 +192,7 @@ def build_summary_text(
             if count:
                 parts.append(f"{state} {count}")
         if parts:
-            lines.append(f"- Plans.md: {', '.join(parts)}")
+            lines.append(f"- Plans: {', '.join(parts)} (未完了 {unfinished_files} ファイル)")
 
     if code_files:
         preview = ", ".join(code_files[-5:])
@@ -260,7 +255,7 @@ def main() -> None:
     total_modified = len(modified) if isinstance(modified, list) else 0
 
     code_files = _extract_code_files(working_ctx)
-    plans_counts = _count_plans(project_dir)
+    plans_counts, unfinished_files = _count_plans(project_dir)
 
     _emit_turn_end(
         session_id=session_id,
@@ -274,6 +269,7 @@ def main() -> None:
         code_files=code_files,
         plans_counts=plans_counts,
         total_modified=total_modified,
+        unfinished_files=unfinished_files,
     )
     if not summary:
         return

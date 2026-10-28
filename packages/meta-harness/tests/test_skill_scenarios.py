@@ -1576,23 +1576,11 @@ def _task_state_outcome_fixture():
     )
 
 
-# The exact `.claude/Plans.md` content every task-state scenario's `setup:` step writes -- must
+# The exact `.claude/plans/meta-harness-eval-fixture.md` content every task-state scenario's `setup:` step writes -- must
 # stay byte-identical to `_CANONICAL_PLANS_FIXTURE` in assert-task-state-outcome.py and to the
 # `setup:` heredocs in scenarios/skill/task-state/*.yaml (all three are cross-checked by
 # `test_task_state_canonical_fixture_matches_real_scenario_setup` below).
 _CANONICAL_PLANS_TEXT = (
-    "---\n"
-    "codd:\n"
-    '  node_id: "plan:meta-harness-eval-fixture"\n'
-    "  kind: plan\n"
-    "  status: active\n"
-    "  depends_on:\n"
-    '    - id: "design:meta-harness"\n'
-    "      relation: implements\n"
-    "---\n"
-    "\n"
-    "# Plans\n"
-    "\n"
     "## Project: meta-harness-eval-fixture\n"
     "\n"
     "### Phase 2: 実装 `cc:WIP`\n"
@@ -1616,7 +1604,7 @@ _CANONICAL_PLANS_TEXT = (
 
 
 def _real_plans_seed_bytes(scenario_filename: str) -> bytes:
-    """Extract the exact `.claude/Plans.md` bytes a real task-state scenario's `setup:` step
+    """Extract the exact `.claude/plans/meta-harness-eval-fixture.md` bytes a real task-state scenario's `setup:` step
     writes, by actually executing that `setup:` script in an isolated tmp dir (same technique as
     `_real_issue_fixture_bytes`, for the same reason: no hand-transcribed copy that could drift)."""
     scenario_path = PACKAGE_DIR / "scenarios" / "skill" / "task-state" / scenario_filename
@@ -1625,7 +1613,7 @@ def _real_plans_seed_bytes(scenario_filename: str) -> bytes:
         tmp_dir = Path(tmp)
         for command in doc["setup"]:
             subprocess.run(command, shell=True, cwd=tmp_dir, capture_output=True)
-        return (tmp_dir / ".claude" / "Plans.md").read_bytes()
+        return (tmp_dir / ".claude" / "plans" / "meta-harness-eval-fixture.md").read_bytes()
 
 
 def test_task_state_canonical_fixture_matches_real_scenario_setup() -> None:
@@ -1638,9 +1626,38 @@ def test_task_state_canonical_fixture_matches_real_scenario_setup() -> None:
         assert _real_plans_seed_bytes(scenario_filename) == _CANONICAL_PLANS_TEXT.encode("utf-8")
 
 
+@pytest.mark.parametrize(
+    "scenario_path",
+    sorted((PACKAGE_DIR / "scenarios" / "skill" / "task-state").glob("*.yaml"))
+    + sorted((PACKAGE_DIR / "scenarios" / "skill" / "handoff").glob("*.yaml")),
+    ids=lambda path: path.stem,
+)
+def test_plan_scenario_setup_and_input_oracle_use_one_project_file(
+    tmp_path: Path, scenario_path: Path
+) -> None:
+    scenario = ev.load_scenario(scenario_path, SCHEMA_DIR)
+    for command in scenario["setup"]:
+        subprocess.run(command, shell=True, cwd=tmp_path, capture_output=True, check=True)
+
+    plan_path = tmp_path / ".claude" / "plans" / "meta-harness-eval-fixture.md"
+    content = plan_path.read_text(encoding="utf-8")
+    assert content.startswith("## Project: meta-harness-eval-fixture\n")
+    assert content.count("## Project:") == 1
+    assert not (tmp_path / ".claude" / "Plans.md").exists()
+
+    if scenario["target"] == "skill:handoff":
+        oracle = next(
+            item for item in scenario["critical"] if item["id"] == "plan-file-input-unchanged"
+        )
+        subprocess.run(oracle["command"], shell=True, cwd=tmp_path, capture_output=True, check=True)
+        plan_path.write_text(content + "- Unexpected edit\n", encoding="utf-8")
+        changed = subprocess.run(oracle["command"], shell=True, cwd=tmp_path, capture_output=True)
+        assert changed.returncode != 0
+
+
 def test_task_state_mark_done_oracle_passes_on_correct_edit(tmp_path: Path) -> None:
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(
         _CANONICAL_PLANS_TEXT.replace("`cc:WIP` 商品一覧API", "`cc:done` 商品一覧API"),
         encoding="utf-8",
@@ -1656,7 +1673,7 @@ def test_task_state_mark_done_oracle_rejects_deleted_heading(tmp_path: Path) -> 
     text = _CANONICAL_PLANS_TEXT.replace("`cc:WIP` 商品一覧API", "`cc:done` 商品一覧API").replace(
         "## Notes\n\n", ""
     )
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(text, encoding="utf-8")
 
     with pytest.raises(AssertionError, match="same line count as the seeded fixture"):
@@ -1668,7 +1685,7 @@ def test_task_state_mark_done_oracle_rejects_unrelated_task_edit(tmp_path: Path)
     text = _CANONICAL_PLANS_TEXT.replace("`cc:WIP` 商品一覧API", "`cc:done` 商品一覧API").replace(
         "`cc:TODO` 注文API", "`cc:done` 注文API"
     )
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(text, encoding="utf-8")
 
     with pytest.raises(AssertionError, match="differ from the seeded fixture at exactly"):
@@ -1686,7 +1703,7 @@ def test_task_state_record_decision_oracle_accepts_yesterday_today_and_tomorrow(
             f"- 2026-01-01: 初期設計方針を確定\n"
             f"- {date_str}: GraphQL を採用（理由: フロントエンドの柔軟性）\n\n## Notes",
         )
-        plans_path = tmp_path / f"Plans-{offset}.md"
+        plans_path = tmp_path / f"fixture-{offset}.md"
         plans_path.write_text(text, encoding="utf-8")
 
         fixture.assert_decision_recorded(
@@ -1701,7 +1718,7 @@ def test_task_state_record_decision_oracle_rejects_stale_date(tmp_path: Path) ->
         "- 2026-01-01: 初期設計方針を確定\n"
         "- 2020-01-01: GraphQL を採用（理由: フロントエンドの柔軟性）\n\n## Notes",
     )
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(text, encoding="utf-8")
 
     with pytest.raises(AssertionError, match="not dated within"):
@@ -1721,7 +1738,7 @@ def test_task_state_record_decision_oracle_rejects_negated_decision_text(tmp_pat
         f"- 2026-01-01: 初期設計方針を確定\n"
         f"- {today}: GraphQL は採用しない（理由: フロントエンドの柔軟性はあるが学習コストが高い）\n\n## Notes",
     )
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(text, encoding="utf-8")
 
     with pytest.raises(AssertionError, match="does not exactly match the expected decision"):
@@ -1739,7 +1756,7 @@ def test_task_state_record_decision_oracle_rejects_entry_written_in_notes_sectio
         "- 評価用フィクスチャ\n",
         f"- 評価用フィクスチャ\n- {today}: GraphQL を採用（理由: フロントエンドの柔軟性）\n",
     )
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(text, encoding="utf-8")
 
     with pytest.raises(AssertionError, match="content after the new Decisions entry"):
@@ -1759,7 +1776,7 @@ def test_task_state_record_decision_oracle_rejects_extraneous_decisions_entry(
         f"- {today}: GraphQL を採用（理由: フロントエンドの柔軟性）\n"
         f"- {today}: 想定外の 2 件目の判断\n\n## Notes",
     )
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(text, encoding="utf-8")
 
     with pytest.raises(AssertionError, match="differ from the seeded fixture by exactly one"):
@@ -1779,7 +1796,7 @@ def test_task_state_record_decision_oracle_rejects_reordered_task_lines(tmp_path
         "- `cc:done` ユーザー認証API\n- `cc:WIP` 商品一覧API\n",
         "- `cc:WIP` 商品一覧API\n- `cc:done` ユーザー認証API\n",
     )
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(text, encoding="utf-8")
 
     with pytest.raises(AssertionError, match="content before the new Decisions entry"):
@@ -1822,7 +1839,7 @@ def _insert_before_separator(block: str) -> str:
 
 def test_task_state_add_phase_with_ac_oracle_passes_on_correct_insertion(tmp_path: Path) -> None:
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(_insert_before_separator(_ADD_PHASE_WITH_AC_BLOCK), encoding="utf-8")
 
     fixture.assert_add_phase_with_ac(
@@ -1839,7 +1856,7 @@ def test_task_state_add_phase_with_ac_oracle_passes_on_correct_insertion(tmp_pat
 def test_task_state_add_phase_with_ac_oracle_rejects_missing_ac_section(tmp_path: Path) -> None:
     """A direct add-phase call that silently dropped the agreed Acceptance Criteria must fail."""
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(_insert_before_separator(_ADD_PHASE_NO_AC_BLOCK), encoding="utf-8")
 
     with pytest.raises(AssertionError, match="Acceptance Criteria セクションが欠落している"):
@@ -1877,10 +1894,10 @@ def test_task_state_add_phase_with_ac_oracle_rejects_internal_whitespace_ac_head
     `parse_tasks()` は見出しを外側の空白だけ許容する完全一致（`.strip() == heading`）で
     判定するため、内部の空白が増えた `#### Acceptance  Criteria` は本番では AC セクションとして
     一切認識されず、そこに書いた verify/judge は完了判定（`/goal` のループ判定）を何も止めない。この
-    fixture が内部空白まで正規化して受理してしまうと、実際には機能しない Plans.md を合格させて
+    fixture が内部空白まで正規化して受理してしまうと、実際には機能しない plan ファイル を合格させて
     しまうため、production パーサーと同じ外側空白のみ許容の判定へ揃える。"""
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(
         _insert_before_separator(_ADD_PHASE_WITH_AC_INTERNAL_WHITESPACE_HEADING_BLOCK),
         encoding="utf-8",
@@ -1921,7 +1938,7 @@ def test_task_state_add_phase_with_ac_oracle_rejects_ac_placed_after_task_group(
     グループ見出し・タスク行より前にあることまで検証しないと `#### Tasks` の後に AC を置く出力
     でも critical check が通ってしまう（task-memory-usage.md: AC は「タスクグループより前」）。"""
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(
         _insert_before_separator(_ADD_PHASE_AC_AFTER_TASKS_BLOCK), encoding="utf-8"
     )
@@ -1947,7 +1964,7 @@ def test_task_state_add_phase_with_ac_oracle_rejects_mismatched_verify_command(
     tampered_block = _ADD_PHASE_WITH_AC_BLOCK.replace(
         "pytest tests/perf/test_latency.py", "pytest tests/perf/test_other.py"
     )
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(_insert_before_separator(tampered_block), encoding="utf-8")
 
     with pytest.raises(AssertionError, match="verify Acceptance Criteria item does not match"):
@@ -1969,7 +1986,7 @@ def test_task_state_add_phase_with_ac_oracle_rejects_collateral_edit_to_existing
     text = _insert_before_separator(_ADD_PHASE_WITH_AC_BLOCK).replace(
         "`cc:WIP` 商品一覧API", "`cc:done` 商品一覧API"
     )
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(text, encoding="utf-8")
 
     with pytest.raises(AssertionError, match="content before the new phase's insertion point"):
@@ -1986,7 +2003,7 @@ def test_task_state_add_phase_with_ac_oracle_rejects_collateral_edit_to_existing
 
 def test_task_state_add_phase_no_ac_oracle_passes_on_correct_insertion(tmp_path: Path) -> None:
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(_insert_before_separator(_ADD_PHASE_NO_AC_BLOCK), encoding="utf-8")
 
     fixture.assert_add_phase_no_ac(
@@ -1999,7 +2016,7 @@ def test_task_state_add_phase_no_ac_oracle_passes_on_correct_insertion(tmp_path:
 def test_task_state_add_phase_no_ac_oracle_rejects_fabricated_ac_section(tmp_path: Path) -> None:
     """A direct add-phase call must not invent an Acceptance Criteria section on its own."""
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(_insert_before_separator(_ADD_PHASE_WITH_AC_BLOCK), encoding="utf-8")
 
     with pytest.raises(AssertionError, match="must not add an"):
@@ -2013,7 +2030,7 @@ def test_task_state_add_phase_no_ac_oracle_rejects_fabricated_ac_section(tmp_pat
 def test_task_state_add_phase_no_ac_oracle_rejects_deleted_task(tmp_path: Path) -> None:
     fixture = _task_state_outcome_fixture()
     tampered_block = _ADD_PHASE_NO_AC_BLOCK.replace("- `cc:TODO` リリースノート作成\n", "")
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(_insert_before_separator(tampered_block), encoding="utf-8")
 
     with pytest.raises(AssertionError, match="new phase tasks do not match"):
@@ -2048,7 +2065,7 @@ def test_task_state_add_phase_with_ac_oracle_rejects_unconsumed_content(tmp_path
     照合するだけで、期待される構造以外の行（未合意のチェックボックスや自由記述テキスト）が
     混入していても検出できなかった。"""
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(
         _insert_before_separator(_ADD_PHASE_WITH_AC_UNCONSUMED_CONTENT_BLOCK), encoding="utf-8"
     )
@@ -2082,7 +2099,7 @@ def test_task_state_add_phase_no_ac_oracle_rejects_unconsumed_content(tmp_path: 
     """PR #326 レビュー2巡目指摘 (Codex P1): AC を伴わない挿入でも、期待される見出し・タスク行
     以外の自由記述テキストが混入していれば拒否しなければならない。"""
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(
         _insert_before_separator(_ADD_PHASE_NO_AC_UNCONSUMED_CONTENT_BLOCK), encoding="utf-8"
     )
@@ -2115,7 +2132,7 @@ def test_task_state_add_phase_no_ac_oracle_rejects_trailing_whitespace_ac_headin
     比較をすり抜け、後続の task-group heading 検証では唯一の task-group heading として消費されて
     しまっていた。見出しの空白を正規化して比較することで、この AC 類似見出しも確実に拒否する。"""
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     plans_path.write_text(
         _insert_before_separator(_ADD_PHASE_NO_AC_TRAILING_WHITESPACE_HEADING_BLOCK),
         encoding="utf-8",
@@ -2133,10 +2150,10 @@ def test_task_state_add_phase_no_ac_oracle_rejects_crlf_rewrite_of_existing_cont
     tmp_path: Path,
 ) -> None:
     """Codex bot レビュー round 4 (P2): `Path.read_text()` の universal-newline 変換で CRLF が
-    LF に正規化されるため、候補が既存 Plans.md 全体を CRLF 化しても全文一致検査をすり抜けて
+    LF に正規化されるため、候補が既存 plan ファイル全体を CRLF 化しても全文一致検査をすり抜けて
     いた。改行コードを保持したまま比較することで、この全面書き換えも検出する。"""
     fixture = _task_state_outcome_fixture()
-    plans_path = tmp_path / "Plans.md"
+    plans_path = tmp_path / "meta-harness-eval-fixture.md"
     crlf_text = _insert_before_separator(_ADD_PHASE_NO_AC_BLOCK).replace("\n", "\r\n")
     plans_path.write_bytes(crlf_text.encode("utf-8"))
 
@@ -2220,28 +2237,59 @@ class TestCollateralScopeOracle:
 
     def test_passes_when_only_allowed_file_changed(self, tmp_path: Path) -> None:
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "before\n")
-        (tmp_path / ".claude" / "Plans.md").write_text("after\n", encoding="utf-8")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "before\n"
+        )
+        (tmp_path / ".claude" / "plans" / "meta-harness-eval-fixture.md").write_text(
+            "after\n", encoding="utf-8"
+        )
 
-        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/plans/meta-harness-eval-fixture.md"}, cwd=tmp_path
+        )
 
     def test_passes_with_no_changes_at_all(self, tmp_path: Path) -> None:
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
 
-        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/plans/meta-harness-eval-fixture.md"}, cwd=tmp_path
+        )
+
+    def test_rejects_another_ignored_plan_file(self, tmp_path: Path) -> None:
+        fixture = _task_state_outcome_fixture()
+        allowed = ".claude/plans/meta-harness-eval-fixture.md"
+        _init_git_repo_with_tracked_file(tmp_path, allowed, "unchanged\n")
+        (tmp_path / ".gitignore").write_text(".claude/plans/\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "ignore local plans"], cwd=tmp_path, check=True
+        )
+        other = tmp_path / ".claude" / "plans" / "other.md"
+        other.write_text("## Project: Unexpected\n", encoding="utf-8")
+
+        with pytest.raises(AssertionError, match="outside the allowed scope"):
+            fixture.assert_tracked_changes_limited_to(
+                {allowed}, ignored_scan_prefixes=(".claude",), cwd=tmp_path
+            )
 
     def test_rejects_change_to_unrelated_tracked_file(self, tmp_path: Path) -> None:
         """A tracked file elsewhere under `.claude/` (e.g. `settings.json`) unlocked by
-        `bypassPermissions` must fail the run even though `Plans.md` itself is untouched."""
+        `bypassPermissions` must fail the run even though `plan file` itself is untouched."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         settings_path = tmp_path / ".claude" / "settings.json"
         settings_path.write_text('{"hooks": {}}\n', encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
 
         with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
-            fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/plans/meta-harness-eval-fixture.md"}, cwd=tmp_path
+            )
 
     def test_gitignored_hook_side_effects_do_not_trip_the_check(self, tmp_path: Path) -> None:
         """PR #273 bot review round 3: the untracked scan is now unconditional (no more
@@ -2252,7 +2300,9 @@ class TestCollateralScopeOracle:
         production (verified against the repo's real `.gitignore`, see the calling scenario
         yaml's comment for the citation)."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(".claude/context/\n__pycache__/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
@@ -2264,7 +2314,9 @@ class TestCollateralScopeOracle:
         pycache_dir.mkdir(parents=True)
         (pycache_dir / "module.cpython-314.pyc").write_bytes(b"\x00")
 
-        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/plans/meta-harness-eval-fixture.md"}, cwd=tmp_path
+        )
 
     def test_ignored_scan_prefixes_defaults_to_off_and_misses_ignored_directory_payload(
         self, tmp_path: Path
@@ -2274,7 +2326,9 @@ class TestCollateralScopeOracle:
         任意ファイルを作成しても検出されない（後方互換の確認。この盲点を実際に塞ぐのが次の
         テスト）。"""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
@@ -2283,7 +2337,9 @@ class TestCollateralScopeOracle:
         payload_dir.mkdir(parents=True)
         (payload_dir / "payload").write_text("candidate-controlled content", encoding="utf-8")
 
-        fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+        fixture.assert_tracked_changes_limited_to(
+            {".claude/plans/meta-harness-eval-fixture.md"}, cwd=tmp_path
+        )
 
     def test_ignored_scan_prefixes_rejects_new_file_under_gitignored_directory(
         self, tmp_path: Path
@@ -2292,7 +2348,9 @@ class TestCollateralScopeOracle:
         を渡すと、`.claude/meta-harness/` のような gitignore 済みディレクトリへの新規ファイル
         作成も、untracked ファイルと同じ allowlist で検出・拒否されるようになる。"""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
@@ -2303,7 +2361,9 @@ class TestCollateralScopeOracle:
 
         with pytest.raises(AssertionError, match=r"new git-ignored files under \['\.claude'\]"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"}, ignored_scan_prefixes=(".claude",), cwd=tmp_path
+                {".claude/plans/meta-harness-eval-fixture.md"},
+                ignored_scan_prefixes=(".claude",),
+                cwd=tmp_path,
             )
 
     def test_ignored_scan_prefixes_still_allows_explicitly_allowed_ignored_file(
@@ -2314,7 +2374,9 @@ class TestCollateralScopeOracle:
         flag it as long as it is also passed via `allowed_paths` (mirrors how the task-state /
         handoff scenario yamls now call this subcommand)."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(
             ".claude/meta-harness-oracle/final-report.md\n", encoding="utf-8"
         )
@@ -2326,7 +2388,10 @@ class TestCollateralScopeOracle:
         (oracle_dir / "final-report.md").write_text("candidate final response", encoding="utf-8")
 
         fixture.assert_tracked_changes_limited_to(
-            {".claude/Plans.md", ".claude/meta-harness-oracle/final-report.md"},
+            {
+                ".claude/plans/meta-harness-eval-fixture.md",
+                ".claude/meta-harness-oracle/final-report.md",
+            },
             ignored_scan_prefixes=(".claude",),
             cwd=tmp_path,
         )
@@ -2335,7 +2400,9 @@ class TestCollateralScopeOracle:
         self, tmp_path: Path
     ) -> None:
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
@@ -2347,7 +2414,7 @@ class TestCollateralScopeOracle:
         )
 
         fixture.assert_tracked_changes_limited_to(
-            {".claude/Plans.md"},
+            {".claude/plans/meta-harness-eval-fixture.md"},
             ignored_scan_prefixes=(".claude",),
             ignored_baseline_file=baseline_path,
             cwd=tmp_path,
@@ -2357,7 +2424,9 @@ class TestCollateralScopeOracle:
         self, tmp_path: Path
     ) -> None:
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
@@ -2368,7 +2437,7 @@ class TestCollateralScopeOracle:
 
         with pytest.raises(AssertionError, match=r"new git-ignored files under"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"},
+                {".claude/plans/meta-harness-eval-fixture.md"},
                 ignored_scan_prefixes=(".claude",),
                 ignored_baseline_file=baseline_path,
                 cwd=tmp_path,
@@ -2378,7 +2447,9 @@ class TestCollateralScopeOracle:
         self, tmp_path: Path
     ) -> None:
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
@@ -2392,7 +2463,7 @@ class TestCollateralScopeOracle:
 
         with pytest.raises(AssertionError, match=r"new git-ignored files under"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"},
+                {".claude/plans/meta-harness-eval-fixture.md"},
                 ignored_scan_prefixes=(".claude",),
                 ignored_baseline_file=baseline_path,
                 cwd=tmp_path,
@@ -2402,7 +2473,9 @@ class TestCollateralScopeOracle:
         self, tmp_path: Path
     ) -> None:
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
@@ -2412,7 +2485,7 @@ class TestCollateralScopeOracle:
 
         with pytest.raises(AssertionError, match=r"new git-ignored files under"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"},
+                {".claude/plans/meta-harness-eval-fixture.md"},
                 ignored_scan_prefixes=(".claude",),
                 cwd=tmp_path,
             )
@@ -2428,12 +2501,14 @@ class TestCollateralScopeOracle:
         Issue #350's original symptom (every scenario failing) with no diagnostic pointing at
         the real cause."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         missing_baseline_path = tmp_path.parent / "does-not-exist-ignored-baseline.json"
 
         with pytest.raises(ValueError, match=r"ignored baseline file not found"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"},
+                {".claude/plans/meta-harness-eval-fixture.md"},
                 ignored_scan_prefixes=(".claude",),
                 ignored_baseline_file=missing_baseline_path,
                 cwd=tmp_path,
@@ -2443,20 +2518,22 @@ class TestCollateralScopeOracle:
         self, tmp_path: Path
     ) -> None:
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
         ignored_link = tmp_path / ".claude" / "meta-harness" / "linked-plan.md"
         ignored_link.parent.mkdir(parents=True)
-        ignored_link.symlink_to(tmp_path / ".claude" / "Plans.md")
+        ignored_link.symlink_to(tmp_path / ".claude" / "plans" / "meta-harness-eval-fixture.md")
         baseline_path = _write_ignored_baseline_file(
             tmp_path, [".claude/meta-harness/linked-plan.md"]
         )
 
         with pytest.raises(AssertionError, match=r"new git-ignored files under"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"},
+                {".claude/plans/meta-harness-eval-fixture.md"},
                 ignored_scan_prefixes=(".claude",),
                 ignored_baseline_file=baseline_path,
                 cwd=tmp_path,
@@ -2472,7 +2549,9 @@ class TestCollateralScopeOracle:
         directory-collapsed ignored entry that contains both a baseline-recorded file (so it gets
         expanded at all) and a symlinked subdirectory must still fail on the symlink."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".gitignore").write_text(".claude/meta-harness/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add gitignore"], cwd=tmp_path, check=True)
@@ -2486,7 +2565,7 @@ class TestCollateralScopeOracle:
 
         with pytest.raises(AssertionError, match=r"new git-ignored files under") as exc_info:
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"},
+                {".claude/plans/meta-harness-eval-fixture.md"},
                 ignored_scan_prefixes=(".claude",),
                 ignored_baseline_file=baseline_path,
                 cwd=tmp_path,
@@ -2499,44 +2578,60 @@ class TestCollateralScopeOracle:
         vector) must be caught even when the caller passes no `allowed_new_prefixes` at all --
         the previous early-return skip made this a silent pass."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
 
         with pytest.raises(AssertionError, match="new untracked files outside the allowed scope"):
-            fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/plans/meta-harness-eval-fixture.md"}, cwd=tmp_path
+            )
 
     def test_rejects_deleted_tracked_file(self, tmp_path: Path) -> None:
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".claude" / "extra.md").write_text("tracked\n", encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "add extra"], cwd=tmp_path, check=True)
         (tmp_path / ".claude" / "extra.md").unlink()
 
         with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
-            fixture.assert_tracked_changes_limited_to({".claude/Plans.md"}, cwd=tmp_path)
+            fixture.assert_tracked_changes_limited_to(
+                {".claude/plans/meta-harness-eval-fixture.md"}, cwd=tmp_path
+            )
 
     def test_allowed_new_prefix_permits_new_file_under_it(self, tmp_path: Path) -> None:
         """`create-handoff` case: a brand-new `.claude/handoffs/{timestamp}.md` must be
         permitted when its prefix is explicitly allow-listed."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         handoffs_dir = tmp_path / ".claude" / "handoffs"
         handoffs_dir.mkdir()
         (handoffs_dir / "20260719-000000.md").write_text("# Task Handoff\n", encoding="utf-8")
 
         fixture.assert_tracked_changes_limited_to(
-            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            {".claude/plans/meta-harness-eval-fixture.md"},
+            allowed_new_prefixes=(".claude/handoffs/",),
+            cwd=tmp_path,
         )
 
     def test_allowed_new_prefix_rejects_new_file_elsewhere(self, tmp_path: Path) -> None:
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         (tmp_path / ".claude" / "settings.local.json").write_text("{}\n", encoding="utf-8")
 
         with pytest.raises(AssertionError, match="new untracked files outside the allowed scope"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+                {".claude/plans/meta-harness-eval-fixture.md"},
+                allowed_new_prefixes=(".claude/handoffs/",),
+                cwd=tmp_path,
             )
 
     def test_space_containing_path_is_parsed_correctly(self, tmp_path: Path) -> None:
@@ -2545,14 +2640,18 @@ class TestCollateralScopeOracle:
         broke the previous newline+slice parsing. `-z` must correctly detect both a legitimate
         allowed new file with a space in its name, and an unrelated disallowed one."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         handoffs_dir = tmp_path / ".claude" / "handoffs"
         handoffs_dir.mkdir()
         (handoffs_dir / "2026 07 19 000000.md").write_text("# Task Handoff\n", encoding="utf-8")
 
         # Allowed: the space-containing new file lives under the allowed prefix.
         fixture.assert_tracked_changes_limited_to(
-            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            {".claude/plans/meta-harness-eval-fixture.md"},
+            allowed_new_prefixes=(".claude/handoffs/",),
+            cwd=tmp_path,
         )
 
         # Disallowed: a second space-containing file outside any allowed scope must still be
@@ -2560,7 +2659,9 @@ class TestCollateralScopeOracle:
         (tmp_path / ".claude" / "extra notes.md").write_text("x\n", encoding="utf-8")
         with pytest.raises(AssertionError, match=r"extra notes\.md"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+                {".claude/plans/meta-harness-eval-fixture.md"},
+                allowed_new_prefixes=(".claude/handoffs/",),
+                cwd=tmp_path,
             )
 
     def test_staged_new_file_under_allowed_prefix_is_permitted(self, tmp_path: Path) -> None:
@@ -2570,7 +2671,9 @@ class TestCollateralScopeOracle:
         unstaged/untracked one -- staging it should not turn a legitimate new handoff file into
         a failure."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         handoffs_dir = tmp_path / ".claude" / "handoffs"
         handoffs_dir.mkdir()
         (handoffs_dir / "20260719-000000.md").write_text("# Task Handoff\n", encoding="utf-8")
@@ -2579,7 +2682,9 @@ class TestCollateralScopeOracle:
         )
 
         fixture.assert_tracked_changes_limited_to(
-            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            {".claude/plans/meta-harness-eval-fixture.md"},
+            allowed_new_prefixes=(".claude/handoffs/",),
+            cwd=tmp_path,
         )
 
     def test_staged_new_file_outside_allowed_prefix_is_rejected(self, tmp_path: Path) -> None:
@@ -2587,14 +2692,18 @@ class TestCollateralScopeOracle:
         staging a file elsewhere (e.g. `.claude/settings.local.json`) must not be laundered
         into a pass just by running `git add` on it."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         settings_path = tmp_path / ".claude" / "settings.local.json"
         settings_path.write_text("{}\n", encoding="utf-8")
         subprocess.run(["git", "add", ".claude/settings.local.json"], cwd=tmp_path, check=True)
 
         with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+                {".claude/plans/meta-harness-eval-fixture.md"},
+                allowed_new_prefixes=(".claude/handoffs/",),
+                cwd=tmp_path,
             )
 
     def test_staged_modification_of_existing_tracked_file_is_still_rejected(
@@ -2604,7 +2713,9 @@ class TestCollateralScopeOracle:
         be excused by `allowed_new_prefixes`, even if its path happens to start with an allowed
         prefix -- only a brand-new addition qualifies."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         handoffs_dir = tmp_path / ".claude" / "handoffs"
         handoffs_dir.mkdir()
         existing = handoffs_dir / "already-tracked.md"
@@ -2620,7 +2731,9 @@ class TestCollateralScopeOracle:
 
         with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+                {".claude/plans/meta-harness-eval-fixture.md"},
+                allowed_new_prefixes=(".claude/handoffs/",),
+                cwd=tmp_path,
             )
 
     def test_symlink_under_allowed_prefix_is_rejected(self, tmp_path: Path) -> None:
@@ -2630,7 +2743,9 @@ class TestCollateralScopeOracle:
         could read whatever pre-existing file it points at. The symlink must be rejected
         regardless of its path."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         target = tmp_path / "sandbox" / "existing-with-keyword.md"
         target.parent.mkdir(parents=True)
         target.write_text("Current Task State\nNext Up\npytest\n", encoding="utf-8")
@@ -2640,7 +2755,9 @@ class TestCollateralScopeOracle:
 
         with pytest.raises(AssertionError, match="new untracked files outside the allowed scope"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+                {".claude/plans/meta-harness-eval-fixture.md"},
+                allowed_new_prefixes=(".claude/handoffs/",),
+                cwd=tmp_path,
             )
 
     def test_regular_file_under_allowed_prefix_still_passes(self, tmp_path: Path) -> None:
@@ -2648,13 +2765,17 @@ class TestCollateralScopeOracle:
         under an allowed prefix must keep passing -- the symlink check must not become an
         overly broad false positive."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         handoffs_dir = tmp_path / ".claude" / "handoffs"
         handoffs_dir.mkdir()
         (handoffs_dir / "20260719-000000.md").write_text("# Task Handoff\n", encoding="utf-8")
 
         fixture.assert_tracked_changes_limited_to(
-            {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+            {".claude/plans/meta-harness-eval-fixture.md"},
+            allowed_new_prefixes=(".claude/handoffs/",),
+            cwd=tmp_path,
         )
 
     def test_rename_of_existing_tracked_file_is_rejected_by_both_paths(
@@ -2666,7 +2787,9 @@ class TestCollateralScopeOracle:
         `allowed_new_prefixes` must not excuse the new path even if it happens to fall under
         one, and the vacated old path must also be flagged."""
         fixture = _task_state_outcome_fixture()
-        _init_git_repo_with_tracked_file(tmp_path, ".claude/Plans.md", "unchanged\n")
+        _init_git_repo_with_tracked_file(
+            tmp_path, ".claude/plans/meta-harness-eval-fixture.md", "unchanged\n"
+        )
         source = tmp_path / "sandbox" / "oldname.md"
         source.parent.mkdir(parents=True)
         source.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
@@ -2683,5 +2806,7 @@ class TestCollateralScopeOracle:
 
         with pytest.raises(AssertionError, match="tracked files changed outside the allowed scope"):
             fixture.assert_tracked_changes_limited_to(
-                {".claude/Plans.md"}, allowed_new_prefixes=(".claude/handoffs/",), cwd=tmp_path
+                {".claude/plans/meta-harness-eval-fixture.md"},
+                allowed_new_prefixes=(".claude/handoffs/",),
+                cwd=tmp_path,
             )

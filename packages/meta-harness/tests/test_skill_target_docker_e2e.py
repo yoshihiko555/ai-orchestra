@@ -113,8 +113,8 @@ prompt: |
   do not use Write. Run exactly one Bash command and then stop:
   python3 -c "from pathlib import Path; Path('.claude/handoffs/live-e2e.md').write_text('# Task Handoff\\n\\n## Current Task State\\n\\n- Bootstrap validation complete.\\n')"
 setup:
-  - "mkdir -p .claude/handoffs"
-  - "printf '# Plans\\n\\n- `cc:done` Bootstrap validation\\n' > .claude/Plans.md"
+  - "mkdir -p .claude/handoffs .claude/plans"
+  - "printf '## Project: meta-harness-eval-fixture\\n\\n### Phase 1: Bootstrap `cc:done`\\n\\n#### Tasks\\n\\n- `cc:done` Bootstrap validation\\n' > .claude/plans/meta-harness-eval-fixture.md"
 allowed_tools:
   - "Bash(python3 *)"
 critical:

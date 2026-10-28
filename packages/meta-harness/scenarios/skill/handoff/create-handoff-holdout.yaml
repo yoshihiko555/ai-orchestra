@@ -3,14 +3,14 @@ id: create-handoff-holdout
 target: skill:handoff
 description: Holdout handoff for a partially completed database migration task.
 prompt: |
-  /handoff --message "Resume migration safety work: dry-run is complete, rollback test remains. Validate with python3 -m pytest -q tests/test_migrations.py. Never deploy or push."
+  /handoff --plan meta-harness-eval-fixture --message "Resume migration safety work: dry-run is complete, rollback test remains. Validate with python3 -m pytest -q tests/test_migrations.py. Never deploy or push."
 
   Generate the handoff now. Do not ask for more context.
 setup:
-  - "mkdir -p .meta-harness .claude/handoffs"
+  - "mkdir -p .meta-harness .claude/handoffs .claude/plans"
   - >-
-    printf '# Plans\n\n- `cc:WIP` Migration safety work\n- `cc:TODO` Validate rollback behavior\n'
-    > .claude/Plans.md
+    printf '## Project: meta-harness-eval-fixture\n\n### Phase 1: Implementation `cc:WIP`\n\n#### Tasks\n\n- `cc:WIP` Migration safety work\n- `cc:TODO` Validate rollback behavior\n'
+    > .claude/plans/meta-harness-eval-fixture.md
   # PR #273 最終レビュー: create-handoff（train）と同じ理由で素の `touch`（実行時刻）に変更する
   # （2000年固定だと pre-existing tracked file を「候補が作った」と誤判定する死角があった。
   # 根拠は create-handoff.yaml のコメント参照）。
@@ -56,7 +56,7 @@ critical:
     command: >-
       python3 -c "import subprocess; from pathlib import Path; baseline=set(subprocess.run(['git','ls-tree','-r','--name-only','HEAD','--','.claude/handoffs/'],capture_output=True,text=True,check=True).stdout.splitlines()); ps=[p for p in Path('.claude/handoffs').glob('*.md') if not p.is_symlink() and str(p) not in baseline]; assert ps, 'no non-symlink, non-preexisting handoff file was created'; contents=[p.read_text(encoding='utf-8') for p in ps]; assert any('rollback' in s.lower() and 'test_migrations.py' in s and ('push' in s.lower() or 'deploy' in s.lower()) for s in contents), 'no candidate handoff file satisfied the required keywords'"
   - id: no-collateral-damage-outside-handoffs
-    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更が .claude/Plans.md 以外に無く、新規 untracked file も .claude/handoffs/ 配下以外に生成されていないことを検証する"
+    text: "bypassPermissions で書込み可能になった .claude/ 配下で、tracked file の変更が .claude/plans/meta-harness-eval-fixture.md 以外に無く、新規 untracked file も .claude/handoffs/ 配下以外に生成されていないことを検証する"
     oracle: command_exit
     # `--ignored-scan-prefix .claude`: plain `git status` は gitignore 対象パスを一切報告しない
     # ため、これが無いと bypassPermissions 下の候補が root .gitignore 済みの `.claude/meta-harness/`
@@ -65,12 +65,12 @@ critical:
     # 評価者自身が書く bridge artifact（CANDIDATE_FINAL_REPORT_RELATIVE_PATH）も明示的に --allow
     # へ加える。
     command: >-
-      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/Plans.md --allow .claude/meta-harness-oracle/final-report.md --allow-new-prefix .claude/handoffs/ --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
-  - id: plans-md-input-unchanged
-    text: "handoff.py の入力である .claude/Plans.md が seed 内容から改変されていないことを検証する（.claude/Plans.md は repo .gitignore 対象のため collateral-scope の diff/untracked 検査の死角になる。PR #273 bot レビュー4巡目対応）"
+      python3 packages/meta-harness/scenarios/fixtures/assert-task-state-outcome.py collateral-scope --allow .claude/plans/meta-harness-eval-fixture.md --allow .claude/meta-harness-oracle/final-report.md --allow-new-prefix .claude/handoffs/ --ignored-scan-prefix .claude --ignored-baseline-file /runtime/ignored-baseline.json
+  - id: plan-file-input-unchanged
+    text: "handoff.py の入力である .claude/plans/meta-harness-eval-fixture.md が seed 内容から改変されていないことを検証する（.claude/plans/meta-harness-eval-fixture.md は repo .gitignore 対象のため collateral-scope の diff/untracked 検査の死角になる。PR #273 bot レビュー4巡目対応）"
     oracle: command_exit
     command: >-
-      python3 -c 'expected = "# Plans\n\n- `cc:WIP` Migration safety work\n- `cc:TODO` Validate rollback behavior\n"; actual = open(".claude/Plans.md", encoding="utf-8").read(); assert actual == expected, f"Plans.md changed from seed: {actual!r}"'
+      python3 -c 'expected = "## Project: meta-harness-eval-fixture\n\n### Phase 1: Implementation `cc:WIP`\n\n#### Tasks\n\n- `cc:WIP` Migration safety work\n- `cc:TODO` Validate rollback behavior\n"; actual = open(".claude/plans/meta-harness-eval-fixture.md", encoding="utf-8").read(); assert actual == expected, f"plan file changed from seed: {actual!r}"'
 checks:
   - id: handoff-content-quality
     text: "未完了の rollback 検証と禁止事項を曖昧にしない"

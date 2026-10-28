@@ -117,8 +117,8 @@ tests/                       # unit / e2e tests
 - **Claude Code**: 計画・実装・コマンド実行・git 操作を担い、ルーティングに従ってサブエージェント経由で Codex / Antigravity に委譲する
 - **Codex CLI**: 呼び出し方と依頼内容に応じて次のいずれかで動く。モードは呼び出し方だけでなく依頼内容と sandbox で判定し、直接起動でも依頼が分析・レビューだけなら相談として扱う
   - **相談**: Claude Code からの `codex exec`（`--sandbox read-only`）。ファイルを編集せず、分析と推奨を返す
-  - **委譲実装**: Claude Code の実装エージェント（tester / backend-python-dev 等）からの `codex exec`（`--sandbox workspace-write`）。委譲された範囲でファイル編集・コマンド実行・テストを行う。commit はせず、Plans.md は呼び出し元が更新する
-  - **発注書実装**: 引き継ぎファイル（`.claude/handoffs/*.md`）を渡した新規セッション、TAKT のタスク、直接起動。発注書の範囲でファイル編集・コマンド実行・テストを行い、commit は発注書に明記がある場合だけ行う。状態は、引き継ぎファイルなら Plans.md の `cc:` マーカーと Acceptance Criteria、TAKT なら TAKT のレポートに残す（Plans.md は作らない）
+  - **委譲実装**: Claude Code の実装エージェント（tester / backend-python-dev 等）からの `codex exec`（`--sandbox workspace-write`）。委譲された範囲でファイル編集・コマンド実行・テストを行う。commit はせず、plan ファイルは呼び出し元が更新する
+  - **発注書実装**: 引き継ぎファイル（`.claude/handoffs/*.md`）を渡した新規セッション、TAKT のタスク、直接起動。発注書の範囲でファイル編集・コマンド実行・テストを行い、commit は発注書に明記がある場合だけ行う。状態は、引き継ぎファイルなら plan ファイル（`.claude/plans/<slug>.md`）の `cc:` マーカーと Acceptance Criteria、TAKT なら TAKT のレポートに残す（plan ファイルは作らない）
 - **Antigravity CLI**: 調査・分析に使う。書き込みは依頼された範囲（調査結果の保存先 `.claude/docs/research/` を含む）に限る。読み取り専用で呼ぶ場合は呼び出し側が `--mode plan` を付ける
 - 設計判断が必要になったら呼び出し元に判断を委ねる（どのエージェントに回すかはルーティングに従う）
 

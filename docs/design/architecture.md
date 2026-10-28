@@ -240,7 +240,7 @@ agents.{name}.tool の値:
 ```
 SessionStart:
   - sync-orchestra.py (外部)             パッケージ差分同期 + facet build
-  - load-task-state.py (core)            Plans.md 読み込み・タスクサマリー表示
+  - load-task-state.py (core)            plan ファイル読み込み・タスクサマリー表示
   - orchestration-bootstrap.py (audit)   state/logs ディレクトリ初期化
 
 UserPromptSubmit:
@@ -369,7 +369,7 @@ templates/project/AGENTS.md     (生成物・直接編集禁止)
 | ファイル                 | パッケージ    | 内容                                                                                                                     |
 | ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `cli-tools.yaml`         | agent-routing | Codex/Antigravity モデル名、sandbox 設定、30 エージェントの tool 割り当て                                                |
-| `task-memory.yaml`       | core          | Plans.md パス、タスクマーカー定義                                                                                        |
+| `task-memory.yaml`       | core          | タスクマーカー定義・表示上限（plan ファイルは `.claude/plans/` 固定）                                                    |
 | `audit-flags.json`       | audit         | 機能フラグ（route_audit, kpi_scorecard）                                                                                 |
 | `quality-gates.json`     | quality-gates | 機能フラグ（quality_gate, context_optimization, evaluation_set_check）・状態ディレクトリ（Issue #153 で audit から分離） |
 | `delegation-policy.json` | audit         | ルーティングポリシー（将来用）                                                                                           |
@@ -436,7 +436,7 @@ agents:
 ├── .claude/
 │   ├── orchestra.json              # インストール済みパッケージ・同期状態
 │   ├── settings.local.json         # hook 登録（自動管理）
-│   ├── Plans.md                    # タスク管理（SSOT）
+│   ├── plans/<slug>.md             # タスク管理（Project ごとの SSOT）
 │   ├── agents/*.md                 # エージェント定義（30ファイル）
 │   ├── skills/*/SKILL.md           # スキル定義（14ディレクトリ）
 │   ├── rules/*.md                  # ルール定義（12ファイル）
@@ -463,7 +463,7 @@ agents:
 | CLI 検出   | `codex exec` / `agy -p` の正規表現マッチング               |
 | Facet      | composition 解決、policy 注入、エラーハンドリング          |
 | 同期       | agents/config の差分同期、agent model パッチ               |
-| タスク状態 | Plans.md パース、マーカー更新                              |
+| タスク状態 | plan ファイルのパース、マーカー更新                        |
 
 **テストパターン**: `module_loader.py` による動的モジュールロード、`tmp_path` フィクスチャ、`monkeypatch`、`@pytest.mark.parametrize`
 
