@@ -37,6 +37,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`agent-routing`: 未導入のエージェントを提案しないように修正**: プロジェクトに `.claude/agents` がある場合、定義ファイルが実在するエージェントだけを提案する。
 - **`agent-routing`: `researcher` が指定 CLI を試さず直接調査してしまう問題に対する指示を修正**: 解決済みの tool が Antigravity / Codex なら CLI を先に実行し、未試行のまま WebSearch / WebFetch 等へ切り替えないことを明記した。実行失敗時のフォールバック条件と、実効 tool・試行結果・理由の報告も明確にした。`.local.yaml` の上書き、CLI 無効化、成功後の出典確認は維持する。
 - **`agent-routing` / `core`: サブエージェントのハンドバックにエージェントルーティングを提案してしまう問題を修正**: `<agent-message>` で始まる入力（サブエージェントの報告・別セッションからのメッセージ）を、タスク完了通知と同じくユーザー入力として扱わない。plan gate も解除しない。
 - **`audit`: 監査ログの記録漏れを修正**: `prompt` イベントに入力種別 `input_kind`（`human` / `slash` / `harness`）を記録し、通知やハンドバックの本文では期待ルートを予測しない。`subagent_start` の `ctx.skill` に起動元のスキルを記録する。`subagent_end` の `agent_type` が空のときは起動時の種別で補い、Claude Code の内部エージェント（開始イベントが無いもの）の終了は記録しない。

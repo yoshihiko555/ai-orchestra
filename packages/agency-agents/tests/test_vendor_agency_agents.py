@@ -395,6 +395,24 @@ class TestErrors:
         assert run(package, cli_tools, "sync", "--source", str(upstream.root)) == vendor.EXIT_ERROR
         assert "重複" in capsys.readouterr().err
 
+    def test_duplicate_agent_path_with_different_profiles_is_error(
+        self, package: Path, upstream: Upstream, cli_tools: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        head = upstream.git("rev-parse", "HEAD")
+        (package / "upstream.yaml").write_text(
+            f"repo: {REPO_URL}\ncommit: {head}\nagents:\n"
+            "  support/support-summary:\n    profile: readonly\n"
+            "  support/support-summary:\n    profile: implementer\n",
+            encoding="utf-8",
+        )
+
+        assert run(package, cli_tools, "sync", "--source", str(upstream.root)) == vendor.EXIT_ERROR
+        err = capsys.readouterr().err
+        assert "YAML が不正" in err
+        assert "重複" in err
+        assert not (package / "agents").exists()
+        assert (package / "manifest.json").read_text(encoding="utf-8") == MANIFEST
+
     def test_ref_starting_with_dash_is_rejected(self, upstream: Upstream) -> None:
         with pytest.raises(vendor.VendorError, match="不正な ref"):
             vendor.resolve_commit(upstream.root, "--output=/tmp/x")
@@ -659,6 +677,91 @@ class TestPrivilegedFrontmatter:
 
 
 class TestSafeWrites:
+    @pytest.mark.parametrize("command", ["sync", "update"])
+    @pytest.mark.parametrize("has_stale_file", [False, True])
+    def test_agents_directory_symlink_is_rejected_before_writes_or_deletes(
+        self,
+        tmp_path: Path,
+        package: Path,
+        upstream: Upstream,
+        cli_tools: Path,
+        capsys: pytest.CaptureFixture,
+        command: str,
+        has_stale_file: bool,
+    ) -> None:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        stale_content = vendor.GENERATED_MARKER_PREFIX + " stale -->\n"
+        if has_stale_file:
+            (outside / "stale.md").write_text(stale_content, encoding="utf-8")
+        (package / "agents").symlink_to(outside, target_is_directory=True)
+        config_before = (package / "upstream.yaml").read_bytes()
+        args = [command, "--source", str(upstream.root)]
+        if command == "update":
+            upstream.write("support/support-summary.md", agent_md("Summary Writer", "Changed."))
+            upstream.commit("update")
+            args += ["--to", "main", "--yes"]
+
+        assert run(package, cli_tools, *args) == vendor.EXIT_ERROR
+
+        assert "symlink" in capsys.readouterr().err
+        assert sorted(path.name for path in outside.iterdir()) == (
+            ["stale.md"] if has_stale_file else []
+        )
+        if has_stale_file:
+            assert (outside / "stale.md").read_text(encoding="utf-8") == stale_content
+        assert (package / "agents").is_symlink()
+        assert (package / "manifest.json").read_text(encoding="utf-8") == MANIFEST
+        assert (package / "upstream.yaml").read_bytes() == config_before
+        assert not (package / "LICENSE-agency-agents").exists()
+
+    @pytest.mark.parametrize(
+        ("command", "relative_target"),
+        [
+            ("sync", "agents/support-summary.md"),
+            ("sync", "manifest.json"),
+            ("sync", "LICENSE-agency-agents"),
+            ("update", "agents/support-summary.md"),
+            ("update", "manifest.json"),
+            ("update", "LICENSE-agency-agents"),
+            ("update", "upstream.yaml"),
+        ],
+    )
+    def test_output_symlink_outside_package_is_rejected_before_any_write(
+        self,
+        tmp_path: Path,
+        package: Path,
+        upstream: Upstream,
+        cli_tools: Path,
+        capsys: pytest.CaptureFixture,
+        command: str,
+        relative_target: str,
+    ) -> None:
+        target = package / relative_target
+        target.parent.mkdir(parents=True, exist_ok=True)
+        outside_content = target.read_bytes() if target.exists() else b"outside\n"
+        outside = tmp_path / "package-escape" / target.name
+        outside.parent.mkdir()
+        outside.write_bytes(outside_content)
+        target.unlink(missing_ok=True)
+        target.symlink_to(outside)
+        config_before = (package / "upstream.yaml").read_bytes()
+        args = [command, "--source", str(upstream.root)]
+        if command == "update":
+            upstream.write("support/support-summary.md", agent_md("Summary Writer", "Changed."))
+            upstream.commit("update")
+            args += ["--to", "main", "--yes"]
+
+        assert run(package, cli_tools, *args) == vendor.EXIT_ERROR
+
+        assert "パッケージ外" in capsys.readouterr().err
+        assert target.is_symlink()
+        assert outside.read_bytes() == outside_content
+        assert sorted(path.name for path in outside.parent.iterdir()) == [target.name]
+        assert (package / "manifest.json").read_text(encoding="utf-8") == MANIFEST
+        assert (package / "upstream.yaml").read_bytes() == config_before
+        assert not (package / "agents" / "specialized-builder.md").exists()
+
     def test_stale_file_without_marker_is_kept(
         self,
         tmp_path: Path,
@@ -679,7 +782,12 @@ class TestSafeWrites:
         assert "hand-written.md" in capsys.readouterr().err
 
     def test_stale_symlink_is_kept_even_if_it_points_to_a_generated_file(
-        self, tmp_path: Path, package: Path, upstream: Upstream, cli_tools: Path
+        self,
+        tmp_path: Path,
+        package: Path,
+        upstream: Upstream,
+        cli_tools: Path,
+        capsys: pytest.CaptureFixture,
     ) -> None:
         run(package, cli_tools, "sync", "--source", str(upstream.root))
         outside = tmp_path / "outside.md"
@@ -690,6 +798,7 @@ class TestSafeWrites:
         assert run(package, cli_tools, "sync", "--source", str(upstream.root)) == 0
         assert link.is_symlink()
         assert outside.exists()
+        assert "生成物ではないため残しました: agents/linked.md" in capsys.readouterr().err
 
     def test_check_reports_non_utf8_file_instead_of_crashing(
         self, package: Path, upstream: Upstream, cli_tools: Path

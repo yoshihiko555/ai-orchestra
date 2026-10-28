@@ -61,6 +61,8 @@
 - [x] EV-30（境界 / must）: 注入対象 — `[Resolved Routing]` は、起動エージェント（`subagent_type`、省略時は `general-purpose`）が base/local マージ後の `agents` に定義され、かつ project が `cli-tools.yaml` または `cli-tools.local.yaml` を持つ場合にのみ注入する。未定義エージェント（`Explore` / `fork` / プラグイン提供エージェント等）や agent-routing 未導入の project には注入しない — 根拠: Issue #453 — 自動テスト: `test_inject_resolved_routing.py`
 - [ ] EV-31（異常 / must）: 書き込めないルーティングでの停止 — ファイルの作成・変更を担う実装エージェント（`tester` / `backend-python-dev` / `backend-go-dev` / `frontend-dev` / `ai-dev`）の定義は、解決済みの（`[Resolved Routing]`、ブロックが無ければ自分で解決した）`tool` が `antigravity`、または `tool` が `codex` で `codex.sandbox` が `read-only` のとき、Edit / Write も CLI への書き込み依頼もせず、tool の値（codex なら sandbox の値も）を添えて「このルーティングでは書き込めない」と報告して終了する。自分の Edit / Write への切り替えで回避しない（Codex 実行エラー時のフォールバックより先に判定する）。`tool: auto` では停止せず、Codex で書き込むのは書き込み用の sandbox（`codex.sandbox.implementation`。エージェント別の sandbox があれば `codex.sandbox`）が `workspace-write` の場合だけで、そうでなければ自身の Edit / Write で書く — 根拠: facets/instructions/tdd.md（書き込みフェーズの停止）、PR #480 の Codex ローカルレビュー r7（tdd.md の文言だけでは担保できない。オーケストレーターからは `[Resolved Routing]` が見えないため停止条件をエージェント定義に置く） / 検証: PR レビュー（静的）
 
+- [ ] EV-32（正常/境界 / must）: `agent-router.py` は、プロジェクトの `.claude/agents` ディレクトリがある場合、`<name>.md` が実在するエージェントだけを提案候補にする。例: GDPR の依頼は `engineering-privacy-engineer.md` が無ければ同エージェントを提案せず、あれば提案する。`.claude/agents` 自体が無い場合は従来の検出を維持する。プロジェクトは hook 入力の `cwd` を優先し、空なら `CLAUDE_PROJECT_DIR` で解決する — 根拠: packages/agent-routing/hooks/agent-router.py、route_config.py（`detect_agent` の `allowed_agents`、`_project_dir_from_data`） — 自動テスト: `test_agent_router_e2e.py::TestFixtureInstalledAgents`
+
 ## 4. 類型別観点
 
 <!-- README.md の類型別チェックリストのうち該当するものを具体化。該当しない項目は N/A として理由を明示する -->

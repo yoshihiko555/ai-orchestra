@@ -438,6 +438,9 @@ Task(subagent_type="planner", prompt="このタスクを分解して")
 Task(subagent_type="code-reviewer", prompt="このコードをレビューして")
 ```
 
+UserPromptSubmit のエージェント提案は、プロジェクトに `.claude/agents` ディレクトリがあれば、
+そこに `<name>.md` が実在するエージェントだけを対象にする。ディレクトリが無い場合は従来の検出を維持する。
+
 `researcher` は解決済みのルーティングに従い、`tool: antigravity` なら `agy`、`tool: codex` なら
 `codex exec` を先に実行します。WebSearch / WebFetch 等だけで指定 CLI を省略しません。
 CLI の実行失敗時（Antigravity は規定のリトライ後、未導入・権限拒否などは確認後）または

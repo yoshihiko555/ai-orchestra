@@ -111,6 +111,18 @@ class VendorError(Exception):
     """設定・upstream の不備。メッセージをそのまま利用者に表示する。"""
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """upstream.yaml の mapping のキー重複を拒否する。"""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        mapping = super().construct_mapping(node, deep=deep)
+        if len(mapping) != len(node.value):
+            raise yaml.constructor.ConstructorError(
+                None, None, "mapping のキーが重複しています", node.start_mark
+            )
+        return mapping
+
+
 @dataclass(frozen=True)
 class AgentSpec:
     """upstream.yaml の 1 エージェント分の設定。"""
@@ -307,7 +319,7 @@ def load_config(package_dir: Path) -> VendorConfig:
     """upstream.yaml を読んで検証する。"""
     config_path = package_dir / CONFIG_NAME
     try:
-        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        data = yaml.load(config_path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except (OSError, UnicodeDecodeError) as exc:
         raise VendorError(f"{config_path} を読めません: {exc}") from exc
     except yaml.YAMLError as exc:
@@ -541,10 +553,16 @@ def write_outputs(
     手で置いたファイル（生成物の印が無いもの）と symlink は消さない。
     """
     agents_dir = package_dir / AGENTS_DIRNAME
+    if agents_dir.is_symlink():
+        raise VendorError(f"出力先の agents ディレクトリが symlink です: {agents_dir}")
     files = {agents_dir / name: content for name, content in expected.items()}
     files[package_dir / MANIFEST_NAME] = manifest
     files[package_dir / LICENSE_NAME] = license_text
     files.update(extra or {})
+    package_root = package_dir.resolve()
+    for target in files:
+        if not target.resolve().is_relative_to(package_root):
+            raise VendorError(f"出力先がパッケージ外を指しています: {target}")
     write_files_atomically(files)
     for stale in agents_dir.glob("*.md"):
         if stale.name in expected:

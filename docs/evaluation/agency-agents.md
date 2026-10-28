@@ -50,6 +50,8 @@
 - [ ] EV-22（異常 / must）: `update` は、進め先が現在の commit の子孫でない場合（巻き戻し・fork の commit）と、`--source` の origin が `upstream.yaml` の `repo` と別のリポジトリの場合に exit 2 で止まる。https と ssh の URL の違いは同じリポジトリとして扱う — 根拠: ADR-20261028-061（レビュー指摘への対応）
 - [ ] EV-23（異常 / must）: `sync` は、生成物の印が無いファイル（手で置いたもの）と symlink を削除せず警告にとどめる — 根拠: 実装挙動
 - [ ] EV-24（正常 / must）: 生成物の印のコメントに upstream の repo・commit・パス・ライセンス名・著作権表示を入れ、upstream の LICENSE を `LICENSE-agency-agents` として同梱する — 根拠: ADR-20261028-061（MIT の告知）
+- [ ] EV-26（異常 / must）: `sync` / `update` は、`agents` ディレクトリが symlink の場合、または出力先（`agents/*.md`・`manifest.json`・`LICENSE-agency-agents`・更新時の `upstream.yaml`）の解決先がパッケージ外の場合、書き込み・削除前に exit 2 で止まる。パッケージ外には何も生成せず、生成物の印がある古いファイルも削除しない。古いファイル自体が symlink の場合は従来どおり警告して残す — 根拠: scripts/vendor-agency-agents.py（`write_outputs`、レビュー finding 1: 出力先の symlink によるパッケージ外への書き込み・削除）
+- [ ] EV-27（異常 / must）: `upstream.yaml` の mapping に重複キーがある場合（同じエージェントのパスに異なる profile を指定した場合を含む）、後の値で上書きせず YAML エラーとして exit 2 で止まり、生成物を書き換えない — 根拠: scripts/vendor-agency-agents.py（`load_config`、レビュー finding 3: `upstream.yaml` の重複キー）
 
 ## 4. 類型別観点
 
