@@ -3,7 +3,7 @@
 **パッケージ**: `packages/image-generation`
 **類型**: スキル型（`/image-gen` スキル + `image-generator` エージェント）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-10-28（sandbox を外す呼び出しを `codex exec` 単体に限る EV-23 を追加し、EV-22 の stderr の表示を Step 3.5 に移す。人間レビュー待ち（本 PR）。前回 2026-10-27: EV-08 のフォールバック先を `gpt-6.1-sol` に変更）
+**最終レビュー日**: 2026-10-28（sandbox を外す呼び出しを `codex exec` 単体に限る EV-23 を追加し、EV-22 の stderr の表示を Step 3.5 に移し、EV-04 に引用符・改行を含む出力先の拒否を加える。人間レビュー待ち（本 PR）。前回 2026-10-27: EV-08 のフォールバック先を `gpt-6.1-sol` に変更）
 **情報源**: packages/image-generation/README.md, docs/adr/ADR-20260605-023.md, facets/instructions/image-gen.md（`/image-gen` スキル指示書）, packages/image-generation/agents/image-generator.md（エージェント指示書）, packages/image-generation/config/image-generation.yaml, packages/image-generation/manifest.json（補助参照: 構成要素の列挙のみ）
 
 ## 1. 責務定義
@@ -33,7 +33,7 @@
 - [ ] EV-01（正常 / must）: `/image-gen <プロンプト>` のみ指定時、出力先はリポジトリルート基準の `generated-images/<slug>.png` に解決される — 根拠: facets/instructions/image-gen.md（トリガーと引数 / Phase 1）
 - [ ] EV-02（正常 / must）: `--out <path>` 指定時はそのパスが出力先として使われ、絶対パスに解決される — 根拠: facets/instructions/image-gen.md（Phase 1）
 - [ ] EV-03（異常 / must）: プロンプトが空の場合、画像生成を実行せず AskUserQuestion で確認する — 根拠: facets/instructions/image-gen.md（Phase 1 手順3）
-- [ ] EV-04（境界 / must）: 出力先パスが `git rev-parse --show-toplevel` で得たリポジトリルート外に解決される場合（パストラバーサル）、生成を実行せず拒否する — 根拠: packages/image-generation/agents/image-generator.md（Step 1）
+- [ ] EV-04（境界 / must）: 出力先パスが `git rev-parse --show-toplevel` で得たリポジトリルート外に解決される場合（パストラバーサル）、生成を実行せず拒否する。解決した絶対パスが `'` または改行を含む場合も拒否する（Step 3.5 がシングルクォートのリテラルとして書くため） — 根拠: packages/image-generation/agents/image-generator.md（Step 1）
 - [ ] EV-05（異常 / must）: Codex 実行後、EV-22 で特定したセッションのフォルダに Step 3 で打ったフレッシュネスマーカーより新しい `*.png`（保存名はモデルで異なり、`gpt-5.5` は `call_*.png`、sol 系は `exec-*.png`、旧 codex は `ig_*.png`）が存在しない場合、既存の古いファイルを流用せず FAILURE として報告する（`ls -t | head` 等での手動迂回は禁止） — 根拠: packages/image-generation/agents/image-generator.md（Step 3.5）, docs/adr/ADR-20260605-023.md（Update 2026-06-17 #2 点7）
 - [ ] EV-22（境界 / must）: Step 3.5 の鮮度ガードは、`codex exec` が stderr のヘッダに出す `session id: <uuid>` を Step 3 で取得したログのヘッダ部分（echo されたプロンプトより前）から読み取り、UUID 形式 `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$` に一致することを機械的に確認したうえで、探索を `~/.codex/generated_images/<session id>/` に限定する。`~/.codex/generated_images` 全体は探索しない（並行して動く別の Codex セッション（TUI や並列の `/image-gen`）の画像を自分の成果物として採用しないため）。session id が取得できない・形式に一致しない場合は全体探索に戻さず FAILURE として報告する。Codex の stderr は sandbox 無効の Step 3 ではログに書くだけで表示せず、Codex の終了後に sandbox ありの Step 3.5 が、ログが symlink でない通常ファイルであることを確かめてから表示する（実行中に Codex がログを symlink に差し替えても、エージェントのコンテキストに外部のファイルを読み込まないため） — 根拠: packages/image-generation/agents/image-generator.md（Step 3, Step 3.5）, docs/adr/ADR-20260605-023.md（Update 2026-10-02, Update 2026-10-28）
 - [ ] EV-23（境界 / must）: sandbox を無効にする（`dangerouslyDisableSandbox: true`）Bash 呼び出しは Step 3 の `codex exec` 単体だけで、`&&` / `;` / `|` / `||` で他のコマンドと連結しない。プロンプトの組み立て、feature 名の解決、マーカーとログの作成、後片付けは sandbox ありの別の呼び出しで行う。プロンプトは Step 2 が `mktemp -d "${TMPDIR:-/tmp}/imggen.XXXXXX"` で作った一時ディレクトリに書き出し、Step 3 は `"$(cat '<RUN_DIR>/prompt.txt')"` で渡す（シェル変数は Bash 呼び出しをまたいで残らないため、表示された絶対パスをリテラルで書く）。sandbox 無効の呼び出しに埋め込む値は、事前の sandbox ありの呼び出しで機械的に検証したリテラルに限る（モデル名は `^[A-Za-z0-9][A-Za-z0-9._-]*$`、feature 名は `imagegenext` / `image_generation` のどちらか、一時ディレクトリのパスは `'` と改行を含まない）。Step 3.5 は `codex exec` の成否に関わらず実行し、exit code が 0 以外なら一時ファイルを片付けて FAILURE を報告する — 根拠: .claude/rules/codex-delegation.md（Bash サンドボックス制約の条件 3・4）, packages/image-generation/agents/image-generator.md（Step 2, Step 3, Step 3.5）, docs/adr/ADR-20260605-023.md（Update 2026-10-28）
@@ -52,7 +52,7 @@
 ## 4. 類型別観点
 
 - [ ] EV-12（対話規約 / 正常 / should）: 対話（AskUserQuestion）はプロンプトが空の場合、または EV-19 の未知 style を選び直す場合に限り発生し、それ以外のフェーズ（出力先解決・委譲・報告）は非対話で完結する — 根拠: facets/instructions/image-gen.md（Phase 1-3）。なお本パッケージ独自の「Dialog Rules Policy」参照は `.claude/rules/` 配下に存在せず、対話条件はスキル指示書の記述のみが根拠。
-- [ ] EV-13（非対話完結性 / 異常 / must）: `codex exec` 呼び出しは `< /dev/null` で stdin を封じ、Bash `timeout` を `180000` に設定し、exit code / stdout マーカーで成否を判定する（ハングしない） — 根拠: packages/image-generation/agents/image-generator.md（Step 3）
+- [ ] EV-13（非対話完結性 / 異常 / must）: `codex exec` 呼び出しは `< /dev/null` で stdin を封じ、Bash `timeout` を `180000` に設定し、exit code / stdout マーカーで成否を判定する（ハングしない）。exit code が分からない場合（タイムアウト・実行拒否など）は成功扱いにしない — 根拠: packages/image-generation/agents/image-generator.md（Step 3, Step 3.5）
 - [ ] EV-14（フォールバック / 異常 / must）: Codex 利用不能時は claude-direct 相当の代替画像生成を行わず、「利用不可」を明示報告して停止する（本パッケージには AI 画像生成の claude-direct 代替経路が存在しないため、フォールバック先は「機能停止の明示報告」であり「別ツールでの続行」ではない） — 根拠: packages/image-generation/agents/image-generator.md（Fallback）
 - [ ] EV-16（config 駆動 / 異常 / must）: ルーティング尊重 — `cli-tools.yaml`（+ `.local.yaml`）の `codex.enabled: false` のとき、`/image-gen` スキル・`image-generator` エージェントは画像生成を実行せず「利用不可」を明示報告する。`image-generator` は `codex exec` を直接呼ぶ設計（`agents.<name>.tool` ルーティングには ADR-023 で不参加）だが、Codex CLI 依存機能であるためグローバル無効化スイッチ `codex.enabled` は尊重する — 根拠: 2026-07-04 人間レビュー裁定。`packages/image-generation/scripts/check_image_gen_enabled.py` による Step 0 kill-switch チェックとして実装済み（Issue #133）。チェックは hook と同じ `"${AI_ORCHESTRA_PYTHON:-python3}"` で起動する（pyyaml を持たない Python で起動すると config を読めず、`codex.enabled: false` が黙って無視されて「利用可」と判定されるため）
 - [ ] EV-15（成果物規約 / 正常 / must）: 生成画像の保存先は既定 `generated-images/<slug>.png`（`.gitignore` 管理）、または EV-04 で検証済みの `--out` パスに限られ、それ以外の場所へは書き込まない — 根拠: packages/image-generation/README.md（出力先）, facets/instructions/image-gen.md（トリガーと引数）
@@ -66,7 +66,7 @@
 以下は Codex API・ChatGPT 認証をモック/スタブすれば決定的にユニット/結合テスト化できる。テストがこれらを謳う場合、実際に外部 `codex exec` を呼んでいないか（テストが遅い・環境依存で flaky にならないか）を確認する。
 
 - EV-01, EV-02, EV-03: 引数解析・デフォルトパス生成・空プロンプト検知のロジック
-- EV-04: パストラバーサルガード（`realpath` 判定と repo root 比較）
+- EV-04: パストラバーサルガード（`realpath` 判定と repo root 比較、引用符・改行を含むパスの拒否）
 - EV-05: フレッシュネスガード（`find -newer` 相当のマーカー比較ロジック。マーカーより新しいファイルが「ある/ない」の2ケースを固定ディレクトリでシミュレート可能）
 - EV-22: セッション限定の探索（Step 3 が stderr をログに取り、Step 3.5 が `session id:` を読み取って UUID 形式で検証し、`find` の対象をそのセッションのフォルダに限定し、取得失敗時に FAILURE を返すこと。ログを sandbox ありの準備の呼び出しで既存パスに書き込まずに作ること、Step 3.5 が symlink・通常ファイル以外のログを読まずに失敗すること）をエージェント指示書の構造契約テストで検証可能
 - EV-23: sandbox 無効の呼び出しの形（Step 3 の sandbox 無効のコードブロックが `codex exec` 1 コマンドだけで、連結演算子を含まず、プロンプトを `"$(cat '<RUN_DIR>/prompt.txt')"` で受け取ること。埋め込む値の形式検証が sandbox ありの準備の呼び出しにあること。Step 3.5 が exit code を受け取り、失敗時も片付けること）をエージェント指示書の構造契約テストで検証可能
