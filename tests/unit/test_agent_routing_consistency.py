@@ -178,6 +178,74 @@ class TestAgentMdFallbackConsistency:
         )
 
 
+class TestResearcherInstructionContract:
+    """指示の静的契約を検証する。LLM が実際に遵守することは保証しない。"""
+
+    @pytest.fixture
+    def researcher_content(self) -> str:
+        content = (_AGENTS_DIR / "researcher.md").read_text(encoding="utf-8")
+        return " ".join(content.split())
+
+    def test_last_resolved_routing_is_authoritative(self, researcher_content: str) -> None:
+        configuration = researcher_content.split("## Configuration", 1)[1].split("## Role", 1)[0]
+        assert "`[Resolved Routing]` block, it is authoritative" in configuration
+        assert "only the last one is authoritative" in configuration
+        assert "Follow it as-is and do not re-read the config files" in configuration
+
+    @pytest.mark.parametrize(("tool", "command"), [("antigravity", "agy"), ("codex", "codex exec")])
+    def test_selected_cli_must_run_first(
+        self, researcher_content: str, tool: str, command: str
+    ) -> None:
+        method = researcher_content.split("## Research Method", 1)[1].split("## CLI Usage", 1)[0]
+        assert "指定された CLI の使用をスキップしてはならない" in method
+        assert re.search(rf"`tool: {tool}` なら.*?Bash で `{command}` を先に実行する", method)
+        assert "「簡単な調査」「一次資料を直接読むだけ」は CLI を省略する理由にならない" in method
+
+    def test_direct_tools_only_prepare_or_supplement_cli_research(
+        self, researcher_content: str
+    ) -> None:
+        method = researcher_content.split("## Research Method", 1)[1].split("## CLI Usage", 1)[0]
+        assert (
+            "WebSearch / WebFetch、curl 等の直接取得、自身の知識だけで本調査を代替してはならない"
+            in method
+        )
+        assert "ローカル資料の Read / Grep / Glob は先に使ってよい" in method
+        assert "成功後の出典確認や不足箇所の補足には WebSearch / WebFetch 等を使ってよい" in method
+
+    def test_fallback_requires_observed_failure_and_agy_retries(
+        self, researcher_content: str
+    ) -> None:
+        fallback = researcher_content.split("### フォールバック条件", 1)[1].split(
+            "## When Called", 1
+        )[0]
+        assert re.search(r"`tool: claude-direct`.*?CLI を試行せず直接調査する", fallback)
+        assert re.search(
+            r"`tool: antigravity`.*?実際に `agy` を試行.*?非ゼロ終了・空出力・質問を含む出力"
+            r".*?確認した後に限り.*?最大 2 回のリトライ.*?それでも失敗したら `claude-direct`",
+            fallback,
+        )
+        assert re.search(
+            r"CLI 未導入・sandbox の権限拒否.*?確認したエラーを報告して直接調査に切り替えてよい",
+            fallback,
+        )
+        assert re.search(
+            r"`tool: codex`.*?実際に `codex exec` を試行して実行エラーを確認した後に限り"
+            r".*?`claude-direct` で続行する",
+            fallback,
+        )
+        assert "CLI を試行せずに「利用できない」と推測してフォールバックしてはならない" in fallback
+
+    def test_report_includes_tool_attempt_and_fallback_reason(
+        self, researcher_content: str
+    ) -> None:
+        output_format = researcher_content.split("## Output Format", 1)[1].split(
+            "## Principles", 1
+        )[0]
+        for field in ("実効 tool", "CLI 試行", "フォールバック理由"):
+            assert f"- {field}:" in output_format
+        assert "claude-direct 指定のため未試行" in output_format
+
+
 # ---------------------------------------------------------------------------
 # is_cli_enabled: enabled フラグの動作
 # ---------------------------------------------------------------------------

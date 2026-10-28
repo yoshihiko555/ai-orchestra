@@ -1,6 +1,6 @@
 # codex-suggestion-compliance ルールのファセット構成定義
 name: codex-suggestion-compliance
-description: Codex suggestion 遵守ルール
+description: Codex の任意助言と必須 routing・実装委譲の境界
 type: rule
 
 policies: []

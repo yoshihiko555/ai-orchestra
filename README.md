@@ -437,6 +437,32 @@ Task(subagent_type="planner", prompt="このタスクを分解して")
 Task(subagent_type="code-reviewer", prompt="このコードをレビューして")
 ```
 
+`researcher` は解決済みのルーティングに従い、`tool: antigravity` なら `agy`、`tool: codex` なら
+`codex exec` を先に実行します。WebSearch / WebFetch 等だけで指定 CLI を省略しません。
+CLI の実行失敗時（Antigravity は規定のリトライ後、未導入・権限拒否などは確認後）または
+`claude-direct` 指定・CLI 無効化時は直接調査でき、報告に実効 tool・試行結果・フォールバック理由を含めます。
+`.local.yaml` による上書きと、CLI 成功後の出典確認・補足は引き続き利用できます。
+
+### 外部 CLI への任意助言
+
+`[Codex Suggestion]` / `[Antigravity Suggestion]` は、操作の保留や追加相談を求める必須指示ではありません。
+相談済み・軽微・適用外ならそのまま続行でき、採否を毎回説明する必要もありません。
+一方、`[Resolved Routing]` / `agents.<name>.tool` の指定とスキル固有の委譲義務は引き続き必須です。
+相談する場合も、既存の config 解決・sandbox 安全条件に従います。
+
+- **Codex（編集前）**: `DESIGN.md` / `ARCHITECTURE.md` の basename、明確な設計パス（`design/`・`architecture/`・`schema/`・`schemas/`・`interfaces/`・`contracts/` 等）、契約宣言の変更に限定します。TS/JS の `interface` は通常パスではコードシグナルとせず、設計パス内の変更としてのみ対象にします。`Props` という名前だけでは除外しません。`core` / `config` / `model`・通常の class・文字数・`src/` だけでは提案しません。
+- **宣言の差分**: Edit は old/new、設計パス以外のソース（`.py` / `.pyi` / `.ts` / `.tsx` / `.js` / `.jsx` / `.java`）への Write はディスク上の旧本文と新本文の宣言を比較し、同じならコードシグナルを抑制します。新規ファイルの旧本文は空とします。旧本文が読取不能・大き過ぎ・非通常ファイル・非 UTF-8 の場合は任意通知を抑制し、exit 0 にします。設計パスは旧本文比較と独立に判定します。
+- **Antigravity**: WebSearch の `query` / WebFetch の `prompt` に比較・選定・移行等の調査意図がある場合に提案します。明確な選択比較（`vs` / `vs.` / `versus` / `違い` / `どっち` / `which is better`）も対象です。文字列等の演算比較や単純な migration エラー検索は除外しますが、明確な選択比較が同居すればそちらを優先します。URL・長さ・一般語（documentation / library / guide / example / best practice）だけでは提案しません。
+- **通知の抑制**: トップレベルの `agent_id` が非空の文字列（`str`）の場合だけ、サブエージェント／インプロセス teammate 内として提案を抑制します。`agent_type` は `--agent` で起動したメインにも付くため、単独では抑制しません。`tool_input.subagent_type` は呼出先なので判定に使いません。`session_id` があれば project / worktree 別に、同一 session・同一ファイル（Codex）または正規化した同一質問（Antigravity）への通知を 1 度に抑えます。
+
+両 hook の config・対象範囲・marker に使う project / worktree は、環境変数 `CLAUDE_PROJECT_DIR` が非空ならそのルートを使い、未設定または空の場合だけ hook 入力の `cwd` で解決します。
+状態は `.claude/state/suggestions/` の hash 化した session / 対象の空 marker だけで、質問本文等は保存しません。
+状態書き込み失敗時は無出力・exit 0、`session_id` がなければ state を作らず呼び出しごとの助言になります。
+marker の自動削除は今回追加しないため、終了後も session ディレクトリが残ります。cleanup は将来課題です。
+**通知済みは相談済みではありません**。意味的な相談済み判定はオーケストレーターが担い、hook は transcript を解析しません。
+次回監査では researcher の指定 CLI 試行率とメインの任意提案の採用率を分離します。researcher の `agy` 実行は `researcher.md` の指示が担い、サブエージェント内の通知は `agent_id` で抑制するため、hook 通知数を researcher の遵守率の代用にしません。
+after-plan hook の発火条件と既存の advisory は変更しません。詳細は [Hook リファレンス](docs/reference/hooks.md) と [ADR-060](docs/adr/ADR-20261028-060.md) を参照してください。
+
 ### スキル一覧
 
 | スキル                | 用途                                                          |

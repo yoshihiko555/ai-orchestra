@@ -58,41 +58,206 @@ class TestShouldSuggestCodex:
         assert codex_write.should_suggest_codex("requirements.txt")[0] is False
 
     def test_design_file_path(self):
-        """DESIGN_INDICATORS をパスに含むファイルは True。"""
+        """DESIGN.md は設計文書として提案する。"""
         result, reason = codex_write.should_suggest_codex("DESIGN.md")
         assert result is True
         assert "DESIGN.md" in reason
 
-    def test_core_path(self):
-        """core/ パスは True。"""
-        result, reason = codex_write.should_suggest_codex("core/engine.py")
-        assert result is True
+    @pytest.mark.parametrize(
+        "file_path",
+        [
+            "core/engine.py",
+            "settings/config.py",
+            "models/user.py",
+            "src/new_module.py",
+            "tools/base_service.py",
+            "tools/abstract_factory.py",
+            "docs/designer_notes.md",
+            "docs/architecture_notes.md",
+            "docs/MY_DESIGN.md",
+            "docs/DESIGN.md.backup",
+            "docs/schema_notes.json",
+            "docs/interfaces_backup/types.ts",
+            "docs/contracts_backup/types.ts",
+        ],
+    )
+    def test_generic_or_partial_path_does_not_suggest(self, file_path):
+        """汎用語や設計名の部分一致だけでは提案しない。"""
+        assert codex_write.should_suggest_codex(file_path)[0] is False
 
-    def test_config_path(self):
-        """config を含むパスは True。"""
-        result, reason = codex_write.should_suggest_codex("settings/config.py")
-        assert result is True
+    @pytest.mark.parametrize(
+        "file_path",
+        [
+            "docs/DESIGN.md",
+            "docs/ARCHITECTURE.md",
+            "docs/design/overview.md",
+            "docs/architecture/overview.md",
+            "schema/user.json",
+            "schemas/user.json",
+            "interfaces/engine.ts",
+            "contracts/service.py",
+        ],
+    )
+    def test_exact_design_path_suggests(self, file_path):
+        """設計文書の basename または設計用パス構成要素が一致すれば提案する。"""
+        should_suggest, reason = codex_write.should_suggest_codex(file_path)
+        assert should_suggest is True
+        assert reason
 
     def test_architecture_in_path(self):
         """architecture を含むパスは True。"""
         result, reason = codex_write.should_suggest_codex("docs/architecture/overview.md")
         assert result is True
 
-    def test_large_content(self):
-        """500文字以上の新規コンテンツは True。"""
-        result, reason = codex_write.should_suggest_codex("normal.py", "x" * 600)
-        assert result is True
-        assert "significant content" in reason
+    @pytest.mark.parametrize("file_path", ["normal.py", "src/new_module.py"])
+    @pytest.mark.parametrize("length", [250, 600, 100_000])
+    def test_content_length_alone_does_not_suggest(self, file_path, length):
+        """src 配下でも本文の長さだけでは提案しない。"""
+        assert codex_write.should_suggest_codex(file_path, "x" * length)[0] is False
 
-    def test_content_with_design_indicator(self):
-        """コンテンツに DESIGN_INDICATORS を含む場合は True。"""
-        result, reason = codex_write.should_suggest_codex("file.py", "class MyClass:\n    pass")
-        assert result is True
+    def test_maximum_length_newline_only_content_does_not_suggest(self):
+        """本文上限まで改行だけでも、契約宣言と誤判定せず処理できる。"""
+        content = "\n" * codex_write.MAX_CONTENT_LENGTH
+        assert codex_write.validate_input("src/engine.py", content) is True
+        assert codex_write.should_suggest_codex(
+            "src/engine.py", content, tool_name="Edit", old_content=content
+        ) == (False, "")
 
-    def test_src_file_with_content(self):
-        """src/ 内の 200 文字超のファイルは True。"""
-        result, reason = codex_write.should_suggest_codex("src/new_module.py", "x" * 250)
-        assert result is True
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "class MyClass:\n    pass",
+            "@dataclass\nclass User:\n    name: str",
+            "class User(TypedDict):\n    name: str",
+            "from abc import ABC, abstractmethod",
+            "from typing import Protocol",
+            "def __init__(self):\n    pass",
+            "# interface Engine {}",
+            "// abstract class Engine {}",
+            'description = "interface Engine {}"',
+            "class Engine(ProtocolFactory):\n    pass",
+            "class Engine(ABCFactory):\n    pass",
+        ],
+    )
+    def test_non_declaration_content_does_not_suggest(self, content):
+        """通常クラス・import・コメント・文字列中の設計語だけでは提案しない。"""
+        assert codex_write.should_suggest_codex("src/engine.py", content)[0] is False
+
+    @pytest.mark.parametrize(
+        "file_path", ["src/engine.ts", "src/engine.tsx", "src/engine.js", "src/engine.jsx"]
+    )
+    @pytest.mark.parametrize(
+        "content",
+        ["interface Engine { run(): void; }", "export interface ButtonProps { label: string; }"],
+    )
+    def test_interface_addition_or_removal_in_normal_source_does_not_suggest(
+        self, file_path, content
+    ):
+        """通常 src の interface は名前によらず汎用の契約シグナルにしない。"""
+        assert codex_write.should_suggest_codex(
+            file_path, content, tool_name="Edit", old_content=""
+        ) == (False, "")
+        assert codex_write.should_suggest_codex(
+            file_path, "", tool_name="Edit", old_content=content
+        ) == (False, "")
+
+    @pytest.mark.parametrize("file_path", ["interfaces/engine.ts", "contracts/button.js"])
+    @pytest.mark.parametrize(
+        "content",
+        ["interface Engine { run(): void; }", "export interface ButtonProps { label: string; }"],
+    )
+    def test_interface_on_design_path_still_suggests(self, file_path, content):
+        """interface の内容ではなく設計用パスの条件で提案する。"""
+        should_suggest, reason = codex_write.should_suggest_codex(file_path, content)
+        assert should_suggest is True
+        assert reason
+
+    @pytest.mark.parametrize(
+        ("file_path", "content"),
+        [
+            ("src/engine.ts", "abstract class Engine { abstract run(): void; }"),
+            ("src/Engine.java", "public interface Engine { void run(); }"),
+            ("src/Engine.java", "public interface Engine<T> { T run(); }"),
+            ("src/engine.py", "class Engine(Protocol):\n    def run(self): ..."),
+            ("src/engine.py", "class Engine(ABC):\n    pass"),
+            ("src/engine.py", "class Engine:\n    @abstractmethod\n    def run(self): ..."),
+        ],
+    )
+    def test_contract_declaration_addition_or_removal_suggests(self, file_path, content):
+        """契約宣言の追加と削除をどちらも提案する。"""
+        added, add_reason = codex_write.should_suggest_codex(
+            file_path, content, tool_name="Edit", old_content=""
+        )
+        removed, remove_reason = codex_write.should_suggest_codex(
+            file_path, "", tool_name="Edit", old_content=content
+        )
+        assert added is True
+        assert add_reason
+        assert removed is True
+        assert remove_reason
+
+    @pytest.mark.parametrize(
+        ("old_content", "content"),
+        [
+            ("interface Engine { old(): void; }", "interface Engine { run(): void; }"),
+            ("abstract class Engine { old() {} }", "abstract class Engine { run() {} }"),
+            ("class Engine(Protocol):\n    old: int", "class Engine(Protocol):\n    value: str"),
+            ("class Engine(ABC):\n    old: int", "class Engine(ABC):\n    value: str"),
+            (
+                "    @abstractmethod\n    def old(self): ...",
+                "    @abstractmethod\n    def run(self): ...",
+            ),
+        ],
+    )
+    def test_unchanged_declaration_with_body_edit_does_not_suggest(self, old_content, content):
+        """Edit の前後で宣言が同じなら本文変更だけでは提案しない。"""
+        assert (
+            codex_write.should_suggest_codex(
+                "src/engine.py", content, tool_name="Edit", old_content=old_content
+            )[0]
+            is False
+        )
+
+    def test_java_interface_body_edit_does_not_suggest(self):
+        """Java の interface もヘッダが同じなら本文変更を提案しない。"""
+        assert codex_write.should_suggest_codex(
+            "src/Engine.java",
+            "public interface Engine { void run(); }",
+            tool_name="Edit",
+            old_content="public interface Engine { void stop(); }",
+        ) == (False, "")
+
+    def test_contract_declaration_replacement_suggests(self):
+        """契約宣言自体が変わる Edit は提案する。"""
+        assert (
+            codex_write.should_suggest_codex(
+                "src/engine.py",
+                "class NewEngine(Protocol):\n    pass",
+                tool_name="Edit",
+                old_content="class OldEngine(Protocol):\n    pass",
+            )[0]
+            is True
+        )
+
+    def test_design_path_suggests_even_when_declaration_is_unchanged(self):
+        """設計パスの提案条件は宣言の差分判定とは独立する。"""
+        assert (
+            codex_write.should_suggest_codex(
+                "contracts/engine.py",
+                "class Engine(Protocol):\n    value: str",
+                tool_name="Edit",
+                old_content="class Engine(Protocol):\n    old: int",
+            )[0]
+            is True
+        )
+
+    @pytest.mark.parametrize("file_path", ["design/README.md", "contracts/CHANGELOG.md"])
+    def test_simple_edit_exclusion_precedes_design_signals(self, file_path):
+        """README・CHANGELOG は設計パスや契約宣言があっても除外する。"""
+        assert (
+            codex_write.should_suggest_codex(file_path, "class Engine(Protocol):\n    pass")[0]
+            is False
+        )
 
     def test_src_file_short_content(self):
         """src/ 内でも短いコンテンツは False。"""
@@ -152,6 +317,7 @@ class TestCodexWriteMain:
 
     def test_codex_disabled_exits(self, monkeypatch, capsys):
         """Codex 無効時は提案なしで exit(0)。"""
+        monkeypatch.setattr(codex_write, "has_project_config", lambda *a, **kw: True)
         monkeypatch.setattr(codex_write, "is_cli_enabled", lambda tool, config, **kw: False)
         monkeypatch.setattr(codex_write, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
@@ -159,7 +325,8 @@ class TestCodexWriteMain:
             io.StringIO(
                 json.dumps(
                     {
-                        "tool_input": {"file_path": "core/main.py", "content": "class Foo: pass"},
+                        "tool_name": "Write",
+                        "tool_input": {"file_path": "DESIGN.md", "content": "設計内容"},
                         "cwd": "/project",
                     }
                 )
@@ -173,6 +340,7 @@ class TestCodexWriteMain:
 
     def test_invalid_input_exits(self, monkeypatch):
         """不正な入力は exit(0)。"""
+        monkeypatch.setattr(codex_write, "has_project_config", lambda *a, **kw: True)
         monkeypatch.setattr(codex_write, "is_cli_enabled", lambda *a, **kw: True)
         monkeypatch.setattr(codex_write, "load_package_config", lambda *a: {})
         monkeypatch.setattr(
@@ -180,6 +348,7 @@ class TestCodexWriteMain:
             io.StringIO(
                 json.dumps(
                     {
+                        "tool_name": "Write",
                         "tool_input": {"file_path": "../etc/passwd", "content": "hack"},
                         "cwd": "/project",
                     }
@@ -199,9 +368,10 @@ class TestCodexWriteMain:
             io.StringIO(
                 json.dumps(
                     {
+                        "tool_name": "Write",
                         "tool_input": {
-                            "file_path": "core/engine.py",
-                            "content": "class Engine: pass",
+                            "file_path": "contracts/engine.py",
+                            "content": "class Engine(Protocol): pass",
                         },
                         "cwd": "/project",
                     }

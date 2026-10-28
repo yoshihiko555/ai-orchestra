@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`codex-suggestions` / `antigravity-suggestions`: 相談提案を任意助言として明確化（ADR-060）**: 提案だけを理由に操作を保留・追加相談する必要や、採否を毎回説明する義務はない。`[Resolved Routing]` / `agents.<name>.tool` の指定とスキル固有の委譲義務、相談時の config 解決・sandbox 安全条件は維持する。
+- **編集前・Web 調査前の提案を絞り込み、通知の重複を抑制**: Codex は明確な設計パス・契約宣言の変更、Antigravity は query / prompt の比較・選定・移行等の調査意図に限定する。トップレベルの非空文字列の `agent_id` でサブエージェント／インプロセス teammate 内を識別して抑制し、`agent_type` 単独では抑制しない。`session_id` があれば project / worktree 別に同一ファイル・正規化した同一質問への通知を 1 度にする。config・対象範囲・marker のルートは `CLAUDE_PROJECT_DIR` → hook 入力の `cwd` の順で解決し、環境変数が非空ならそのルートを使い、未設定または空の場合だけ `cwd` を使う。状態は `.claude/state/suggestions/` の hash 化した空 marker のみ。状態書き込み失敗時は無出力・exit 0、session 不明時は state を作らない。after-plan の発火条件は変更しない。
 - **`image-generation`: `image_model` の既定値を `gpt-5.5` から `gpt-6.1-sol` に変更**: `gpt-5.5` が ChatGPT アカウントの Codex で使えなくなり（`model_not_found`）、`/image-gen` が失敗していた。`image-generation.local.yaml` で `image_model: gpt-5.5` を指定している場合は、削除するか `gpt-6.1-sol` に変更する。
 - **`codd`: drift の既定の判定範囲を変更（Issue #515）**: relation が `references` / `supersedes` のエッジと、下流が ADR のエッジは既定で drift の対象外になり、空白・空行・Markdown 表の区切り行だけの上流コミットは「上流が変わった」と数えない。従来の対象範囲（全 relation・全 kind）に戻すには `codd.local.yaml` の `drift.relations` に 5 つの relation を全部書き、`drift.exclude_downstream_kinds: []` にする（整形だけのコミットの無視は設定で戻せない）。
 - **meta-harness / loop-harness: Docker 内 Claude Code の pin を 2.1.282 に更新**: コンテナ内の Claude が `AGENTS.md` を読めるようになる。
@@ -30,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`agent-routing`: `researcher` が指定 CLI を試さず直接調査してしまう問題に対する指示を修正**: 解決済みの tool が Antigravity / Codex なら CLI を先に実行し、未試行のまま WebSearch / WebFetch 等へ切り替えないことを明記した。実行失敗時のフォールバック条件と、実効 tool・試行結果・理由の報告も明確にした。`.local.yaml` の上書き、CLI 無効化、成功後の出典確認は維持する。
 - **`orchex install` / `setup` で `.codex/config.toml` と `.codex/skills/context-loader/` が配置されない問題を修正**: `codex-suggestions` を後から導入しても初回テンプレートが配置される（既存ファイルは上書きしない）。
 - **`image-generation`: `image_model` に sol 系モデル（`gpt-6.1-sol` 等）を指定すると、生成に成功しても失敗と報告される問題を修正**: 保存名が `exec-*.png` になるモデルでも生成した画像を受け取れる。
 - **`image-generation`: 並行して動く別の Codex セッションの画像を、自分の生成結果として取り違えることがある問題を修正**: 探索をその実行のセッションのフォルダに限定した。

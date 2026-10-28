@@ -49,6 +49,7 @@
   },
   "files": [
     "hooks/hook_common.py",
+    "hooks/suggestion_common.py",
     "hooks/log_common.py",
     "hooks/context_store.py",
     "hooks/ac_parser.py",

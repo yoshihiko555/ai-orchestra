@@ -4,7 +4,7 @@
 **単位**: スキルフロー（手動で出した PR に対する bot レビュー指摘を検出→収集→分類→修正→push→返信/resolve→報告まで一気通貫で処理する単一スキルの一連の振る舞い）
 **作成日**: 2026-07-14
 **最終レビュー日**: 未レビュー（draft、パッケージ実装前に作成）
-**情報源**: `.claude/Plans.md`（Project: review-respond スキル。要件整理・Decisions・Notes）, 本タスクの仕様定義（`/review-respond` フロー・`pr_review_threads.py` コントラクト）, `docs/evaluation/git-workflow.md`（`pr_review_threads.py` の API 契約：EV-20〜EV-29）, `packages/loop-harness/lib/pr_review_wait.py`（`verify_origin`/`classify_severity` の再利用元・severity 分類 fail-safe 挙動）, `.claude/rules/skill-review-policy.md`, `.claude/rules/codex-suggestion-compliance.md`（累積的変更の原則）
+**情報源**: `.claude/Plans.md`（Project: review-respond スキル。要件整理・Decisions・Notes）, 本タスクの仕様定義（`/review-respond` フロー・`pr_review_threads.py` コントラクト）, `docs/evaluation/git-workflow.md`（`pr_review_threads.py` の API 契約：EV-20〜EV-29）, `packages/loop-harness/lib/pr_review_wait.py`（`verify_origin`/`classify_severity` の再利用元・severity 分類 fail-safe 挙動）, `.claude/rules/skill-review-policy.md`, `facets/instructions/review-respond.md`（Step 4: スキル固有の実装委譲義務）
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
 > この評価セットは「振る舞い仕様書」として機能し、テストコードとの突合（`evaluation-set-policy`
@@ -73,7 +73,7 @@ push し、すべての指摘（採用・非採用いずれも）に返信を残
 
 ### 修正実装
 
-- [ ] EV-08（正常 / must）: 採用指摘の修正はメインオーケストレーターが直接大量編集せず、implementation subagent（`Task(subagent_type=...)`）へ委譲する。3 箇所以上の変更が見込まれる通常の実装作業として `codex-suggestion-compliance.md` の累積的変更の原則に従う — 根拠: 本タスク仕様「修正実装（implementation subagent 委譲）」, `.claude/rules/codex-suggestion-compliance.md`「累積的変更の原則」 / 検証: PR レビュー
+- [ ] EV-08（正常 / must）: 採用指摘の修正はメインオーケストレーターが直接大量編集せず、implementation subagent（`Task(subagent_type=...)`、`[Resolved Routing]` / `cli-tools.yaml` の `agents.<name>.tool` に従う）へ委譲する。これは本スキル固有の実装委譲義務であり、変更箇所数や `[Codex Suggestion]` の有無・採否には依存しない — 根拠: `facets/instructions/review-respond.md` Step 4「修正実装」 / 検証: PR レビュー
 - [ ] EV-09（正常 / must）: 修正実装後は必ずテストを実行し、失敗したテストが残った状態のまま commit & push フェーズへ進まない — 根拠: 本タスク仕様「テスト実行」 / 検証: 実行観察
 
 ### commit & push
@@ -115,4 +115,4 @@ push し、すべての指摘（採用・非採用いずれも）に返信を残
 - **混在スレッドの resolve 保留**（EV-11・EV-12）: `has_non_bot_comments: true` のスレッドで返信をスキップしていないか（返信自体は行われるべき）、逆に resolve を実行してしまっていないか（人間コメントが混在するスレッドを勝手に閉じない）を確認する
 - **全件レスポンス保証**（EV-14）: 指摘の絞り込み・フィルタリングロジックを追加する改修では、フィルタで除外された指摘が「非対応（理由あり）」としてサマリーに残るか、それとも黙って消えるかを確認する。黙って消える設計変更は EV-14 の観点に反する
 - **冪等性の再検証**（EV-16）: ローカル state（キャッシュファイル・実行履歴等）を持ち込む改修提案が出た場合、`.claude/Plans.md` Decisions の「ローカル state を持たない」設計判断と矛盾しないか、GitHub 側の状態のみを SSOT とする原則が崩れていないかを重点確認する
-- **implementation subagent 委譲の徹底**（EV-08）: 修正実装フェーズの改修時、メインオーケストレーターが直接 Edit/Write で大量修正する経路が紛れ込んでいないかを確認する（`codex-suggestion-compliance.md` の累積的変更の原則）
+- **implementation subagent 委譲の徹底**（EV-08）: 修正実装フェーズの改修時、変更箇所数や助言の有無・採否を理由に委譲を省略し、メインオーケストレーターが直接 Edit/Write で大量修正する経路が紛れ込んでいないかを確認する（`facets/instructions/review-respond.md` Step 4 のスキル固有の実装委譲義務）

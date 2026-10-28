@@ -354,6 +354,68 @@ def test_resolved_routing_researcher_includes_antigravity_model(
     assert "- antigravity.model: base-antigravity-model" in additional_context
 
 
+@pytest.mark.parametrize("tool", ["codex", "claude-direct"])
+def test_resolved_routing_researcher_local_tool_override_is_appended_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tool: str
+) -> None:
+    _write_base_config(tmp_path, monkeypatch)
+    _write_local_config(tmp_path, f"agents:\n  researcher:\n    tool: {tool}\n")
+    original_prompt = "research\n\n[Resolved Routing]\n- tool: antigravity"
+
+    output = _run_main(
+        {
+            "tool_name": "Agent",
+            "cwd": str(tmp_path),
+            "tool_input": {"subagent_type": "researcher", "prompt": original_prompt},
+        }
+    )
+
+    hook_output = json.loads(output)["hookSpecificOutput"]
+    final_prompt = hook_output["updatedInput"]["prompt"]
+    routing = final_prompt.rsplit("[Resolved Routing]", 1)[1]
+    assert final_prompt.startswith(original_prompt)
+    assert final_prompt.endswith(hook_output["additionalContext"])
+    assert "- agent: researcher" in routing.splitlines()
+    assert f"- tool: {tool}" in routing.splitlines()
+    assert "- antigravity." not in routing
+    if tool == "codex":
+        assert "- codex.model: base-codex-model" in routing
+    else:
+        assert "- codex." not in routing
+
+
+def test_resolved_routing_researcher_local_antigravity_disable_falls_back_with_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_base_config(tmp_path, monkeypatch)
+    _write_local_config(
+        tmp_path,
+        """antigravity:
+  enabled: false
+""",
+    )
+
+    output = _run_main(
+        {
+            "tool_name": "Agent",
+            "cwd": str(tmp_path),
+            "tool_input": {"subagent_type": "researcher", "prompt": "research"},
+        }
+    )
+
+    hook_output = json.loads(output)["hookSpecificOutput"]
+    routing = hook_output["additionalContext"]
+    assert hook_output["updatedInput"]["prompt"].endswith(routing)
+    assert "- agent: researcher" in routing.splitlines()
+    assert "- tool: claude-direct" in routing.splitlines()
+    assert "- antigravity." not in routing
+    assert "- codex." not in routing
+    assert (
+        "- note: configured tool 'antigravity' -> claude-direct (antigravity.enabled is false)"
+        in routing
+    )
+
+
 def test_resolved_routing_non_agent_tool_produces_no_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
