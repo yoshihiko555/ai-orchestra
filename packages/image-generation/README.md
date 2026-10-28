@@ -44,6 +44,9 @@ Codex の組み込み `image_gen` は ChatGPT 認証で動くため **`OPENAI_AP
 | 層1 | Claude Code の Bash sandbox | **無効化**（`dangerouslyDisableSandbox: true`）                            |
 | 層2 | Codex の `--sandbox`        | `workspace-write` + `network_access=true`（FS は repo 内に OS 強制で限定） |
 
+層1 を外すのは `codex exec` 単体の Bash 呼び出しだけで、プロンプトの組み立てや後片付けは sandbox ありの
+別の呼び出しで行う（プロンプトはファイルに書き出し、`"$(cat '<file>')"` で渡す）。
+
 確定呼び出し（`$IMG_FEATURE` はフラグ名の実行時解決結果。次項参照）:
 
 ```bash
