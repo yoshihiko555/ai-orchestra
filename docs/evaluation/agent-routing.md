@@ -3,7 +3,7 @@
 **パッケージ**: `packages/agent-routing`
 **類型**: 主: hook 型、副: 設定・エージェント定義の配布（README.md の 3 類型のうちどれにも完全一致しないため、共通チェックリストの「配布ライフサイクル」「後方互換性」で代替評価する。詳細は 4 節参照）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-09-27（EV-31（実装エージェントの書き込めないルーティングでの停止）を新設。ADR-20260926-056 の実装計画 Phase 7。2026-09-27 人間レビュー済み。前回 2026-09-25: Issue #452: EV-27 を新設。`agent-router.py` がバックグラウンドタスク完了通知（`<task-notification>`）に `[Agent Routing]` を提案しないことを追加。前回レビュー 2026-07-04: Issue #124 対応: 検証方法（manual/policy review）の明示、EV-11/EV-22/EV-26 の検証状態更新、4節 N/A 理由の具体化を実施。観点数・優先度は変更なし）
+**最終レビュー日**: 2026-10-28（EV-33（CLI にルーティングするエージェントは `Bash` を持つ）を新設。人間レビュー待ち（本 PR）。前回 2026-09-27: EV-31（実装エージェントの書き込めないルーティングでの停止）を新設。ADR-20260926-056 の実装計画 Phase 7。2026-09-27 人間レビュー済み。前回 2026-09-25: Issue #452: EV-27 を新設。`agent-router.py` がバックグラウンドタスク完了通知（`<task-notification>`）に `[Agent Routing]` を提案しないことを追加。前回レビュー 2026-07-04: Issue #124 対応: 検証方法（manual/policy review）の明示、EV-11/EV-22/EV-26 の検証状態更新、4節 N/A 理由の具体化を実施。観点数・優先度は変更なし）
 **改訂**: 2026-09-25（Issue #453: ルーティング解決を hook のコード実装＋`[Resolved Routing]` 注入へ移行。EV-04〜09 を更新し EV-28〜30 を新設。人間レビューは PR で実施）
 **情報源**: docs/reference/packages.md（agent-routing セクション）, .claude/rules/agent-routing-policy.md, .claude/rules/codex-delegation.md, .claude/rules/antigravity-delegation.md, .claude/rules/config-loading.md, .claude/rules/context-sharing.md, Issue #453（ルーティング解決のコード化と注入）
 **補助参照（構成要素の列挙のみ）**: packages/agent-routing/manifest.json, packages/agent-routing/{hooks,agents,config}/ 配下のファイル名一覧
@@ -62,6 +62,7 @@
 - [ ] EV-31（異常 / must）: 書き込めないルーティングでの停止 — ファイルの作成・変更を担う実装エージェント（`tester` / `backend-python-dev` / `backend-go-dev` / `frontend-dev` / `ai-dev`）の定義は、解決済みの（`[Resolved Routing]`、ブロックが無ければ自分で解決した）`tool` が `antigravity`、または `tool` が `codex` で `codex.sandbox` が `read-only` のとき、Edit / Write も CLI への書き込み依頼もせず、tool の値（codex なら sandbox の値も）を添えて「このルーティングでは書き込めない」と報告して終了する。自分の Edit / Write への切り替えで回避しない（Codex 実行エラー時のフォールバックより先に判定する）。`tool: auto` では停止せず、Codex で書き込むのは書き込み用の sandbox（`codex.sandbox.implementation`。エージェント別の sandbox があれば `codex.sandbox`）が `workspace-write` の場合だけで、そうでなければ自身の Edit / Write で書く — 根拠: facets/instructions/tdd.md（書き込みフェーズの停止）、PR #480 の Codex ローカルレビュー r7（tdd.md の文言だけでは担保できない。オーケストレーターからは `[Resolved Routing]` が見えないため停止条件をエージェント定義に置く） / 検証: PR レビュー（静的）
 
 - [ ] EV-32（正常/境界 / must）: `agent-router.py` は、プロジェクトの `.claude/agents` ディレクトリがある場合、`<name>.md` が実在するエージェントだけを提案候補にする。例: GDPR の依頼は `engineering-privacy-engineer.md` が無ければ同エージェントを提案せず、あれば提案する。`.claude/agents` 自体が無い場合は従来の検出を維持する。プロジェクトは hook 入力の `cwd` を優先し、空なら `CLAUDE_PROJECT_DIR` で解決する — 根拠: packages/agent-routing/hooks/agent-router.py、route_config.py（`detect_agent` の `allowed_agents`、`_project_dir_from_data`） — 自動テスト: `test_agent_router_e2e.py::TestFixtureInstalledAgents`
+- [ ] EV-33（境界 / must）: `cli-tools.yaml` で `tool` が `codex` / `antigravity` / `auto` のエージェントは、定義の frontmatter の `tools` に `Bash` を含む（`tools` を省略して全ツールを許可する定義でもよい）。Codex / Antigravity は Bash から呼ぶため、`Bash` が無いと委譲できない（2026-10-28: `spec-writer` が `tool: codex` なのに `Bash` を持たず、配布先が定義に `Bash` を足したことで同期が止まっていた） — 根拠: .claude/rules/codex-delegation.md（呼び出し方法）, .claude/rules/antigravity-delegation.md（呼び出し方法）, packages/agent-routing/config/cli-tools.yaml — 自動テスト: `tests/unit/test_agent_routing_consistency.py`（`TestCliRoutedAgentsHaveBash`）
 
 ## 4. 類型別観点
 

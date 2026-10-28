@@ -1,7 +1,7 @@
 ---
 name: spec-writer
 description: Specification document generator for API, database, and UI specifications.
-tools: Read, Glob, Grep, Write
+tools: Read, Glob, Grep, Write, Bash
 model: sonnet
 ---
 
