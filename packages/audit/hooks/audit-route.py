@@ -27,6 +27,7 @@ from event_logger import (
     emit_event,
     load_trace_state,
     resolve_project_root_from_hook_data,
+    update_trace_skill,
 )
 from hook_common import (
     find_first_text,
@@ -221,6 +222,11 @@ def main() -> None:
         all_aliases[key] = list(dict.fromkeys(merged))
 
     session_id = str(data.get("session_id") or "")
+    if actual_route.startswith("skill:"):
+        # 後続の subagent_start が ctx.skill に起動元スキルを記録できるようにする
+        update_trace_skill(
+            actual_route.removeprefix("skill:"), session_id=session_id, project_dir=root
+        )
     trace = load_trace_state(project_dir=root)
     tid = trace.get("tid", "")
     expected_route = _get_expected_route(trace, root)

@@ -239,6 +239,7 @@ def save_trace_state(
     *,
     session_id: str = "",
     expected_route: str = "",
+    skill: str = "",
     project_dir: str | None = None,
 ) -> None:
     """現在のトレース ID を state ファイルに保存する（アトミック書き込み）。
@@ -247,6 +248,7 @@ def save_trace_state(
         tid: トレース ID（UserPromptSubmit 起点で生成される）
         session_id: セッション識別子
         expected_route: 予測ルート（audit-route.py が参照する）
+        skill: このターンで起動中のスキル名（subagent_start の ctx.skill に使う）
         project_dir: プロジェクトルート。省略時は自動解決。
     """
     path = _trace_state_path(project_dir)
@@ -254,9 +256,33 @@ def save_trace_state(
         "tid": tid,
         "session_id": session_id,
         "expected_route": expected_route,
+        "skill": skill,
         "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     _atomic_write_json(path, data)
+
+
+def update_trace_skill(
+    skill: str,
+    *,
+    session_id: str = "",
+    project_dir: str | None = None,
+) -> None:
+    """現在のトレースに起動中のスキル名を書き込む（Skill ツール実行時に呼ぶ）。
+
+    トレースが無い場合、別セッションのトレースの場合、session_id が分からない場合は書き換えない。
+
+    Args:
+        skill: スキル名
+        session_id: 呼び出し元のセッション識別子
+        project_dir: プロジェクトルート。省略時は自動解決。
+    """
+    trace = load_trace_state(project_dir)
+    if not trace.get("tid"):
+        return
+    if not session_id or trace.get("session_id") != session_id:
+        return
+    _atomic_write_json(_trace_state_path(project_dir), {**trace, "skill": skill})
 
 
 def load_trace_state(project_dir: str | None = None) -> dict[str, str]:
@@ -295,6 +321,7 @@ def save_subagent_trace(
     aid: str,
     tid: str,
     ptid: str = "",
+    agent_type: str = "",
     project_dir: str | None = None,
 ) -> None:
     """サブエージェント固有のトレース情報を保存する（アトミック書き込み）。
@@ -303,6 +330,7 @@ def save_subagent_trace(
         aid: エージェント ID
         tid: サブエージェント固有のトレース ID
         ptid: 親トレース ID
+        agent_type: エージェント種別（SubagentStop の入力で空のときの補完に使う）
         project_dir: プロジェクトルート。省略時は自動解決。
     """
     path = _subagent_trace_path(aid, project_dir)
@@ -310,6 +338,7 @@ def save_subagent_trace(
         "tid": tid,
         "ptid": ptid,
         "aid": aid,
+        "agent_type": agent_type,
         "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
     _atomic_write_json(path, data)

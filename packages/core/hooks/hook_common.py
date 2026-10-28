@@ -765,6 +765,7 @@ def get_field(data: dict, key: str) -> str:
 # ---------------------------------------------------------------------------
 
 TASK_NOTIFICATION_TAG = "<task-notification>"
+AGENT_MESSAGE_TAG_PREFIX = "<agent-message"
 
 
 def is_async_launch(tool_response: object) -> bool:
@@ -790,6 +791,22 @@ def is_task_notification(prompt: str) -> bool:
     エージェントルーティング提案・plan gate 解除の対象から除外する。
     """
     return prompt.lstrip().startswith(TASK_NOTIFICATION_TAG)
+
+
+def is_harness_prompt(prompt: str) -> bool:
+    """prompt がハーネスの流した非ユーザー入力かどうかを判定する。
+
+    UserPromptSubmit はバックグラウンドタスクの完了通知（`<task-notification>`）と、
+    サブエージェントのハンドバックや別セッションからのメッセージ（`<agent-message ...>`）でも
+    発火する。hook 入力にはこれらと人の入力を区別するフィールドがないため、本文の先頭タグで判定する。
+    """
+    head = prompt.lstrip()
+    if head.startswith(TASK_NOTIFICATION_TAG):
+        return True
+    if not head.startswith(AGENT_MESSAGE_TAG_PREFIX):
+        return False
+    next_char = head[len(AGENT_MESSAGE_TAG_PREFIX) : len(AGENT_MESSAGE_TAG_PREFIX) + 1]
+    return next_char == ">" or next_char.isspace()
 
 
 # ---------------------------------------------------------------------------

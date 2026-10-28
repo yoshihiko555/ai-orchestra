@@ -7,6 +7,8 @@
 **情報源**: packages/audit/README.md, docs/reference/packages.md（audit セクション）, .claude/rules/config-loading.md（補助: packages/audit/manifest.json, hooks/scripts のファイル名と docstring 冒頭）
 
 > Issue #153（config 分離。ADR-20260926-055）で `quality_gate` 系の機能フラグを `quality-gates.json` へ分離した。EV-25 は新規追加で人間レビュー未実施（最終レビュー日は更新していない）。
+>
+> 2026-10-28 のルーティング監査（routing-audit 一回目）で見つかった記録の欠落に対応して EV-26〜EV-28 を新設した。人間レビュー未実施（最終レビュー日は更新していない）。
 
 ## 1. 責務定義
 
@@ -75,6 +77,9 @@ audit パッケージは、Claude Code セッション中のルーティング�
 - [ ] EV-23（境界 / should）: sys.path bootstrap フォールバック — `event_logger.py` は `AI_ORCHESTRA_DIR` 環境変数が未設定でも `__file__` 相対の `../../core/hooks` を候補として core の `hook_common` を解決でき、`packages/audit/scripts/` 配下のスクリプトが `event_logger` を単体 import しても解決に失敗しない — 根拠: 実装挙動
 - [ ] EV-24（異常 / must）: `codex exec` の prompt 抽出は、同一 Bash 呼び出し内の heredoc + `"$(cat "$VAR")"` 形式に加え、書き出しと `codex exec` が別の Bash 呼び出しになる `"$(cat '<絶対パス>')"` 形式でもファイル内容を記録する。読み込みは basename `codex-prompt.*` の通常ファイル（symlink 不可・サイズ上限あり）に限り、読めない場合は prompt を記録しない（コマンド置換の文字列を prompt として記録しない） — 根拠: Issue #463 / PR #469 レビュー指摘 — 自動テスト: `packages/audit/tests/test_audit_hooks.py::TestExtractCodexPromptLiteralPathForm`, `packages/audit/tests/test_audit_hooks.py::TestMainCliCallPromptFile::test_literal_path_command_records_real_prompt_and_masks_secrets`
 - [ ] EV-25（正常 / should）: `audit-bootstrap.py` は `.claude/config/audit/` の `audit-flags.local.json`（または未同期の `audit-flags.json`）に `quality-gates.json` へ移動済みのキー（`quality_gate` / `context_optimization` / `evaluation_set_check` / `paths.state_dir`）を検出した場合、SessionStart の出力に移行案内を 1 行だけ追加する。案内は 1 種類（読み込まれない旨と移行先）で、ファイル種別による文言の分岐はない。該当が無ければ既存の出力を変えない。JSON が壊れていても例外を出さない（fail-open） — 根拠: Issue #153 / ADR-20260926-055 — 自動テスト: `packages/audit/tests/test_audit_bootstrap.py`
+- [ ] EV-26（境界 / must）: `prompt` イベントは `input_kind`（`human` / `slash` / `harness`）を持つ。`harness` は `<task-notification>` / `<agent-message>` で始まる非ユーザー入力（判定は `hook_common.is_harness_prompt`）で、本文のキーワードで期待ルートを予測せず（`matched_rule` は null）、同じセッションの直前のトレースの期待ルートとスキルを引き継ぐ（別セッションなら既定ルート） — 根拠: routing-audit 一回目の発見事項（audit が人以外の入力を人の入力として記録する）— 自動テスト: `packages/audit/tests/test_audit_hooks.py::TestClassifyPrompt`, `::TestPromptInputKind`
+- [ ] EV-27（正常 / should）: `subagent_start` の `ctx.skill` に、同じセッションで起動中のスキル名を記録する。スキル名は `/name` で始まる入力と Skill ツールの実行でトレースに書かれ、`/` で始まらない人の入力で空に戻る。別セッションのトレースのスキルは使わない — 根拠: routing-audit 一回目の発見事項（サブエージェントの起動ログに起動元スキルがない）— 自動テスト: `packages/audit/tests/test_audit_hooks.py::TestRouteSkillUpdatesTrace`, `::TestSubagentStartCtxSkill`
+- [ ] EV-28（境界 / must）: SubagentStop の入力の `agent_type` が空なら、`subagent_start` で保存した種別で補う。対応する `subagent_start` が無く `agent_type` も空の終了（SubagentStart を伴わない内部エージェント。prompt suggestion 等）は `subagent_end` として記録しない — 根拠: routing-audit 一回目の発見事項（終了イベントの種別が空になる）+ Claude Code 公式仕様（hooks の SubagentStop）— 自動テスト: `packages/audit/tests/test_audit_hooks.py::TestSubagentEndAgentType`
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

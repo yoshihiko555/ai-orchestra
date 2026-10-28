@@ -112,6 +112,14 @@ class TestFixtureTaskNotification:
 </task-notification>"""
         assert _run_hook(prompt, cwd=str(tmp_path)) == {}
 
+    def test_subagent_hand_back_prompt_produces_no_output(self, tmp_path: Path) -> None:
+        _write_cli_tools_yaml(tmp_path, {"agents": {"planner": {"tool": "codex"}}})
+        prompt = """<agent-message from="a266234be5dae5c0e">
+[Subagent hand-back] The text below is the final report of a subagent.
+  次の steps を plan してください
+</agent-message>"""
+        assert _run_hook(prompt, cwd=str(tmp_path)) == {}
+
 
 class TestFixtureCliSuggestionByTool:
     """fixture config の tool 値ごとに CLI 提案マーカーが正しく出ることを検証する。

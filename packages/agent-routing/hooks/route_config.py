@@ -25,6 +25,7 @@ from hook_common import (  # noqa: E402, F401
     TASK_NOTIFICATION_TAG,
     get_agent_tool,
     is_cli_enabled,
+    is_harness_prompt,
     is_task_notification,
     load_cli_tools_config,
     resolve_agent_routing,

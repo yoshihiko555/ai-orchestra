@@ -35,6 +35,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`agent-routing`: `researcher` が指定 CLI を試さず直接調査してしまう問題に対する指示を修正**: 解決済みの tool が Antigravity / Codex なら CLI を先に実行し、未試行のまま WebSearch / WebFetch 等へ切り替えないことを明記した。実行失敗時のフォールバック条件と、実効 tool・試行結果・理由の報告も明確にした。`.local.yaml` の上書き、CLI 無効化、成功後の出典確認は維持する。
+- **`agent-routing` / `core`: サブエージェントのハンドバックにエージェントルーティングを提案してしまう問題を修正**: `<agent-message>` で始まる入力（サブエージェントの報告・別セッションからのメッセージ）を、タスク完了通知と同じくユーザー入力として扱わない。plan gate も解除しない。
+- **`audit`: 監査ログの記録漏れを修正**: `prompt` イベントに入力種別 `input_kind`（`human` / `slash` / `harness`）を記録し、通知やハンドバックの本文では期待ルートを予測しない。`subagent_start` の `ctx.skill` に起動元のスキルを記録する。`subagent_end` の `agent_type` が空のときは起動時の種別で補い、Claude Code の内部エージェント（開始イベントが無いもの）の終了は記録しない。
 - **`orchex install` / `setup` で `.codex/config.toml` と `.codex/skills/context-loader/` が配置されない問題を修正**: `codex-suggestions` を後から導入しても初回テンプレートが配置される（既存ファイルは上書きしない）。
 - **`image-generation`: `image_model` に sol 系モデル（`gpt-6.1-sol` 等）を指定すると、生成に成功しても失敗と報告される問題を修正**: 保存名が `exec-*.png` になるモデルでも生成した画像を受け取れる。
 - **`image-generation`: 並行して動く別の Codex セッションの画像を、自分の生成結果として取り違えることがある問題を修正**: 探索をその実行のセッションのフォルダに限定した。

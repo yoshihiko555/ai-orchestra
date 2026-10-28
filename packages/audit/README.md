@@ -146,6 +146,10 @@ orchex run audit analyze-cli-usage -- --days 30
 
 ログは `.claude/logs/audit/` 配下に JSONL 形式で保存されます。`quality_gate` イベント自体は `quality-gates` パッケージの `post-test-analysis.py` から記録されます。
 
+- `prompt` イベントの `input_kind` は `human`（人の入力）/ `slash`（`/name` で始まる入力）/ `harness`（タスク完了通知やサブエージェントのハンドバックなど、ハーネスが流した入力）のいずれか。`harness` では本文から期待ルートを予測せず、同じセッションの直前のターンの値を引き継ぐ
+- `subagent_start` の `ctx.skill` には、そのターンで起動中のスキル（`/name` の入力か Skill ツールの実行）が入る
+- SubagentStart を伴わない Claude Code の内部エージェント（prompt suggestion 等）の終了は `subagent_end` として記録しない
+
 ## 設定
 
 設定ファイルは `.claude/config/audit/` に配置されます。
