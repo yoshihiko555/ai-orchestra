@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`agency-agents`: OSS の agency-agents からエージェントを取り込むパッケージを追加（ADR-20261028-061）**: 取り込むエージェントとツール権限を `upstream.yaml` で決め、upstream の commit を固定して生成する。ツール権限は既定で読み取り専用。`essential` プリセットに含まれる。
+- **`agency-agents`: 専門エージェントを 5 つ追加**: `engineering-privacy-engineer`（個人情報）、`engineering-identity-access-engineer`（SSO・OIDC）、`engineering-payments-billing-engineer`（決済）、`engineering-database-reliability-engineer`（DB の冗長化・移行）、`engineering-minimal-change-engineer`（最小差分の実装）。
 - **`/task-state close`: 完了した plan ファイルを片付ける**: 完了しているか確かめ、`## Decisions` を ADR か PR 本文に残すか選んでから plan ファイルを削除する。worktree を切らずに作業しているときに使う。
 - **`codd`: drift を「見たら消せる」ものにする（Issue #515）**: frontmatter の `depends_on[].synced`（確認済みの上流コミット）と `depends_on[].anchor`（上流の特定の行だけに依存）を宣言でき、`codd ack <node_id>` が drift 中のエッジの `synced` を上流の最新コミットに更新する（`--all` はそのノードの drift 対象の全エッジ）。drift の warning に原因コミットの短 SHA と日付が出る。
 - **`codd`: PR の CI ガードレールを追加**: `codd verdict` が validate と impact から APPROVE / CONDITIONAL / REJECT を判定する。
@@ -18,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **BREAKING** **`agent-routing` → `agency-agents`: `specialized-mcp-builder` と `support-executive-summary-generator` を移動**: `subagent_type` は `MCP Builder` / `Executive Summary Generator` からファイル名と同じ `specialized-mcp-builder` / `support-executive-summary-generator` に変わる。`support-executive-summary-generator` は読み取り専用になる。既存プロジェクトでは `orchex install agency-agents --project <path>` を実行しないと、2 つのエージェントが消える。
 - **`codex-suggestions` / `antigravity-suggestions`: 相談提案を任意助言として明確化（ADR-060）**: 提案だけを理由に操作を保留・追加相談する必要や、採否を毎回説明する義務はない。`[Resolved Routing]` / `agents.<name>.tool` の指定とスキル固有の委譲義務、相談時の config 解決・sandbox 安全条件は維持する。
 - **編集前・Web 調査前の提案を絞り込み、通知の重複を抑制**: Codex は明確な設計パス・契約宣言の変更、Antigravity は query / prompt の比較・選定・移行等の調査意図に限定する。トップレベルの非空文字列の `agent_id` でサブエージェント／インプロセス teammate 内を識別して抑制し、`agent_type` 単独では抑制しない。`session_id` があれば project / worktree 別に同一ファイル・正規化した同一質問への通知を 1 度にする。config・対象範囲・marker のルートは `CLAUDE_PROJECT_DIR` → hook 入力の `cwd` の順で解決し、環境変数が非空ならそのルートを使い、未設定または空の場合だけ `cwd` を使う。状態は `.claude/state/suggestions/` の hash 化した空 marker のみ。状態書き込み失敗時は無出力・exit 0、session 不明時は state を作らない。after-plan の発火条件は変更しない。
 - **BREAKING** **`core` / `task-state` / `order` / `handoff`: Plans.md を Project ごとの plan ファイル `.claude/plans/<slug>.md` に分割（ADR-20261027-059）**: `/order --to plans` は発注書ごとに新しいファイルを作り、SessionStart は未完了のファイルだけをファイルごとにまとめて注入する。`.claude/Plans.md` は読まれなくなり（残っていると警告が出る）、移行コマンドは無いので、中の Project を `.claude/plans/<slug>.md` に手で移す。`task-memory.yaml` の `plans_file` は廃止し、codd の既定 scope からも外した。

@@ -34,8 +34,6 @@
     "agents/security-reviewer.md",
     "agents/spec-reviewer.md",
     "agents/spec-writer.md",
-    "agents/specialized-mcp-builder.md",
-    "agents/support-executive-summary-generator.md",
     "agents/tester.md",
     "agents/testing-reality-checker.md",
     "agents/ux-reviewer.md"

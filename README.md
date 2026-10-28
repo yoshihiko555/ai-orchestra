@@ -429,6 +429,7 @@ uv tool install -e .
 | レビュー（設計） | `spec-reviewer` `architecture-reviewer` `ux-reviewer`                                                       |
 | ドキュメント     | `docs-writer`                                                                                               |
 | ユーティリティ   | `general-purpose` `specialized-mcp-builder` `support-executive-summary-generator` `testing-reality-checker` |
+| 専門（agency-agents） | `engineering-privacy-engineer` `engineering-identity-access-engineer` `engineering-payments-billing-engineer` `engineering-database-reliability-engineer` `engineering-minimal-change-engineer` |
 
 ### エージェントの呼び出し
 

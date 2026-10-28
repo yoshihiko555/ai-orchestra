@@ -1,0 +1,21 @@
+{
+  "name": "agency-agents",
+  "version": "0.1.0",
+  "description": "agency-agents（OSS）のエージェントを commit 固定で取り込んだもの。正本は upstream.yaml",
+  "depends": ["core", "agent-routing"],
+  "hooks": {},
+  "files": [],
+  "skills": [],
+  "agents": [
+    "agents/engineering-database-reliability-engineer.md",
+    "agents/engineering-identity-access-engineer.md",
+    "agents/engineering-minimal-change-engineer.md",
+    "agents/engineering-payments-billing-engineer.md",
+    "agents/engineering-privacy-engineer.md",
+    "agents/specialized-mcp-builder.md",
+    "agents/support-executive-summary-generator.md"
+  ],
+  "rules": [],
+  "scripts": [],
+  "config": []
+}

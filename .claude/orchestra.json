@@ -1,5 +1,6 @@
 {
   "installed_packages": [
+    "agency-agents",
     "agent-routing",
     "antigravity-suggestions",
     "audit",
@@ -31,6 +32,11 @@
     "agents/data-modeler.md",
     "agents/debugger.md",
     "agents/docs-writer.md",
+    "agents/engineering-database-reliability-engineer.md",
+    "agents/engineering-identity-access-engineer.md",
+    "agents/engineering-minimal-change-engineer.md",
+    "agents/engineering-payments-billing-engineer.md",
+    "agents/engineering-privacy-engineer.md",
     "agents/finding-verifier.md",
     "agents/frontend-dev.md",
     "agents/general-purpose.md",
@@ -68,13 +74,13 @@
     "config/quality-gates/quality-gates.json",
     "config/skill-evolution/skill-evolution.yaml"
   ],
-  "last_sync": "2026-09-27T09:22:45.543207+00:00",
+  "last_sync": "2026-10-28T10:56:29.006537+00:00",
   "file_hashes": {
     "core": {
       "config/core/task-memory.yaml": "c059d1d84cd186fcf7f20bb9ffcb7475b3355784a3a0c890f1a39312f4ffe9b1"
     },
     "agent-routing": {
-      "config/agent-routing/cli-tools.yaml": "74234600badb2bba17b53dde31191480e49deba6ccba62c05ecdfa9e97c6c91f",
+      "config/agent-routing/cli-tools.yaml": "4a07eb7edf2f12ff0d918501152a793775084d198df62fdacd5420b493303d92",
       "agents/ai-architect.md": "d04bcb1017752f8bd3e1f6ffc5b7f292809357fa3c0b6c807617ebdc480ed446",
       "agents/ai-dev.md": "f1c53f1064c0fe7be172f235837dc511597fe169678f06e102e66c3562a8dd30",
       "agents/api-designer.md": "bb81a221c98b8a0b88513c1c040e844aae7b317679c8f7e6952168108b511a2b",
@@ -96,9 +102,7 @@
       "agents/requirements.md": "4caaa703214dd3ddd0f68f76038a238860df61bf29131e71485794e4c03033db",
       "agents/researcher.md": "8991379bf322028d281aa523a8399ced200a5a3c312a21e1298b13637ed2904f",
       "agents/security-reviewer.md": "d77159767829a1d767e996a204308bca5437755853982e4a01a16c9164628108",
-      "agents/specialized-mcp-builder.md": "46ff9ebc6679a2beb45466563e90d98245e03f91bdf4e625d94b329243a3df1e",
       "agents/spec-reviewer.md": "5b7a399d83b4470eb638ed67cd3a964aaaa4e94e503040ea8f92aeab410f1d93",
-      "agents/support-executive-summary-generator.md": "fdc6a1a7dec25dab28ee90282a4196cee2aae3146b20eb63e720e327658e3281",
       "agents/spec-writer.md": "0ed8fa11b1f66b1d610e59cd3066484a3345f303963607425853cc7eef147782",
       "agents/tester.md": "5f7f7acf7ffaf98f590dd5e60a8e470cfe75425aeedb4b2ee5ef2f9d3e9383a4",
       "agents/testing-reality-checker.md": "999f8925e2f27680e4d36a6818fe644c0f473c44bcc29b693b0557ac5217eb27",
@@ -142,6 +146,15 @@
     "quality-gates": {
       "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95",
       "config/quality-gates/quality-gates.json": "6efbb1c0c84106d598a8019808f50b2af99189b0617b7aaa49801d3e5c8a6a43"
+    },
+    "agency-agents": {
+      "agents/specialized-mcp-builder.md": "25a791df57e5e770254c32667cf029eb8d47edb216f7981ad2f9d4e515408613",
+      "agents/support-executive-summary-generator.md": "002da3b51d632067ee5aed6a137af548328cc2b01e4142ad6d29e831b6b777ea",
+      "agents/engineering-database-reliability-engineer.md": "b5ce83bef3616184e116046e53571ccd8bd3dc67285ce24f435f046d047230ef",
+      "agents/engineering-identity-access-engineer.md": "04df59cf81f2784e379da9d50c669ddcc52761c9fa71e6b050caed9af9c80881",
+      "agents/engineering-minimal-change-engineer.md": "d805db14d2ba3e22e7ca936467c08d33e9d36295670bf38876446ea6d053b376",
+      "agents/engineering-payments-billing-engineer.md": "56fdc1ffa32c03c97aec0a44e4fca7b167db27c9d4ea261e5065b76507791f38",
+      "agents/engineering-privacy-engineer.md": "f824ec2b45dcd077556a75aca0baa3adf8252a3b718ec2d53b110994ce636381"
     }
   },
   "codex_file_hashes": {
