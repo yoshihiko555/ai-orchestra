@@ -7,9 +7,11 @@
 
 import json
 import sys
+from pathlib import Path
 
 from route_config import (
     RESEARCHER_FALLBACK_TRIGGERS,
+    _project_dir_from_data,
     build_cli_suggestion,
     detect_agent,
     get_agent_tool,
@@ -30,7 +32,12 @@ def main():
         config = load_config(data)
         messages = []
 
-        agent, trigger = detect_agent(prompt)
+        project_dir = _project_dir_from_data(data)
+        agents_dir = Path(project_dir) / ".claude" / "agents"
+        allowed_agents = None
+        if project_dir and agents_dir.is_dir():
+            allowed_agents = {path.stem for path in agents_dir.glob("*.md") if path.is_file()}
+        agent, trigger = detect_agent(prompt, allowed_agents=allowed_agents)
         if agent:
             tool = get_agent_tool(agent, config)
             cli_msg = build_cli_suggestion(tool, agent, trigger, config)
@@ -40,7 +47,7 @@ def main():
                 f"[Agent Routing] '{trigger}' → `{agent}` (tool: {tool}):\n"
                 f'Task(subagent_type="{agent}", prompt="...")'
             )
-        else:
+        elif allowed_agents is None or "researcher" in allowed_agents:
             prompt_lower = prompt.lower()
             for trig in RESEARCHER_FALLBACK_TRIGGERS.get(
                 "ja", []

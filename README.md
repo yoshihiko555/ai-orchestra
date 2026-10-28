@@ -429,6 +429,7 @@ uv tool install -e .
 | レビュー（設計） | `spec-reviewer` `architecture-reviewer` `ux-reviewer`                                                       |
 | ドキュメント     | `docs-writer`                                                                                               |
 | ユーティリティ   | `general-purpose` `specialized-mcp-builder` `support-executive-summary-generator` `testing-reality-checker` |
+| 専門（agency-agents） | `engineering-privacy-engineer` `engineering-identity-access-engineer` `engineering-payments-billing-engineer` `engineering-database-reliability-engineer` `engineering-minimal-change-engineer` |
 
 ### エージェントの呼び出し
 
@@ -436,6 +437,9 @@ uv tool install -e .
 Task(subagent_type="planner", prompt="このタスクを分解して")
 Task(subagent_type="code-reviewer", prompt="このコードをレビューして")
 ```
+
+UserPromptSubmit のエージェント提案は、プロジェクトに `.claude/agents` ディレクトリがあれば、
+そこに `<name>.md` が実在するエージェントだけを対象にする。ディレクトリが無い場合は従来の検出を維持する。
 
 `researcher` は解決済みのルーティングに従い、`tool: antigravity` なら `agy`、`tool: codex` なら
 `codex exec` を先に実行します。WebSearch / WebFetch 等だけで指定 CLI を省略しません。

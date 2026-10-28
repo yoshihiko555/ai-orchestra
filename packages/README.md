@@ -8,6 +8,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------ |
 | [core](#core)                                       | 全パッケージ共通の基盤ライブラリ                                                                 | 基盤         |
 | [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案                                                | 基盤         |
+| [agency-agents](#agency-agents)                     | OSS の agency-agents から commit 固定で取り込んだエージェント                                    | エージェント |
 | [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint の品質ゲート                                               | 品質         |
 | [loop-harness](#loop-harness)                       | Issue 起点の Maker / Checker 反復と PR レビュー対応を安全に駆動                                  | ハーネス     |
 | [docker-runtime](#docker-runtime)                   | ハーネス共通の Docker / broker ライフサイクル基盤                                                | 基盤         |
@@ -44,7 +45,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 
 ### agent-routing
 
-`cli-tools.yaml` に基づいてエージェントをルーティング提案する。30 エージェントの定義と使い方ルールを管理し、`.claude/agents/` に同期される配布元でもある。
+`cli-tools.yaml` に基づいてエージェントをルーティング提案する。28 エージェントの定義と使い方ルールを管理し、`.claude/agents/` に同期される配布元でもある。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -52,9 +53,23 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 **提供するもの:**
 
 - hooks: `agent-router.py`（UserPromptSubmit で自動提案）
-- agents: 30 エージェント定義（planner, architect, code-reviewer, general-purpose 等）
+- agents: 28 エージェント定義（planner, architect, code-reviewer, general-purpose 等）
 - rules (facet build): `orchestra-usage`, `agent-routing-policy`
 - config: `cli-tools.yaml`（モデル名・サンドボックス・フラグの一元管理）
+
+---
+
+### agency-agents
+
+OSS の [agency-agents](https://github.com/msitarzewski/agency-agents)（MIT）のエージェントを、`upstream.yaml` で固定した commit から取り込んで配布する。`agents/*.md` と `manifest.json` の `agents` は `scripts/vendor-agency-agents.py` の生成物で、手で編集しない。ツール権限は既定で読み取り専用（`profile: readonly`）。詳細は [docs/reference/packages.md](../docs/reference/packages.md#agency-agents)。
+
+- **バージョン**: 0.1.0
+- **依存**: core, agent-routing
+
+**提供するもの:**
+
+- agents: `specialized-mcp-builder`, `support-executive-summary-generator`, `engineering-privacy-engineer`, `engineering-identity-access-engineer`, `engineering-payments-billing-engineer`, `engineering-database-reliability-engineer`, `engineering-minimal-change-engineer`
+- 取り込みの正本: `upstream.yaml`（配布しない）と upstream の LICENSE（`LICENSE-agency-agents`）
 
 ---
 

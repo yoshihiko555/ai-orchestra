@@ -1,0 +1,31 @@
+# agency-agents（upstream）から取り込むエージェントの正本。
+# agents/*.md と manifest.json の agents は scripts/vendor-agency-agents.py が生成するので手で編集しない。
+#
+#   生成:     uv run python scripts/vendor-agency-agents.py sync --source <ローカルの clone>
+#   検証:     uv run python scripts/vendor-agency-agents.py sync --source <clone> --check
+#   追従:     uv run python scripts/vendor-agency-agents.py update --source <clone> --to <ref>
+#   一覧:     uv run python scripts/vendor-agency-agents.py list --source <clone> [--ref <ref>] [--query <text>]
+#
+# agents の書き方（キーは upstream 内のパスから .md を除いたもの。生成ファイル名と name はその末尾）:
+#   <category>/<file>:              # 設定なし = profile: readonly（Read, Glob, Grep）
+#   <category>/<file>:
+#     profile: writer               # readonly | writer（+Edit, Write） | implementer（+Bash）
+#   <category>/<file>:
+#     tools: [Read, Grep, Agent]    # 明示する場合。profile と同時には書けない。Agent はここでだけ付く
+#     frontmatter:                  # name / tools 以外の frontmatter を上書きする（例: model）
+#       model: sonnet
+
+repo: https://github.com/msitarzewski/agency-agents
+commit: b37b5bb33b78f2c1d6567d98e25ca818e3259219
+agents:
+  # MCP サーバーを実装させるため、ファイル編集とコマンド実行まで許可する
+  specialized/specialized-mcp-builder:
+    profile: implementer
+  support/support-executive-summary-generator:
+  # 2026-10-28 追加。助言・レビュー用途は readonly、最小差分の実装だけ implementer
+  engineering/engineering-privacy-engineer:
+  engineering/engineering-identity-access-engineer:
+  engineering/engineering-payments-billing-engineer:
+  engineering/engineering-database-reliability-engineer:
+  engineering/engineering-minimal-change-engineer:
+    profile: implementer

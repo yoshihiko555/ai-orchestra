@@ -30,6 +30,16 @@ os.environ["AI_ORCHESTRA_DIR"] = str(REPO_ROOT)
 _REAL_CONFIG = hook_common.load_package_config("agent-routing", "cli-tools.yaml", str(REPO_ROOT))
 _AGENTS_IN_CONFIG = set(_REAL_CONFIG.get("agents", {}).keys())
 _AGENTS_DIR = REPO_ROOT / "packages" / "agent-routing" / "agents"
+# agency-agents（upstream から取り込んだエージェント）も cli-tools.yaml でルーティングする。
+# ルーティング設定の無い取り込みエージェントは vendor スクリプトが警告するだけなので、
+# 孤立 .md の検査（TestNoOrphanAgentMd）は agent-routing だけを対象にする
+_VENDORED_AGENTS_DIR = REPO_ROOT / "packages" / "agency-agents" / "agents"
+
+
+def _agent_md_path(agent_name: str) -> Path:
+    """エージェント名の .md を agent-routing → agency-agents の順で探す。"""
+    own = _AGENTS_DIR / f"{agent_name}.md"
+    return own if own.is_file() else _VENDORED_AGENTS_DIR / f"{agent_name}.md"
 
 
 # ---------------------------------------------------------------------------
@@ -42,8 +52,11 @@ class TestAgentMdFilesExist:
 
     @pytest.mark.parametrize("agent_name", sorted(_AGENTS_IN_CONFIG))
     def test_agent_md_exists(self, agent_name: str) -> None:
-        md_path = _AGENTS_DIR / f"{agent_name}.md"
-        assert md_path.is_file(), f"packages/agent-routing/agents/{agent_name}.md が見つかりません"
+        md_path = _agent_md_path(agent_name)
+        assert md_path.is_file(), (
+            f"{agent_name}.md が packages/agent-routing/agents/ にも "
+            "packages/agency-agents/agents/ にも見つかりません"
+        )
 
 
 class TestNoOrphanAgentMd:
@@ -156,7 +169,7 @@ class TestAgentMdFallbackConsistency:
 
     @pytest.mark.parametrize("agent_name", sorted(_AGENTS_IN_CONFIG))
     def test_fallback_tool_matches_config(self, agent_name: str) -> None:
-        md_path = _AGENTS_DIR / f"{agent_name}.md"
+        md_path = _agent_md_path(agent_name)
         if not md_path.is_file():
             pytest.skip(f"agents/{agent_name}.md not found")
 

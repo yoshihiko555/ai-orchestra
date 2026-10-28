@@ -25,6 +25,7 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from tests.module_loader import REPO_ROOT, load_module
@@ -47,7 +48,7 @@ WARN_MARKER = "[WARN]"
 
 def _run_hook(prompt: str, cwd: str | None = None) -> dict:
     """agent-router の main() を呼び、stdout の JSON を返す。出力なしなら空辞書。"""
-    input_data = {"prompt": prompt, "cwd": cwd or str(REPO_ROOT)}
+    input_data = {"prompt": prompt, "cwd": str(REPO_ROOT) if cwd is None else cwd}
     captured = io.StringIO()
     stdin_backup = sys.stdin
     stdout_backup = sys.stdout
@@ -119,6 +120,92 @@ class TestFixtureTaskNotification:
   次の steps を plan してください
 </agent-message>"""
         assert _run_hook(prompt, cwd=str(tmp_path)) == {}
+
+
+class TestFixtureInstalledAgents:
+    """導入済みエージェントの定義ファイルに応じて提案候補を絞る。"""
+
+    def test_missing_privacy_engineer_is_not_suggested(self, tmp_path: Path) -> None:
+        _write_cli_tools_yaml(
+            tmp_path, {"agents": {"engineering-privacy-engineer": {"tool": "claude-direct"}}}
+        )
+        agents_dir = tmp_path / ".claude" / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "debugger.md").write_text("# Debugger\n", encoding="utf-8")
+
+        assert _run_hook("GDPR 対応を確認してください", cwd=str(tmp_path)) == {}
+
+    def test_installed_privacy_engineer_is_suggested(self, tmp_path: Path) -> None:
+        _write_cli_tools_yaml(
+            tmp_path, {"agents": {"engineering-privacy-engineer": {"tool": "claude-direct"}}}
+        )
+        agents_dir = tmp_path / ".claude" / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "engineering-privacy-engineer.md").write_text(
+            "# Privacy Engineer\n", encoding="utf-8"
+        )
+
+        ctx = _additional_context(_run_hook("GDPR 対応を確認してください", cwd=str(tmp_path)))
+
+        assert 'Task(subagent_type="engineering-privacy-engineer"' in ctx
+
+    def test_missing_agents_directory_preserves_detection(self, tmp_path: Path) -> None:
+        _write_cli_tools_yaml(
+            tmp_path, {"agents": {"engineering-privacy-engineer": {"tool": "claude-direct"}}}
+        )
+
+        ctx = _additional_context(_run_hook("GDPR 対応を確認してください", cwd=str(tmp_path)))
+
+        assert not (tmp_path / ".claude" / "agents").exists()
+        assert 'Task(subagent_type="engineering-privacy-engineer"' in ctx
+
+    def test_directory_named_like_agent_file_is_not_suggested(self, tmp_path: Path) -> None:
+        (tmp_path / ".claude" / "agents" / "engineering-privacy-engineer.md").mkdir(parents=True)
+
+        assert _run_hook("GDPR 対応を確認してください", cwd=str(tmp_path)) == {}
+
+    @pytest.mark.parametrize("installed", [False, True])
+    def test_empty_cwd_uses_project_directory_from_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installed: bool
+    ) -> None:
+        agents_dir = tmp_path / ".claude" / "agents"
+        agents_dir.mkdir(parents=True)
+        if installed:
+            (agents_dir / "engineering-privacy-engineer.md").write_text(
+                "# Privacy Engineer\n", encoding="utf-8"
+            )
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+        ctx = _additional_context(_run_hook("GDPR 対応を確認してください", cwd=""))
+
+        assert ('Task(subagent_type="engineering-privacy-engineer"' in ctx) == installed
+
+    def test_cwd_takes_precedence_over_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / ".claude" / "agents").mkdir(parents=True)
+        environment_project = tmp_path / "environment-project"
+        agents_dir = environment_project / ".claude" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "engineering-privacy-engineer.md").write_text(
+            "# Privacy Engineer\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(environment_project))
+
+        assert _run_hook("GDPR 対応を確認してください", cwd=str(tmp_path)) == {}
+
+    @pytest.mark.parametrize("installed", [False, True])
+    def test_researcher_fallback_respects_installed_agents(
+        self, tmp_path: Path, installed: bool
+    ) -> None:
+        agents_dir = tmp_path / ".claude" / "agents"
+        agents_dir.mkdir(parents=True)
+        if installed:
+            (agents_dir / "researcher.md").write_text("# Researcher\n", encoding="utf-8")
+
+        ctx = _additional_context(_run_hook("このPDF見てください", cwd=str(tmp_path)))
+
+        assert ('Task(subagent_type="researcher"' in ctx) == installed
 
 
 class TestFixtureCliSuggestionByTool:

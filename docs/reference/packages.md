@@ -22,6 +22,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------ |
 | [core](#core)                                       | 全パッケージ共通の基盤ライブラリ                                                                 | 基盤         |
 | [agent-routing](#agent-routing)                     | cli-tools.yaml 駆動のエージェントルーティング提案                                                | 基盤         |
+| [agency-agents](#agency-agents)                     | OSS の agency-agents から commit 固定で取り込んだエージェント                                    | エージェント |
 | [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint                                                            | 品質         |
 | [audit](#audit)                                     | 統一イベントログによる監査・CLI 記録                                                             | 監査         |
 | [codex-suggestions](#codex-suggestions)             | ファイル編集時の Codex 相談提案                                                                  | 提案         |
@@ -41,7 +42,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 | プリセット  | 含まれるパッケージ                              |
 | ----------- | ----------------------------------------------- |
-| `essential` | core, agent-routing, audit, quality-gates, codd, git-workflow |
+| `essential` | core, agent-routing, agency-agents, audit, quality-gates, codd, git-workflow |
 | `all`       | 全パッケージ                                    |
 
 ---
@@ -95,7 +96,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | ------ | ------------------------- | -------------------------------------------------------- |
 | hook   | `agent-router.py`         | UserPromptSubmit: プロンプトからエージェントを検出し提案 |
 | util   | `route_config.py`         | ルーティング設定読み込み・エージェント検出ロジック       |
-| agents | 30 定義                   | planner, architect, code-reviewer, general-purpose 等    |
+| agents | 28 定義                   | planner, architect, code-reviewer, general-purpose 等    |
 | rule   | `orchestra-usage.md`      | AI Orchestra 使用ガイド                                  |
 | rule   | `agent-routing-policy.md` | エージェントルーティングポリシー                         |
 | config | `cli-tools.yaml`          | モデル名・サンドボックス・フラグの一元管理               |
@@ -111,7 +112,52 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | Test/Debug     | debugger, tester                                                                                                                                  |
 | Review         | code-reviewer, security-reviewer, performance-reviewer, spec-reviewer, architecture-reviewer, ux-reviewer, adversarial-reviewer, finding-verifier |
 | Docs           | docs-writer                                                                                                                                       |
-| Utility        | general-purpose, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker                                            |
+| Utility        | general-purpose, testing-reality-checker                                                                                                          |
+
+`specialized-mcp-builder` と `support-executive-summary-generator` は [agency-agents](#agency-agents) が配布する（ルーティング設定は `cli-tools.yaml` に残る）。
+
+---
+
+## agency-agents
+
+OSS の [agency-agents](https://github.com/msitarzewski/agency-agents)（MIT）のエージェントを、`upstream.yaml` で固定した commit から取り込んで配布する。取り込むエージェント・ツール権限・frontmatter の上書きは `upstream.yaml` だけで決まり、`agents/*.md` と `manifest.json` の `agents` は `scripts/vendor-agency-agents.py` が生成する（手で編集しない）。`essential` プリセットに含まれる。
+
+- **バージョン**: 0.1.0
+- **依存**: core, agent-routing
+
+### コンポーネント
+
+| 種別   | 名前                                     | 説明                                                     |
+| ------ | ---------------------------------------- | -------------------------------------------------------- |
+| agent  | `specialized-mcp-builder.md`             | MCP サーバーの設計・実装（profile: implementer）         |
+| agent  | `support-executive-summary-generator.md` | 経営層向けサマリーの作成（profile: readonly）            |
+| agent  | `engineering-privacy-engineer.md`        | 個人情報の検出・最小化・削除対応（profile: readonly）    |
+| agent  | `engineering-identity-access-engineer.md` | OAuth/OIDC・SSO・SCIM（profile: readonly）              |
+| agent  | `engineering-payments-billing-engineer.md` | 決済連携・冪等性・PCI（profile: readonly）             |
+| agent  | `engineering-database-reliability-engineer.md` | DB の冗長化・バックアップ・無停止移行（profile: readonly） |
+| agent  | `engineering-minimal-change-engineer.md` | 最小差分の実装（profile: implementer）                   |
+| config | `upstream.yaml`                          | 取り込みの正本（配布しない。ai-orchestra 側の開発用）    |
+
+### ツール権限（profile）
+
+| profile            | tools                               |
+| ------------------ | ----------------------------------- |
+| `readonly`（既定） | Read, Glob, Grep                    |
+| `writer`           | Read, Glob, Grep, Edit, Write       |
+| `implementer`      | Read, Glob, Grep, Edit, Write, Bash |
+
+`Agent`（サブエージェントの起動）はどの profile にも含めず、`tools: [...]` で明示したときだけ付く。frontmatter の `name` は upstream のファイル名（slug）に書き換える。
+
+### 運用（ai-orchestra の開発者向け）
+
+| やりたいこと                     | 手順                                                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| upstream のエージェントを探す    | `uv run python scripts/vendor-agency-agents.py list --source <clone> --ref origin/main [--query <語>]` |
+| エージェントを足す・外す         | `upstream.yaml` の `agents` を編集して `sync --source <clone>`。`cli-tools.yaml` の `agents` にも足す  |
+| upstream に追従する              | `update --source <clone> --to origin/main`。要レビューの差分を読んでから `--yes` を付けて再実行      |
+| 生成物が正本と一致するか確かめる | `sync --source <clone> --check`                                                                        |
+
+`update` は、`Bash` / `Edit` / `Write` / `Agent` を持つエージェントの変更、description の変更、未対応の frontmatter キーの追加、危険なパターン（シェルへのパイプ、外部 URL、認証情報の語、指示の上書き等）・不可視文字・HTML コメントの追加、安全に関する記述の削除を「要レビュー」として差分全文を出す。要レビューがある限り `--yes` なしでは書き換えない。取り込み済みのエージェントが upstream で削除されていた場合、進め先が現在の commit の子孫でない場合、`--source` の origin が `repo` と違う場合は止まる。upstream の frontmatter から生成物に通すのは `description` と表示用のキーだけで、`hooks` / `mcpServers` / `permissionMode` 等は入れない。
 
 ---
 

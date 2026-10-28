@@ -187,3 +187,14 @@ agents:
     tool: claude-direct
   testing-reality-checker:
     tool: claude-direct
+  # --- agency-agents パッケージ（upstream から取り込み）---
+  engineering-privacy-engineer:
+    tool: claude-direct
+  engineering-identity-access-engineer:
+    tool: claude-direct
+  engineering-payments-billing-engineer:
+    tool: claude-direct
+  engineering-database-reliability-engineer:
+    tool: claude-direct
+  engineering-minimal-change-engineer:
+    tool: claude-direct

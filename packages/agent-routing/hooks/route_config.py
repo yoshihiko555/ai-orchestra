@@ -160,6 +160,27 @@ AGENT_TRIGGERS: dict[str, dict[str, list[str]]] = {
         "ja": ["リアリティチェック", "本番準備", "品質確認"],
         "en": ["reality check", "production ready", "quality gate"],
     },
+    # agency-agents（先に定義したエージェントが優先されるため末尾に置く）
+    "engineering-privacy-engineer": {
+        "ja": ["個人情報", "プライバシー", "データ最小化"],
+        "en": ["privacy", "pii", "gdpr"],
+    },
+    "engineering-identity-access-engineer": {
+        "ja": ["シングルサインオン", "ID連携", "SCIM"],
+        "en": ["sso", "oidc", "saml", "scim"],
+    },
+    "engineering-payments-billing-engineer": {
+        "ja": ["決済", "課金", "請求処理"],
+        "en": ["payment", "billing", "stripe"],
+    },
+    "engineering-database-reliability-engineer": {
+        "ja": ["レプリケーション", "フェイルオーバー", "ポイントインタイムリカバリ"],
+        "en": ["replication", "failover", "point-in-time recovery"],
+    },
+    "engineering-minimal-change-engineer": {
+        "ja": ["最小差分", "最小限の修正", "最小変更"],
+        "en": ["minimal change", "minimal diff", "smallest fix"],
+    },
 }
 
 # エージェント不一致時の researcher フォールバックトリガー
