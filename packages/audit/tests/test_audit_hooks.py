@@ -1541,6 +1541,20 @@ class TestRouteSkillUpdatesTrace:
 
         assert _read_trace(project)["skill"] == ""
 
+    def test_skill_tool_without_session_id_does_not_touch_trace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        _write_trace(
+            project,
+            {"tid": "t1", "session_id": "s0", "expected_route": "claude-direct", "skill": ""},
+        )
+        data = {"cwd": str(project), "tool_name": "Skill", "tool_input": {"skill": "review"}}
+
+        _run_main(audit_route, data, monkeypatch)
+
+        assert _read_trace(project)["skill"] == ""
+
 
 class TestSubagentStartCtxSkill:
     """`subagent_start` の ctx.skill に起動中のスキルが入ることのテスト。"""

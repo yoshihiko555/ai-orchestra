@@ -270,7 +270,7 @@ def update_trace_skill(
 ) -> None:
     """現在のトレースに起動中のスキル名を書き込む（Skill ツール実行時に呼ぶ）。
 
-    トレースが無い場合と、別セッションのトレースの場合は書き換えない。
+    トレースが無い場合、別セッションのトレースの場合、session_id が分からない場合は書き換えない。
 
     Args:
         skill: スキル名
@@ -280,7 +280,7 @@ def update_trace_skill(
     trace = load_trace_state(project_dir)
     if not trace.get("tid"):
         return
-    if session_id and trace.get("session_id") != session_id:
+    if not session_id or trace.get("session_id") != session_id:
         return
     _atomic_write_json(_trace_state_path(project_dir), {**trace, "skill": skill})
 
