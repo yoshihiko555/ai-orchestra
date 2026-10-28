@@ -80,6 +80,32 @@ class TestIsTaskNotification:
         assert hook_common.is_task_notification(prompt) is False
 
 
+class TestIsHarnessPrompt:
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "<task-notification>\n<task-id>abc</task-id>\n</task-notification>",
+            '<agent-message from="a266234be5dae5c0e">\n[Subagent hand-back] 次の plan を立てて',
+            "  \n<agent-message>\n本文",
+            '<agent-message\tfrom="x">',
+        ],
+    )
+    def test_returns_true_for_notification_and_agent_message(self, prompt: str) -> None:
+        assert hook_common.is_harness_prompt(prompt) is True
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "テストを書いて",
+            "この <agent-message> タグの意味を説明して",
+            "<agent-messages>は独自タグです",
+            "",
+        ],
+    )
+    def test_returns_false_for_user_input(self, prompt: str) -> None:
+        assert hook_common.is_harness_prompt(prompt) is False
+
+
 class TestIsTestPath:
     @pytest.mark.parametrize(
         ("path", "expected"),

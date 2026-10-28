@@ -41,13 +41,20 @@ def main() -> None:
 
     cwd = get_field(data, "cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
-    # 親のトレース ID を取得
+    # 親のトレース ID と、同じセッションで起動中のスキル名を取得
     trace = load_trace_state(project_dir=cwd)
     parent_tid = trace.get("tid", "")
+    skill = trace.get("skill") if trace.get("session_id") == session_id else None
 
     # サブエージェント用の新しいトレース ID
     sub_tid = generate_id()
-    save_subagent_trace(aid=agent_id, tid=sub_tid, ptid=parent_tid, project_dir=cwd)
+    save_subagent_trace(
+        aid=agent_id,
+        tid=sub_tid,
+        ptid=parent_tid,
+        agent_type=agent_type or "",
+        project_dir=cwd,
+    )
 
     # task_summary は SubagentStart hook の入力に含まれないため null
     # 将来的に PreToolUse:Task で description をキャプチャする方式に変更可能
@@ -61,6 +68,7 @@ def main() -> None:
         tid=sub_tid,
         ptid=parent_tid or None,
         aid=agent_id,
+        ctx={"skill": skill or None, "phase": None},
         project_dir=cwd,
     )
 

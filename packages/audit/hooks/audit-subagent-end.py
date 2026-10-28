@@ -39,7 +39,6 @@ def main() -> None:
 
     session_id = get_field(data, "session_id")
     agent_id = get_field(data, "agent_id")
-    agent_type = get_field(data, "agent_type") or ""
 
     if not agent_id or not session_id:
         return
@@ -48,6 +47,11 @@ def main() -> None:
 
     # サブエージェント固有のトレース情報を復元
     sub_trace = load_subagent_trace(agent_id, project_dir=cwd)
+    agent_type = get_field(data, "agent_type") or sub_trace.get("agent_type") or ""
+    # SubagentStart を伴わない内部エージェント（prompt suggestion 等）の終了は agent_type が空で届く。
+    # 対応する subagent_start が無く追跡対象外なので記録しない
+    if not sub_trace and not agent_type:
+        return
     ptid = sub_trace.get("ptid") or None
 
     # sub_trace が消えていた場合は親トレース → session_id の順でフォールバック

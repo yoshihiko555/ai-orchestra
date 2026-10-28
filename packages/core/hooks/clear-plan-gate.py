@@ -4,8 +4,8 @@
 ユーザーがメッセージを送信した時点で、計画を確認したとみなし
 plan gate を解除して実装エージェントの呼び出しを許可する。
 
-バックグラウンドタスクの完了通知（`<task-notification>`）はユーザーの確認では
-ないため、gate を解除しない。
+バックグラウンドタスクの完了通知（`<task-notification>`）やサブエージェントの
+ハンドバック（`<agent-message>`）はユーザーの確認ではないため、gate を解除しない。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ if _orchestra_dir:
 
 from hook_common import (  # noqa: E402
     get_field,
-    is_task_notification,
+    is_harness_prompt,
     read_hook_input,
     safe_hook_execution,
 )
@@ -40,9 +40,9 @@ def _get_gate_path(data: dict) -> str:
 def main() -> None:
     data = read_hook_input()
 
-    # バックグラウンドタスクの完了通知はユーザーの確認ではないため gate を解除しない
+    # タスク完了通知やハンドバックはユーザーの確認ではないため gate を解除しない
     prompt = get_field(data, "prompt")
-    if is_task_notification(prompt):
+    if is_harness_prompt(prompt):
         sys.exit(0)
 
     gate_path = _get_gate_path(data)

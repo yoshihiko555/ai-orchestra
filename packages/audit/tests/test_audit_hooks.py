@@ -25,6 +25,10 @@ os.environ.setdefault("AI_ORCHESTRA_DIR", str(REPO_ROOT))
 audit_route = load_module("audit_route", "packages/audit/hooks/audit-route.py")
 audit_cli = load_module("audit_cli", "packages/audit/hooks/audit-cli.py")
 audit_prompt = load_module("audit_prompt", "packages/audit/hooks/audit-prompt.py")
+audit_subagent_start = load_module(
+    "audit_subagent_start", "packages/audit/hooks/audit-subagent-start.py"
+)
+audit_subagent_end = load_module("audit_subagent_end", "packages/audit/hooks/audit-subagent-end.py")
 
 
 # ---------------------------------------------------------------------------
@@ -1349,3 +1353,266 @@ class TestMaskHeredocBodiesPerformance:
         audit_cli._mask_heredoc_bodies(command)
         elapsed = time.monotonic() - start
         assert elapsed < 1.0
+
+
+# ---------------------------------------------------------------------------
+# 入力種別・起動元スキル・内部エージェントの終了（audit-prompt / audit-route /
+# audit-subagent-start / audit-subagent-end）
+# ---------------------------------------------------------------------------
+
+
+def _make_project(tmp_path: Path) -> Path:
+    (tmp_path / ".claude" / "state").mkdir(parents=True)
+    return tmp_path
+
+
+def _write_trace(project: Path, trace: dict) -> None:
+    (project / ".claude" / "state" / "audit-trace.json").write_text(
+        json.dumps(trace), encoding="utf-8"
+    )
+
+
+def _read_trace(project: Path) -> dict:
+    return json.loads(
+        (project / ".claude" / "state" / "audit-trace.json").read_text(encoding="utf-8")
+    )
+
+
+def _run_main(
+    module: object, data: dict, monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[str, dict, dict]]:
+    """hook の main() を実行し、emit_event に渡されたイベントを返す。"""
+    events: list[tuple[str, dict, dict]] = []
+
+    def fake_emit_event(event_type: str, payload: dict, **kwargs: object) -> dict:
+        events.append((event_type, payload, kwargs))
+        return payload
+
+    monkeypatch.setattr(module, "emit_event", fake_emit_event)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(data)))
+    module.main()
+    return events
+
+
+class TestClassifyPrompt:
+    """`classify_prompt` のテスト。"""
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "<task-notification>\n<task-id>x</task-id>\n</task-notification>",
+            '<agent-message from="a1">\n[Subagent hand-back] plan を立てて',
+        ],
+    )
+    def test_harness_prompt(self, prompt: str) -> None:
+        assert audit_prompt.classify_prompt(prompt) == ("harness", "")
+
+    @pytest.mark.parametrize(
+        ("prompt", "name"),
+        [
+            ("/review security", "review"),
+            ("/codex:rescue 直して", "codex:rescue"),
+            ("  /goal\n", "goal"),
+        ],
+    )
+    def test_slash_command(self, prompt: str, name: str) -> None:
+        assert audit_prompt.classify_prompt(prompt) == ("slash", name)
+
+    @pytest.mark.parametrize(
+        "prompt",
+        ["テストを書いて", "/Users/yoshihiko/foo.py を見て", "/ だけ"],
+    )
+    def test_human_prompt(self, prompt: str) -> None:
+        assert audit_prompt.classify_prompt(prompt) == ("human", "")
+
+
+class TestPromptInputKind:
+    """`audit_prompt.main()` が入力種別を記録し、非ユーザー入力でキーワード予測をしないことのテスト。"""
+
+    def test_harness_prompt_carries_over_route_and_skill_of_same_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        _write_trace(
+            project, {"tid": "t0", "session_id": "s1", "expected_route": "codex", "skill": "review"}
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project),
+            "prompt": "<task-notification>\n<summary>調査が完了。次の plan を立てて</summary>",
+        }
+
+        events = _run_main(audit_prompt, data, monkeypatch)
+
+        assert events[0][0] == "prompt"
+        payload = events[0][1]
+        assert payload["input_kind"] == "harness"
+        assert payload["expected_route"] == "codex"
+        assert payload["matched_rule"] is None
+        trace = _read_trace(project)
+        assert trace["skill"] == "review"
+        assert trace["tid"] != "t0"
+
+    def test_harness_prompt_of_other_session_uses_default_route(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        _write_trace(
+            project, {"tid": "t0", "session_id": "s0", "expected_route": "codex", "skill": "review"}
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project),
+            "prompt": '<agent-message from="a1">\n[Subagent hand-back] plan を立てて',
+        }
+
+        events = _run_main(audit_prompt, data, monkeypatch)
+
+        assert events[0][1]["expected_route"] == "claude-direct"
+        assert _read_trace(project)["skill"] == ""
+
+    def test_slash_prompt_records_skill(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        data = {"session_id": "s1", "cwd": str(project), "prompt": "/review security"}
+
+        events = _run_main(audit_prompt, data, monkeypatch)
+
+        assert events[0][1]["input_kind"] == "slash"
+        assert _read_trace(project)["skill"] == "review"
+
+    def test_human_prompt_clears_previous_skill(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        _write_trace(
+            project,
+            {"tid": "t0", "session_id": "s1", "expected_route": "codex", "skill": "review"},
+        )
+        data = {"session_id": "s1", "cwd": str(project), "prompt": "README を直して"}
+
+        events = _run_main(audit_prompt, data, monkeypatch)
+
+        assert events[0][1]["input_kind"] == "human"
+        assert _read_trace(project)["skill"] == ""
+
+
+class TestRouteSkillUpdatesTrace:
+    """Skill ツールの実行で trace の skill が更新されることのテスト。"""
+
+    def test_skill_tool_sets_skill_of_same_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        _write_trace(
+            project,
+            {"tid": "t1", "session_id": "s1", "expected_route": "claude-direct", "skill": ""},
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project),
+            "tool_name": "Skill",
+            "tool_input": {"skill": "review"},
+        }
+
+        _run_main(audit_route, data, monkeypatch)
+
+        trace = _read_trace(project)
+        assert trace["skill"] == "review"
+        assert trace["tid"] == "t1"
+
+    def test_skill_tool_does_not_touch_trace_of_other_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        _write_trace(
+            project,
+            {"tid": "t1", "session_id": "s0", "expected_route": "claude-direct", "skill": ""},
+        )
+        data = {
+            "session_id": "s1",
+            "cwd": str(project),
+            "tool_name": "Skill",
+            "tool_input": {"skill": "review"},
+        }
+
+        _run_main(audit_route, data, monkeypatch)
+
+        assert _read_trace(project)["skill"] == ""
+
+
+class TestSubagentStartCtxSkill:
+    """`subagent_start` の ctx.skill に起動中のスキルが入ることのテスト。"""
+
+    def test_records_skill_of_same_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        _write_trace(project, {"tid": "t1", "session_id": "s1", "skill": "review"})
+        data = {
+            "session_id": "s1",
+            "agent_id": "a1",
+            "agent_type": "code-reviewer",
+            "cwd": str(project),
+        }
+
+        events = _run_main(audit_subagent_start, data, monkeypatch)
+
+        event_type, payload, kwargs = events[0]
+        assert event_type == "subagent_start"
+        assert kwargs["ctx"] == {"skill": "review", "phase": None}
+        assert kwargs["ptid"] == "t1"
+        sub_trace = json.loads(
+            (project / ".claude" / "state" / "audit-subagent-a1.json").read_text(encoding="utf-8")
+        )
+        assert sub_trace["agent_type"] == "code-reviewer"
+
+    def test_skill_of_other_session_is_not_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        _write_trace(project, {"tid": "t1", "session_id": "s0", "skill": "review"})
+        data = {"session_id": "s1", "agent_id": "a1", "agent_type": "tester", "cwd": str(project)}
+
+        events = _run_main(audit_subagent_start, data, monkeypatch)
+
+        assert events[0][2]["ctx"] == {"skill": None, "phase": None}
+
+
+class TestSubagentEndAgentType:
+    """`subagent_end` の agent_type 補完と、内部エージェントの除外のテスト。"""
+
+    def test_internal_agent_without_start_is_not_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        data = {"session_id": "s1", "agent_id": "a9", "agent_type": "", "cwd": str(project)}
+
+        events = _run_main(audit_subagent_end, data, monkeypatch)
+
+        assert events == []
+
+    def test_empty_agent_type_is_filled_from_start_trace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        start = {"session_id": "s1", "agent_id": "a1", "agent_type": "researcher"}
+        _run_main(audit_subagent_start, {**start, "cwd": str(project)}, monkeypatch)
+        data = {"session_id": "s1", "agent_id": "a1", "agent_type": "", "cwd": str(project)}
+
+        events = _run_main(audit_subagent_end, data, monkeypatch)
+
+        assert events[0][0] == "subagent_end"
+        assert events[0][1]["agent_type"] == "researcher"
+        assert not (project / ".claude" / "state" / "audit-subagent-a1.json").exists()
+
+    def test_end_with_agent_type_is_recorded_without_start_trace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        data = {"session_id": "s1", "agent_id": "a2", "agent_type": "tester", "cwd": str(project)}
+
+        events = _run_main(audit_subagent_end, data, monkeypatch)
+
+        assert events[0][1]["agent_type"] == "tester"

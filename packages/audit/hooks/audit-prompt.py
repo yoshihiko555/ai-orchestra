@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,11 +26,13 @@ if _orchestra_dir:
 from event_logger import (
     emit_event,
     generate_id,
+    load_trace_state,
     resolve_project_root_from_hook_data,
     save_trace_state,
 )
 from hook_common import (
     find_first_text,
+    is_harness_prompt,
     load_package_config,
     read_hook_input,
     safe_hook_execution,
@@ -43,9 +46,31 @@ from secret_masking import mask_secrets as _mask_secrets
 
 DEFAULT_MAX_EXCERPT_CHARS = 160
 
+# `/name` または `/plugin:name` の後に空白か本文末尾が続くもの（`/Users/...` 等のパスは除く）
+SLASH_COMMAND_RE = re.compile(r"^/([A-Za-z0-9][\w.-]*(?::[\w.-]+)?)(?=\s|$)")
+
 # ---------------------------------------------------------------------------
 # Route prediction
 # ---------------------------------------------------------------------------
+
+
+def classify_prompt(prompt: str) -> tuple[str, str]:
+    """prompt を入力種別とスラッシュコマンド名に分ける。
+
+    Args:
+        prompt: UserPromptSubmit の prompt 本文。
+
+    Returns:
+        (input_kind, slash_name) のタプル。input_kind は `harness`（タスク完了通知・
+        ハンドバック等の非ユーザー入力）/ `slash` / `human` のいずれか。
+        slash_name は `slash` のときだけ値を持ち、それ以外は空文字。
+    """
+    if is_harness_prompt(prompt):
+        return "harness", ""
+    match = SLASH_COMMAND_RE.match(prompt.lstrip())
+    if match:
+        return "slash", match.group(1)
+    return "human", ""
 
 
 def select_expected_route(prompt: str, config: dict, policy: dict) -> tuple[str, str | None]:
@@ -82,6 +107,25 @@ def select_expected_route(prompt: str, config: dict, policy: dict) -> tuple[str,
     return str(policy.get("default_route", "claude-direct")), None
 
 
+def carry_over_route(previous: dict, session_id: str, policy: dict) -> tuple[str, str]:
+    """非ユーザー入力のターンに、同じセッションの直前のターンの期待ルートとスキルを引き継ぐ。
+
+    通知やハンドバックの本文はキーワード予測の対象にしない（本文の語で期待ルートが変わるため）。
+
+    Args:
+        previous: `load_trace_state()` の結果辞書。
+        session_id: 現在のセッション識別子。
+        policy: delegation-policy.json から読み込んだルーティングポリシー。
+
+    Returns:
+        (expected_route, skill) のタプル。引き継げない場合は既定ルートと空文字。
+    """
+    default_route = str(policy.get("default_route", "claude-direct"))
+    if not session_id or previous.get("session_id") != session_id:
+        return default_route, ""
+    return str(previous.get("expected_route") or default_route), str(previous.get("skill") or "")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -108,9 +152,16 @@ def main() -> None:
 
     config = load_config(data)
     policy = load_package_config("audit", "delegation-policy.json", root)
-    expected_route, matched_rule = select_expected_route(prompt, config, policy)
-
     session_id = str(data.get("session_id") or "")
+
+    input_kind, slash_name = classify_prompt(prompt)
+    if input_kind == "harness":
+        previous = load_trace_state(project_dir=root)
+        expected_route, skill = carry_over_route(previous, session_id, policy)
+        matched_rule = None
+    else:
+        expected_route, matched_rule = select_expected_route(prompt, config, policy)
+        skill = slash_name
 
     # マスキング → truncate の順序で処理する
     # (config の max_excerpt_chars を読み、デフォルトは 160)
@@ -124,6 +175,7 @@ def main() -> None:
         tid,
         session_id=session_id,
         expected_route=expected_route,
+        skill=skill,
         project_dir=root,
     )
 
@@ -131,6 +183,7 @@ def main() -> None:
         "prompt",
         {
             "user_input_excerpt": excerpt,
+            "input_kind": input_kind,
             "expected_route": expected_route,
             "matched_rule": matched_rule,
         },

@@ -366,6 +366,29 @@ class TestClearPlanGateMain:
 
         assert gate_path.exists()
 
+    def test_subagent_hand_back_prompt_keeps_gate(self, monkeypatch, tmp_path):
+        """サブエージェントのハンドバックはユーザーの確認ではないため gate を解除しない。"""
+        state_dir = tmp_path / ".claude" / "state"
+        state_dir.mkdir(parents=True)
+        gate_path = state_dir / "plan-gate.json"
+        gate_path.write_text(json.dumps({"pending": True, "agent": "planner"}), encoding="utf-8")
+
+        _make_stdin(
+            {
+                "cwd": str(tmp_path),
+                "prompt": (
+                    '<agent-message from="a266234be5dae5c0e">\n'
+                    "[Subagent hand-back] 計画を作成しました\n"
+                    "</agent-message>"
+                ),
+            },
+            monkeypatch,
+        )
+        with pytest.raises(SystemExit, match="0"):
+            clear_gate.main()
+
+        assert gate_path.exists()
+
     def test_no_cwd_exits_0(self, monkeypatch):
         """cwd がない場合、exit(0)。"""
         monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
