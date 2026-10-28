@@ -11,7 +11,7 @@ codd:
 
 # パッケージリファレンス
 
-**更新日**: 2026-07-12
+**更新日**: 2026-10-28
 AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `packages/*/config` は `.claude/` に同期される配布元。
 
 ---
@@ -187,7 +187,7 @@ orchex run audit analyze-cli-usage -- --format json
 
 ## codex-suggestions
 
-ファイル編集前に Codex 相談を提案し、設計品質を高める。プラン完了後も Codex レビューを促す。
+設計・契約の変更前に Codex 相談を任意提案する。プラン完了後の Codex レビューも既存の advisory として維持する。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -200,21 +200,26 @@ orchex run audit analyze-cli-usage -- --format json
 | hook  | `check-codex-after-plan.py`   | PostToolUse(Agent/Task): プラン完了後に Codex レビューを提案 |
 | skill | `codex-system`                | Codex CLI 利用ガイド                                         |
 | rule  | `codex-delegation`            | Codex CLI 委譲ルール                                         |
-| rule  | `codex-suggestion-compliance` | Codex 提案への遵守ルール                                     |
+| rule  | `codex-suggestion-compliance` | 任意助言と必須 routing・実装委譲の境界                       |
 
 ### 発火条件
 
 `check-codex-before-write.py` は以下の条件で `[Codex Suggestion]` を出力する（プロジェクト外のファイルは対象外）:
 
-- `core/` を含むファイルパスへの変更
-- `config` や `class` 等のキーワードを含む変更内容
-- 大きなコンテンツを含む新規ファイル作成
+- basename が `DESIGN.md` / `ARCHITECTURE.md`、または `design/`・`architecture/`・`schema/`・`schemas/`・`interfaces/`・`contracts/` 等の明確な設計パスへの変更
+- `interface` / `abstract class` / `Protocol` / `ABC` / `@abstractmethod` 等の契約宣言の追加・削除・変更。ただし TS/JS の `interface` は通常パスではコードシグナルとせず、設計パス内の変更としてのみ対象とする。`Props` という名前だけでは除外しない
+
+Edit の `old_string` / `new_string` で契約宣言が同じならコードシグナルを抑制する。設計パス以外のソース（`.py` / `.pyi` / `.ts` / `.tsx` / `.js` / `.jsx` / `.java`）への Write はディスク上の旧本文と新本文の宣言を比較し、新規ファイルの旧本文は空とする。旧本文が読取不能・大き過ぎ・非通常ファイル・非 UTF-8 の場合は任意通知を抑制し、exit 0 とする。設計パスは旧本文比較と独立に判定する。
+
+`core` / `config` / `model`・通常の `class`・文字数・`src/` だけでは発火しない。`codex.enabled` の明示 opt-in とプロジェクト外の除外は維持する。
+
+サブエージェント／インプロセス teammate 内の抑制と session / file 単位の通知抑制は、[提案の共通契約（Hook リファレンス）](hooks.md)に従う。`check-codex-after-plan.py` の発火条件は今回変更しない。
 
 ---
 
 ## antigravity-suggestions
 
-WebSearch/WebFetch の前に Antigravity CLI でのリサーチを提案する。
+WebSearch/WebFetch の前に、比較・選定・移行等の調査意図がある場合に Antigravity CLI でのリサーチを任意提案する。
 
 - **バージョン**: 0.1.0
 - **依存**: core
@@ -226,7 +231,17 @@ WebSearch/WebFetch の前に Antigravity CLI でのリサーチを提案する�
 | hook  | `suggest-antigravity-research.py`   | PreToolUse(WebSearch/WebFetch): `[Antigravity Suggestion]` を出力 |
 | skill | `antigravity-system`                | Antigravity CLI 利用ガイド                                        |
 | rule  | `antigravity-delegation`            | Antigravity CLI 委譲ルール                                        |
-| rule  | `antigravity-suggestion-compliance` | Antigravity 提案への遵守ルール                                    |
+| rule  | `antigravity-suggestion-compliance` | 任意助言と必須 routing・委譲の境界                                |
+
+### 発火条件と通知抑制
+
+WebSearch の `query` / WebFetch の `prompt` に比較・選定・移行等の調査意図がある場合に限定する。明確な選択比較（`vs` / `vs.` / `versus` / `違い` / `どっち` / `which is better`）も対象とする。文字列等の演算比較や単純な migration エラー検索は除外するが、明確な選択比較が同居すればそちらを優先する。URL・長さ・`documentation` / `library` / `guide` / `example` / `best practice` 等の一般語だけでは発火しない。
+
+両パッケージの編集前・Web 調査前 hook は、トップレベルの `agent_id` が非空の文字列（`str`）の場合だけ、サブエージェント／インプロセス teammate 内として提案を抑制する。`agent_type` は `--agent` で起動したメインにも付くため、単独では抑制しない。呼出先を示す `tool_input.subagent_type` も判定に使わない。`session_id` があれば project / worktree 別に同一 session・同一ファイル（Codex）または正規化した同一質問（Antigravity）への通知を 1 度に抑える。
+
+両 hook の config・対象範囲・marker に使う project / worktree は、環境変数 `CLAUDE_PROJECT_DIR` が非空ならそのルートを使い、未設定または空の場合だけ hook 入力の `cwd` で解決する。状態は `.claude/state/suggestions/` の hash 化した session / 対象の空 marker のみ。質問本文等は保存せず、状態書き込み失敗時は無出力・exit 0 とする。`session_id` がなければ state を作らず、呼び出しごとに助言する。marker の自動削除は今回追加せず、終了後も session ディレクトリが残る。cleanup は将来課題とする。通知済みは相談済みではなく、意味的な相談済み判定はオーケストレーターが担う（transcript 解析はしない）。詳細は [Hook リファレンス](hooks.md)を参照。
+
+`[Codex Suggestion]` / `[Antigravity Suggestion]` は操作の保留や追加相談を義務付けない。相談済み・軽微・適用外なら続行でき、採否を毎回説明する必要もない。ただし `[Resolved Routing]` / `agents.<name>.tool` とスキル固有の委譲義務、相談時の既存 config 解決・sandbox 安全条件は維持する。
 
 ---
 

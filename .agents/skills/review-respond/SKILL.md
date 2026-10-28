@@ -124,7 +124,7 @@ python3 "$PR_THREADS" fetch --pr {pr_number} --output "$FETCH_FULL"
 
 ### Step 4: 修正実装
 
-採用した指摘は、メインオーケストレーターが直接大量編集せず、implementation subagent（`cli-tools.yaml` の `agents.<name>.tool` ルーティングに従う）へ委譲する。3 箇所以上の変更が見込まれる通常の実装作業として `codex-suggestion-compliance.md` の「累積的変更の原則」に従う。
+採用した指摘は、メインオーケストレーターが直接大量編集せず、implementation subagent（`[Resolved Routing]` / `cli-tools.yaml` の `agents.<name>.tool` ルーティングに従う）へ委譲する。これは本スキル固有の実装委譲義務であり、変更箇所数や `[Codex Suggestion]` の有無・採否には依存しない。
 
 ```
 Task(subagent_type="{ルーティング解決結果}", prompt="""
