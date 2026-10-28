@@ -118,7 +118,7 @@
     },
     "image-generation": {
       "config/image-generation/image-generation.yaml": "2344a6b3abcd1beecb6f2c67204b7f3d02aacba50237af2c2926c03dc8b8d65e",
-      "agents/image-generator.md": "bd3c6431f900cccdc8f13e3d8cfc19fe7c1fd928bb71b731add9f675fb66c541",
+      "agents/image-generator.md": "d976b4dbcd21834c24f64ed05a65885e5e8b04c34c3884e8b177f40473c55a3d",
       "config/image-generation/styles/isometric.md": "821224582cf75c6148d683b67407bd5de6d9d7b208742de27ba5df5650a10861",
       "config/image-generation/styles/blueprint.md": "70d4d9843bff8b04dd1cbc80753ccd10b897e31def54a45c0764adbe480be8a8",
       "config/image-generation/styles/line-illust.md": "763b37dd0247fc2aa60a523424663e8bb671e4a00cbb9b220982922ed36e2983"

@@ -40,6 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`orchex install` / `setup` で `.codex/config.toml` と `.codex/skills/context-loader/` が配置されない問題を修正**: `codex-suggestions` を後から導入しても初回テンプレートが配置される（既存ファイルは上書きしない）。
 - **`image-generation`: `image_model` に sol 系モデル（`gpt-6.1-sol` 等）を指定すると、生成に成功しても失敗と報告される問題を修正**: 保存名が `exec-*.png` になるモデルでも生成した画像を受け取れる。
 - **`image-generation`: 並行して動く別の Codex セッションの画像を、自分の生成結果として取り違えることがある問題を修正**: 探索をその実行のセッションのフォルダに限定した。
+- **`image-generation`: 画像生成で sandbox を外す範囲を `codex exec` 単体の呼び出しに限定**: これまでは、プロンプトの組み立てや後片付けまで sandbox を外した 1 回の呼び出しで実行されることがあった。今はプロンプトをファイルに書き出してから渡し、それ以外のコマンドは sandbox ありで実行する。
 
 ## [0.3.6] - 2026-09-30
 
