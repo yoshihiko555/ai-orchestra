@@ -765,6 +765,19 @@ class TestSelectExpectedRoute:
         assert route == "codex"
         assert rule == "r1"
 
+    def test_agent_prediction_uses_request_sentences_only(self) -> None:
+        """agent-router と同じく、依頼の文だけでエージェントを予測する（ADR-20261029-062）。"""
+        config = {"agents": {"tester": {"tool": "codex"}}}
+        policy = {"default_route": "claude-direct", "rules": []}
+
+        route, rule = audit_prompt.select_expected_route("単体テストを追加しました", config, policy)
+        assert (route, rule) == ("claude-direct", None)
+
+        route, rule = audit_prompt.select_expected_route(
+            "単体テストを追加してください", config, policy
+        )
+        assert (route, rule) == ("codex", "agent:tester")
+
 
 # ---------------------------------------------------------------------------
 # main (from audit-route.py) — policy/config aliases の union 統合テスト

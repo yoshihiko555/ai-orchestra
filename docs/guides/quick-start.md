@@ -93,11 +93,11 @@ orchex status --project /path/to/project
 
 ### エージェントの呼び出し
 
-Claude Code の会話中に、タスクの種類に応じたキーワードを使うと `agent-router` hook が自動的にエージェントを提案する。
+Claude Code の会話中に、タスクの種類に応じたキーワードを依頼の文（「〜して」「〜してください」等）で使うと、`agent-router` hook が自動的にエージェントを提案する。報告や過去の作業の説明（「〜しました」）には提案しない。
 
 ```
-「この機能のタスクを分解して」     → planner が提案される
-「セキュリティをレビューして」     → security-reviewer が提案される
+「この機能をタスク分解して」       → planner が提案される
+「脆弱性を確認して」               → security-reviewer が提案される
 「Python で API を実装して」       → backend-python-dev が提案される
 「このライブラリについて調べて」   → researcher（Antigravity）が提案される
 ```
@@ -167,6 +167,16 @@ agents:
     tool: claude-direct    # Antigravity の代わりに Claude で処理
   debugger:
     tool: claude-direct    # Codex の代わりに Claude で処理
+```
+
+### エージェント提案を Jev で判定する（任意）
+
+API キー（環境変数 `TYPESAFE_API_KEY` か `~/.config/typesafe/api-key`）を置いて、次のように書くと、提案を TypeSafe の Jev で判定する。入力は既知の秘密情報・URL・メールアドレス等を伏せてから送るが、それ以外の本文はそのまま TypeSafe に送られる。使えないときはキーワード判定に戻る。送る内容・費用・遅れは [packages.md の「提案の判定」](../reference/packages.md#提案の判定routerengine) を参照。
+
+```yaml
+# .claude/config/agent-routing/cli-tools.local.yaml
+router:
+  engine: jev
 ```
 
 ### サブエージェントのデフォルトモデルを変更

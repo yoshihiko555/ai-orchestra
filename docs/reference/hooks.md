@@ -147,11 +147,12 @@ plan ファイルは読むだけで書き換えない（ADR-20260928-058）。�
 
 **処理フロー:**
 
-1. stdin から `{ "prompt": "..." }` を受け取る
+1. stdin から `{ "prompt": "..." }` を受け取る（ハーネスの通知は何もしない）
 2. `cli-tools.yaml`（+ `.local.yaml`）を読み込む
-3. プロンプト内のキーワードからエージェントを検出
+3. エージェントを検出する。`router.engine: keyword`（既定）は、入力のうち依頼の形をした文だけでキーワードを照合する。`router.engine: jev` は Jev の判定を使い、使えないときはキーワード判定に戻る（[packages.md の「提案の判定」](./packages.md#提案の判定routerengine)）
 4. `agents.{name}.tool` でルーティング先を決定
 5. CLI 呼び出しコマンド例と `Task(...)` 形式を stdout に出力
+6. project が audit を導入していれば、判定を監査ログに `routing_suggestion` として残す
 
 **出力例:**
 

@@ -46,9 +46,11 @@ ANTIGRAVITY_MARKERS: tuple[str, str] = ("Antigravity CLI", "agy -p")
 WARN_MARKER = "[WARN]"
 
 
-def _run_hook(prompt: str, cwd: str | None = None) -> dict:
+def _run_hook(prompt: str, cwd: str | None = None, session_id: str | None = None) -> dict:
     """agent-router の main() を呼び、stdout の JSON を返す。出力なしなら空辞書。"""
     input_data = {"prompt": prompt, "cwd": str(REPO_ROOT) if cwd is None else cwd}
+    if session_id is not None:
+        input_data["session_id"] = session_id
     captured = io.StringIO()
     stdin_backup = sys.stdin
     stdout_backup = sys.stdout
@@ -66,6 +68,16 @@ def _run_hook(prompt: str, cwd: str | None = None) -> dict:
     if not output:
         return {}
     return json.loads(output)
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """local.yaml で engine=jev の環境でも、テストから実際の送信をしない。"""
+
+    def refuse(*_args: object) -> tuple[int, bytes]:
+        raise OSError("network is disabled in tests")
+
+    monkeypatch.setattr(agent_router.jev_router, "_urllib_transport", refuse)
 
 
 def _additional_context(result: dict) -> str:
@@ -206,6 +218,34 @@ class TestFixtureInstalledAgents:
         ctx = _additional_context(_run_hook("このPDF見てください", cwd=str(tmp_path)))
 
         assert ('Task(subagent_type="researcher"' in ctx) == installed
+
+
+class TestFixtureRequestGate:
+    """依頼の形をした節だけで提案する（EV-34）。researcher へのフォールバックも同じ節を使う。"""
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "単体テストを追加しました。CI も通っています",
+            "I added unit tests for the parser yesterday.",
+            "> 単体テストを追加してください\n前回の依頼を貼りました",
+            "単体テストは後で追加してください",
+        ],
+    )
+    def test_non_request_prompt_produces_no_output(self, tmp_path: Path, prompt: str) -> None:
+        assert _run_hook(prompt, cwd=str(tmp_path)) == {}
+
+    def test_request_sentence_after_report_is_suggested(self, tmp_path: Path) -> None:
+        # 報告の節の「テスト」ではなく、依頼の節の「README」で決まる
+        ctx = _additional_context(
+            _run_hook("単体テストを追加しました。README を直してください", cwd=str(tmp_path))
+        )
+        assert 'Task(subagent_type="docs-writer"' in ctx
+
+    def test_researcher_fallback_uses_request_clauses(self, tmp_path: Path) -> None:
+        assert _run_hook("この PDF見ておきました。要点はメモ済みです", cwd=str(tmp_path)) == {}
+        ctx = _additional_context(_run_hook("リポジトリ全体を把握して", cwd=str(tmp_path)))
+        assert 'Task(subagent_type="researcher"' in ctx
 
 
 class TestFixtureCliSuggestionByTool:
@@ -444,7 +484,7 @@ class TestLiveConfigRoutingContract:
         _assert_markers_for_resolved_tool(ctx, self._resolved_tool("researcher"))
 
     def test_codebase_trigger_matches_resolved_tool(self) -> None:
-        ctx = _additional_context(_run_hook("コードベース全体を理解したい"))
+        ctx = _additional_context(_run_hook("コードベース全体を把握して"))
         assert "researcher" in ctx
         _assert_markers_for_resolved_tool(ctx, self._resolved_tool("researcher"))
 
@@ -485,3 +525,300 @@ class TestHookSkipConditions:
     def test_unrelated_prompt_produces_no_output(self) -> None:
         result = _run_hook("what is the weather today in tokyo")
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Jev ルーティング（EV-35〜EV-40）。送信は差し替えた transport で行い、ネットワークに出ない
+# ---------------------------------------------------------------------------
+
+TEST_KEY = "ts-test-0123456789abcdef"
+SESSION_ID = "jev-e2e-session"
+
+
+def _jev_answer(choice: str, p_none: float) -> tuple[int, bytes]:
+    body = {
+        "answers": {
+            "flat": {
+                "type": "choice",
+                "choice": choice,
+                "probabilities": {"none": p_none, choice: 1 - p_none},
+            }
+        },
+        "usage": {"input_tokens": 2900},
+    }
+    return 200, json.dumps(body).encode()
+
+
+class _Transport:
+    def __init__(self, response: tuple[int, bytes] | BaseException) -> None:
+        self.response = response
+        self.calls = 0
+
+    def __call__(self, *_args: object) -> tuple[int, bytes]:
+        self.calls += 1
+        if isinstance(self.response, BaseException):
+            raise self.response
+        return self.response
+
+
+@pytest.fixture
+def jev_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """engine=jev の project とキーを用意し、送信先を差し替える関数を返す。"""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("TYPESAFE_API_KEY", TEST_KEY)
+    _write_cli_tools_yaml(
+        tmp_path,
+        {"agents": {"tester": {"tool": "claude-direct"}, "debugger": {"tool": "claude-direct"}}},
+        local={"router": {"engine": "jev"}},
+    )
+
+    def use(response: tuple[int, bytes] | BaseException) -> _Transport:
+        transport = _Transport(response)
+        monkeypatch.setattr(agent_router.jev_router, "_urllib_transport", transport)
+        return transport
+
+    return use
+
+
+def _enable_audit(project_dir: Path, *, enabled: bool = True) -> None:
+    config_dir = project_dir / ".claude" / "config" / "audit"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    flags = {"features": {"route_audit": {"enabled": enabled}}}
+    (config_dir / "audit-flags.json").write_text(json.dumps(flags), encoding="utf-8")
+
+
+def _routing_events(project_dir: Path) -> list[dict]:
+    log = project_dir / ".claude" / "logs" / "audit" / "sessions" / f"{SESSION_ID}.jsonl"
+    if not log.exists():
+        return []
+    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    return [event for event in events if event["type"] == "routing_suggestion"]
+
+
+class TestFixtureJevRouting:
+    """engine=jev で Jev の判定を使う（EV-36）。"""
+
+    def test_jev_choice_is_suggested_in_existing_format(self, tmp_path: Path, jev_env) -> None:
+        jev_env(_jev_answer("tester", 0.32))
+        ctx = _additional_context(_run_hook("この関数を直したいです", cwd=str(tmp_path)))
+        assert "[Agent Routing] 'jev p_none=0.32' → `tester` (tool: claude-direct)" in ctx
+        assert 'Task(subagent_type="tester"' in ctx
+
+    def test_jev_declines_without_keyword_fallback(self, tmp_path: Path, jev_env) -> None:
+        jev_env(_jev_answer("tester", 0.7))
+        assert _run_hook("単体テストを追加してください", cwd=str(tmp_path)) == {}
+
+    def test_jev_none_choice_is_not_suggested(self, tmp_path: Path, jev_env) -> None:
+        jev_env(_jev_answer("none", 0.1))
+        assert _run_hook("単体テストを追加してください", cwd=str(tmp_path)) == {}
+
+    def test_jev_choice_not_installed_is_not_replaced(self, tmp_path: Path, jev_env) -> None:
+        """未導入のエージェントを選んだら、キーワード判定や次の候補に繰り下げない（EV-38）。"""
+        agents_dir = tmp_path / ".claude" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "debugger.md").write_text("# Debugger\n", encoding="utf-8")
+        jev_env(_jev_answer("tester", 0.1))
+        assert _run_hook("デバッグしてほしい", cwd=str(tmp_path)) == {}
+
+    def test_jev_choice_without_agents_directory_is_suggested(
+        self, tmp_path: Path, jev_env
+    ) -> None:
+        jev_env(_jev_answer("debugger", 0.1))
+        ctx = _additional_context(_run_hook("ログの原因を見てほしい", cwd=str(tmp_path)))
+        assert 'Task(subagent_type="debugger"' in ctx
+
+
+class TestFixtureJevFallback:
+    """Jev が使えないときは依頼形ゲート付きのキーワード判定になる（EV-37）。"""
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            TimeoutError("timed out"),
+            OSError("unreachable"),
+            (401, b""),
+            (503, b""),
+            (200, b"not json"),
+        ],
+    )
+    def test_jev_failure_falls_back_to_keyword(
+        self, tmp_path: Path, jev_env, capsys: pytest.CaptureFixture[str], response
+    ) -> None:
+        transport = jev_env(response)
+        ctx = _additional_context(_run_hook("単体テストを追加してください", cwd=str(tmp_path)))
+        assert transport.calls == 1
+        assert "[Agent Routing] 'テスト' → `tester`" in ctx
+        assert TEST_KEY not in ctx
+        assert TEST_KEY not in capsys.readouterr().err
+
+    def test_jev_fallback_keeps_request_gate(self, tmp_path: Path, jev_env) -> None:
+        jev_env((503, b""))
+        assert _run_hook("単体テストを追加しました", cwd=str(tmp_path)) == {}
+
+    def test_jev_without_key_uses_keyword(
+        self, tmp_path: Path, jev_env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TYPESAFE_API_KEY")
+        transport = jev_env(_jev_answer("debugger", 0.1))
+        ctx = _additional_context(_run_hook("単体テストを追加してください", cwd=str(tmp_path)))
+        assert transport.calls == 0
+        assert 'Task(subagent_type="tester"' in ctx
+
+    def test_jev_without_masking_uses_keyword(
+        self, tmp_path: Path, jev_env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(agent_router.jev_router, "load_mask_secrets", lambda: None)
+        transport = jev_env(_jev_answer("debugger", 0.1))
+        ctx = _additional_context(_run_hook("単体テストを追加してください", cwd=str(tmp_path)))
+        assert transport.calls == 0
+        assert 'Task(subagent_type="tester"' in ctx
+
+    def test_jev_not_called_for_default_keyword_engine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TYPESAFE_API_KEY", TEST_KEY)
+        transport = _Transport(_jev_answer("debugger", 0.1))
+        monkeypatch.setattr(agent_router.jev_router, "_urllib_transport", transport)
+        _write_cli_tools_yaml(tmp_path, {"agents": {"tester": {"tool": "claude-direct"}}})
+        ctx = _additional_context(_run_hook("単体テストを追加してください", cwd=str(tmp_path)))
+        assert transport.calls == 0
+        assert 'Task(subagent_type="tester"' in ctx
+
+    def test_jev_slash_command_is_not_sent(self, tmp_path: Path, jev_env) -> None:
+        transport = jev_env(_jev_answer("debugger", 0.1))
+        _run_hook("/review 単体テストを追加してください", cwd=str(tmp_path))
+        assert transport.calls == 0
+
+
+class TestFixtureJevRecord:
+    """判定を audit の監査ログに残す（EV-40 / audit EV-29・EV-30）。"""
+
+    def test_jev_record_ok_judgment(self, tmp_path: Path, jev_env) -> None:
+        _enable_audit(tmp_path)
+        jev_env(_jev_answer("tester", 0.32))
+        _run_hook("この関数を直したいです", cwd=str(tmp_path), session_id=SESSION_ID)
+
+        events = _routing_events(tmp_path)
+        assert len(events) == 1
+        record = events[0]["data"]
+        assert record["engine"] == "jev"
+        assert record["status"] == "ok"
+        assert record["decided_by"] == "jev"
+        assert record["config_id"] == "r3-flat-B-v3"
+        assert record["model"] == "jev-1.14.0"
+        assert record["request_hash"] == "5ae693c78f47091d"
+        assert record["probabilities"] == {"none": 0.32, "tester": pytest.approx(0.68)}
+        assert record["p_none"] == 0.32
+        assert record["choice"] == "tester"
+        assert record["suggested"] == "tester"
+        assert record["installed"] is True
+        assert record["keyword"] == {"agent": "none", "trigger": None}
+        assert isinstance(record["latency_ms"], int)
+        assert record["input_tokens"] == 2900
+
+    def test_jev_record_fallback_and_keyword_counterfactual(self, tmp_path: Path, jev_env) -> None:
+        _enable_audit(tmp_path)
+        jev_env((503, b""))
+        _run_hook("単体テストを追加してください", cwd=str(tmp_path), session_id=SESSION_ID)
+
+        record = _routing_events(tmp_path)[0]["data"]
+        assert record["status"] == "http_5xx"
+        assert record["decided_by"] == "keyword"
+        assert record["suggested"] == "tester"
+        assert record["keyword"] == {"agent": "tester", "trigger": "テスト"}
+        assert record["probabilities"] is None
+
+    def test_jev_record_never_contains_key_or_prompt(self, tmp_path: Path, jev_env) -> None:
+        _enable_audit(tmp_path)
+        jev_env(OSError(f"failed with Bearer {TEST_KEY}"))
+        _run_hook(
+            "秘密のプロジェクト名を含む依頼を直して", cwd=str(tmp_path), session_id=SESSION_ID
+        )
+
+        log = tmp_path / ".claude" / "logs" / "audit" / "sessions" / f"{SESSION_ID}.jsonl"
+        text = log.read_text(encoding="utf-8")
+        assert TEST_KEY not in text
+        assert "秘密のプロジェクト名" not in text
+        assert _routing_events(tmp_path)[0]["data"]["status"] == "network_error"
+
+    def test_jev_record_keyword_engine(self, tmp_path: Path) -> None:
+        _enable_audit(tmp_path)
+        _write_cli_tools_yaml(tmp_path, {"agents": {"tester": {"tool": "claude-direct"}}})
+        _run_hook("単体テストを追加してください", cwd=str(tmp_path), session_id=SESSION_ID)
+
+        record = _routing_events(tmp_path)[0]["data"]
+        assert record["engine"] == "keyword"
+        assert record["status"] is None
+        assert record["suggested"] == "tester"
+
+    def test_jev_record_slash_command_status(self, tmp_path: Path, jev_env) -> None:
+        _enable_audit(tmp_path)
+        jev_env(_jev_answer("debugger", 0.1))
+        _run_hook("/review 単体テストを追加してください", cwd=str(tmp_path), session_id=SESSION_ID)
+        assert _routing_events(tmp_path)[0]["data"]["status"] == "slash_command"
+
+    def test_jev_record_skipped_without_audit(self, tmp_path: Path, jev_env) -> None:
+        jev_env(_jev_answer("tester", 0.32))
+        ctx = _additional_context(
+            _run_hook("この関数を直したいです", cwd=str(tmp_path), session_id=SESSION_ID)
+        )
+        assert 'Task(subagent_type="tester"' in ctx
+        assert not (tmp_path / ".claude" / "logs").exists()
+
+    def test_jev_record_skipped_when_route_audit_disabled(self, tmp_path: Path, jev_env) -> None:
+        _enable_audit(tmp_path, enabled=False)
+        jev_env(_jev_answer("tester", 0.32))
+        _run_hook("この関数を直したいです", cwd=str(tmp_path), session_id=SESSION_ID)
+        assert _routing_events(tmp_path) == []
+
+    def test_jev_record_failure_keeps_suggestion(
+        self, tmp_path: Path, jev_env, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import event_logger
+
+        def broken(*_args: object, **_kwargs: object) -> None:
+            raise ValueError("Unknown event_type: routing_suggestion")
+
+        monkeypatch.setattr(event_logger, "emit_event", broken)
+        _enable_audit(tmp_path)
+        jev_env(_jev_answer("tester", 0.32))
+        ctx = _additional_context(
+            _run_hook("この関数を直したいです", cwd=str(tmp_path), session_id=SESSION_ID)
+        )
+        assert 'Task(subagent_type="tester"' in ctx
+
+
+class TestFixtureJevReviewFixes:
+    """レビュー対応（EV-37 / EV-40）。"""
+
+    def test_jev_unencodable_prompt_falls_back_and_records(self, tmp_path: Path, jev_env) -> None:
+        _enable_audit(tmp_path)
+        transport = jev_env(_jev_answer("debugger", 0.1))
+        ctx = _additional_context(
+            _run_hook(
+                "単体テストを追加してください \ud800", cwd=str(tmp_path), session_id=SESSION_ID
+            )
+        )
+        assert transport.calls == 0
+        assert 'Task(subagent_type="tester"' in ctx
+        assert _routing_events(tmp_path)[0]["data"]["status"] == "no_masking"
+
+    @pytest.mark.parametrize(
+        "flags",
+        [{"features": ["route_audit"]}, {"features": {"route_audit": True}}],
+    )
+    def test_jev_record_malformed_audit_flags_keeps_suggestion(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], flags: object
+    ) -> None:
+        config_dir = tmp_path / ".claude" / "config" / "audit"
+        config_dir.mkdir(parents=True)
+        (config_dir / "audit-flags.json").write_text(json.dumps(flags), encoding="utf-8")
+        _write_cli_tools_yaml(tmp_path, {"agents": {"tester": {"tool": "claude-direct"}}})
+
+        ctx = _additional_context(
+            _run_hook("単体テストを追加してください", cwd=str(tmp_path), session_id=SESSION_ID)
+        )
+
+        assert 'Task(subagent_type="tester"' in ctx
+        assert "Hook error" not in capsys.readouterr().err
+        assert _routing_events(tmp_path) == []

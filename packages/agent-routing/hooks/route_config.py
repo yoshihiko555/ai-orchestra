@@ -24,10 +24,12 @@ from hook_common import (  # noqa: E402, F401
     DEFAULT_CODEX_SANDBOX_ANALYSIS,
     TASK_NOTIFICATION_TAG,
     get_agent_tool,
+    has_project_config,
     is_cli_enabled,
     is_harness_prompt,
     is_task_notification,
     load_cli_tools_config,
+    load_package_config,
     resolve_agent_routing,
     resolve_agent_sandbox,
 )
@@ -188,6 +190,82 @@ RESEARCHER_FALLBACK_TRIGGERS: dict[str, list[str]] = {
     "ja": ["PDF見て", "動画分析", "画像解析", "コードベース全体", "リポジトリ全体"],
     "en": ["analyze pdf", "analyze video", "analyze image", "entire codebase"],
 }
+
+# 依頼の形（ADR-20261029-062）。キーワード判定はこの形を含む節だけでトリガーを照合する
+_REQUEST_VERBS_EN = (
+    r"implement|investigate|research|debug|review|write|design|compare|fix|run|add|create|"
+    r"build|plan|refactor|optimize|test|document|analyze|update"
+)
+REQUEST_PATTERN = re.compile(
+    r"(?:して|作って|書いて|直して|調べて|深掘りして|見直して|比べて|"
+    r"決めて|確認して|探して|挙げて|考えて|分解して|見て)"
+    r"(?:ください|ほしい|欲しい|いただきたい|もらいたい|もらえますか|"
+    r"いただけますか|いきましょう|[。.!！?？\n]|$)"
+    r"|(?:調査|実装|設計|比較|検討|作成|修正|レビュー)(?:を)?したい"
+    r"|比較(?:も|が)(?:ほしい|欲しい)"
+    r"|(?:^\s*|\bplease\s+|\b(?:can|could|would)\s+you\s+|"
+    r"\bI\s+(?:want|need)\s+to\s+)"
+    rf"(?:{_REQUEST_VERBS_EN})\b",
+    re.I,
+)
+# 依頼の形でも、今すぐの依頼ではない節（完了・先送り・否定）
+NONCURRENT_PATTERN = re.compile(
+    r"後ほど|(?<![一-鿿])後で|そのうち|済み|してもらった|しておきました|"
+    r"してほしいわけ.{0,5}ない|しなくて(?:も)?いい|"
+    r"資料.{0,12}ありますか|未実装かな|なかったっけ|"
+    r"\b(?:later|already)\b|"
+    rf"\b(?:do not|don.t)\s+(?:{_REQUEST_VERBS_EN})\b",
+    re.I,
+)
+_FENCED_CODE_RE = re.compile(r"(?ms)^[ \t]*(\x60{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*$|\Z)")
+_PASTED_OPEN_TAG_RE = re.compile(r"<pasted_content\b[^>]{0,256}>", re.I)
+_PASTED_CLOSE_TAG_RE = re.compile(r"</pasted_content[^>]{0,256}>", re.I)
+_PASTED_TAG_RE = re.compile(r"</?pasted_content[^>]{0,256}>")
+# 行頭の空白・タブの後の `>`。改行はまたがない（空行が続く入力で二乗時間にならないため）
+_QUOTED_LINE_RE = re.compile(r"(?m)^[ \t]*>.*$")
+_URL_RE = re.compile(r"https?://\S+")
+_CLAUSE_SPLIT_RE = re.compile(r"[。！？!?\n]|\.(?=\s)|(?=後ほど|(?<![一-鿿])後で|そのうち)")
+
+
+def _remove_pasted_blocks(prompt: str) -> str:
+    """閉じタグがない場合は再探索せず、残りの入力をそのまま残す。"""
+    parts: list[str] = []
+    cursor = 0
+    while opening := _PASTED_OPEN_TAG_RE.search(prompt, cursor):
+        closing = _PASTED_CLOSE_TAG_RE.search(prompt, opening.end())
+        if closing is None:
+            break
+        parts.append(prompt[cursor : opening.start()])
+        cursor = closing.end()
+    parts.append(prompt[cursor:])
+    return "".join(parts)
+
+
+def _strip_quoted_text(prompt: str) -> str:
+    """コードブロック・引用行・URL と、依頼が外側にあるときの貼り付けを取り除く。"""
+    prompt = _FENCED_CODE_RE.sub("", prompt)
+    outer = _remove_pasted_blocks(prompt)
+    if REQUEST_PATTERN.search(outer):
+        prompt = outer
+    else:
+        # 貼り付けだけの入力は、貼り付けた本文が依頼そのものであることがある
+        prompt = _PASTED_TAG_RE.sub("", prompt)
+    prompt = _QUOTED_LINE_RE.sub("", prompt)
+    return _URL_RE.sub("", prompt)
+
+
+def _routing_request_clauses(prompt: str) -> list[str]:
+    """入力から、今すぐの依頼の形をした節だけを返す。
+
+    `detect_agent` 自体は節に分けない。loop-harness は依頼の形をしていない Issue の
+    タイトルとラベルを渡すため、ユーザー入力を扱う呼び出し側がこの節を渡す。
+    """
+    clauses = _CLAUSE_SPLIT_RE.split(_strip_quoted_text(prompt))
+    return [
+        clause
+        for clause in clauses
+        if REQUEST_PATTERN.search(clause) and not NONCURRENT_PATTERN.search(clause)
+    ]
 
 
 def _project_dir_from_data(data: dict) -> str:

@@ -204,3 +204,29 @@ class TestCalcEventDistribution:
         ]
         result = calc_event_distribution(events)
         assert result["unknown"] == 3
+
+
+class TestRoutingSuggestionEvents:
+    """routing_suggestion を含むログでも既存の集計値が変わらない（audit EV-30）。"""
+
+    def test_routing_suggestion_does_not_change_existing_stats(
+        self, sample_events: list[dict]
+    ) -> None:
+        routing = {
+            "type": "routing_suggestion",
+            "sid": "s1",
+            "data": {"engine": "jev", "status": "ok", "suggested": "tester", "p_none": 0.2},
+        }
+        with_routing = [*sample_events, routing]
+
+        for calc in (
+            calc_session_stats,
+            calc_route_stats,
+            calc_cli_stats,
+            calc_subagent_stats,
+            calc_quality_stats,
+        ):
+            assert calc(with_routing) == calc(sample_events)
+        distribution = calc_event_distribution(with_routing)
+        assert distribution.pop("routing_suggestion") == 1
+        assert distribution == calc_event_distribution(sample_events)

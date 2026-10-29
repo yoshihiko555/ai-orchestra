@@ -68,6 +68,22 @@ antigravity:
 # 読み込み時に antigravity へ正規化される（enabled のみ反映、model/flags は
 # Gemini CLI 固有値のため無視）。agents.*.tool: gemini も antigravity に読み替える。
 
+# エージェント提案（agent-router.py）の判定エンジン（ADR-20261029-062）
+router:
+  # keyword: 依頼の形をした文だけでトリガー語を照合する（既定。外部へは送らない）
+  # jev: TypeSafe の Jev で判定する。.local.yaml で jev にし、API キー（環境変数
+  #   TYPESAFE_API_KEY か ~/.config/typesafe/api-key）があるときだけ使う。既知の秘密情報・URL 等を
+  #   伏せて最大 1200 文字を api.typesafe.ai に送る（それ以外の本文はそのまま送られる。1 件あたり約 $0.0001、遅れは p50 約 0.2 秒）。
+  #   使えないとき（キー無し・タイムアウト・HTTP エラー等）はキーワード判定に戻る
+  engine: keyword
+  jev:
+    # 送信内容（指示文・判定基準）はこのモデルで評価した r3-flat-B-v3 に固定している
+    model: jev-1.14.0
+    # 壁時計での待ち時間の上限（ミリ秒）。超えたらキーワード判定に戻る
+    timeout_ms: 500
+    # 委譲不要（none）の確率がこの値を超えたら提案しない
+    max_p_none: 0.5
+
 # Claude Code サブエージェントの設定
 subagent:
   # 全エージェント .md のフロントマター model に適用されるデフォルトモデル

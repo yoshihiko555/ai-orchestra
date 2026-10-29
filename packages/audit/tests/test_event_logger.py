@@ -107,6 +107,24 @@ class TestEmitEvent:
             "loop_stop",
         } <= event_logger.EVENT_TYPES
 
+    def test_routing_suggestion_is_written(self, tmp_path: object) -> None:
+        """agent-router が記録する routing_suggestion を書き出せる（EV-29）。"""
+        project_dir = str(tmp_path)
+        os.makedirs(os.path.join(project_dir, ".claude"), exist_ok=True)
+
+        event_logger.emit_event(
+            "routing_suggestion",
+            {"engine": "jev", "status": "ok", "suggested": "tester"},
+            session_id="s1",
+            project_dir=project_dir,
+        )
+
+        path = event_logger.get_session_log_path("s1", project_dir)
+        with open(path, encoding="utf-8") as f:
+            record = json.loads(f.readline())
+        assert record["type"] == "routing_suggestion"
+        assert record["data"]["suggested"] == "tester"
+
     def test_no_session_id_returns_record_without_write(self, tmp_path: object) -> None:
         """session_id が空の場合、書き込みせずにレコードを返すことを確認する。"""
         record = event_logger.emit_event("session_start", {"packages": []})
