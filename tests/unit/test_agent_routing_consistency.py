@@ -7,6 +7,7 @@
 - build_aliases が全エージェントの tool 種別に合った alias を生成する
 - エージェント .md のフォールバックデフォルトが cli-tools.yaml と矛盾しない
 - manifest.json の agents 配列と docs/reference/packages.md のエージェント一覧表が一致する（EV-26）
+- CLI にルーティングするエージェントの定義が Bash ツールを持つ（EV-33）
 """
 
 from __future__ import annotations
@@ -162,6 +163,28 @@ class TestBuildAliasesWithRealConfig:
 
 # 各 .md から「フォールバックデフォルト」のセクションを解析する
 _FALLBACK_TOOL_RE = re.compile(r"^-\s*Tool:\s*(.+)", re.MULTILINE)
+
+
+_TOOLS_LINE_RE = re.compile(r"^tools:\s*(.+)$", re.MULTILINE)
+_CLI_TOOLS = {"codex", "antigravity", "auto"}
+
+
+class TestCliRoutedAgentsHaveBash:
+    """EV-33: Codex / Antigravity は Bash から呼ぶため、CLI にルーティングするエージェントは Bash を持つ。"""
+
+    @pytest.mark.parametrize("agent_name", sorted(_AGENTS_IN_CONFIG))
+    def test_cli_routed_agent_can_run_bash(self, agent_name: str) -> None:
+        if route_config.get_agent_tool(agent_name, _REAL_CONFIG) not in _CLI_TOOLS:
+            return
+        content = _agent_md_path(agent_name).read_text(encoding="utf-8")
+        frontmatter = content.split("---", 2)[1] if content.startswith("---") else ""
+        match = _TOOLS_LINE_RE.search(frontmatter)
+        if not match:
+            return  # tools を省略した定義は全ツールを使える
+        tools = {tool.strip() for tool in match.group(1).split(",")}
+        assert "Bash" in tools, (
+            f"{agent_name} は CLI にルーティングされるが、tools に Bash がない: {sorted(tools)}"
+        )
 
 
 class TestAgentMdFallbackConsistency:
