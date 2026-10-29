@@ -6,7 +6,11 @@
   "hooks": {
     "UserPromptSubmit": ["agent-router.py"]
   },
-  "files": ["hooks/agent-router.py", "hooks/route_config.py"],
+  "files": [
+    "hooks/agent-router.py",
+    "hooks/jev_router.py",
+    "hooks/route_config.py"
+  ],
   "skills": [],
   "agents": [
     "agents/adversarial-reviewer.md",

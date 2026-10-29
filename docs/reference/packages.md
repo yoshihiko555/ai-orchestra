@@ -96,10 +96,57 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | ------ | ------------------------- | -------------------------------------------------------- |
 | hook   | `agent-router.py`         | UserPromptSubmit: プロンプトからエージェントを検出し提案 |
 | util   | `route_config.py`         | ルーティング設定読み込み・エージェント検出ロジック       |
+| util   | `jev_router.py`           | Jev による判定（`router.engine: jev` のときだけ使う）    |
 | agents | 28 定義                   | planner, architect, code-reviewer, general-purpose 等    |
 | rule   | `orchestra-usage.md`      | AI Orchestra 使用ガイド                                  |
 | rule   | `agent-routing-policy.md` | エージェントルーティングポリシー                         |
 | config | `cli-tools.yaml`          | モデル名・サンドボックス・フラグの一元管理               |
+
+### 提案の判定（`router.engine`）
+
+`agent-router.py` がどのエージェントを提案するかは `cli-tools.yaml` の `router.engine` で決まる（ADR-20261029-062）。
+
+| engine              | 判定                                                                                                                                                                                                                          |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `keyword`（既定）   | 入力のうち依頼の形をした文（「〜して」「〜してください」「please / can you + 動詞」等）だけでトリガー語を照合する。報告・過去形・否定・先送り・引用（`>` の行、コードブロック）だけの入力には提案しない。この絞り込みを止める設定は無い。外部へは何も送らない |
+| `jev`（任意で有効） | TypeSafe の判定モデル Jev に入力を送り、委譲すべきエージェントを判定させる。委譲不要（`none`）の確率が `max_p_none` を超えたら提案しない。Jev が使えないときは `keyword` の判定に戻る                                         |
+
+**Jev を有効にする手順:**
+
+1. TypeSafe の API キーを、環境変数 `TYPESAFE_API_KEY` か `~/.config/typesafe/api-key`（1 行）に置く。`.env` は読まない。キーは出力・ログに出さない
+2. `.claude/config/agent-routing/cli-tools.local.yaml` に次を書く
+
+   ```yaml
+   router:
+     engine: jev
+   ```
+
+3. 入力すると、``[Agent Routing] 'jev p_none=0.32' → `tester` (tool: ...)`` の形で提案が出る。`p_none` は Jev が返した `probabilities.none`（委譲不要の確率）で、低いほど委譲すべきという判定。判定は audit の監査ログ（`routing_suggestion`）に残る（`orchex run audit log-viewer -- --type routing_suggestion` で確認できる）
+
+**何をどこへ送るか:** 人の入力 1 件だけを `https://api.typesafe.ai/v1/systemone` に送る。会話の文脈とハーネスの通知は送らない。`/` で始まるスラッシュコマンドも送らず、`keyword` の判定で決める。送る前に、貼り付けタグを外し、`mask_secrets`（audit パッケージ）で API キー等を伏せ、URL・メールアドレス・ホームディレクトリのパスを置き換え、1200 文字で切る。マスキング関数を読み込めないとき、送信内容を組み立てられないとき（壊れた文字を含む入力等）は送らない。
+
+**マスキングの限界:** 伏せるのは既知の形式（API キー・トークン・パスワード等のパターン、URL、メールアドレス、ホームディレクトリのパス）だけで、機密情報の除去は保証しない。送る範囲（先頭 1200 文字）のそれ以外の本文（社内の名称、顧客名、コード片、未公開の設計など）は、そのまま TypeSafe に送られる。こうした内容を入力するプロジェクトでは `keyword` のままにする。
+
+**費用と遅れ:** 1 件あたり約 $0.0001（入力 p50 約 2.9k トークン）。hook は同期で動くので、すべての人の入力に p50 約 0.2 秒、最悪 `timeout_ms`（既定 500ms）の待ち時間が加わる。待ち時間は判定の開始から数え、マスキング等の送信前の準備も含む。
+
+**キーワード判定に戻る場合:** キーが無い、`timeout_ms` を超えた、HTTP エラー、接続できない、応答の形が違う（リダイレクトは追従せず、これに含める）、マスキング関数が無い・送信内容を組み立てられない。hook は止まらない。Jev が「委譲不要」と判定したとき、選んだエージェントが `.claude/agents` に無いときは、キーワード判定には戻らず何も提案しない。
+
+| キー                    | 既定値       | 説明                                                                   |
+| ----------------------- | ------------ | ---------------------------------------------------------------------- |
+| `router.engine`         | `keyword`    | `keyword` / `jev`。それ以外の値は `keyword` として扱う                 |
+| `router.jev.model`      | `jev-1.14.0` | Jev のモデル。送信内容（指示文・判定基準）はこのモデルで評価したもの。上書きすると精度は未評価になる。記録の `config_id` は変わらないので、`model` と `request_hash` で見分ける |
+| `router.jev.timeout_ms` | `500`        | 壁時計での待ち時間の上限（ミリ秒）。上限は設けていないが、大きくするとすべての入力の待ち時間がその分延びうる |
+| `router.jev.max_p_none` | `0.5`        | 委譲不要の確率がこの値を超えたら提案しない（誤提案を減らす側に寄せる） |
+
+**提案が出ないとき:** audit を導入していれば、`orchex run audit log-viewer -- --type routing_suggestion --raw` で判定の記録を見て理由を確かめる（audit が無いプロジェクトでは記録は残らない）。
+
+| 記録の内容 | 意味 |
+| --- | --- |
+| `status: ok`、`choice: none` または `p_none` が `max_p_none` を超える | Jev が委譲不要と判定した |
+| `status: ok`、`installed: false` | Jev が選んだエージェントが `.claude/agents` に無い |
+| `status` が `no_key` / `timeout` / `http_4xx` / `http_5xx` / `network_error` / `invalid_response` / `no_masking` | Jev を使えず、キーワード判定に戻った（キーが無い / 時間切れ / 拒否（キーが無効等）/ サービス側のエラー / 接続できない / 応答の形が違う・リダイレクト / マスキングできない） |
+| `status: slash_command` | スラッシュコマンドなので送らず、キーワード判定で決めた |
+| `decided_by: keyword`、`keyword.agent: none` | キーワード判定でも提案が無い。依頼の文が無いのか、トリガー語が無いのかは記録では区別できない |
 
 ### エージェント一覧
 

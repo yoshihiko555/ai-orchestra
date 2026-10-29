@@ -37,7 +37,7 @@ from hook_common import (
     read_hook_input,
     safe_hook_execution,
 )
-from route_config import detect_agent, get_agent_tool, load_config
+from route_config import _routing_request_clauses, detect_agent, get_agent_tool, load_config
 from secret_masking import mask_secrets as _mask_secrets
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,8 @@ def select_expected_route(prompt: str, config: dict, policy: dict) -> tuple[str,
         (expected_route, matched_rule_id) のタプル。ルール非マッチ時は
         matched_rule_id は None。
     """
-    agent, _trigger = detect_agent(prompt)
+    # agent-router と同じく依頼の形をした節だけで照合する（ADR-20261029-062）
+    agent, _trigger = detect_agent("\n".join(_routing_request_clauses(prompt)))
     if agent:
         tool = get_agent_tool(agent, config)
         return tool, f"agent:{agent}"

@@ -74,3 +74,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20261027-059 | Plans.md を Project ごとの plan ファイル `.claude/plans/<slug>.md` に分割する（ADR-056 / 058 の部分 supersede）                  | accepted   | 2026-10-27 |
 | ADR-20261028-060 | 必須 routing と任意の CLI 相談助言を分離し、提案条件・通知範囲を絞る                                                               | accepted   | 2026-10-28 |
 | ADR-20261028-061 | agency-agents のエージェントを commit 固定の vendor で取り込み、upstream.yaml で付け外しする                                       | accepted   | 2026-10-28 |
+| ADR-20261029-062 | エージェント提案に任意の Jev 判定を入れ、キーワード判定は依頼の文に限定して残す | accepted | 2026-10-29 |

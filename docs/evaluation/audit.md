@@ -9,6 +9,8 @@
 > Issue #153（config 分離。ADR-20260926-055）で `quality_gate` 系の機能フラグを `quality-gates.json` へ分離した。EV-25 は新規追加で人間レビュー未実施（最終レビュー日は更新していない）。
 >
 > 2026-10-28 のルーティング監査（routing-audit 一回目）で見つかった記録の欠落に対応して EV-26〜EV-28 を新設した。人間レビュー未実施（最終レビュー日は更新していない）。
+>
+> 2026-10-29 のルーター精度改善（ADR-20261029-062）で、ルーターの判定を記録する `routing_suggestion` イベントの EV-29 / EV-30 を新設した。EV-20 の型の語彙にも `routing_suggestion` を足した。人間レビュー待ち（本 PR。最終レビュー日は更新していない）。
 
 ## 1. 責務定義
 
@@ -70,7 +72,7 @@ audit パッケージは、Claude Code セッション中のルーティング�
 - [ ] EV-19（正常 / must）: CLI ツール型 - コマンド契約: `orchex run audit dashboard / dashboard-html / log-viewer / kpi-report / analyze-cli-usage` の 5 コマンドが提供され、記載されたオプション（`--session` / `--type` / `--trace` / `--limit` / `--raw` / `--days` / `--output` / `-o` / `--format`）が文書通りに機能する — 根拠: packages/audit/README.md（スクリプト詳細節）
 - 入力バリデーション: 存在しない session-id・破損した JSONL 行に対する期待挙動が未文書化（情報源に明記なし。仕様確定・文書化はパッケージ別ギャップ Issue で追跡）。EV 化は見送る
 - N/A: CLI ツール型 - 破壊的操作の安全策 — audit のスクリプトはログ読み取り専用の分析・レポート生成ツールであり、JSONL ソースデータを変更・削除する操作を持たない（`-o` 指定時の出力ファイル上書きのみで、ログ自体への影響はない） — 根拠: packages/audit/README.md（各スクリプトの説明はすべて「表示」「生成」で、削除・変更系コマンドの記載がない）
-- [ ] EV-20（境界 / should）: CLI ツール型 - 出力の安定性: JSONL の `type` フィールドは `session_start` / `session_end` / `prompt` / `route_decision` / `cli_call` / `subagent_start` / `subagent_end` のいずれかで安定しており、`log-viewer --raw` や機械可読出力はこの語彙に依存する — 根拠: packages/audit/README.md（フック一覧の「記録内容」列）
+- [ ] EV-20（境界 / should）: CLI ツール型 - 出力の安定性: JSONL の `type` フィールドは `session_start` / `session_end` / `prompt` / `route_decision` / `cli_call` / `subagent_start` / `subagent_end` / `routing_suggestion`（ADR-20261029-062）のいずれかで安定しており、`log-viewer --raw` や機械可読出力はこの語彙に依存する — 根拠: packages/audit/README.md（フック一覧の「記録内容」列）
 - 設定レイヤリング: EV-11 / EV-12 参照（スクリプトのデフォルト値も `audit-flags.json` + `*.local.json` の階層に従う）
 - [ ] EV-21（正常 / must）: ログ出力先の root worktree 集約とフォールバック — worktree セッションから書き込まれるイベントログ（`session_start` 等）は `_resolve_log_root`（core `hook_common.resolve_log_root` への委譲）により root worktree の `.claude/logs/audit/` に集約される。root worktree が解決できない場合、または root に `.claude/` が存在しない場合は、`_resolve_project_dir`（`.claude/` を持つ親の遡り探索）で解決した project_dir へフォールバックする — 根拠: docs/adr/ADR-20260728-046.md
 - [ ] EV-22（異常 / must）: root 解決の堅牢性の core 委譲 — `_resolve_root_worktree` / `_resolve_log_root` は audit 固有の git 解決ロジックを持たず core（`hook_common.resolve_root_worktree` / `resolve_log_root`）へ委譲するため、`git init --separate-git-dir` 構成の誤検出、ambient な `GIT_DIR`/`GIT_WORK_TREE` 環境変数汚染、非 UTF-8 パスでの `UnicodeDecodeError` があっても誤ったログ出力先を解決しない（core 側の防御をそのまま享受する） — 根拠: docs/adr/ADR-20260728-046.md + 実装挙動（event_logger.py が hook_common から import）
@@ -80,6 +82,8 @@ audit パッケージは、Claude Code セッション中のルーティング�
 - [ ] EV-26（境界 / must）: `prompt` イベントは `input_kind`（`human` / `slash` / `harness`）を持つ。`harness` は `<task-notification>` / `<agent-message>` で始まる非ユーザー入力（判定は `hook_common.is_harness_prompt`）で、本文のキーワードで期待ルートを予測せず（`matched_rule` は null）、同じセッションの直前のトレースの期待ルートとスキルを引き継ぐ（別セッションなら既定ルート） — 根拠: routing-audit 一回目の発見事項（audit が人以外の入力を人の入力として記録する）— 自動テスト: `packages/audit/tests/test_audit_hooks.py::TestClassifyPrompt`, `::TestPromptInputKind`
 - [ ] EV-27（正常 / should）: `subagent_start` の `ctx.skill` に、同じセッションで起動中のスキル名を記録する。スキル名は `/name` で始まる入力と Skill ツールの実行でトレースに書かれ、`/` で始まらない人の入力で空に戻る。別セッションのトレースのスキルは使わない — 根拠: routing-audit 一回目の発見事項（サブエージェントの起動ログに起動元スキルがない）— 自動テスト: `packages/audit/tests/test_audit_hooks.py::TestRouteSkillUpdatesTrace`, `::TestSubagentStartCtxSkill`
 - [ ] EV-28（境界 / must）: SubagentStop の入力の `agent_type` が空なら、`subagent_start` で保存した種別で補う。対応する `subagent_start` が無く `agent_type` も空の終了（SubagentStart を伴わない内部エージェント。prompt suggestion 等）は `subagent_end` として記録しない — 根拠: routing-audit 一回目の発見事項（終了イベントの種別が空になる）+ Claude Code 公式仕様（hooks の SubagentStop）— 自動テスト: `packages/audit/tests/test_audit_hooks.py::TestSubagentEndAgentType`
+- [ ] EV-29（正常 / must）: `routing_suggestion` イベント — `EVENT_TYPES` に `routing_suggestion` を含む。記録するのは agent-routing の `agent-router.py`（UserPromptSubmit）で、ルーターの判定 1 件ごとに 1 件。`data` は `engine` / `status` / `decided_by` / `config_id` / `model` / `request_hash` / `probabilities` / `p_none` / `choice` / `suggested` / `installed` / `keyword` / `latency_ms` / `input_tokens` を持つ（意味は docs/evaluation/agent-routing.md EV-40）。入力の本文・API キー・Jev の応答本文・例外文は記録しない。`prompt` イベントとは同じ `sid` と `ts` の近さで突き合わせる（hook の実行順が決まっていないため `tid` は共有しない）。project が audit を導入していない（`audit-flags.json` も `.local.json` も無い）とき、`route_audit.enabled: false` のときは記録しない（EV-08 と揃える） — 根拠: ADR-20261029-062 — 自動テスト: `packages/agent-routing/tests/test_agent_router_e2e.py -k jev_record`、`packages/audit/tests/test_event_logger.py -k routing_suggestion`
+- [ ] EV-30（異常 / must）: `routing_suggestion` の記録に失敗しても（audit の hook を読み込めない、書き込みに失敗する、古い audit で未知のイベント型として拒否される）、agent-router は提案を変えずに exit 0 で終わる。`routing_suggestion` を含むログでも `dashboard_stats.py` / `kpi-report.py` / `log-viewer.py` は例外を出さず、イベントの総数と型ごとの件数に 1 件として数える以外の既存の集計値は変わらない。`log-viewer.py` は 1 行に engine・status・提案・p_none・latency_ms を表示する — 根拠: ADR-20261029-062, EV-13 — 自動テスト: `packages/audit/tests/test_dashboard_stats.py -k routing_suggestion`、`packages/audit/tests/test_audit_scripts_routing_suggestion.py`
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

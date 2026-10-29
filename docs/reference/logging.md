@@ -71,6 +71,7 @@ skill-evolution の旧 metrics は、以下の fail-safe な one-shot migration 
 | `session_start` / `session_end` | `audit-bootstrap.py`, `audit-session-end.py` | セッション開始 / 終了の集計 |
 | `prompt` | `audit-prompt.py` | expected route と入力抜粋の記録 |
 | `route_decision` | `audit-route.py` | expected / actual route の照合 |
+| `routing_suggestion` | `packages/agent-routing/hooks/agent-router.py` | エージェント提案の判定（engine・status・Jev の確率・キーワード判定の結果。入力の本文は含まない） |
 | `quality_gate` | `packages/quality-gates/hooks/post-test-analysis.py` | テストコマンド実行結果の記録 |
 | `cli_call` | `audit-cli.py` | Codex / Antigravity CLI 呼び出しの記録 |
 | `subagent_start` / `subagent_end` | `audit-subagent-start.py`, `audit-subagent-end.py` | サブエージェントのライフサイクル |
@@ -83,7 +84,7 @@ skill-evolution の旧 metrics は、以下の fail-safe な one-shot migration 
 ### audit
 
 - 全体を時系列で確認する: `orchex run audit log-viewer`
-- ルーティング精度を見る: `prompt` と `route_decision` を `log-viewer` / `kpi-report` で確認
+- ルーティング精度を見る: `prompt` と `route_decision` を `log-viewer` / `kpi-report` で確認。提案の判定は `orchex run audit log-viewer -- --type routing_suggestion`
 - CLI 利用状況を見る: `orchex run audit analyze-cli-usage`
 - セッション全体を俯瞰する: `orchex run audit dashboard`
 - HTML で共有する: `orchex run audit dashboard-html -- -o dashboard.html`

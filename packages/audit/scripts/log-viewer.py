@@ -82,6 +82,12 @@ def format_event(event: dict) -> str:
             f"expected={data.get('expected', '?')} "
             f"actual={actual_str} matched={data.get('matched', False)}"
         )
+    elif event_type == "routing_suggestion":
+        detail = (
+            f"engine={data.get('engine', '?')} status={data.get('status') or '-'} "
+            f"suggested={data.get('suggested', '?')} p_none={data.get('p_none')} "
+            f"latency_ms={data.get('latency_ms')}"
+        )
     elif event_type == "cli_call":
         detail = (
             f"tool={data.get('tool', '?')} "

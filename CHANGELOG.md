@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`agent-routing`: エージェント提案を Jev（TypeSafe の判定モデル）で判定できるようにする（任意。ADR-20261029-062）**: `cli-tools.local.yaml` で `router.engine: jev` にし、API キー（`TYPESAFE_API_KEY` か `~/.config/typesafe/api-key`）を置くと有効になる。既知の秘密情報・URL・メールアドレス・ホームパスを伏せたうえで、入力の先頭最大 1200 文字を TypeSafe に送り（それ以外の本文はそのまま送られる。1 件あたり約 $0.0001、遅れは p50 約 0.2 秒・最大 500ms）、使えないときはキーワード判定に戻る。判定は audit の監査ログに `routing_suggestion` として残る。
 - **`agency-agents`: OSS の agency-agents からエージェントを取り込むパッケージを追加（ADR-20261028-061）**: 取り込むエージェントとツール権限を `upstream.yaml` で決め、upstream の commit を固定して生成する。ツール権限は既定で読み取り専用。`essential` プリセットに含まれる。
 - **`agency-agents`: 専門エージェントを 5 つ追加**: `engineering-privacy-engineer`（個人情報）、`engineering-identity-access-engineer`（SSO・OIDC）、`engineering-payments-billing-engineer`（決済）、`engineering-database-reliability-engineer`（DB の冗長化・移行）、`engineering-minimal-change-engineer`（最小差分の実装）。
 - **`/task-state close`: 完了した plan ファイルを片付ける**: 完了しているか確かめ、`## Decisions` を ADR か PR 本文に残すか選んでから plan ファイルを削除する。worktree を切らずに作業しているときに使う。
@@ -20,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`agent-routing`: キーワードによる提案を依頼の文に限定（ADR-20261029-062）**: 「〜して」「〜してください」「please / can you + 動詞」等の依頼の形をした文だけでトリガー語を照合し、報告・過去形・否定・先送り・引用だけの入力には提案しなくなる（この絞り込みを止める設定は無い）。audit の期待ルート（`expected_route`）の予測も同じ文で行う。
+- **`agent-routing-policy` ルール: 提案が依頼内容と明らかに合わないときは従わず、その旨を 1 行添える**（例外に追加）。
 - **BREAKING** **`agent-routing` → `agency-agents`: `specialized-mcp-builder` と `support-executive-summary-generator` を移動**: `subagent_type` は `MCP Builder` / `Executive Summary Generator` からファイル名と同じ `specialized-mcp-builder` / `support-executive-summary-generator` に変わる。`support-executive-summary-generator` は読み取り専用になる。既存プロジェクトでは `orchex install agency-agents --project <path>` を実行しないと、2 つのエージェントが消える。
 - **`codex-suggestions` / `antigravity-suggestions`: 相談提案を任意助言として明確化（ADR-060）**: 提案だけを理由に操作を保留・追加相談する必要や、採否を毎回説明する義務はない。`[Resolved Routing]` / `agents.<name>.tool` の指定とスキル固有の委譲義務、相談時の config 解決・sandbox 安全条件は維持する。
 - **編集前・Web 調査前の提案を絞り込み、通知の重複を抑制**: Codex は明確な設計パス・契約宣言の変更、Antigravity は query / prompt の比較・選定・移行等の調査意図に限定する。トップレベルの非空文字列の `agent_id` でサブエージェント／インプロセス teammate 内を識別して抑制し、`agent_type` 単独では抑制しない。`session_id` があれば project / worktree 別に同一ファイル・正規化した同一質問への通知を 1 度にする。config・対象範囲・marker のルートは `CLAUDE_PROJECT_DIR` → hook 入力の `cwd` の順で解決し、環境変数が非空ならそのルートを使い、未設定または空の場合だけ `cwd` を使う。状態は `.claude/state/suggestions/` の hash 化した空 marker のみ。状態書き込み失敗時は無出力・exit 0、session 不明時は state を作らない。after-plan の発火条件は変更しない。

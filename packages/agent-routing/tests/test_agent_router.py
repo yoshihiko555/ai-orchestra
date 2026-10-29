@@ -239,6 +239,87 @@ def test_detect_agent_detects_dotted_ascii_trigger_adjacent_to_japanese() -> Non
     assert agent == "frontend-dev"
 
 
+def test_detect_agent_itself_does_not_require_request_form() -> None:
+    """loop-harness は Issue のタイトルとラベルを渡すため、detect_agent は節に分けない。"""
+    agent, _ = route_config.detect_agent("feat: Python の依存を整理する\nenhancement")
+    assert agent == "backend-python-dev"
+
+
+# ---------------------------------------------------------------------------
+# _routing_request_clauses: 依頼形ゲート（EV-34）
+# ---------------------------------------------------------------------------
+
+
+def _requested_agent(prompt: str) -> str | None:
+    """agent-router と同じく、依頼の節だけを detect_agent に渡した結果を返す。"""
+    clauses = route_config._routing_request_clauses(prompt)
+    agent, _ = route_config.detect_agent("\n".join(clauses))
+    return agent
+
+
+def test_request_clauses_keep_japanese_request() -> None:
+    assert route_config._routing_request_clauses("単体テストを追加してください") == [
+        "単体テストを追加してください"
+    ]
+    assert _requested_agent("単体テストを追加してください") == "tester"
+
+
+def test_request_clauses_keep_english_request() -> None:
+    assert _requested_agent("Please write a unit test for the parser") == "tester"
+    assert _requested_agent("Can you investigate why the deploy is slow?") == "researcher"
+
+
+def test_request_clauses_drop_japanese_report() -> None:
+    assert route_config._routing_request_clauses("単体テストを追加しました。全部通っています") == []
+
+
+def test_request_clauses_drop_english_report() -> None:
+    assert _requested_agent("I wrote unit tests for the parser yesterday.") is None
+
+
+def test_request_clauses_drop_completed_or_deferred_work() -> None:
+    assert _requested_agent("テストはもう追加してもらったので確認して") is None
+    assert _requested_agent("デバッグは後で確認してください") is None
+    assert _requested_agent("I want to review the schema later") is None
+
+
+def test_request_clauses_drop_negated_request() -> None:
+    assert _requested_agent("今回はテストを追加しなくていいので確認して") is None
+    assert _requested_agent("Please do not run the tests, I already ran them") is None
+
+
+def test_request_clauses_keep_only_the_request_sentence() -> None:
+    clauses = route_config._routing_request_clauses(
+        "テストを書きました。次はREADMEを書いてください"
+    )
+    assert clauses == ["次はREADMEを書いてください"]
+    assert _requested_agent("テストを書きました。次はREADMEを書いてください") == "docs-writer"
+
+
+def test_request_clauses_drop_quoted_lines() -> None:
+    prompt = "> 単体テストを追加してください\nこれは前回の依頼の写しです"
+    assert route_config._routing_request_clauses(prompt) == []
+
+
+def test_request_clauses_drop_fenced_code() -> None:
+    prompt = "```\nplease debug this\n```\nこのログの意味は？"
+    assert _requested_agent(prompt) is None
+
+
+def test_request_clauses_drop_pasted_block_when_outer_text_requests() -> None:
+    prompt = "<pasted_content>エラーが出ました。デバッグしてください</pasted_content>\nこのメモを整理して"
+    assert _requested_agent(prompt) is None
+
+
+def test_request_clauses_read_pasted_block_when_it_is_the_whole_request() -> None:
+    prompt = "<pasted_content>単体テストを追加してください</pasted_content>"
+    assert _requested_agent(prompt) == "tester"
+
+
+def test_request_clauses_empty_prompt() -> None:
+    assert route_config._routing_request_clauses("") == []
+
+
 # ---------------------------------------------------------------------------
 # get_agent_tool
 # ---------------------------------------------------------------------------
@@ -410,3 +491,18 @@ def test_build_cli_suggestion_codex_shows_analysis_sandbox_only() -> None:
     assert result is not None
     assert "dummy-analysis-mode" in result
     assert "dummy-impl-mode" not in result
+
+
+def test_request_clauses_handle_many_blank_lines_quickly() -> None:
+    """空行が続く入力でも引用行の除去が二乗時間にならない。"""
+    import time
+
+    started = time.monotonic()
+    clauses = route_config._routing_request_clauses("\n" * 100_000 + "単体テストを追加してください")
+    assert time.monotonic() - started < 2.0
+    assert clauses == ["単体テストを追加してください"]
+
+
+def test_request_clauses_drop_indented_quoted_lines() -> None:
+    prompt = "  > 単体テストを追加してください\n\t> README を直してください\n引用だけです"
+    assert route_config._routing_request_clauses(prompt) == []

@@ -86,6 +86,8 @@ EVENT_TYPES = frozenset(
         "session_end",
         "prompt",
         "route_decision",
+        # agent-routing の agent-router.py が記録するルーターの判定（ADR-20261029-062）
+        "routing_suggestion",
         "cli_call",
         "subagent_start",
         "subagent_end",
