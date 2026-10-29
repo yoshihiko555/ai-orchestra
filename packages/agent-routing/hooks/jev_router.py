@@ -50,7 +50,7 @@ ENGINE_JEV = "jev"
 _MAX_KEY_FILE_BYTES = 4096
 _API_KEY_RE = re.compile(r"[\x21-\x7e]{1,512}")
 _MODEL_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
-_PASTED_TAG_RE = re.compile(r"</?pasted_content[^>]*>")
+_PASTED_TAG_RE = re.compile(r"</?pasted_content[^>]{0,256}>")
 _URL_RE = re.compile(r"https?://\S+")
 # 単語の途中からは照合を始めない（@ の無い長い英数字列で二乗時間にならないため）
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+\.[\w.-]+")

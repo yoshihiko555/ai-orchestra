@@ -441,6 +441,10 @@ Task(subagent_type="code-reviewer", prompt="このコードをレビューして
 UserPromptSubmit のエージェント提案は、プロジェクトに `.claude/agents` ディレクトリがあれば、
 そこに `<name>.md` が実在するエージェントだけを対象にする。ディレクトリが無い場合は従来の検出を維持する。
 
+既定（`router.engine: keyword`）では、入力のうち依頼の形をした文（「〜して」「〜してください」「please / can you + 動詞」等）だけでトリガー語を照合し、報告・過去形・否定・引用だけの入力には提案しない。
+`cli-tools.local.yaml` で `router.engine: jev` にし、TypeSafe の API キーを置くと、TypeSafe の Jev で判定する（任意）。入力の先頭最大 1200 文字を、既知の秘密情報・URL 等を伏せたうえで外部（api.typesafe.ai）に送る。使えないときはキーワード判定に戻る。
+手順・送る内容・費用・遅れは [提案の判定（`router.engine`）](docs/reference/packages.md#提案の判定routerengine) を参照。
+
 `researcher` は解決済みのルーティングに従い、`tool: antigravity` なら `agy`、`tool: codex` なら
 `codex exec` を先に実行します。WebSearch / WebFetch 等だけで指定 CLI を省略しません。
 CLI の実行失敗時（Antigravity は規定のリトライ後、未導入・権限拒否などは確認後）または

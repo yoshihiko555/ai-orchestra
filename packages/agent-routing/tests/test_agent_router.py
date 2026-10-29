@@ -269,6 +269,41 @@ def test_request_clauses_keep_english_request() -> None:
     assert _requested_agent("Can you investigate why the deploy is slow?") == "researcher"
 
 
+def test_request_clauses_keep_english_build_request() -> None:
+    assert _requested_agent("Please build a React component for the dashboard") == "frontend-dev"
+
+
+def test_request_clauses_keep_english_plan_request() -> None:
+    assert _requested_agent("Plan the implementation milestones") == "planner"
+
+
+def test_request_clauses_keep_more_english_request_verbs() -> None:
+    for prompt in (
+        "Please refactor the parser",
+        "Please optimize the parser",
+        "Please test the parser",
+        "Please document the parser",
+        "Please analyze the parser",
+        "Please update the parser",
+    ):
+        assert route_config._routing_request_clauses(prompt) == [prompt]
+
+
+def test_request_clauses_keep_japanese_compound_words() -> None:
+    for prompt in (
+        "変更前後で性能を比べて",
+        "最後でエラーが出る原因を調べて",
+        "午後で空いている時間を調べて",
+        "明日以後で空いている時間を調べて",
+    ):
+        assert route_config._routing_request_clauses(prompt) == [prompt]
+
+
+def test_request_clauses_keep_english_request_with_negated_outcome() -> None:
+    assert _requested_agent("Can you debug why the tests don't pass?") == "debugger"
+    assert _requested_agent("Could you investigate why builds do not finish?") == "researcher"
+
+
 def test_request_clauses_drop_japanese_report() -> None:
     assert route_config._routing_request_clauses("単体テストを追加しました。全部通っています") == []
 
@@ -281,11 +316,28 @@ def test_request_clauses_drop_completed_or_deferred_work() -> None:
     assert _requested_agent("テストはもう追加してもらったので確認して") is None
     assert _requested_agent("デバッグは後で確認してください") is None
     assert _requested_agent("I want to review the schema later") is None
+    assert route_config._routing_request_clauses("単体テストは後で追加してください") == []
+    assert route_config._routing_request_clauses("デバッグは後で確認してください") == []
 
 
 def test_request_clauses_drop_negated_request() -> None:
     assert _requested_agent("今回はテストを追加しなくていいので確認して") is None
     assert _requested_agent("Please do not run the tests, I already ran them") is None
+
+
+def test_request_clauses_drop_directly_negated_english_verbs() -> None:
+    for prompt in (
+        "Can you review the schema, but do not build the parser",
+        "Can you review the schema, but don't plan the rollout",
+        "Can you review the schema, but do not refactor the parser",
+        "Can you review the schema, but don't optimize the parser",
+        "Can you review the schema, but do not test the parser",
+        "Can you review the schema, but don't document the parser",
+        "Can you review the schema, but do not analyze the parser",
+        "Can you review the schema, but don't update the parser",
+        "Can you review the schema, but don't run the parser",
+    ):
+        assert route_config._routing_request_clauses(prompt) == []
 
 
 def test_request_clauses_keep_only_the_request_sentence() -> None:
@@ -294,6 +346,18 @@ def test_request_clauses_keep_only_the_request_sentence() -> None:
     )
     assert clauses == ["次はREADMEを書いてください"]
     assert _requested_agent("テストを書きました。次はREADMEを書いてください") == "docs-writer"
+
+
+def test_request_clauses_split_english_sentences() -> None:
+    clauses = route_config._routing_request_clauses(
+        "I already wrote tests. Can you review the schema?"
+    )
+    assert [clause.strip() for clause in clauses] == ["Can you review the schema"]
+
+
+def test_request_clauses_keep_periods_inside_names() -> None:
+    prompt = "Next.js の README.md を直して"
+    assert route_config._routing_request_clauses(prompt) == [prompt]
 
 
 def test_request_clauses_drop_quoted_lines() -> None:
@@ -314,6 +378,62 @@ def test_request_clauses_drop_pasted_block_when_outer_text_requests() -> None:
 def test_request_clauses_read_pasted_block_when_it_is_the_whole_request() -> None:
     prompt = "<pasted_content>単体テストを追加してください</pasted_content>"
     assert _requested_agent(prompt) == "tester"
+
+
+def test_request_clauses_drop_nested_pasted_block() -> None:
+    prompt = (
+        "<pasted_content>a<pasted_content>b</pasted_content>c</pasted_content>\nこのメモを整理して"
+    )
+    assert route_config._routing_request_clauses(prompt) == ["このメモを整理して"]
+    assert route_config._remove_pasted_blocks(prompt) == ("c</pasted_content>\nこのメモを整理して")
+
+
+def test_remove_pasted_blocks_preserve_unmatched_tags() -> None:
+    for prompt in (
+        "メモ<pasted_content>本文",
+        "本文</pasted_content>メモ",
+        "本文</pasted_content>メモ<pasted_content>続き",
+    ):
+        assert route_config._remove_pasted_blocks(prompt) == prompt
+
+
+def test_remove_pasted_blocks_remove_case_insensitive_multiline_blocks() -> None:
+    prompt = (
+        '前<Pasted_Content source="memo">\n本文\n</PASTED_CONTENT>中'
+        "<pasted_content>別の本文</pasted_content>後<pasted_content>未完の本文"
+    )
+    assert route_config._remove_pasted_blocks(prompt) == "前中後<pasted_content>未完の本文"
+
+
+def test_remove_pasted_blocks_bound_tag_attributes() -> None:
+    attributes = " " * 256
+    prompt = f"前<pasted_content{attributes}>本文</pasted_content{attributes}>後"
+    assert route_config._remove_pasted_blocks(prompt) == "前後"
+    for prompt in (
+        f"前<pasted_content{attributes} >本文</pasted_content>後",
+        f"前<pasted_content>本文</pasted_content{attributes} >後",
+    ):
+        assert route_config._remove_pasted_blocks(prompt) == prompt
+
+
+def test_request_clauses_handle_many_unclosed_pasted_tags_quickly() -> None:
+    import time
+
+    prompt = "<pasted_content>" * 20_000 + "\n単体テストを追加してください"
+    started = time.monotonic()
+    clauses = route_config._routing_request_clauses(prompt)
+    assert time.monotonic() - started < 2.0
+    assert clauses == ["単体テストを追加してください"]
+
+
+def test_request_clauses_handle_many_incomplete_pasted_tags_quickly() -> None:
+    import time
+
+    prompt = "<pasted_content" * 20_000
+    started = time.monotonic()
+    clauses = route_config._routing_request_clauses(prompt)
+    assert time.monotonic() - started < 2.0
+    assert clauses == []
 
 
 def test_request_clauses_empty_prompt() -> None:

@@ -192,6 +192,10 @@ RESEARCHER_FALLBACK_TRIGGERS: dict[str, list[str]] = {
 }
 
 # 依頼の形（ADR-20261029-062）。キーワード判定はこの形を含む節だけでトリガーを照合する
+_REQUEST_VERBS_EN = (
+    r"implement|investigate|research|debug|review|write|design|compare|fix|run|add|create|"
+    r"build|plan|refactor|optimize|test|document|analyze|update"
+)
 REQUEST_PATTERN = re.compile(
     r"(?:して|作って|書いて|直して|調べて|深掘りして|見直して|比べて|"
     r"決めて|確認して|探して|挙げて|考えて|分解して|見て)"
@@ -201,31 +205,46 @@ REQUEST_PATTERN = re.compile(
     r"|比較(?:も|が)(?:ほしい|欲しい)"
     r"|(?:^\s*|\bplease\s+|\b(?:can|could|would)\s+you\s+|"
     r"\bI\s+(?:want|need)\s+to\s+)"
-    r"(?:implement|investigate|research|debug|review|write|design|compare|"
-    r"fix|run|add|create)\b",
+    rf"(?:{_REQUEST_VERBS_EN})\b",
     re.I,
 )
 # 依頼の形でも、今すぐの依頼ではない節（完了・先送り・否定）
 NONCURRENT_PATTERN = re.compile(
-    r"後ほど|後で|そのうち|済み|してもらった|しておきました|"
+    r"後ほど|(?<![一-鿿])後で|そのうち|済み|してもらった|しておきました|"
     r"してほしいわけ.{0,5}ない|しなくて(?:も)?いい|"
     r"資料.{0,12}ありますか|未実装かな|なかったっけ|"
-    r"\b(?:later|already|do not|don.t)\b",
+    r"\b(?:later|already)\b|"
+    rf"\b(?:do not|don.t)\s+(?:{_REQUEST_VERBS_EN})\b",
     re.I,
 )
 _FENCED_CODE_RE = re.compile(r"(?ms)^[ \t]*(\x60{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*$|\Z)")
-_PASTED_BLOCK_RE = re.compile(r"(?is)<pasted_content\b[^>]*>.*?</pasted_content[^>]*>")
-_PASTED_TAG_RE = re.compile(r"</?pasted_content[^>]*>")
+_PASTED_OPEN_TAG_RE = re.compile(r"<pasted_content\b[^>]{0,256}>", re.I)
+_PASTED_CLOSE_TAG_RE = re.compile(r"</pasted_content[^>]{0,256}>", re.I)
+_PASTED_TAG_RE = re.compile(r"</?pasted_content[^>]{0,256}>")
 # 行頭の空白・タブの後の `>`。改行はまたがない（空行が続く入力で二乗時間にならないため）
 _QUOTED_LINE_RE = re.compile(r"(?m)^[ \t]*>.*$")
 _URL_RE = re.compile(r"https?://\S+")
-_CLAUSE_SPLIT_RE = re.compile(r"[。！？!?\n]|(?=後ほど|後で|そのうち)")
+_CLAUSE_SPLIT_RE = re.compile(r"[。！？!?\n]|\.(?=\s)|(?=後ほど|(?<![一-鿿])後で|そのうち)")
+
+
+def _remove_pasted_blocks(prompt: str) -> str:
+    """閉じタグがない場合は再探索せず、残りの入力をそのまま残す。"""
+    parts: list[str] = []
+    cursor = 0
+    while opening := _PASTED_OPEN_TAG_RE.search(prompt, cursor):
+        closing = _PASTED_CLOSE_TAG_RE.search(prompt, opening.end())
+        if closing is None:
+            break
+        parts.append(prompt[cursor : opening.start()])
+        cursor = closing.end()
+    parts.append(prompt[cursor:])
+    return "".join(parts)
 
 
 def _strip_quoted_text(prompt: str) -> str:
     """コードブロック・引用行・URL と、依頼が外側にあるときの貼り付けを取り除く。"""
     prompt = _FENCED_CODE_RE.sub("", prompt)
-    outer = _PASTED_BLOCK_RE.sub("", prompt)
+    outer = _remove_pasted_blocks(prompt)
     if REQUEST_PATTERN.search(outer):
         prompt = outer
     else:
