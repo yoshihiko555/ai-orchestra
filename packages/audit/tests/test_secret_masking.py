@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Callable
 
 import pytest
 
@@ -130,6 +131,33 @@ class TestMaskSecrets:
         assert "dbuser" not in result
         assert "sup3rSecr3t" not in result
         assert "[REDACTED]" in result
+
+    @pytest.mark.parametrize("text", ["a-" * 50_000], ids=["connection-scheme-run"])
+    def test_preserves_long_non_matching_connection_scheme_promptly(self, text: str) -> None:
+        """接続文字列が成立しない長いスキーム文字列でも処理が長引かず、元の文字列を保つ。"""
+        started = time.monotonic()
+        masked = secret_masking.mask_secrets(text)
+        assert time.monotonic() - started < 2.0
+        assert masked == text
+
+    def test_masks_connection_string_after_long_alphanumeric_run(self) -> None:
+        """長い英数字列に直結した接続文字列の認証情報もマスクする。"""
+        password = "sup3r" + "Secr3t"
+        text = "a" * 40 + "postgres://dbuser:" + password + "@db.example.com"
+        masked = secret_masking.mask_secrets(text)
+        assert "dbuser" not in masked
+        assert password not in masked
+        assert "[REDACTED]" in masked
+
+    @pytest.mark.parametrize("prefix", ["DBは", "x_"])
+    def test_masks_connection_string_after_japanese_or_underscore(self, prefix: str) -> None:
+        """日本語やアンダースコアに直結した接続文字列も伏せ、前後の文章は保つ。"""
+        password = "sup3r" + "Secr3t"
+        text = prefix + "postgres://dbuser:" + password + "@db.example.com です"
+        masked = secret_masking.mask_secrets(text)
+        assert "dbuser" not in masked
+        assert password not in masked
+        assert masked == prefix + "[REDACTED] です"
 
     def test_does_not_mask_plain_url_without_credentials(self) -> None:
         """認証情報を含まない通常の URL はマスク対象外であることを確認する。"""
@@ -307,6 +335,28 @@ class TestMaskSecrets:
         assert "c29tZS1mYWtl" not in masked
         assert "[REDACTED]" in masked
 
+    @pytest.mark.parametrize("line", ["prose line", "...(truncated)...", "MIIE vQ IBADAN"])
+    def test_masks_unterminated_pem_through_following_block(self, line: str) -> None:
+        """END のない鍵の後に完全なブロックが続くときは、最初の BEGIN から END までを
+        丸ごと伏せる（修正前と同じ。本文以外の行の後ろの本文行を残さない）。"""
+        begin = "-----BEGIN " + "PRIVATE " + "KEY-----"
+        end = "-----END " + "PRIVATE " + "KEY-----"
+        text = f"{begin}\nMIIEvQIBADAN\n{line}\nQWERtyuiop1234\n{begin}\nc29tZQ==\n{end}"
+        masked = secret_masking.mask_secrets(text)
+        assert masked == "[REDACTED]"
+
+    @pytest.mark.parametrize(
+        ("scheme_length", "expected"),
+        [(33, "[REDACTED]"), (34, "s[REDACTED]")],
+    )
+    def test_masks_connection_string_at_scheme_length_boundary(
+        self, scheme_length: int, expected: str
+    ) -> None:
+        """スキームが 33 文字ちょうどなら全体を、34 文字なら先頭 1 文字を残して伏せる。"""
+        password = "sup3r" + "Secr3t"
+        text = "s" * scheme_length + "://dbuser:" + password + "@db.example.com"
+        assert secret_masking.mask_secrets(text) == expected
+
     @pytest.mark.parametrize("line_break", ["\n", "\r\n", "\r", "\\n", "\\r\\n", "\\r"])
     def test_masks_unterminated_pem_with_legacy_headers(self, line_break: str) -> None:
         begin = "-----BEGIN RSA " + "PRIVATE " + "KEY-----"
@@ -404,6 +454,29 @@ class TestMaskSecrets:
         assert time.monotonic() - started < 2.0
         assert begin not in masked
         assert masked == "[REDACTED]\n" + prose
+
+    @pytest.mark.parametrize(
+        "build_text",
+        [
+            lambda begin, end: (begin + "\n") * 20_000,
+            lambda begin, end: end + "\n" + (begin + "\n") * 20_000,
+            lambda begin, end: (begin + "\n") * 20_000 + end,
+            lambda begin, end: (begin[:-5] + end) * 20_000,
+        ],
+        ids=["begin-only", "leading-end", "trailing-end", "overlapping-end"],
+    )
+    def test_masks_repeated_pem_begin_lines_promptly(
+        self, build_text: Callable[[str, str], str]
+    ) -> None:
+        """BEGIN 行が大量に続いても処理が長引かず、各 BEGIN をマスクする。"""
+        begin = "-----BEGIN " + "PRIVATE " + "KEY-----"
+        end = "-----END " + "PRIVATE " + "KEY-----"
+        text = build_text(begin, end)
+        started = time.monotonic()
+        masked = secret_masking.mask_secrets(text)
+        assert time.monotonic() - started < 2.0
+        assert begin not in masked
+        assert "[REDACTED]" in masked
 
     @pytest.mark.parametrize("blank", [" " * 20_000, " \t" * 10_000])
     @pytest.mark.parametrize("tail", ["", ".", "MIIB."])

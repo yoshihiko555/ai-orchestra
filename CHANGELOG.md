@@ -40,6 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`audit` / `agent-routing`: 長いプロンプトやコマンドで監査・Jev ルーティングのフックが数秒間止まる問題を修正**: `-` 区切りの語や PEM の BEGIN 行を大量に含んでも待たされなくなり、日本語に直結した接続文字列の認証情報もマスクされる。
 - **`audit` / `agent-routing`: 秘密情報のマスキングで伏せ漏れていた形式を伏せるように修正**: JWT 単体、GitHub（`gho_` 等・fine-grained PAT）・GitLab・Slack のトークン、`Authorization: Basic`、`passwd` / `pwd` キーの値、暗号化 PEM と END 行の無い PEM、`+` `/` `=` を含む Bearer が、監査ログと Jev への送信内容に残っていた。
 - **`spec-writer` が Codex に作業を委譲できない問題を修正**: `cli-tools.yaml` で `tool: codex` にルーティングされているのに、エージェント定義に `Bash` ツールが無く `codex exec` を呼べなかった。
 - **`agent-routing`: 未導入のエージェントを提案しないように修正**: プロジェクトに `.claude/agents` がある場合、定義ファイルが実在するエージェントだけを提案する。

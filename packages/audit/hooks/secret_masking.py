@@ -55,6 +55,33 @@ _PEM_UNTERMINATED_PATTERN = re.compile(
     r"(?:[A-Za-z0-9+/=]+[ \t]*|(?:Proc-Type|DEK-Info):[^\r\n\\]*)?"
     rf"(?={_PEM_LINE_BREAK}|[\"']|\Z))*"
 )
+_PEM_BLOCK_PATTERN = re.compile(
+    rf"-----BEGIN {_PEM_LABEL}-----"
+    r".*?"
+    rf"-----END {_PEM_LABEL}-----",
+    re.DOTALL,
+)
+_PEM_END_PATTERN = re.compile(rf"-----END {_PEM_LABEL}-----")
+
+
+def _mask_pem_blocks(text: str) -> str:
+    """BEGIN から END までの PEM 秘密鍵ブロックを丸ごと伏せる。
+
+    ブロックのパターンは最後の END までの部分にだけ適用する。この範囲の BEGIN は
+    すべて後ろに END があるので、END を探して入力の末尾まで走査することがない。
+    全体に適用すると、後ろに END のない BEGIN が大量にあるとき、BEGIN ごとに末尾まで
+    走査して処理時間が入力長の 2 乗に伸びる。
+    最後の END より後ろの BEGIN は、もともとブロックとして一致しないので、
+    _PEM_UNTERMINATED_PATTERN に任せる。
+    `.*?` は DOTALL なので、JSON のエスケープ済み改行（`\\n` の 2 文字）も含めて覆う。
+    """
+    last_end: re.Match[str] | None = None
+    for last_end in _PEM_END_PATTERN.finditer(text):
+        pass
+    if last_end is None:
+        return text
+    cut = last_end.end()
+    return _PEM_BLOCK_PATTERN.sub("[REDACTED]", text[:cut]) + text[cut:]
 
 
 def _mask_secret_kv(match: re.Match[str]) -> str:
@@ -89,16 +116,8 @@ SECRET_PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str
     # PEM 秘密鍵は key=value より先に伏せる。後にすると、`secret: -----BEGIN ...`
     # の値の 1 行目（ヘッダー行）だけが key=value で伏せられ、PEM として一致
     # しなくなって本文が残る。
-    # 先にブロック全体を捕捉し、JSON のエスケープ済み改行にも対応する。
-    (
-        re.compile(
-            rf"-----BEGIN {_PEM_LABEL}-----"
-            r".*?"
-            rf"-----END {_PEM_LABEL}-----",
-            re.DOTALL,
-        ),
-        "[REDACTED]",
-    ),
+    # そのため END のある完全なブロックは、mask_secrets がこのリストの前に
+    # _mask_pem_blocks で丸ごと伏せる（JSON のエスケープ済み改行にも対応）。
     # END が欠けた PEM は、BEGIN と本文・従来形式の暗号化ヘッダーだけを捕捉する。
     (_PEM_UNTERMINATED_PATTERN, "[REDACTED]"),
     # OpenAI などの API キー
@@ -137,7 +156,12 @@ SECRET_PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str
     # 接続文字列形式の認証情報（postgres://user:pass@host, mysql://... 等）。
     # user:pass@ を含む URL のみ対象にし、認証情報を含まない通常の URL
     # （https://example.com 等）は対象外にする。
-    (re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/]+:[^\s@/]+@\S+"), "[REDACTED]"),
+    # スキーム長を制限し、各開始位置で読む量を一定にして処理時間を入力長に比例させる。
+    # \b があると、長い英数字列に直結したスキームが制限により一致せず、
+    # 認証情報が漏れる。日本語や "_" の直後でも \b が成立しないため付けない。
+    # スキームが 33 文字を超える場合、末尾の 33 文字より前の先頭部分は伏せずに残り、
+    # 認証情報を含む残りの部分だけをマスクする。
+    (re.compile(r"[A-Za-z][A-Za-z0-9+.-]{0,32}://[^\s:@/]+:[^\s@/]+@\S+"), "[REDACTED]"),
 ]
 
 
@@ -150,6 +174,7 @@ def mask_secrets(text: str) -> str:
     Returns:
         マスク済みテキスト。該当しない場合は元の文字列を返す。
     """
+    text = _mask_pem_blocks(text)
     for pattern, replacement in SECRET_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
