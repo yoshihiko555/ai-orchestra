@@ -345,6 +345,14 @@ class TestMaskSecrets:
         masked = secret_masking.mask_secrets(text)
         assert masked == "[REDACTED]"
 
+    @pytest.mark.parametrize("label", ["", "EC ", "ENCRYPTED "])
+    def test_masks_pem_block_whose_end_shares_dashes(self, label: str) -> None:
+        """BEGIN と END、END と END が `-----` を兼ねていても、修正前と同じく
+        最後の END まで丸ごと伏せる（重なった END を取り逃がさない）。"""
+        begin = "-----BEGIN " + "PRIVATE " + "KEY-----"
+        text = begin + "END EC " + "PRIVATE " + "KEY-----END " + label + "PRIVATE " + "KEY-----"
+        assert secret_masking.mask_secrets(text) == "[REDACTED]"
+
     @pytest.mark.parametrize(
         ("scheme_length", "expected"),
         [(33, "[REDACTED]"), (34, "s[REDACTED]")],

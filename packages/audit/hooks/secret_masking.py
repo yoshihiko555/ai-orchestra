@@ -61,7 +61,8 @@ _PEM_BLOCK_PATTERN = re.compile(
     rf"-----END {_PEM_LABEL}-----",
     re.DOTALL,
 )
-_PEM_END_PATTERN = re.compile(rf"-----END {_PEM_LABEL}-----")
+# END の末尾の `-----` は次の END の先頭を兼ねられる。重なった END も拾うため先読みで探す。
+_PEM_END_PATTERN = re.compile(rf"(?=(-----END {_PEM_LABEL}-----))")
 
 
 def _mask_pem_blocks(text: str) -> str:
@@ -80,7 +81,7 @@ def _mask_pem_blocks(text: str) -> str:
         pass
     if last_end is None:
         return text
-    cut = last_end.end()
+    cut = last_end.end(1)
     return _PEM_BLOCK_PATTERN.sub("[REDACTED]", text[:cut]) + text[cut:]
 
 
