@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-11-01
+
 ### Added
 
 - **`agent-routing`: エージェント提案を Jev（TypeSafe の判定モデル）で判定できるようにする（任意。ADR-20261029-062）**: `cli-tools.local.yaml` で `router.engine: jev` にし、API キー（`TYPESAFE_API_KEY` か `~/.config/typesafe/api-key`）を置くと有効になる。既知の秘密情報・URL・メールアドレス・ホームパスを伏せたうえで、入力の先頭最大 1200 文字を TypeSafe に送り（それ以外の本文はそのまま送られる。1 件あたり約 $0.0001、遅れは p50 約 0.2 秒・最大 500ms）、使えないときはキーワード判定に戻る。判定は audit の監査ログに `routing_suggestion` として残る。
