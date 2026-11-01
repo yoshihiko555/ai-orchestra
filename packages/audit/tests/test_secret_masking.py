@@ -365,6 +365,21 @@ class TestMaskSecrets:
         text = "s" * scheme_length + "://dbuser:" + password + "@db.example.com"
         assert secret_masking.mask_secrets(text) == expected
 
+    @pytest.mark.parametrize(
+        "scheme",
+        ["s" + "1" * 33, "s" + "1" * 40, "a" + "." * 40, "1" * 10],
+    )
+    def test_masks_connection_string_with_long_scheme_tail_without_letters(
+        self, scheme: str
+    ) -> None:
+        """スキームの末尾 33 文字に英字がなくても、認証情報は伏せる。"""
+        password = "sup3r" + "Secr3t"
+        text = scheme + "://dbuser:" + password + "@db.example.com"
+        masked = secret_masking.mask_secrets(text)
+        assert "dbuser" not in masked
+        assert password not in masked
+        assert "[REDACTED]" in masked
+
     @pytest.mark.parametrize("line_break", ["\n", "\r\n", "\r", "\\n", "\\r\\n", "\\r"])
     def test_masks_unterminated_pem_with_legacy_headers(self, line_break: str) -> None:
         begin = "-----BEGIN RSA " + "PRIVATE " + "KEY-----"
