@@ -201,6 +201,22 @@ class TestMaskSecrets:
         assert "[REDACTED]" in masked
         assert "end" in masked
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            ("eyJ" + "_-") * 16_000,
+            "eyJ" + "a" * 80_000,
+            "eyJ" + "a." + ("eyJ" + "_-") * 16_000,
+        ],
+        ids=["repeated-prefix", "long-header", "repeated-payload"],
+    )
+    def test_masks_incomplete_jwt_like_run_promptly(self, text: str) -> None:
+        """JWT が成立しない長い base64url 文字列でも処理が長引かず、元の文字列を保つ。"""
+        started = time.monotonic()
+        masked = secret_masking.mask_secrets(text)
+        assert time.monotonic() - started < 2.0
+        assert masked == text
+
     @pytest.mark.parametrize("prefix", ["gh" + suffix + "_" for suffix in "pousr"])
     @pytest.mark.parametrize("length", [36, 48])
     def test_masks_github_classic_tokens(self, prefix: str, length: int) -> None:

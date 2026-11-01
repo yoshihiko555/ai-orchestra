@@ -1439,6 +1439,30 @@ class TestClassifyPrompt:
         assert audit_prompt.classify_prompt(prompt) == ("human", "")
 
 
+class TestPromptSecretMasking:
+    """`audit_prompt.main()` が監査ログに機密情報を残さないことのテスト。"""
+
+    def test_main_masks_unterminated_pem_before_normalizing_newlines(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = _make_project(tmp_path)
+        begin = "-----BEGIN " + "PRIVATE " + "KEY-----"
+        data = {
+            "session_id": "s1",
+            "cwd": str(project),
+            "prompt": begin + "\nMIIBogIBAAJ\nc29tZS1mYWtl",
+        }
+
+        events = _run_main(audit_prompt, data, monkeypatch)
+
+        assert events[0][0] == "prompt"
+        excerpt = events[0][1]["user_input_excerpt"]
+        assert begin not in excerpt
+        assert "MIIBogIBAAJ" not in excerpt
+        assert "c29tZS1mYWtl" not in excerpt
+        assert excerpt == "[REDACTED]"
+
+
 class TestPromptInputKind:
     """`audit_prompt.main()` が入力種別を記録し、非ユーザー入力でキーワード予測をしないことのテスト。"""
 

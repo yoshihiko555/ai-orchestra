@@ -164,11 +164,11 @@ def main() -> None:
         expected_route, matched_rule = select_expected_route(prompt, config, policy)
         skill = slash_name
 
-    # マスキング → truncate の順序で処理する
+    # マスキング → 改行の置換 → truncate の順序で処理する。
+    # 改行を先に置換すると、END のない PEM の本文行を判別できずマスクが漏れる。
     # (config の max_excerpt_chars を読み、デフォルトは 160)
     max_chars = int(audit_cfg.get("max_excerpt_chars", DEFAULT_MAX_EXCERPT_CHARS))
-    excerpt = prompt.strip().replace("\n", " ")
-    excerpt = _mask_secrets(excerpt)
+    excerpt = _mask_secrets(prompt.strip()).replace("\n", " ")
     excerpt = excerpt[:max_chars]
 
     tid = generate_id()

@@ -108,7 +108,13 @@ SECRET_PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str
     # Bearer 認証（RFC 6750 の b64token 文字集合）
     (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]+=*", re.IGNORECASE), "[REDACTED]"),
     # 単独の JWT（署名なしも含む。ヘッダーとペイロードは JSON 形式に限定）
-    (re.compile(r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*"), "[REDACTED]"),
+    # \b は "-" の後でも再試行して長い非一致入力の走査が 2 乗になるため、
+    # base64url 文字の直後からは開始しない（従来と異なり "-" 直後の JWT も対象外）。
+    # "." を含まないセグメントには所有的量指定子を使い、後戻りを防ぐ。
+    (
+        re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]++\.eyJ[A-Za-z0-9_-]++\.[A-Za-z0-9_-]*"),
+        "[REDACTED]",
+    ),
     # GitHub の従来形式トークン（長い値も末尾まで捕捉する）
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}"), "[REDACTED]"),
     # GitHub の fine-grained PAT
