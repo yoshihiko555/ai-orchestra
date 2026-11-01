@@ -420,6 +420,45 @@ class TestMaskSecrets:
         assert "[REDACTED]" in masked
 
 
+class TestMaskSecretsQuadraticPatternsPerformance:
+    """#531 の 2 つのパターン（接続文字列・BEGIN〜END の全体ブロック）が、
+    長い入力でも入力長にほぼ比例した時間で終わることを確認する。"""
+
+    def test_connection_string_pattern_long_input_is_prompt(self) -> None:
+        """接続文字列パターン: `a-` の繰り返し（約 100KB）でも短時間で終わる。"""
+        text = "a-" * 50_000
+        started = time.monotonic()
+        result = secret_masking.mask_secrets(text)
+        elapsed = time.monotonic() - started
+        assert result == text
+        assert elapsed < 1.5
+
+    def test_pem_full_block_pattern_many_begin_headers_is_prompt(self) -> None:
+        """END のない BEGIN ヘッダー 20,000 個でも短時間で終わる。"""
+        text = "-----BEGIN PRIVATE KEY-----\n" * 20_000
+        started = time.monotonic()
+        result = secret_masking.mask_secrets(text)
+        elapsed = time.monotonic() - started
+        assert "-----BEGIN PRIVATE KEY-----" not in result
+        assert "[REDACTED]" in result
+        assert elapsed < 1.5
+
+    def test_long_input_with_real_connection_string_still_masked(self) -> None:
+        """長い入力に混ぜた本物のスタイルの接続文字列も取りこぼさない。"""
+        text = "a-" * 50_000 + " postgres://dbuser:sup3rSecr3t@db.example.com:5432/prod"
+        result = secret_masking.mask_secrets(text)
+        assert "sup3rSecr3t" not in result
+        assert "[REDACTED]" in result
+
+    def test_long_input_with_real_pem_block_still_masked(self) -> None:
+        """長い入力に混ぜた本物のスタイルの PEM ブロックも本文・END 込みでマスクする。"""
+        text = "-----BEGIN PRIVATE KEY-----\n" * 20_000
+        text += "-----BEGIN PRIVATE KEY-----\nMIIBogIBAAJ\n-----END PRIVATE KEY-----\n"
+        result = secret_masking.mask_secrets(text)
+        assert "-----END PRIVATE KEY-----" not in result
+        assert "MIIBogIBAAJ" not in result
+
+
 class TestHooksUseSharedModule:
     """各 hook が共通モジュールの `mask_secrets` を利用していることを確認する。"""
 

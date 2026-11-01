@@ -90,10 +90,14 @@ SECRET_PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str
     # の値の 1 行目（ヘッダー行）だけが key=value で伏せられ、PEM として一致
     # しなくなって本文が残る。
     # 先にブロック全体を捕捉し、JSON のエスケープ済み改行にも対応する。
+    # 本文は `[^-]` と「ダッシュの後にダッシュが続かない」`-(?!-)` だけで構成する。
+    # 本文は PEM では base64 のためダッシュを含まず、最初の `-----`（END マーカー
+    # 等の行）で必ず停止する。`.*?` のままだと END が見つからない入力で、BEGIN の
+    # 出現ごとに末尾まで読んで入力長の 2 乗に近い時間かかる（Issue #531）。
     (
         re.compile(
             rf"-----BEGIN {_PEM_LABEL}-----"
-            r".*?"
+            r"(?:[^-]|-(?!-))*?"
             rf"-----END {_PEM_LABEL}-----",
             re.DOTALL,
         ),
@@ -137,7 +141,10 @@ SECRET_PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str
     # 接続文字列形式の認証情報（postgres://user:pass@host, mysql://... 等）。
     # user:pass@ を含む URL のみ対象にし、認証情報を含まない通常の URL
     # （https://example.com 等）は対象外にする。
-    (re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/]+:[^\s@/]+@\S+"), "[REDACTED]"),
+    # scheme 部は {0,32} で上限を付ける（実際の URL scheme は十分に短い）。
+    # 上限がないと、開始位置ごとの `[A-Za-z0-9+.-]*` の長い読みとバック
+    # トラックで入力長の 2 乗に近い時間かかる（Issue #531）。
+    (re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]{0,32}://[^\s:@/]+:[^\s@/]+@\S+"), "[REDACTED]"),
 ]
 
 
