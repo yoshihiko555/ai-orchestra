@@ -131,6 +131,8 @@ codex exec --model <model> --sandbox <codex.sandbox.implementation> <flags> "{ta
 
 > **Non-Interactive 実行**: `-p` のみで非対話完結する（stdin 封じ不要）。no-questions 指示は維持。
 > 詳細は `antigravity-delegation.md` の「Non-Interactive 実行」セクション参照。
+> 調査は 10〜20 分かかることがある。`--print-timeout 30m` を付けて出力をファイルに受け、Bash がバックグラウンドへ
+> 移しても失敗とせず、同ルールの「長時間実行と待機」に従って完了を待ってから報告する。
 
 ```bash
 # 一般的なリサーチ
