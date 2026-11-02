@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Antigravity（`agy`）の調査が途中で Claude の直接調査に切り替わる**: Bash がコマンドをバックグラウンドへ移しても失敗とせず、`agy` の完了を待ってから結果を読むようにした（`antigravity-delegation` ルール、`antigravity-system` / `reverse` スキル、`researcher` / `general-purpose` / `reverse-coordinator` エージェント）。`agy` には `--print-timeout 30m` を付け、タイムアウトは stderr で判定してリトライしない。
+
 ## [0.3.7] - 2026-11-01
 
 ### Added

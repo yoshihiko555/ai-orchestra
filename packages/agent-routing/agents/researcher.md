@@ -93,17 +93,27 @@ You gather and synthesize information using Antigravity CLI:
 > `antigravity.model` は config の `antigravity.model_allowlist` と突合し、未掲載なら警告を出力に含めること。
 
 ```bash
+# 出力先を作る（表示された絶対パスを <dir> に書く。再実行・リトライのたびに新しく作る）
+mktemp -d "${TMPDIR:-/tmp}/agy.XXXXXX"
+
 # 一般的なリサーチ
-agy -p "{research question}" --model <antigravity.model> <antigravity.flags> 2>/dev/null
+agy -p "{research question}" --model <antigravity.model> <antigravity.flags> --print-timeout 30m \
+  > '<dir>/out.md' 2> '<dir>/err.log'; echo $? > '<dir>/exit'
 
 # 対象ディレクトリを追加して分析（リポジトリ全体など）
-agy -p "{question}" --model <antigravity.model> <antigravity.flags> --add-dir . 2>/dev/null
+agy -p "{question}" --model <antigravity.model> <antigravity.flags> --add-dir . --print-timeout 30m \
+  > '<dir>/out.md' 2> '<dir>/err.log'; echo $? > '<dir>/exit'
 ```
 
 - 非対話実行は `-p`（`--print`）のみで完結する（Gemini CLI と異なり stdin 封じは不要）
-- タイムアウト: Bash の timeout パラメータに `300000`（5分、agy の `--print-timeout` デフォルトと同じ）を推奨
+- 実行と待機: `antigravity-delegation` ルールの「長時間実行と待機」に従う。調査は 10〜20 分かかることがあり、
+  Bash は途中でコマンドをバックグラウンドへ移す（「Command was moved to the background」）。これは失敗ではない。
+  リトライもフォールバックもせず、`<dir>/exit` ができるまで待ってから `out.md` を読む。agy の結果を判定するまで
+  最終報告を返さない。バックグラウンドで動いている agy があるうちは、同じ調査をもう一度起動しない
 - prompt の末尾に `IMPORTANT: Do not ask any clarifying questions. Provide your best answer based on the available information. If you need assumptions, state them.` を付ける（非対話実行では agy の質問に答えられず、調査結果が返らないため）
 - exit code が非ゼロ・出力が空・出力が質問になっている場合は、`antigravity-delegation` ルールのリトライプロトコルに従う（最大 2 回）
+- `err.log` に `print timeout` がある場合はタイムアウト（exit 0 のまま途中までの出力が返る）。リトライせず、途中までの
+  出力を使い、足りない部分を直接調査で補う
 
 ### tool = "codex" の場合
 
@@ -121,6 +131,7 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{research question}" < /
 - `tool: antigravity` の場合は、実際に `agy` を試行し、非ゼロ終了・空出力・質問を含む出力を確認した後に限り、
   `antigravity-delegation` のリトライプロトコル（最大 2 回のリトライ）に従う。それでも失敗したら `claude-direct` で続行する。
   CLI 未導入・sandbox の権限拒否など再試行できない実行エラーは、確認したエラーを報告して直接調査に切り替えてよい。
+  Bash がコマンドをバックグラウンドへ移しただけでは失敗ではない（完了を待って判定する）。
 - `tool: codex` の場合は、実際に `codex exec` を試行して実行エラーを確認した後に限り、`claude-direct` で続行する。
 - CLI を試行せずに「利用できない」と推測してフォールバックしてはならない。
 

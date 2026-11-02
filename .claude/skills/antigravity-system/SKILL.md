@@ -118,10 +118,12 @@ Task tool parameters:
     agy -p "{research question}
 
     IMPORTANT: Do not ask any clarifying questions. Provide your best answer
-    based on the available information." --model <antigravity.model> 2>/dev/null
+    based on the available information." --model <antigravity.model> --print-timeout 30m
 
-    タイムアウト: Bash timeout パラメータに 300000 を指定すること。
-    リトライ: タイムアウトや質問検出時は antigravity-delegation.md のリトライプロトコルに従う。
+    実行と待機: .claude/rules/antigravity-delegation.md の「長時間実行と待機」の手順に従う
+    （出力はファイルに受ける）。Bash がバックグラウンドへ移しても失敗ではない。完了を待って出力を読み、
+    agy の結果を判定するまで報告を返さない。
+    リトライ: エラー終了・空出力・質問検出時は antigravity-delegation.md のリトライプロトコルに従う。
 
     Save full output to: .claude/docs/research/{topic}.md
     Return a concise summary.
@@ -141,6 +143,7 @@ IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> 2>/
 
 > **Note**: `agy -p` モードは stdin を待たないため `< /dev/null` は不要。
 > 詳細は `antigravity-delegation.md` の「Non-Interactive 実行」セクション参照。
+> 調査は 10〜20 分かかることがある。Bash がバックグラウンドへ移した場合の待ち方は同ルールの「長時間実行と待機」参照。
 
 ```bash
 # Codebase analysis
@@ -173,6 +176,9 @@ Save Antigravity research results to:
 This allows Claude and Codex to reference the research later.
 
 ## Task Templates
+
+以下はプロンプトの例。調査は 10〜20 分かかることがあるため、実行は `--print-timeout 30m` を付けて出力をファイルに受け、
+`antigravity-delegation.md` の「長時間実行と待機」に従う。
 
 ### Pre-Implementation Research
 
