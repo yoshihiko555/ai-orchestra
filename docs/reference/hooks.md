@@ -22,18 +22,20 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 
 ### フックイベント一覧
 
-| イベント             | 発火タイミング                     |
-| -------------------- | ---------------------------------- |
-| `SessionStart`       | Claude Code セッション開始時       |
-| `SessionEnd`         | Claude Code セッション終了時       |
-| `UserPromptSubmit`   | ユーザーがプロンプトを送信した直後 |
-| `InstructionsLoaded` | 指示書ファイルの読み込み完了時     |
-| `PreToolUse`         | ツール実行前                       |
-| `PostToolUse`        | ツール実行後                       |
-| `Stop`               | Claude Code が応答を返す直前       |
-| `ExitPlanMode`       | プランモード終了時                 |
-| `SubagentStart`      | サブエージェント起動時             |
-| `SubagentStop`       | サブエージェント停止時             |
+| イベント             | 発火タイミング                         |
+| -------------------- | -------------------------------------- |
+| `SessionStart`       | Claude Code セッション開始時           |
+| `SessionEnd`         | Claude Code セッション終了時           |
+| `UserPromptSubmit`   | ユーザーがプロンプトを送信した直後     |
+| `InstructionsLoaded` | 指示書ファイルの読み込み完了時         |
+| `PreToolUse`         | ツール実行前                           |
+| `PostToolUse`        | ツール実行後                           |
+| `PostToolUseFailure` | ツール実行が失敗した後                 |
+| `PermissionDenied`   | auto mode がツール呼び出しを拒否した後 |
+| `Stop`               | Claude Code が応答を返す直前           |
+| `ExitPlanMode`       | プランモード終了時                     |
+| `SubagentStart`      | サブエージェント起動時                 |
+| `SubagentStop`       | サブエージェント停止時                 |
 
 ### フックの入出力
 
@@ -108,6 +110,15 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 | ---------------------------- | ----------- | ---------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `codd-scan-postedit.py`      | PostToolUse | Edit/Write | scope 内ファイル編集時に `codd scan` を実行し graph を再構築（常に非ブロック、`hooks.scan_on_edit` opt-in・既定 `false`） |
 | `codd-validate-precommit.py` | PreToolUse  | Bash       | `git commit` 検出時に `codd validate` を実行し warn/block（`hooks.validate_on_commit` opt-in・既定 `warn`）               |
+
+### fail-logs
+
+| フック                      | イベント                                            | 対象 | 説明                                                                                                                                      |
+| --------------------------- | --------------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `capture-failures.py`       | PostToolUse / PostToolUseFailure / PermissionDenied | 全て | 失敗（非ゼロ終了・ツールのエラー・テスト/lint の失敗・auto mode の拒否）を `failures.jsonl` に記録（常に無出力・exit 0）                  |
+| `inject-failure-summary.py` | SessionStart                                        | —    | 再発している失敗シグネチャを `<fail-logs-summary>` 枠で注入                                                                               |
+| `present-lessons.py`        | SessionStart                                        | —    | 基準を超えた教訓候補を `<fail-logs-lessons>` 枠で提示（同じ内容は 1 日 1 回まで。ロックを待たない。非対話・教訓化セッションでは出さない） |
+| `distill-launch.py`         | SessionEnd                                          | —    | 教訓化が有効なとき（既定で無効）、教訓化のワーカーを切り離して起動してすぐ戻る（git・flock・記録の読み込みはしない）                      |
 
 ---
 
@@ -287,10 +298,12 @@ if __name__ == "__main__":
 - `sync-orchestra.py`（同期スクリプト）
 - `load-task-state.py`（core）
 - `audit-bootstrap.py`（audit）
+- `inject-failure-summary.py`, `present-lessons.py`（fail-logs）
 
 ### SessionEnd
 
 - `audit-session-end.py`（audit）
+- `distill-launch.py`（fail-logs）
 
 ### UserPromptSubmit
 
@@ -311,7 +324,11 @@ if __name__ == "__main__":
 - `Agent/Task`: `set-plan-gate.py`, `capture-task-result.py`, `check-codex-after-plan.py`
 - `Edit/Write`: `post-implementation-review.py`, `lint-on-save.py`, `test-tampering-detector.py`, `test-gate-checker.py`, `update-working-context.py`, `codd-scan-postedit.py`（opt-in、`hooks.scan_on_edit` 既定 `false`）
 - `Bash`: `post-test-analysis.py`, `test-tampering-detector.py`, `audit-cli.py`
-- `全 PostToolUse`: `audit-route.py`
+- `全 PostToolUse`: `audit-route.py`, `capture-failures.py`（fail-logs）
+
+### PostToolUseFailure / PermissionDenied
+
+- `capture-failures.py`（fail-logs）
 
 ### InstructionsLoaded
 

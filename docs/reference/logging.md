@@ -27,7 +27,7 @@ codd:
 蓄積ログの配置・root 解決方針の決定は **ADR-20260728-046** を正本とします。要点は以下の3点です。
 
 1. **機械が書く蓄積ログ**は `.claude/logs/<pkg>/` 配下に配置する（例: `.claude/logs/audit/`, `.claude/logs/fail-logs/`, `.claude/logs/skill-evolution/`）。
-2. **蓄積型 gitignore ログ**（`.claude/logs/` 配下のうち fail-logs `failures.jsonl` と skill-evolution の metrics）は **root worktree 解決**で書く。
+2. **蓄積型 gitignore ログ**（`.claude/logs/` 配下のうち fail-logs の `failures.jsonl`・教訓候補の台帳と、skill-evolution の metrics）は **root worktree 解決**で書く。
    - `git rev-parse --path-format=absolute --git-common-dir` の親ディレクトリを root worktree として使用し、そこに集約する。
    - git コマンドが失敗する場合（非リポジトリ・タイムアウト等）は `project_dir` へフォールバックする（fail-safe。破壊的動作へは進まない）。
    - root 解決は hook 内部の git 呼び出しに限定し、config 経由で `project_dir` 外パスを指定させない（既存のパストラバーサルガードは維持）。
@@ -50,6 +50,8 @@ codd:
 | `audit`（`audit-subagent-start.py`） | `.claude/state/audit-subagent-<agent_id>.json` | JSON | ignore | 対象外（project_dir ローカル） | サブエージェント固有のトレース状態 |
 | `quality-gates`（`post-test-analysis.py`、audit の sessions ログへ相乗り） | `.claude/logs/audit/sessions/<session_id>.jsonl`（`type: quality_gate`） | JSONL | ignore | **実装済み**（audit 経由） | テストコマンド実行結果の記録 |
 | `fail-logs`（`capture-failures.py`） | `.claude/logs/fail-logs/failures.jsonl` | JSONL | ignore（`.claude/logs/`） | **実装済み** | ツール実行失敗イベントの記録 |
+| `fail-logs`（台帳・CLI） | `.claude/logs/fail-logs/lessons.jsonl` / `lessons-state.json` / `lessons.md` | JSONL / JSON / Markdown | ignore（`.claude/logs/`） | **実装済み** | 教訓候補の出来事の履歴・現在の状態・人が読む一覧 |
+| `fail-logs`（教訓化） | `.claude/logs/fail-logs/distill-runs.jsonl` / `distill-daily.json` | JSONL / JSON | ignore（`.claude/logs/`） | **実装済み** | 教訓化の実行記録（理由付き。LLM の出力は書かない）とその日の回数 |
 | `skill-evolution`（`skill_evolution_common.py: metrics_path`） | `.claude/logs/skill-evolution/metrics/<skill>.jsonl` | JSONL | ignore（`.claude/logs/`） | **実装済み**（one-shot migration 付き） | スキル実行のオフライン評価メトリクス |
 | `skill-evolution`（`skill_evolution_common.py: pending_path`） | `.claude/logs/skill-evolution/pending/<run_id>.json` | JSON | ignore（`.claude/logs/`） | 対象外（project_dir ローカル） | フォーク中サブエージェント実行の一時状態（Stop hook が回収） |
 | `skill-evolution`（`skill_evolution_common.py: lock_path`） | `.claude/logs/skill-evolution/locks/<skill>.lock` | lockfile | ignore（`.claude/logs/`） | 対象外（project_dir ローカル） | スキル単位の並行実行排他制御 |
@@ -95,6 +97,8 @@ skill-evolution の旧 metrics は、以下の fail-safe な one-shot migration 
 
 - 専用ビューアはなく、`failures.jsonl` を直接参照するか SessionStart 時の再発サマリー注入（`inject-failure-summary.py`、設定は `packages/fail-logs/config/fail-logs.yaml` の `summary.*`）で確認します。
 - 集計仕様（再発シグネチャ・無害化・有界性保証）の正本は `docs/design/fail-logs.md` です。
+- 教訓候補は `lessons.md`（人が読む一覧。Codex などに渡せる）か `python3 "$AI_ORCHESTRA_DIR/packages/fail-logs/scripts/lessons_cli.py" list` で確認し、`/lessons` で昇格・却下します。台帳・写像・一覧は root worktree に集約され、`lessons.lock` の中で更新されます（`docs/design/fail-logs.md` §8）。
+- 教訓化（既定で無効）の実行は `distill-runs.jsonl` に理由付きで 1 件ずつ記録されます（`skipped` の理由: `no_signal` / `daily_limit` / `reserved` / `locked` / `no_masking` など。`docs/design/fail-logs.md` §7.6）。
 
 ### skill-evolution
 

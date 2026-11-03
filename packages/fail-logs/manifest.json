@@ -27,7 +27,7 @@
     "lib/distill_prompt.py",
     "lib/distill_worker.py"
   ],
-  "skills": [],
+  "skills": ["lessons"],
   "agents": [],
   "rules": [],
   "scripts": [
