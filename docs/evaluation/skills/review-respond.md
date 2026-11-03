@@ -3,8 +3,8 @@
 **対象スキル群**: `/review-respond`（正本: `facets/instructions/review-respond.md`、所属パッケージ: `packages/git-workflow`）
 **単位**: スキルフロー（手動で出した PR に対する bot レビュー指摘を検出→収集→分類→修正→push→返信/resolve→報告まで一気通貫で処理する単一スキルの一連の振る舞い）
 **作成日**: 2026-07-14
-**最終レビュー日**: 未レビュー（draft、パッケージ実装前に作成）
-**情報源**: `.claude/Plans.md`（Project: review-respond スキル。要件整理・Decisions・Notes）, 本タスクの仕様定義（`/review-respond` フロー・`pr_review_threads.py` コントラクト）, `docs/evaluation/git-workflow.md`（`pr_review_threads.py` の API 契約：EV-20〜EV-29）, `packages/loop-harness/lib/pr_review_wait.py`（`verify_origin`/`classify_severity` の再利用元・severity 分類 fail-safe 挙動）, `.claude/rules/skill-review-policy.md`, `facets/instructions/review-respond.md`（Step 4: スキル固有の実装委譲義務）
+**最終レビュー日**: 2026-11-03（EV-19〜EV-23（採用した指摘の教訓候補化。要件 FT-09）を追加し、人間レビューで承認。EV-01〜EV-18 は未レビューのまま）
+**情報源**: `.claude/Plans.md`（Project: review-respond スキル。要件整理・Decisions・Notes）, 本タスクの仕様定義（`/review-respond` フロー・`pr_review_threads.py` コントラクト）, `docs/evaluation/git-workflow.md`（`pr_review_threads.py` の API 契約：EV-20〜EV-29）, `packages/loop-harness/lib/pr_review_wait.py`（`verify_origin`/`classify_severity` の再利用元・severity 分類 fail-safe 挙動）, `.claude/rules/skill-review-policy.md`, `facets/instructions/review-respond.md`（Step 4: スキル固有の実装委譲義務）, `docs/requirements/fail-logs.md`（FR-09）, `docs/design/fail-logs.md`（§10.1 `lessons_cli.py`・§11.1）
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
 > この評価セットは「振る舞い仕様書」として機能し、テストコードとの突合（`evaluation-set-policy`
@@ -47,6 +47,7 @@ push し、すべての指摘（採用・非採用いずれも）に返信を残
 | 4        | 修正実装                       | 採用指摘一覧                                                       | implementation subagent への委譲による修正、テスト実行                                    |
 | 5        | commit & push                  | 修正後の worktree 差分                                             | commit・push の実行（スキル明示実行を承認とみなす。追加確認なし）                          |
 | 6        | 返信 + resolve                 | 各指摘の対応方針・修正内容                                          | 採用: 対応内容を返信し resolve／非採用: 理由を返信し resolve／issue comment: 返信のみで完了（いずれも `has_non_bot_comments: true` のスレッドは resolve を保留） |
+| 6.5      | 教訓候補化（fail-logs 導入時） | 採用した指摘                                                        | 一般化できる指摘を `lessons_cli.py add --actor review` で教訓候補に追加・合流（失敗しても続行） |
 | 7        | サマリー報告                   | 全指摘の処理結果                                                    | 対応済み/非対応の一覧と理由をユーザーへ日本語で報告                                        |
 
 ## 3. 評価観点
@@ -100,6 +101,14 @@ push し、すべての指摘（採用・非採用いずれも）に返信を残
 
 - [ ] EV-18（正常 / must）: 実行完了後、対応済み（採用・修正内容）と非対応（非採用・理由、または issue comment 完了）の一覧をユーザーへ日本語で報告する — 根拠: 本タスク仕様「サマリー報告（対応済み/非対応と理由の一覧）」, `.claude/rules/orchestra-usage.md`「ユーザーへの報告: 日本語」 / 検証: 実行観察
 
+### 教訓候補化（2026-11-03 追加。要件 FT-09）
+
+- [ ] EV-19（正常 / should）: 返信・resolve の後、採用した指摘のうち、この変更に限らず一般化できるものを `lessons_cli.py list --json` で既存の候補と見比べてから、`lessons_cli.py add --json - --actor review`（根拠 `{kind: pr, ref: <owner/repo#N>}`）で新しい候補として追加するか既存の候補に合流させる。追加の LLM 呼び出しを行わない（実行中のセッション自身が判断する） — 根拠: `docs/requirements/fail-logs.md` FR-09 / `docs/design/fail-logs.md` §11.1 / 検証: 実行観察
+- [ ] EV-20（異常 / must）: 採用しなかった（非採用の）指摘は教訓候補にしない — 根拠: `docs/requirements/fail-logs.md` FR-09 受け入れ条件 1 / 検証: PR レビュー（指示文の確認）・実行観察
+- [ ] EV-21（異常 / must）: 候補の追加が失敗しても（`lessons_cli.py` の終了コードが 0 以外。fail-logs が導入されていない・無効の終了コード 4 を含む）、警告を 1 行出すだけで `/review-respond` を止めず、返信・resolve・サマリー報告を続ける。fail-logs が導入されていなければ、このステップを飛ばす — 根拠: `docs/requirements/fail-logs.md` FR-09 受け入れ条件 3 / `docs/design/fail-logs.md` §10.1・§11.1 / 検証: 実行観察
+- [ ] EV-22（境界 / must）: 教訓候補の台帳を、再実行時の処理判定（どの指摘を再処理するか）に使わない。再処理の判定は EV-16 のとおり GitHub 上の unresolved 状態だけで行う — 根拠: `docs/requirements/fail-logs.md` FR-09 受け入れ条件 4 / `docs/design/fail-logs.md` §11.1 / 検証: PR レビュー
+- [ ] EV-23（境界 / must）: `/review-respond` は `lessons_cli.py` だけを使い、状態を変える `lessons_admin.py`（昇格・却下・Issue の作成など）を呼ばない — 根拠: `docs/requirements/fail-logs.md` §10 制約 / `docs/design/fail-logs.md` §10.1 / 検証: PR レビュー
+
 ## 4. 検証方法
 
 スキルフローは pytest で強制できないため、以下の手段で観点との整合を確認する:
@@ -114,5 +123,6 @@ push し、すべての指摘（採用・非採用いずれも）に返信を残
 - **返信と resolve の順序**（EV-11・EV-12）: 修正実装や返信フォーマットの改修時、「返信 → resolve」の順序が「resolve → 返信」に入れ替わっていないかを確認する。resolve 後は GitHub の通知挙動が変わりうるため、順序の逆転は指摘者（bot 運用者・人間レビュアー）への説明責任を損なう
 - **混在スレッドの resolve 保留**（EV-11・EV-12）: `has_non_bot_comments: true` のスレッドで返信をスキップしていないか（返信自体は行われるべき）、逆に resolve を実行してしまっていないか（人間コメントが混在するスレッドを勝手に閉じない）を確認する
 - **全件レスポンス保証**（EV-14）: 指摘の絞り込み・フィルタリングロジックを追加する改修では、フィルタで除外された指摘が「非対応（理由あり）」としてサマリーに残るか、それとも黙って消えるかを確認する。黙って消える設計変更は EV-14 の観点に反する
-- **冪等性の再検証**（EV-16）: ローカル state（キャッシュファイル・実行履歴等）を持ち込む改修提案が出た場合、`.claude/Plans.md` Decisions の「ローカル state を持たない」設計判断と矛盾しないか、GitHub 側の状態のみを SSOT とする原則が崩れていないかを重点確認する
+- **冪等性の再検証**（EV-16）: ローカル state（キャッシュファイル・実行履歴等）を持ち込む改修提案が出た場合、`.claude/Plans.md` Decisions の「ローカル state を持たない」設計判断と矛盾しないか、GitHub 側の状態のみを SSOT とする原則が崩れていないかを重点確認する。EV-19 の教訓候補の台帳はローカルに残るが、`/review-respond` の処理判定に読まない限り（EV-22）この原則と矛盾しない。台帳を「対応済みの指摘」の判定に使う変更は EV-16・EV-22 に反する
+- **教訓候補化の非干渉**（EV-19〜EV-23）: 教訓候補化のステップの改修時、その失敗が返信・resolve を止める経路（終了コードでの中断、例外の未処理）が紛れ込んでいないか、`lessons_admin.py` を呼ぶ経路が無いかを確認する
 - **implementation subagent 委譲の徹底**（EV-08）: 修正実装フェーズの改修時、変更箇所数や助言の有無・採否を理由に委譲を省略し、メインオーケストレーターが直接 Edit/Write で大量修正する経路が紛れ込んでいないかを確認する（`facets/instructions/review-respond.md` Step 4 のスキル固有の実装委譲義務）
