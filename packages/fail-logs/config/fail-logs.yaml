@@ -46,3 +46,15 @@ summary:
     - git grep
     - git ls-files
   include_non_bash_tool_errors: false # Bash 以外のツールのエラー（Edit の文字列不一致など）も集計するか
+
+# 教訓候補の台帳・提示（docs/design/fail-logs.md §8〜§10）。
+# 候補は .claude/logs/fail-logs/lessons.jsonl（台帳）と lessons.md（人が読む一覧）に root worktree でまとめて保存する。
+lessons:
+  add_daily_limit: 20 # 追加元（agent / review など）ごとに 1 日に追加できる候補の数
+  lock_wait_seconds: 5 # 台帳のロックを待つ秒数（取れなければ追加を諦めて理由を返す）
+  present:
+    enabled: true # セッション開始時に昇格候補を知らせるか（false で提示だけを止める）
+    threshold: 2 # 提示する再発回数（異なるセッション・PR の数）
+    max_items: 5 # 提示する候補の件数の上限
+    max_chars: 1500 # 提示の文字数の上限
+    promoting_stale_days: 14 # 昇格中のまま何日たったら反映の確認を促すか

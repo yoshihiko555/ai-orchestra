@@ -7,16 +7,31 @@
     "PostToolUse": ["capture-failures.py"],
     "PostToolUseFailure": ["capture-failures.py"],
     "PermissionDenied": ["capture-failures.py"],
-    "SessionStart": ["inject-failure-summary.py"]
+    "SessionStart": ["inject-failure-summary.py", "present-lessons.py"]
   },
   "files": [
     "hooks/capture-failures.py",
     "hooks/inject-failure-summary.py",
-    "lib/masking.py"
+    "hooks/present-lessons.py",
+    "lib/masking.py",
+    "lib/sanitize.py",
+    "lib/lessons_model.py",
+    "lib/lessons_store.py",
+    "lib/lessons_context.py",
+    "lib/promotion.py"
   ],
   "skills": [],
   "agents": [],
   "rules": [],
-  "scripts": [],
+  "scripts": [
+    {
+      "path": "scripts/lessons_cli.py",
+      "description": "教訓候補の CLI（list / show / add / check-text / render / path。読み取りと候補の追加だけ。許可リストに入れてよい）"
+    },
+    {
+      "path": "scripts/lessons_admin.py",
+      "description": "教訓候補の人向け CLI（revise / set-state / merge / ack / verify / issue / rebuild。/lessons で人が承認した操作だけに使う。許可リストに入れない）"
+    }
+  ],
   "config": ["config/fail-logs.yaml"]
 }

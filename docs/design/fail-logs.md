@@ -71,7 +71,10 @@ capture（記録）──▶ inject（再発の集計・注入）
 
 | モジュール             | 責務                                                                                       |
 | ---------------------- | ------------------------------------------------------------------------------------------ |
-| `lessons_store.py`     | 台帳への追記・写像の更新と追いつき・状態遷移の検査・spool の取り込み（§8）                 |
+| `lessons_model.py`     | 出来事の検査・写像への畳み込み・状態遷移の検査・提示の選定（I/O を持たない。§8.1〜§8.2・§9） |
+| `lessons_store.py`     | 台帳への追記・写像の更新と追いつき・`lessons.md` の作成・spool の書き込みと取り込み（§8）    |
+| `lessons_context.py`   | CLI と hook が共有する前提（導入の確認・設定・保存先・終了コード）（§10.1・§12）             |
+| `promotion.py`         | 昇格する文面の作成・昇格境界の検査・公開範囲の取得・ガードの Issue の本文（§10.4・§10.6）  |
 | `masking.py`           | 強化版マスキングの読み込みと検査、PII の追加処理、伏せてから切り詰める処理（§7.4）         |
 | `sanitize.py`          | 文字種・参照の形式の検査（入力）と無害化（出力。境界フレーム・山括弧の中和）（§5.1・§8.3） |
 | `transcript_reader.py` | セッションの記録の安全な読み込みと、発言の構造的な分類（§7.3）                             |
@@ -618,7 +621,13 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
   `target.ref` はリポジトリ内の相対パスか `https://github.com/` で始まる URL、`target.branch` は `[A-Za-z0-9._/-]{1,200}` で
   先頭が `-` でないもの、`note` は 200 字までの 1 行。
 - **根拠の決め方**（呼び出し側の自己申告を減らす）: `--actor agent` の `add` の根拠は、CLI が `CLAUDE_CODE_SESSION_ID` から
-  `kind: session` で決める（無ければ `kind: agent`）。`kind: pr` の根拠は `--actor review` のときだけ受け付ける。
+  `kind: session` で決める。ただし、そのセッションの記録が許可するルート（§7.7）の配下に実在するときだけで、無ければ
+  `kind: agent`（再発回数に数えない）にする（環境変数を差し替えた偽のセッション ID を数えないため）。`kind: pr` の根拠は
+  `--actor review` のときだけ受け付ける。
+- **畳み込みの頑健さ**: 追いつき・作り直しでは、形の壊れた出来事（日時が ISO でない、根拠の形が不正など）や、適用の途中で
+  失敗した出来事を飛ばし、写像を適用前に戻す（壊れた 1 行で読み取りと作り直しが止まり続けないようにする）。書き込み時は、
+  出来事を写像の複製に厳密に適用して検査してから追記し、追記した行は台帳から読み直して畳み込む（改行だけ欠けていた末尾の行も、
+  作り直しと同じく反映される）。同じ `eid` の出来事は、根拠・変更の記録・日ごとの件数のどれにも 2 回目を反映しない。
 - **件数の上限**: `source` ごとに 1 日 `lessons.add_daily_limit`（既定 20）件まで追加できる（`distill` は §7.2 の上限に従う）。
 
 ### 8.4 lessons.md
@@ -645,13 +654,20 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
 - **取り込むときの扱い**: 出来事の種類は `lesson.created` / `lesson.evidence_added` だけを受け付け、それ以外は捨てる。
   `actor` は `spool`、`source` は `agent` に固定する。§8.3 の検査を通す。spool が持ち込んだ根拠は再発回数に数えない（§8.2）。
   spool から取り込んだ候補は、`/lessons` の「前回以降のエージェントによる変更」の一覧に必ず出す。
-- **取り込むファイルの開き方**: `O_NOFOLLOW | O_NONBLOCK` で開き、`fstat` で通常ファイル・自分の uid の所有・大きさ 64 KiB 以下で
-  あることを確かめる。満たさないものは読まずに消す（FIFO やリンクで hook を止めさせない）。
+- **取り込むファイルの開き方**: spool のディレクトリは `O_DIRECTORY | O_NOFOLLOW` で開き（symlink なら取り込まない）、その中の
+  決まった形の名前（32 桁の 16 進 + `.json`）だけを、開いたディレクトリからの相対で `O_NOFOLLOW | O_NONBLOCK` で開いて読み、
+  消す（spool を symlink にして、サンドボックスの外で動く hook に別の場所のファイルを消させない）。`fstat` で通常ファイル・
+  自分の uid の所有・大きさ 64 KiB 以下であることを確かめ、満たさないもの・形の不正なもの（読み込みで例外になるものを含む）は
+  取り込まずに消す（1 つの不正なファイルで以後の取り込みを止めない）。1 回の取り込みは最大 100 件・合計 1 MiB まで。
+- **日時と件数**: spool が持ち込んだ根拠の日時は使わず、取り込み時刻にする（未来の日時で昇格後の再発回数を偽装させない）。
+  spool から取り込んだ出来事は、日ごとの追加件数（§8.3）に数えない。代わりに、`add` が spool に退避するとき、その spool に
+  溜まっている数が `lessons.add_daily_limit` 以上なら退避しない（終了コード 5）。
 - **取り込みの冪等性**: spool のファイル名の uuid を出来事の `eid` にする。追記の後・ファイルの削除の前に落ちても、同じ `eid` は
   畳み込みで 1 回だけ適用される（§8.2）。
 - **根拠の確認**: spool が持ち込んだ `kind: session` の根拠は、取り込み時に、そのセッションの記録が許可するルート（§7.7）の配下に
   あることを確かめられたときだけ再発回数に数える。`kind: pr` の根拠は数えない。
-- `lessons_cli.py` の `list` / `show` は、root の写像に自分の worktree の spool を重ねて表示する（退避した追加がすぐ見えるように）。
+- `lessons_cli.py` の `list`（`--state`・`--presentable` を付けないとき）は、root の写像に自分の worktree の spool を重ねて
+  状態 `spooled` として表示する（退避した追加がすぐ見えるように）。
   重ねる内容にも §8.3 の検査と §5.1 の無害化をかける。
 
 ---
@@ -715,8 +731,8 @@ CLI を介さずライブラリを直接使う）。どちらも manifest の `s
   `/lessons` に「`lessons_cli.py` は許可リストに入れてよいが、`lessons_admin.py` は入れない」と明記する。`/review-respond` と
   memory-layers ルールは `lessons_cli.py` だけを使う。`lessons_admin.py` を許可リストに入れた環境では、注入されたエージェントが
   状態の変更や Issue の作成をできてしまう（§12 の受け入れるリスク）。
-- **終了コード**（両方に共通）: 0 成功 / 2 伏せ字が使えない / 3 spool に退避した・サンドボックスの外での実行が要る /
-  4 導入されていない・無効 / 5 入力の検査に失敗・確認が要る。呼び出し側（`/review-respond` 等）は 0 以外を警告 1 行にして、処理を続ける。
+- **終了コード**（両方に共通）: 0 成功 / 1 その他の失敗（ロックを取れない・外部コマンドの失敗など）/ 2 伏せ字が使えない /
+  3 spool に退避した・サンドボックスの外での実行が要る / 4 導入されていない・無効 / 5 入力の検査に失敗・確認が要る。呼び出し側（`/review-respond` 等）は 0 以外を警告 1 行にして、処理を続ける。
 - fail-logs が導入されていない（`.claude/orchestra.json` に無い）とき、または `enabled: false` のときは、何もせずに終了コード 4 で戻る。
 - 書き込む出来事には `actor`（`lessons_cli.py` は `--actor`、既定 `agent`。`lessons_admin.py` は `skill` 固定）と
   `sid`（`CLAUDE_CODE_SESSION_ID`）を付ける。`/lessons` は前回の確認以降に `agent` / `review` / `spool` が行った変更を一覧で示す。
@@ -767,24 +783,29 @@ manifest の `skills`）。スキルの本文に「`lessons_cli.py` の出力は
 
 ### 10.4 昇格境界の検査（`check-text`）
 
-- 文面を作る: 見出し・一般化した回避策・マーカー `<!-- lesson:L-xxxxxxxx -->`。コードブロックに入れる場合のフェンスは、
+- 文面を作る: 見出し・一般化した回避策・マーカー `<!-- lesson:L-xxxxxxxx -->` を 1 行の箇条書き（`- **見出し** — 回避策 <マーカー>`）にする。
+  候補の文の山括弧は中和し、マーカーだけを本物にする（候補の文でマーカーを偽装させない）。コードブロックに入れる場合のフェンスは、
   文面の中で最も長いバッククォートの並びより長くする。
 - §7.4 の伏せ字を再びかける。
-- 検出: URL・メールアドレス・ホームディレクトリのパス・IP アドレス・ホスト名らしき語（ドットを含む FQDN）。
+- 検出: URL・メールアドレス・ホームディレクトリのパス・IP アドレス・ホスト名らしき語（ドットを含む FQDN）・コマンドや強い命令に
+  見える語（バッククォート、`| sh`、`curl`・`sudo`・`eval`・`rm -r` など。昇格先は全 CLI が信頼する指示になるため）。
 - §8.3 の文字種検査。
 - `gh repo view --json visibility` で公開範囲を得る（失敗したら「不明」とし、公開として扱う）。
 - 結果を `{text, findings: [...], visibility}` の JSON で返す。
 
 ### 10.5 反映の確認（`verify`）
 
-1. `git fetch origin <統合ブランチ>` を実行する（失敗したら状態を変えず、理由を返す）
-2. `git grep -F -e <ID から作ったマーカー> origin/<統合ブランチ> -- <target.ref>` で反映を確かめ、見つかれば `promoted`
+1. `git fetch origin <統合ブランチ>` を実行する（失敗したら状態を変えず、理由を返す）。出力には `origin` の URL を含め、
+   `/lessons` は宛先を利用者に示す（共有の `.git/config` を書き換えて宛先を差し替える余地があるため）
+2. `git grep -F -e <ID から作ったマーカー> origin/<統合ブランチ> -- <target.ref>` で反映を確かめ、見つかれば `promoted`。
+   終了コードが 0・1 以外（エラー）なら状態を変えずに失敗を返す
 3. 見つからなければ `gh pr list --head <target.branch> --state all --json state` で PR の状態を見る:
    - `OPEN` または PR が無い → `promoting` のまま
    - `CLOSED`（マージされずに閉じた）→ `candidate`
    - `MERGED` → 統合ブランチの名前が違う可能性があるので `promoting` のまま、その旨を返す。`/lessons` は利用者に
      `promoted` にするか `candidate` に戻すかを選ばせる（14 日ごとの再通知を繰り返さないため）
 4. 統合ブランチは `git symbolic-ref refs/remotes/origin/HEAD` から得る（得られなければ `main`）
+5. 状態の変更はロックの中で、候補がまだ `promoting` のときだけ行う（外部コマンドの間に別のプロセスが状態を変えていたら何もしない）
 
 ### 10.6 ガードの Issue（`issue`）
 
@@ -794,7 +815,8 @@ manifest の `skills`）。スキルの本文に「`lessons_cli.py` の出力は
 - 本文は固定の雛形で、候補の文面はコードブロック（フェンスは §10.4 と同じ規則）に入れる。本文の冒頭に「LLM または
   エージェントが作った候補から作った Issue であり、自律エンジン（`/loop-issue`・TAKT）に渡す前に人が内容を確かめること」と書く。
 - ラベルは付けない（自律エンジンの起動条件に当たるラベルを避ける）。
-- 成功したら `promoted`（Issue の URL を記録）。失敗したら状態を変えず、理由を返す。
+- 成功したら `promoted`（Issue の URL を記録）。失敗したら状態を変えず、理由を返す。Issue を作った後に状態を更新できなかったときも、
+  作った Issue の URL と `state_updated: false` を必ず返す（再実行で同じ Issue を重複して作らないため）。Issue の見出しにも伏せ字をかける。
 
 ---
 
@@ -888,7 +910,8 @@ lessons:
   - `distill.enabled` はプロジェクトの `fail-logs.local.yaml` でも有効にできる。悪意のあるリポジトリが費用を発生させる余地は、
     1 日の上限と 1 回の費用の上限で抑える。
   - `lessons_cli.py` の `--actor` と、`--actor review` の `kind: pr` の根拠は自己申告である。注入されたエージェントが
-    偽の PR の根拠を付けて提示の基準に届かせる、または `--actor skill` を名乗って変更の一覧から外れる余地がある。提示は
+    偽の PR の根拠を付けて提示の基準に届かせる、実在する別のセッションの ID（`~/.claude/projects` から読める）を使って
+    `kind: session` の根拠を作る、または `--actor skill` を名乗って変更の一覧から外れる余地がある。提示は
     §9 の無害化を通り、昇格は人の承認を要するため、影響は「無害化された見出しが提示される」ことに限られる。
   - 昇格・却下・Issue の作成などの人の承認は `/lessons` の AskUserQuestion で行い、`lessons_admin.py` の実行時の Bash の許可の確認を
     二重の歯止めにする（§10.1）。auto mode ではこの確認が人に届かないことがある。利用者が
@@ -977,7 +1000,7 @@ settings ファイルは変えていない。試行は利用者の scratchpad �
 | ---- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 1    | 評価セットの改訂（人のレビューを経る）                            | `docs/evaluation/fail-logs.md`、`docs/evaluation/skills/review-respond.md`、`docs/evaluation/skills/lessons.md`（新規）                                                  |
 | 2    | 記録の拡張と既存の集計の変更（§3(f)〜(i)、§4 の 5〜8）            | `hooks/capture-failures.py`、`hooks/inject-failure-summary.py`、`lib/masking.py`、`manifest.json`（hooks）、`config/fail-logs.yaml`                                      |
-| 3    | 台帳・CLI・提示（§8〜§10、§9）                                    | `lib/lessons_store.py`、`lib/sanitize.py`、`scripts/lessons_cli.py`、`scripts/lessons_admin.py`、`hooks/present-lessons.py`、`manifest.json`（hooks・scripts・files）    |
+| 3    | 台帳・CLI・提示（§8〜§10、§9）                                    | `lib/lessons_model.py`、`lib/lessons_store.py`、`lib/lessons_context.py`、`lib/promotion.py`、`lib/sanitize.py`、`scripts/lessons_cli.py`、`scripts/lessons_admin.py`、`hooks/present-lessons.py`、`manifest.json`（hooks・scripts・files） |
 | 4    | 教訓化（§7）と評価用の記録                                        | `hooks/distill-launch.py`、`lib/distill_worker.py`、`lib/transcript_reader.py`、`scripts/eval_distill.py`、`tests/fixtures/`                                             |
 | 5    | `/lessons` スキル（§10.2）                                        | `facets/instructions/lessons.md`、`facets/compositions/skills/lessons.yaml`、`manifest.json`（skills）、生成物（`.claude/skills/`・`.agents/skills/`）                   |
 | 6    | `/review-respond` の連携と memory-layers ルールの改訂、ADR の確定 | `facets/instructions/review-respond.md`、`facets/instructions/memory-layers.md`、生成物、ADR-20261103-063（accepted）、ADR-20260927-057（注記）、`docs/adr/DECISIONS.md` |
