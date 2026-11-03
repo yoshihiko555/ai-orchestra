@@ -98,7 +98,7 @@ skill-evolution の旧 metrics は、以下の fail-safe な one-shot migration 
 - 専用ビューアはなく、`failures.jsonl` を直接参照するか SessionStart 時の再発サマリー注入（`inject-failure-summary.py`、設定は `packages/fail-logs/config/fail-logs.yaml` の `summary.*`）で確認します。
 - 集計仕様（再発シグネチャ・無害化・有界性保証）の正本は `docs/design/fail-logs.md` です。
 - 教訓候補は `lessons.md`（人が読む一覧。Codex などに渡せる）か `python3 "$AI_ORCHESTRA_DIR/packages/fail-logs/scripts/lessons_cli.py" list` で確認し、`/lessons` で昇格・却下します。台帳・写像・一覧は root worktree に集約され、`lessons.lock` の中で更新されます（`docs/design/fail-logs.md` §8）。
-- 教訓化（既定で無効）の実行は `distill-runs.jsonl` に理由付きで 1 件ずつ記録されます（`skipped` の理由: `no_signal` / `daily_limit` / `reserved` / `locked` / `no_masking` など。`docs/design/fail-logs.md` §7.6）。
+- 教訓化（既定で有効）の実行は `distill-runs.jsonl` に理由付きで 1 件ずつ記録されます（`skipped` の理由: `no_signal` / `daily_limit` / `reserved` / `locked` / `no_masking` など。`docs/design/fail-logs.md` §7.6）。
 
 ### skill-evolution
 

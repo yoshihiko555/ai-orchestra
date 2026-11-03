@@ -118,7 +118,7 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 | `capture-failures.py`       | PostToolUse / PostToolUseFailure / PermissionDenied | 全て | 失敗（非ゼロ終了・ツールのエラー・テスト/lint の失敗・auto mode の拒否）を `failures.jsonl` に記録（常に無出力・exit 0）                  |
 | `inject-failure-summary.py` | SessionStart                                        | —    | 再発している失敗シグネチャを `<fail-logs-summary>` 枠で注入                                                                               |
 | `present-lessons.py`        | SessionStart                                        | —    | 基準を超えた教訓候補を `<fail-logs-lessons>` 枠で提示（同じ内容は 1 日 1 回まで。ロックを待たない。非対話・教訓化セッションでは出さない） |
-| `distill-launch.py`         | SessionEnd                                          | —    | 教訓化が有効なとき（既定で無効）、教訓化のワーカーを切り離して起動してすぐ戻る（git・flock・記録の読み込みはしない）                      |
+| `distill-launch.py`         | SessionEnd                                          | —    | 教訓化が有効なとき（既定で有効）、教訓化のワーカーを切り離して起動してすぐ戻る（git・flock・記録の読み込みはしない）                      |
 
 ---
 

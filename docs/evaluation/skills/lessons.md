@@ -3,7 +3,7 @@
 **対象スキル群**: `/lessons`（正本: `facets/instructions/lessons.md`、所属パッケージ: `packages/fail-logs`）
 **単位**: スキルフロー（教訓候補の一覧 → 反映の確認 → 1 件の確認 → 昇格先の選択 → 文面の検査 → 承認 → 書き込みと状態の変更、を人と対話して進める単一スキルの一連の振る舞い）
 **作成日**: 2026-11-03
-**最終レビュー日**: 2026-11-03（スキル実装前に作成し、人間レビューで承認）
+**最終レビュー日**: 2026-11-03（教訓化を既定で有効に改め、EV-19 を改訂。人間レビューで承認）。2026-11-03（スキル実装前に作成し、人間レビューで承認）
 **情報源**: `docs/requirements/fail-logs.md`（FR-13〜FR-15・NF-04・NF-09・§10 制約）, `docs/design/fail-logs.md`（§5.1・§8.5・§10.1〜§10.6）, `docs/adr/ADR-20261103-063.md`, `docs/evaluation/fail-logs.md`（`lessons_cli.py` / `lessons_admin.py` の契約: EV-71・EV-80〜EV-88）
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
@@ -82,7 +82,7 @@
 
 - [ ] EV-17（正常 / should）: 書き込みの後、コミットと PR は通常の手順（`/commit`・`/pr-create`）で行うよう案内する。スキル自身はコミット・push しない — 根拠: `docs/requirements/fail-logs.md` FR-14 概要 / `docs/design/fail-logs.md` §10.2 手順 12 / 検証: 実行観察
 - [ ] EV-18（境界 / must）: スキルの本文に「`lessons_cli.py` は許可リストに入れてよいが、`lessons_admin.py` は入れない」と明記する — 根拠: `docs/requirements/fail-logs.md` §10 制約 / `docs/design/fail-logs.md` §10.1・§12 / 検証: PR レビュー（指示文の確認）
-- [ ] EV-19（境界 / should）: fail-logs が導入されていない・無効（CLI の終了コード 4）のときは、何も変えずにその旨と有効化の方法を示して終える。スキルの説明に、教訓化（既定で無効）の有効化の方法を書く — 根拠: `docs/requirements/fail-logs.md` NF-09 / `docs/design/fail-logs.md` §10.1 / 検証: PR レビュー・実行観察
+- [ ] EV-19（境界 / should）: fail-logs が導入されていない・無効（CLI の終了コード 4）のときは、何も変えずにその旨と有効化の方法を示して終える。スキルの説明に、教訓化（既定で有効）の止め方と費用を書く — 根拠: `docs/requirements/fail-logs.md` NF-09 / `docs/design/fail-logs.md` §10.1 / 検証: PR レビュー・実行観察
 
 ## 4. 検証方法
 

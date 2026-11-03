@@ -81,17 +81,18 @@ LESSONS_ADMIN="$AI_ORCHESTRA_DIR/packages/fail-logs/scripts/lessons_admin.py"
 - 終了コード: 0 成功 / 1 その他の失敗 / 2 伏せ字が使えない / 3 サンドボックスの外での実行が要る / 4 fail-logs が導入されていない・無効 / 5 入力の検査に失敗・確認が要る
 - 終了コード 4 のときは、何も変えずに「fail-logs が導入されていない、または `enabled: false`」と伝えて終える（`orchex install fail-logs --project .` で導入できる）
 
-### 教訓化（既定で無効）を有効にする方法
+### 教訓化（既定で有効）を止める方法
 
-セッションの終了時に教訓候補を自動で作る「教訓化」は既定で無効（`claude -p` を呼ぶため費用が発生する）。有効にするには
-`.claude/config/fail-logs/fail-logs.local.yaml` に次を書く。1 日の回数（`distill.daily_limit`）と 1 回の費用（`distill.max_budget_usd`）に上限がある。
+セッションの終了時に教訓候補を自動で作る「教訓化」は既定で有効で、合図のあったセッションだけ `claude -p` を呼ぶ（費用が発生する）。
+1 日の回数（`distill.daily_limit`、既定 10）と 1 回の費用（`distill.max_budget_usd`、既定 0.5 ドル）に上限があり、上限はプロジェクトごと。
+止めるには `.claude/config/fail-logs/fail-logs.local.yaml` に次を書く。
 
 ```yaml
 distill:
-  enabled: true
+  enabled: false
 ```
 
-教訓化が無効でも、`/review-respond` と作業中のエージェントが `lessons_cli.py add` で候補を足す。
+教訓化を止めても、`/review-respond` と作業中のエージェントが `lessons_cli.py add` で候補を足す。
 
 ## 承認のルール（全ステップ共通）
 

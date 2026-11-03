@@ -455,7 +455,7 @@ AI（Claude Code 等）の失敗を貯め、そこから教訓を昇格させる
 | hook   | `capture-failures.py`       | PostToolUse / PostToolUseFailure / PermissionDenied: `tool_error` / `test_failure` / `lint_failure` / `cli_failure` / `permission_denied` を記録 |
 | hook   | `inject-failure-summary.py` | SessionStart: 再発している失敗シグネチャをコンテキストへ注入（ADR-20260630-027。新しいイベントのテスト・lint 以外は別の見出し）       |
 | hook   | `present-lessons.py`        | SessionStart: 基準を超えた教訓候補を `<fail-logs-lessons>` 枠で提示（1 日 1 回まで。非対話では出さない）                            |
-| hook   | `distill-launch.py`         | SessionEnd: 教訓化が有効なとき（既定で無効）、教訓化のワーカーを切り離して起動する                                                    |
+| hook   | `distill-launch.py`         | SessionEnd: 教訓化が有効なとき（既定で有効）、教訓化のワーカーを切り離して起動する                                                    |
 | skill  | `lessons`                   | 教訓候補を人が確認し、承認したものを AGENTS.md の記述欄・プロジェクト独自の `.claude/rules`・ガードの Issue へ昇格させる              |
 | script | `lessons_cli.py`            | 教訓候補の一覧・表示・追加・昇格する文面の検査（許可リストに入れてよい）                                                              |
 | script | `lessons_admin.py`          | 状態の変更・反映の確認・ガードの Issue の作成（人が `/lessons` で承認した操作だけ。許可リストに入れない）                            |

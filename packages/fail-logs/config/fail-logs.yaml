@@ -59,11 +59,11 @@ lessons:
     max_chars: 1500 # 提示の文字数の上限
     promoting_stale_days: 14 # 昇格中のまま何日たったら反映の確認を促すか
 
-# 教訓化（docs/design/fail-logs.md §7）。既定で無効。有効にするとセッションの終了時に、合図（人の訂正・手動の拒否・中断、
+# 教訓化（docs/design/fail-logs.md §7）。既定で有効。セッションの終了時に、合図（人の訂正・手動の拒否・中断、
 # 未解決や反復の失敗）があったセッションだけを、道具を持たない `claude -p` に渡して教訓候補を作る（費用が発生する）。
-# 有効にするには fail-logs.local.yaml に `distill: {enabled: true}` を書く。
+# 止めるには fail-logs.local.yaml に `distill: {enabled: false}` を書く。
 distill:
-  enabled: false
+  enabled: true
   model: sonnet # 教訓化セッションのモデル（英数字・`.`・`-`・`[`・`]` だけ）
   language: ja # 候補の文面の言語
   include_noninteractive: false # `claude -p` など非対話のセッションも教訓化するか
