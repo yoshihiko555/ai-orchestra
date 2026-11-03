@@ -1,0 +1,23 @@
+# lessons スキルのファセット構成定義
+name: lessons
+description: fail-logs の教訓候補を人が確認し、承認したものを AGENTS.md・rules・ガードの Issue へ昇格させる
+
+# フロントマター（生成される SKILL.md に付与）
+frontmatter:
+  name: lessons
+  description: |
+    fail-logs が貯めた教訓候補（ツールの失敗・人の訂正・レビュー指摘から作った候補）を一覧し、
+    人が 1 件ずつ確認して、昇格先（AGENTS.md の記述欄 / プロジェクト独自の .claude/rules / ガードの Issue）を選び、
+    承認した文面だけを書き込む。却下・昇格中の候補の反映の確認・重複のまとめもここで行う。
+    「教訓候補を見たい」「昇格候補を確認して」「fail-logs の候補を整理して」「lessons」等のリクエストや、
+    セッション開始時の昇格候補の案内を受けて使用する。
+    トリガー: /lessons
+  metadata:
+    short-description: fail-logs の教訓候補の確認と昇格
+
+# 参照するポリシー
+policies:
+  - dialog-rules
+
+# スキル固有の instruction（ファイル参照）
+instruction: lessons

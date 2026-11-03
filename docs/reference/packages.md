@@ -31,7 +31,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [loop-harness](#loop-harness)                       | Issue 起点の Maker/Checker 反復と PR レビュー対応を安全駆動                                      | ハーネス     |
 | [codd](#codd)                                       | ドキュメント依存グラフの scan/validate/ack/impact（整合性レイヤー）                              | 整合性       |
 | [codex-harness](#codex-harness)                     | Codex CLI 向け repo-local ハーネス（hooks + 非対話 run/review）                                  | ハーネス     |
-| [fail-logs](#fail-logs)                             | AI の失敗イベント記録基盤（学習ループの入力）                                                    | 学習         |
+| [fail-logs](#fail-logs)                             | 失敗の記録と、教訓候補の蓄積・提示・昇格（学習ループ）                                           | 学習         |
 | [image-generation](#image-generation)               | Codex 組み込み image_gen による画像生成                                                          | 生成         |
 | [docker-runtime](#docker-runtime)                   | ハーネス共通の Docker/broker ライフサイクル基盤                                                  | 基盤         |
 | [meta-harness](#meta-harness)                       | 候補ハーネス・スキル・ルーティング設定の評価・進化基盤（Docker 隔離実行 + propose/promote/loop） | ハーネス     |
@@ -441,18 +441,26 @@ Codex CLI を主たる利用面とする repo-local ハーネス。hooks（secre
 
 ## fail-logs
 
-AI（Claude Code 等）の失敗イベントを記録する基盤。蓄積した失敗を次回以降の改善に活かす学習ループの入力を担う。
+AI（Claude Code 等）の失敗を貯め、そこから教訓を昇格させるパッケージ。失敗イベントの記録と再発の注入に加え、失敗・人の訂正・レビュー指摘から
+教訓候補を作り、基準を超えた候補をセッション開始時に提示し、人が `/lessons` で承認して AGENTS.md・rules・ガードの Issue に昇格させる
+（ADR-20261103-063、`docs/design/fail-logs.md`）。
 
 - **バージョン**: 0.1.0
 - **依存**: core
 
 ### コンポーネント
 
-| 種別   | 名前                        | 説明                                                                                     |
-| ------ | --------------------------- | ---------------------------------------------------------------------------------------- |
-| hook   | `capture-failures.py`       | PostToolUse: `tool_error` / `test_failure` / `lint_failure` / `cli_failure` を検知し記録 |
-| hook   | `inject-failure-summary.py` | SessionStart: 再発している失敗シグネチャをコンテキストへ注入（ADR-20260630-027）         |
-| config | `fail-logs.yaml`            | 失敗種別ごとのトグル・抜粋文字数・ログ保存先                                             |
+| 種別   | 名前                        | 説明                                                                                                                                  |
+| ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| hook   | `capture-failures.py`       | PostToolUse / PostToolUseFailure / PermissionDenied: `tool_error` / `test_failure` / `lint_failure` / `cli_failure` / `permission_denied` を記録 |
+| hook   | `inject-failure-summary.py` | SessionStart: 再発している失敗シグネチャをコンテキストへ注入（ADR-20260630-027。新しいイベントのテスト・lint 以外は別の見出し）       |
+| hook   | `present-lessons.py`        | SessionStart: 基準を超えた教訓候補を `<fail-logs-lessons>` 枠で提示（1 日 1 回まで。非対話では出さない）                            |
+| hook   | `distill-launch.py`         | SessionEnd: 教訓化が有効なとき（既定で無効）、教訓化のワーカーを切り離して起動する                                                    |
+| skill  | `lessons`                   | 教訓候補を人が確認し、承認したものを AGENTS.md の記述欄・プロジェクト独自の `.claude/rules`・ガードの Issue へ昇格させる              |
+| script | `lessons_cli.py`            | 教訓候補の一覧・表示・追加・昇格する文面の検査（許可リストに入れてよい）                                                              |
+| script | `lessons_admin.py`          | 状態の変更・反映の確認・ガードの Issue の作成（人が `/lessons` で承認した操作だけ。許可リストに入れない）                            |
+| script | `eval_distill.py`           | 教訓化の判断の手動評価（CI では実行しない）                                                                                           |
+| config | `fail-logs.yaml`            | 失敗種別ごとのトグル・抜粋文字数・ログ保存先・再発の注入（`summary.*`）・台帳と提示（`lessons.*`）・教訓化（`distill.*`）           |
 
 ---
 

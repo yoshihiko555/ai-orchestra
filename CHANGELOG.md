@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`fail-logs`: 失敗から教訓候補を貯め、繰り返し現れた候補を知らせる（ADR-20261103-063）**: 教訓候補を root worktree の台帳（人が読む一覧は `.claude/logs/fail-logs/lessons.md`）に貯め、異なるセッション・PR から 2 回以上現れた候補などをセッション開始時に `<fail-logs-lessons>` 枠で知らせる。同じ内容は 1 日 1 回まで（`lessons.present.enabled: false` で止められる）。
+- **`/lessons` スキルを追加**: 教訓候補を 1 件ずつ確認し、承認した文面だけを AGENTS.md の記述欄・プロジェクト独自の `.claude/rules`・ガードの Issue に書き込む。却下・反映の確認・重複のまとめもここで行う。
+- **`fail-logs`: 教訓化（既定で無効）**: `distill.enabled: true` にすると、人の訂正や未解決の失敗があったセッションだけを、終了時に道具を持たない `claude -p` に渡して教訓候補を作る。費用が発生し（既定は 1 日 10 回・1 回 0.5 ドルまで）、抜粋は機密情報を伏せてから送る（`ANTHROPIC_BASE_URL` を差し替えていればその接続先へ）。
+- **`fail-logs`: 教訓候補の CLI を追加**: `scripts/lessons_cli.py`（一覧・表示・追加・昇格する文面の検査。Bash の許可リストに入れてよい）と `scripts/lessons_admin.py`（状態の変更・反映の確認・Issue の作成。**許可リストに入れないこと**）。
+- **`/review-respond`: 採用した指摘のうち一般化できるものを教訓候補にする**（fail-logs を導入している場合。失敗しても返信・resolve は続ける）。
+
+### Changed
+
+- **`fail-logs`: コマンドの非ゼロ終了・ツールのエラー・auto mode の拒否も記録する**: 新しい種別 `permission_denied`（`targets.permission_denied`）を足し、再発サマリーではテスト・lint 以外の再発を別の見出しで出す（設定 `summary.top_signatures_new` ほか）。既存のテスト・lint の再発の出力は変わらない。
+- **`memory-layers` ルール: 作業中に得た落とし穴と回避策は、fail-logs を導入していれば auto-memory ではなく教訓候補にする**（`lessons_cli.py add`）。昇格先にプロジェクト独自の `.claude/rules` とガードの Issue を加えた。
+
 ### Fixed
 
 - **Antigravity（`agy`）の調査が途中で Claude の直接調査に切り替わる**: Bash がコマンドをバックグラウンドへ移しても失敗とせず、`agy` の完了を待ってから結果を読むようにした（`antigravity-delegation` ルール、`antigravity-system` / `reverse` スキル、`researcher` / `general-purpose` / `reverse-coordinator` エージェント）。`agy` には `--print-timeout 30m` を付け、タイムアウトは stderr で判定してリトライしない。

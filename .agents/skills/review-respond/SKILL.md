@@ -179,6 +179,33 @@ EOF
 
 Step 2/3 で処理対象と判定した指摘（`origin_verified: true` の場合は `fetch` が返した全件、`origin_verified: false` の場合は高確度で bot と判定できた件のみ）には、必ず何らかのレスポンス（対応内容 or 非採用理由）を残す。処理対象から除外した項目（判定不能・人間起因）には返信も resolve も行わず、Step 7 のサマリーで「未対応（判定保留）」として件数を報告する。返信本文には秘匿情報（API キー・トークン等）やスタックトレースの生ログをそのまま貼り付けず、PR コメントとして公開される前提で内容を整形する。
 
+### Step 6.5: 採用した指摘を教訓候補にする（fail-logs を導入している場合）
+
+採用した指摘のうち、**この変更に限らず一般化できるもの**（同じ種類の誤りを今後も防げるもの）だけを、fail-logs の教訓候補にする。
+非採用の指摘は候補にしない。追加の LLM 呼び出しはせず、このセッション自身が判断する。
+
+```bash
+LESSONS_CLI="$AI_ORCHESTRA_DIR/packages/fail-logs/scripts/lessons_cli.py"
+python3 "$LESSONS_CLI" list --json   # 既存の候補（同じ教訓なら merge_into にその ID を入れる）
+```
+
+候補ごとに、本文を一時ファイルに書いて渡す（`{owner/repo}` と `{pr_number}` は Step 1 の PR の URL から作る）:
+
+```bash
+LESSON_FILE=$(mktemp "${TMPDIR:-/tmp}/lesson.XXXXXX")
+cat > "$LESSON_FILE" <<'EOF'
+{"title": "1 行の見出し", "event": "事象", "cause": "原因", "avoidance": "回避策", "scope": "all", "severity": "normal",
+ "signals": ["drift"], "evidence": {"kind": "pr", "ref": "{owner/repo}#{pr_number}"}}
+EOF
+python3 "$LESSONS_CLI" add --json - --actor review < "$LESSON_FILE"
+```
+
+- 見出し・回避策は一般化して書き、人名・ホスト名・パス・ID・機密情報を入れない
+- 同じ PR の複数の指摘が同じ教訓になるなら、1 件にまとめる（同じ PR からの合流は再発回数を増やさない）
+- `lessons_cli.py` の終了コードが 0 以外（fail-logs が導入されていない・無効の 4 を含む）でも、**警告を 1 行出すだけで止めない**。返信・resolve・サマリー報告は続ける
+- 台帳（候補の一覧）を、再実行時の処理判定（どの指摘を再処理するか）に使わない。再処理の判定は GitHub 上の unresolved 状態だけで行う
+- 状態を変える `lessons_admin.py`（昇格・却下・Issue の作成）は使わない。昇格は人が `/lessons` で行う
+
 ### Step 7: サマリー報告
 
 ユーザーへ日本語で報告する:
@@ -202,6 +229,9 @@ Step 2/3 で処理対象と判定した指摘（`origin_verified: true` の場�
 
 ### resolve 件数
 {N} 件
+
+### 教訓候補（fail-logs）
+- {lid} — {見出し}（新規 / 合流）。追加できなかった場合は警告の 1 行
 
 ### push 先
 {ブランチ名}
