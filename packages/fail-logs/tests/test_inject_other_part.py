@@ -11,6 +11,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from tests.module_loader import load_module
 
 inject = load_module(
@@ -20,6 +22,7 @@ inject = load_module(
 LOG_REL = Path(".claude") / "logs" / "fail-logs" / "failures.jsonl"
 OTHER_HEADING = "  テスト・lint 以外で繰り返している失敗（再発を回避すること）:"
 LEGACY_HEADING = "  繰り返している失敗（再発を回避すること）:"
+RECURRENCE_COUNT = 2
 
 
 def _make_project(tmp_path: Path, local_config: str | None = None) -> Path:
@@ -167,6 +170,25 @@ def test_other_rows_do_not_push_out_test_failures(monkeypatch, tmp_path, capsys)
     assert "pytest" in out
 
 
+# EV-31 / EV-36: 末尾の壊れた物理行で、窓の外のテスト・lint を再走査し損ねない。
+def test_corrupt_tail_line_does_not_skip_rescan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary_limit = 5
+    project = _make_project(tmp_path, f"summary:\n  max_records: {summary_limit}\n")
+    legacy = [_legacy("pytest tests/a") for _ in range(RECURRENCE_COUNT)]
+    read_limit = summary_limit * inject.TAIL_READ_MULTIPLIER
+    flood = [_new(f"make target-{index}") for index in range(read_limit)]
+    _write_log(project, legacy + flood)
+    with (project / LOG_REL).open("a", encoding="utf-8") as log_file:
+        log_file.write('{"v": 1, "ts": broken\n')
+
+    out = _run(monkeypatch, project, capsys)
+
+    assert _has_line(out, LEGACY_HEADING)
+    assert "pytest" in out
+
+
 # EV-33: 意図した非ゼロ終了（最後の単純コマンドが grep 等で終了コード 1）は集計しない。
 def test_expected_nonzero_commands_are_excluded(monkeypatch, tmp_path, capsys) -> None:
     project = _make_project(tmp_path)
@@ -187,6 +209,30 @@ def test_expected_nonzero_commands_are_excluded(monkeypatch, tmp_path, capsys) -
     out = _run(monkeypatch, project, capsys)
 
     assert out == ""
+
+
+# EV-33: 引用符に囲まれた演算子だけの引数でも、検索の不一致を除外する。
+def test_quoted_operator_search_failures_are_excluded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = _make_project(tmp_path)
+    _write_log(project, [_new("grep -F '|' a.txt"), _new("grep -F '|' b.txt")])
+
+    assert _run(monkeypatch, project, capsys) == ""
+
+
+# EV-33: リダイレクトの & を区切りと誤認せず、検索の不一致を除外する。
+@pytest.mark.parametrize("redirect", ["2>&1", "&>/dev/null"])
+def test_redirected_search_failures_are_excluded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    redirect: str,
+) -> None:
+    project = _make_project(tmp_path)
+    _write_log(project, [_new(f"grep foo f {redirect}") for _ in range(RECURRENCE_COUNT)])
+
+    assert _run(monkeypatch, project, capsys) == ""
 
 
 # EV-33: 終了コード 1 以外、または最後の単純コマンドが対象外なら集計する。
@@ -226,6 +272,25 @@ def test_shell_signature_uses_two_tokens(monkeypatch, tmp_path, capsys) -> None:
 
     assert "×2" in out
     assert "git status" not in out
+
+
+# EV-34: 同じリダイレクト先を持つ別コマンドを混ぜず、それぞれの再発としてまとめる。
+def test_redirected_shell_failures_keep_distinct_signatures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = _make_project(tmp_path)
+    commands = ("make build 2>&1", "pytest 2>&1")
+    signatures = ("make build", "pytest")
+    rows = [_new(command) for command in commands for _ in range(RECURRENCE_COUNT)]
+    _write_log(project, rows)
+
+    out = _run(monkeypatch, project, capsys)
+
+    entries = [line for line in out.splitlines() if line.strip().startswith("- ×")]
+    assert len(entries) == len(commands)
+    assert all(f"×{RECURRENCE_COUNT}" in line for line in entries)
+    assert all(any(f"[shell] {signature}" in line for line in entries) for signature in signatures)
+    assert not any("[shell] 1" in line for line in entries)
 
 
 # EV-35: Bash 以外のツールエラーは既定で集計しない。
@@ -306,6 +371,63 @@ def test_last_simple_command_tokens() -> None:
     assert inject._last_simple_command_tokens("a || b | c d ; e f") == ["e", "f"]
     assert inject._last_simple_command_tokens("FOO=1 BAR=2 grep x") == ["grep", "x"]
     assert inject._last_simple_command_tokens("") == []
+
+
+# EV-33 / EV-34: 引用符の外の演算子だけで分け、最後の単純コマンドを採用する。
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("a && b", ["b"]),
+        ("x; y", ["y"]),
+        ("a|b", ["b"]),
+        ("a & b", ["b"]),
+        ("a |& b", ["b"]),
+        ("cmd\nnext arg", ["next", "arg"]),
+        ("grep -F '|' file.txt", ["grep", "-F", "|", "file.txt"]),
+        ('"grep" x', ["grep", "x"]),
+        ("echo 5 > f", ["echo", "5"]),
+    ],
+)
+def test_last_simple_command_tokens_preserve_shell_words(command: str, expected: list[str]) -> None:
+    assert inject._last_simple_command_tokens(command) == expected
+
+
+# EV-34: リダイレクトの演算子と宛先は、コマンドのトークンに含めない。
+@pytest.mark.parametrize(
+    "redirect",
+    [
+        "2>&1",
+        ">&2",
+        "&>/dev/null",
+        "&>>file",
+        "2>file",
+        "2>>file",
+        ">file",
+        "<file",
+        "<<EOF",
+        "<&3",
+        ">|file",
+        "<<<value",
+        "<>file",
+        "> 'file with spaces'",
+    ],
+)
+def test_redirections_are_dropped_from_command_tokens(redirect: str) -> None:
+    assert inject._last_simple_command_tokens(f"make build {redirect}") == ["make", "build"]
+    assert inject._last_simple_command_tokens(f"pytest {redirect}") == ["pytest"]
+
+
+# EV-34: リダイレクト先ではなく、最後の単純コマンドをシグネチャにする。
+def test_other_signature_key_ignores_redirections() -> None:
+    signature = inject._other_signature_key({"command": "make build 2>&1", "command_kind": "shell"})
+
+    assert signature == ("", "shell", "make build")
+
+
+# EV-33: 引用符やエスケープが閉じていない入力でも、予備の分割で処理を続ける。
+@pytest.mark.parametrize("command", ['grep "unterminated', "grep trailing" + "\\"])
+def test_unparseable_shell_input_falls_back(command: str) -> None:
+    assert inject._last_simple_command_tokens(command) == command.split()
 
 
 # EV-33: 引用符の中の `|` `;` では分けない（`grep -E "a|b"` も意図した非ゼロ終了として除外する）。
