@@ -148,7 +148,7 @@ audit ログ基盤と互換な形にすることで、将来の分析ツール�
 ## 4. 集計・注入フロー
 
 inject-failure-summary.py（SessionStart hook）は以下の契約で動く。1〜4 は 2026-07-28 に確定した契約、
-5〜8 は 2026-11-03 の追加で、**既存の入力（`detected_by: "output_pattern"` の失敗イベント）だけがあるときの
+5〜8 は 2026-11-03 の追加で、**既存の入力（`PostToolUse` の経路が記録した、`tool_use_id` を持たない失敗イベント）だけがあるときの
 出力は従来と同じ**になる（NF-06）。
 
 1. ログの物理末尾から最大 `TAIL_READ_MULTIPLIER × max_records`（現在 3 倍）行を読み、`ts` の降順で
@@ -163,18 +163,24 @@ inject-failure-summary.py（SessionStart hook）は以下の契約で動く。1�
 3. `min_occurrences`（既定 2）以上再発したシグネチャのみを対象とし、頻度順に `top_signatures`
    （既定 5）件まで注入する。1 回きりの失敗は注入しない（ノイズ抑制）。
 4. 壊れた行（JSON パース不能）はスキップし、セッション開始処理を止めない。
-5. **テスト・lint とそれ以外を分けて扱う**: `failure_type` が `test_failure` / `lint_failure` の行（`detected_by` を問わない。
-   以下「テスト・lint 部」）と、それ以外の行（`tool_error` / `cli_failure` / `permission_denied`。以下「その他部」）とで、
+5. **従来部とその他部を分けて扱う**: `PostToolUseFailure` / `PermissionDenied` から記録した行（`data.tool_use_id` を持つ）の
+   うち、`failure_type` が `test_failure` / `lint_failure` でないもの（`tool_error` / `cli_failure` / `permission_denied`。以下「その他部」）と、
+   それ以外の行（`tool_use_id` を持たない従来の行すべてと、新しい行のうちテスト・lint のもの。以下「従来部」）とで、
    手順 1 の件数上限・手順 3 の上位件数を別々に適用する。その他部の上位件数は `summary.top_signatures_new`（既定 3）。
-   走査は末尾から行い、両方が上限に達するか、走査量の上限（`summary.max_scan_bytes`、既定 2 MiB）に達したら止める。
-   注入文は、テスト・lint 部の後ろに、その他部を別の見出しで足す。その他部の行が無ければ、注入文は従来と同じになる。
-6. **意図した非ゼロ終了の除外**: `detected_by: "exit_code"` かつ `exit_code == 1` で、判定対象のコマンドが
+   従来部は手順 1〜4 のとおりに集計する（従来の行の `failure_type` が `tool_error` でも従来部に入れ、出力を変えない）。
+   手順 1 の読み取り窓が件数の上限まで埋まっているときは、末尾から走査し直し、両方が上限に達するか、走査量の上限
+   （`summary.max_scan_bytes`、既定 2 MiB）に達したら止める。走査し直してもその他部の行が無ければ、従来部は読み取り窓の
+   ものを使う（出力を変えない）。注入文は、従来部の後ろに、その他部を別の見出しで足す。
+   その他部の行が無ければ、注入文は従来と同じになる。
+   （2026-11-03 の実装で、`failure_type` だけで分けると、`failure_type` の違う同じコマンドの従来の行を 1 つのシグネチャに
+   まとめる手順 2 と両立しないことが分かったため、記録の出所（`tool_use_id` の有無）で分けることにした。）
+6. **意図した非ゼロ終了の除外**（その他部だけ）: `detected_by: "exit_code"` かつ `exit_code == 1` で、判定対象のコマンドが
    `summary.expected_nonzero_commands` に当たるものは集計に入れない。判定対象のコマンドは、コマンド全体を
-   `&&` `||` `;` `|` で区切った**最後の単純コマンド**から、先頭の環境変数の代入を除いた先頭 1〜2 トークン
+   `&&` `||` `;` `|` と改行で区切った（引用符の中では区切らない）**最後の単純コマンド**から、先頭の環境変数の代入を除いた先頭 1〜2 トークン
    （既定: `grep` `rg` `test` `[` `diff` `cmp` `which` `pgrep` `git diff` `git grep` `git ls-files`）。
 7. **その他部のシグネチャ**: `command_kind` が `shell` の行は、先頭トークンだけだと `git` や `uv` に潰れるため、
    最後の単純コマンドの先頭 2 トークン（例 `git push`、`uv run`）をシグネチャにする。
-8. **Bash 以外のツールエラーは既定で集計しない**: `data.command` が空の `tool_error` は、
+8. **Bash 以外のツールエラーは既定で集計しない**（その他部だけ）: `data.tool` が `Bash` でない `tool_error` は、
    `summary.include_non_bash_tool_errors: true` のときだけ集計する（Edit の文字列不一致などの雑音を避ける）。
    記録自体は行い、教訓化の前段判定（§7.3）で使う。
 
@@ -377,10 +383,13 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
   絶対パスから読み込む。パスは `$AI_ORCHESTRA_DIR/packages/audit/hooks/secret_masking.py`、無ければ
   このファイルからの相対パス（`../../audit/hooks/secret_masking.py`）。`sys.path` に名前で足す方式は使わない
   （同名のファイルに差し替えられないため）
-- 読み込み後に、既知の機密情報の見本（`sk-` + 30 文字など）が伏せられることを確かめる（カナリア）
+- 読み込み後に、既知の機密情報の見本（`sk-` で始まる API キー・`password=` の key=value・`Bearer` のトークンの 3 つ）が
+  すべて伏せられることを確かめる（カナリア。古い版や差し替えた版を見分ける）
 - 読み込み・カナリア・呼び出しのいずれかで失敗したら「伏せ字が使えない」とする
 - 強化版に加えて、ホームディレクトリのパス（`/Users/<名前>`・`/home/<名前>` → `~`）、メールアドレス、
-  IPv4 アドレス、URL のクエリ文字列と認証情報（`user:pass@`）を伏せる
+  IPv4 アドレス、URL のクエリ文字列と認証情報（`user:pass@`）、空白区切りのフラグで渡す機密情報（`--password x`・
+  `--token=x`・`curl -u user:pass`）を伏せる。正規表現は量指定子に上限を付け、64 KiB の入力でも線形の時間で終わるようにする。
+  `mysql -pSECRET` のように 1 文字のフラグに続けて書く形は、`cp -pR` などと区別できないため伏せない（受け入れる限界）
 - **伏せてから切り詰める**（切り詰めで機密情報の途中が切れて、正規表現に当たらなくなるのを防ぐ）。巨大な本文は、
   伏せる前に固定の上限（64 KiB）で切る
 
