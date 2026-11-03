@@ -11,6 +11,7 @@ targets:
   test_failure: true # pytest / npm test 等の失敗
   lint_failure: true # ruff / mypy 等の失敗
   cli_failure: true # codex / agy 等の外部 CLI 失敗
+  permission_denied: true # auto mode の分類器が拒否したツール呼び出し（PermissionDenied）
 
 # エラー要約（error_excerpt）の最大文字数
 max_excerpt_chars: 500
@@ -27,3 +28,21 @@ summary:
   min_occurrences: 2 # 再発とみなす最小回数（これ未満は注入しない）
   top_signatures: 5 # 表示する再発シグネチャの上位件数
   show_examples: true # 代表コマンド + エラー抜粋を表示するか
+  # 以下は PostToolUseFailure / PermissionDenied から記録した、テスト・lint 以外の行（その他部）にだけ効く。
+  # 設計は docs/design/fail-logs.md §4 の 5〜8 を参照。
+  top_signatures_new: 3 # その他部の上位件数（従来の再発の後ろに別の見出しで出す）
+  max_scan_bytes: 2097152 # その他部が末尾を占めるときに、ログを末尾から走査する量の上限（バイト）
+  # 意図した非ゼロ終了とみなすコマンド（終了コード 1 で、最後の単純コマンドの先頭 1〜2 トークンが一致したら集計しない）
+  expected_nonzero_commands:
+    - grep
+    - rg
+    - test
+    - "["
+    - diff
+    - cmp
+    - which
+    - pgrep
+    - git diff
+    - git grep
+    - git ls-files
+  include_non_bash_tool_errors: false # Bash 以外のツールのエラー（Edit の文字列不一致など）も集計するか
