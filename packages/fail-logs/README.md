@@ -6,7 +6,7 @@ AI（Claude Code 等）の**失敗を貯め、そこから教訓を昇格させ�
 ```text
 記録（hook）──▶ 再発の注入（SessionStart）
    │
-   └──▶ 教訓化（SessionEnd。既定で無効）──▶ 教訓候補の台帳 ──▶ 提示（SessionStart）──▶ 昇格（/lessons。人が承認）
+   └──▶ 教訓化（SessionEnd。既定で有効）──▶ 教訓候補の台帳 ──▶ 提示（SessionStart）──▶ 昇格（/lessons。人が承認）
                                             ▲
                              /review-respond・作業中のエージェント（lessons_cli.py add）
 ```
@@ -46,21 +46,21 @@ AI（Claude Code 等）の**失敗を貯め、そこから教訓を昇格させ�
 - `present-lessons.py`（SessionStart）が、基準を超えた候補（再発 2 回以上、昇格したのに再発、昇格中のまま 14 日 など）を `<fail-logs-lessons>`
   枠で知らせる。同じ内容は同じ root で 1 日 1 回まで。重大で再発 1 の候補は ID だけを示す。非対話のセッションでは示さない
 
-### 4. 教訓化（既定で無効）
+### 4. 教訓化（既定で有効）
 
-`distill-launch.py`（SessionEnd）が、教訓化が有効なときだけワーカーを切り離して起動する（セッションの終了を待たせない）。
+`distill-launch.py`（SessionEnd）が、対話のセッションの終了時にワーカーを切り離して起動する（セッションの終了を待たせない。非対話のセッションは既定で対象外）。
 ワーカーは LLM を使わない前段判定（人の訂正・手動の拒否・中断、未解決や反復の失敗）で合図のあったセッションだけを、
 道具を持たない `claude -p`（`--restricted --tools ""`、hook・MCP・セッション保存なし、環境変数は許可リストだけ）に渡し、
 出力を形式検査してから台帳に入れる。TDD の red → green や一過性の失敗は合図にしない。
 
-**有効にするには** `.claude/config/fail-logs/fail-logs.local.yaml` に次を書く（`claude -p` の費用が発生する）:
+合図があると `claude -p` の費用が発生する。**止めるには** `.claude/config/fail-logs/fail-logs.local.yaml` に次を書く:
 
 ```yaml
 distill:
-  enabled: true
+  enabled: false
 ```
 
-- 1 日の回数（`distill.daily_limit`、既定 10）と 1 回の費用（`distill.max_budget_usd`、既定 0.5 ドル）に上限がある。設定でも越えられない
+- 1 日の回数（`distill.daily_limit`、既定 10）と 1 回の費用（`distill.max_budget_usd`、既定 0.5 ドル）に上限がある。上限はプロジェクトごとで、設定でも越えられない
   コード側の上限（1 日 50 回・1 回 2.0 ドル など）もある
 - 抜粋はセッションの記録から機密情報を伏せてから切り詰めて渡す（audit の強化版マスキング + PII）。伏せ字が使えないときは呼ばない
 - **`ANTHROPIC_BASE_URL` を差し替えている環境では、抜粋はその接続先に送られる**
@@ -165,8 +165,8 @@ lessons: # 教訓候補の台帳と提示
   present:
     enabled: true # false で提示だけを止める
     threshold: 2
-distill: # 教訓化（既定で無効）
-  enabled: false
+distill: # 教訓化（既定で有効）
+  enabled: true # false で教訓化だけを止める
   model: sonnet
   daily_limit: 10
   max_budget_usd: 0.5

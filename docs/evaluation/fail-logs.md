@@ -3,14 +3,14 @@
 **パッケージ**: `packages/fail-logs`
 **類型**: hook 型（副類型: CLI ツール型。`scripts/lessons_cli.py` / `scripts/lessons_admin.py`）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-11-03（教訓化と昇格に合わせて EV-22〜EV-88 を追加し、EV-04・EV-11・EV-12・EV-16・EV-17 を改訂。人間レビューで承認）。2026-07-28（価値フロー仕様確定・EV-17〜21 新設。裁定は docs/design/fail-logs.md / ADR-20260728-046 を正本とする）
+**最終レビュー日**: 2026-11-03（教訓化を既定で有効に改め、EV-37 を改訂。人間レビューで承認）。2026-11-03（教訓化と昇格に合わせて EV-22〜EV-88 を追加し、EV-04・EV-11・EV-12・EV-16・EV-17 を改訂。人間レビューで承認）。2026-07-28（価値フロー仕様確定・EV-17〜21 新設。裁定は docs/design/fail-logs.md / ADR-20260728-046 を正本とする）
 **情報源**: docs/requirements/fail-logs.md（主、2026-11-03 追加分の FR / NF）, docs/design/fail-logs.md（主、価値フロー設計 §1〜§7 と 2026-11-03 追加の §3(f)〜(i)・§4 の 5〜8・§5.1・§7〜§12）, ADR-20260728-046（蓄積型ログの root worktree 解決と配置規約）, ADR-20261103-063（教訓化と昇格）, packages/fail-logs/README.md（主）。packages/fail-logs/manifest.json・hooks のファイル名/docstring 冒頭は構成要素の列挙にのみ使用し、期待値の導出には用いていない（README に記述がない振る舞いは「根拠: 実装挙動」と明示）。
 
 ## 1. 責務定義
 
 fail-logs は AI エージェント（Claude Code 等）のツール実行失敗を検知する hook（`capture-failures.py`。PostToolUse / PostToolUseFailure / PermissionDenied）と、記録済みの失敗をセッション開始時にサマリーとしてコンテキストへ注入する SessionStart hook（`inject-failure-summary.py`）からなる、失敗知識蓄積の基盤である。失敗のみを記録し（成功は対象外、ノイズ抑制）、`core`（`hook_common`, `failure_detector`）にのみ依存する。記録処理自体の失敗が、記録対象であるツール実行やセッション開始そのものを妨げないことを保証する。
 
-2026-11-03 から、貯めた失敗から教訓を昇格させる段を持つ。セッション終了時に合図のあったセッションから教訓候補を作り（教訓化。既定で無効）、候補を root worktree の台帳に蓄積・合流させ、基準を超えた候補をセッション開始時に提示し、人が `/lessons` スキルで確認・承認して昇格先へ書き込む。教訓化・提示・CLI のいずれも、失敗しても利用者のセッションを止めず、LLM が作った候補文を指示として扱わせない。
+2026-11-03 から、貯めた失敗から教訓を昇格させる段を持つ。セッション終了時に合図のあったセッションから教訓候補を作り（教訓化。既定で有効）、候補を root worktree の台帳に蓄積・合流させ、基準を超えた候補をセッション開始時に提示し、人が `/lessons` スキルで確認・承認して昇格先へ書き込む。教訓化・提示・CLI のいずれも、失敗しても利用者のセッションを止めず、LLM が作った候補文を指示として扱わせない。
 
 ### Non-Goals
 
@@ -68,9 +68,9 @@ fail-logs は AI エージェント（Claude Code 等）のツール実行失敗
 - [ ] EV-35（境界 / should）: その他部の、Bash 以外のツール（`tool` が `Bash` でない）の `tool_error` は、`summary.include_non_bash_tool_errors: true` のときだけ集計する — 根拠: docs/design/fail-logs.md §4 の 8
 - [ ] EV-36（境界 / must）: ログの走査は末尾から `summary.max_scan_bytes` で止まり、注入するシグネチャは `top_signatures` + `top_signatures_new` 件が上限 — 根拠: docs/design/fail-logs.md §4 の有界性保証
 
-### 教訓化（2026-11-03 追加。既定で無効）
+### 教訓化（2026-11-03 追加。既定で有効）
 
-- [ ] EV-37（境界 / must）: 既定の設定（`distill.enabled: false`）では、SessionEnd の起動役はワーカーを起動せず、実行記録も書かない（spool も無いとき） — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 1・NF-09 / docs/design/fail-logs.md §7.1
+- [ ] EV-37（境界 / must）: 既定の設定（`distill.enabled: true`）では、対話のセッションの SessionEnd で起動役がワーカーを起動する（前段判定はワーカーが行う）。`distill.enabled: false` のときは起動せず、実行記録も書かない（spool も無いとき） — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 1・NF-09 / docs/design/fail-logs.md §7.1・§12
 - [ ] EV-38（境界 / must）: 環境変数 `FAIL_LOGS_DISTILL` があるとき、および `CLAUDE_CODE_ENTRYPOINT` が `sdk-` で始まり `distill.include_noninteractive` が false のときは、教訓化を起動せず、実行記録も書かない — 根拠: docs/requirements/fail-logs.md NF-05・NF-08 / docs/design/fail-logs.md §7.1
 - [ ] EV-39（正常 / must）: 起動役は 1 秒以内に無出力・終了コード 0 で戻り、ワーカーを hook の標準入出力を引き継がずに切り離して起動し、セッションの記録のパスを引数ではなく標準入力で渡す — 根拠: docs/requirements/fail-logs.md NF-01 / docs/design/fail-logs.md §7.1・§7.7
 - [ ] EV-40（正常 / must）: 前段判定で合図が無いときは LLM を呼ばず、`no_signal` で記録する — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 2 / docs/design/fail-logs.md §7.1・§7.6
@@ -144,7 +144,7 @@ fail-logs は AI エージェント（Claude Code 等）のツール実行失敗
 - [ ] EV-14（境界 / should）: `inject-failure-summary.py` のログ走査は上限を設けた範囲に限定され、ログが肥大してもファイル全体を毎回読み込まない（性能） — 根拠: 実装挙動
 - ~~EV-15~~（**欠番**, 2026-07-03 レビュー）: 注入サマリーの無害化（間接プロンプトインジェクション対策）は、具体的な担保内容が未確定と判定。脅威モデルと保証範囲を明文化した設計が必要（現状の `<fail-logs-summary>` 境界フレーム＋`[log]` プレフィックス＋山括弧中和を出発点として Issue #131 で再設計）。2026-07-28 裁定で後継 EV-20 を新設(欠番は再利用しない方針を維持)
 - 秘匿情報: EV-06（既存の経路）・EV-27・EV-28（新しい記録）・EV-50・EV-51（教訓化の入力）・EV-60（台帳）・EV-84（昇格先の文面）で担保
-- config 駆動: EV-07（enabled 全体無効化）・EV-08・EV-29（targets 個別無効化）・EV-37（教訓化は既定で無効）・EV-78（提示の無効化）・EV-81（CLI の無効化）で担保
+- config 駆動: EV-07（enabled 全体無効化）・EV-08・EV-29（targets 個別無効化）・EV-37（教訓化は既定で有効、`distill.enabled: false` で停止）・EV-78（提示の無効化）・EV-81（CLI の無効化）で担保
 - [ ] EV-16（境界 / should）: 冪等性 — 同一失敗イベントが再入力されても重複排除は行わず、重複記録を許容する（`_append_secure_jsonl` は `O_APPEND` の純追記）。再発した失敗はそれ自体が「解決すべき重要な失敗」のシグナルであり、蓄積を許容して inject-failure-summary の再発集計で重要度として扱う。**2026-11-03 追加**: 新しいイベント（`PostToolUseFailure` / `PermissionDenied`）の記録も同じく重複排除しない。重複を排除するのは、教訓候補の再発回数（根拠の組で数える。EV-62）と spool の取り込み（`eid`。EV-72）だけで、失敗イベントの記録には適用しない — 根拠: 2026-07-03 人間レビュー裁定（現実装が重複排除しないことを確認済み。実装ギャップなし） / docs/design/fail-logs.md §3(d)
 - [ ] EV-17（正常 / must）: capture の記録契約 — stdout 無出力・検知有無に関わらず常に exit 0、audit v1 互換スキーマ + data.branch フィールド（ADR-20260728-046）を含む記録が追記される。**2026-11-03 追加**: 同じスクリプトを PostToolUse / PostToolUseFailure / PermissionDenied に登録し、入力の `hook_event_name` で分岐する。どのイベントの行も `data.branch` を持つ — 根拠: docs/design/fail-logs.md §3
 - [ ] EV-18（正常 / must）: 集計・注入の機能回帰 — 正常な失敗ログ（再発 min_occurrences 以上を含む）から、再発シグネチャ中心の期待どおりのサマリーが生成・注入される（シグネチャは command 先頭トークン + command_kind、非 Bash は failure_type + tool フォールバック） — 根拠: docs/design/fail-logs.md §4

@@ -62,7 +62,7 @@ capture（記録）──▶ inject（再発の集計・注入）
 | ------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | capture | ツール実行の失敗を検知し JSONL に永続化する（記録のみ、判断はしない）      | `capture-failures.py`（PostToolUse / PostToolUseFailure / PermissionDenied） |
 | inject  | 蓄積ログから再発シグネチャを集計し、次セッション冒頭へ無害化して注入する   | `inject-failure-summary.py`（SessionStart）                                  |
-| distill | セッション終了時に、合図のあったセッションから教訓候補を作る（既定で無効） | `distill-launch.py`（SessionEnd）+ `lib/distill_worker.py`                   |
+| distill | セッション終了時に、合図のあったセッションから教訓候補を作る（既定で有効） | `distill-launch.py`（SessionEnd）+ `lib/distill_worker.py`                   |
 | ledger  | 教訓候補の出来事を追記し、現在の状態を写像（スナップショット）に保つ       | `lib/lessons_store.py`                                                       |
 | present | 基準を超えた候補をセッション冒頭に知らせる                                 | `present-lessons.py`（SessionStart）                                         |
 | promote | 人が候補を確認し、昇格先へ書き込む                                         | `/lessons` スキル + `scripts/lessons_cli.py`                                 |
@@ -889,7 +889,7 @@ summary:
   include_non_bash_tool_errors: false # §4 の 8
 
 distill:
-  enabled: false # 教訓化（既定で無効）
+  enabled: true # 教訓化（既定で有効。false で止める。2026-11-03 改訂）
   model: sonnet
   language: ja
   include_noninteractive: false
@@ -928,8 +928,9 @@ lessons:
 
 - 設定ファイルを変えたら `.claude/orchestra.json` の台帳を同じコミットで更新する。
 - **受け入れるリスク**（ADR-20261103-063 にも記載）:
-  - `distill.enabled` はプロジェクトの `fail-logs.local.yaml` でも有効にできる。悪意のあるリポジトリが費用を発生させる余地は、
-    1 日の上限と 1 回の費用の上限で抑え、その上限もコード側の上限（§7.2。1 日 50 回 × 1 回 2.0 ドル）を越えられない。
+  - 教訓化は既定で有効なため、fail-logs を導入した全プロジェクトで、合図のあったセッションの終了時に `claude -p` の費用が
+    発生する（2026-11-03 改訂。ADR-20261103-063 の注記）。費用は 1 日の上限と 1 回の費用の上限で抑え、その上限もコード側の
+    上限（§7.2。1 日 50 回 × 1 回 2.0 ドル）を越えられない。上限はプロジェクト（root）ごとなので、N 個のプロジェクトでは最大 N 倍になる。
   - 教訓化セッションが出す重大度・対象範囲は、そのまま候補に入る（重大で再発 1 の候補は §9 で ID だけを示し、昇格には人の承認が要る）。
   - `lessons_cli.py` の `--actor` と、`--actor review` の `kind: pr` の根拠は自己申告である。注入されたエージェントが
     偽の PR の根拠を付けて提示の基準に届かせる、実在する別のセッションの ID（`~/.claude/projects` から読める）を使って

@@ -63,11 +63,20 @@ def _run(monkeypatch, project, capsys) -> str:
 
 
 ENABLED = "distill:\n  enabled: true\n"
+DISABLED = "distill:\n  enabled: false\n"
 
 
-# EV-37: 既定（教訓化は無効）で spool も無ければ、何も起動しない。
-def test_disabled_by_default(monkeypatch, tmp_path, capsys) -> None:
+# EV-37: 既定（教訓化は有効）では、対話のセッションの終了時にワーカーを起動する（前段判定はワーカーが行う）。
+def test_enabled_by_default(monkeypatch, tmp_path, capsys) -> None:
     project = h.make_project(tmp_path)
+    assert _run(monkeypatch, project, capsys) == ""
+    assert len(_Popen.calls) == 1
+    assert json.loads(_Popen.calls[0].stdin.data.decode())["mode"] == "distill"
+
+
+# EV-37: `distill.enabled: false` で spool も無ければ、何も起動しない。
+def test_disabled_by_config(monkeypatch, tmp_path, capsys) -> None:
+    project = h.make_project(tmp_path, local_config=DISABLED)
     assert _run(monkeypatch, project, capsys) == ""
     assert _Popen.calls == []
 
@@ -114,7 +123,7 @@ def test_launch_detached_with_stdin(monkeypatch, tmp_path, capsys) -> None:
 
 # EV-37 の補足: 教訓化が無効でも、spool があれば取り込みだけのために起動する。
 def test_spool_only_launches_import(monkeypatch, tmp_path, capsys) -> None:
-    project = h.make_project(tmp_path)
+    project = h.make_project(tmp_path, local_config=DISABLED)
     spool = h.log_dir(project) / "spool"
     spool.mkdir(parents=True)
     (spool / ("a" * 32 + ".json")).write_text("{}")
