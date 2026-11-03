@@ -5,9 +5,15 @@
   "depends": ["core"],
   "hooks": {
     "PostToolUse": ["capture-failures.py"],
+    "PostToolUseFailure": ["capture-failures.py"],
+    "PermissionDenied": ["capture-failures.py"],
     "SessionStart": ["inject-failure-summary.py"]
   },
-  "files": ["hooks/capture-failures.py", "hooks/inject-failure-summary.py"],
+  "files": [
+    "hooks/capture-failures.py",
+    "hooks/inject-failure-summary.py",
+    "lib/masking.py"
+  ],
   "skills": [],
   "agents": [],
   "rules": [],

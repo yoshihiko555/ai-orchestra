@@ -132,7 +132,7 @@
       "config/loop-harness/loops/issue-loop.yaml": "f0355b7d55a1dc603fbf65ec5721056511e7891a794d523934f02062832f5257"
     },
     "fail-logs": {
-      "config/fail-logs/fail-logs.yaml": "cff47ea7d188af706a796aa88149cf26b73561ec71a754e9244566264290e5b2"
+      "config/fail-logs/fail-logs.yaml": "ee971b2994058bfabdb79ac2aa37e7b2facaf824695481ef952b77cc8e66910c"
     },
     "skill-evolution": {
       "config/skill-evolution/skill-evolution.yaml": "b50bae0454bca2df0f7a91c8d4855a7c7b382cf0d2afecc9ff3c9e3ba43734fc"

@@ -61,11 +61,11 @@ fail-logs は AI エージェント（Claude Code 等）のツール実行失敗
 
 ### 再発サマリー（2026-11-03 追加）
 
-- [ ] EV-31（正常 / must）: テスト・lint の行（`failure_type` が `test_failure` / `lint_failure`）とそれ以外の行を分けて集計し、それぞれに件数の上限と上位件数（その他は `summary.top_signatures_new`）を適用する。それ以外の行が大量にあっても、テスト・lint の再発が集計から押し出されない — 根拠: docs/requirements/fail-logs.md FR-04 受け入れ条件 4 / docs/design/fail-logs.md §4 の 5
-- [ ] EV-32（境界 / must）: テスト・lint 以外の行が無いとき、注入文は 2026-11-03 の変更前と同じ。ある場合は、テスト・lint 部の後ろに別の見出しで足す — 根拠: docs/requirements/fail-logs.md NF-06 / docs/design/fail-logs.md §4 の 5
-- [ ] EV-33（境界 / must）: `detected_by: "exit_code"`・`exit_code == 1` で、最後の単純コマンドの（環境変数の代入を除いた）先頭 1〜2 トークンが `summary.expected_nonzero_commands` に当たる行は集計しない（例: `grep`・`test`・`git diff`。`a && grep x` も除外し、`grep x && a` は除外しない） — 根拠: docs/requirements/fail-logs.md FR-04 受け入れ条件 3 / docs/design/fail-logs.md §4 の 6
-- [ ] EV-34（正常 / should）: テスト・lint 以外の `command_kind: "shell"` の行は、最後の単純コマンドの先頭 2 トークン（例 `git push`）をシグネチャにする — 根拠: docs/design/fail-logs.md §4 の 7
-- [ ] EV-35（境界 / should）: `command` が空の `tool_error` は、`summary.include_non_bash_tool_errors: true` のときだけ集計する — 根拠: docs/design/fail-logs.md §4 の 8
+- [ ] EV-31（正常 / must）: 新しいイベントの行（`tool_use_id` を持つ）のうちテスト・lint 以外のもの（その他部）と、それ以外の行（従来部）を分けて集計し、それぞれに件数の上限と上位件数（その他部は `summary.top_signatures_new`）を適用する。その他部の行が大量にあっても、テスト・lint の再発が集計から押し出されない（2026-11-03 の実装で、分け方を `failure_type` から記録の出所に改めた。設計 §4 の 5） — 根拠: docs/requirements/fail-logs.md FR-04 受け入れ条件 4 / docs/design/fail-logs.md §4 の 5
+- [ ] EV-32（境界 / must）: その他部の行が無いとき、注入文は 2026-11-03 の変更前と同じ（`tool_use_id` を持たない従来の行は、`failure_type` が `tool_error` でも従来どおり集計する）。ある場合は、従来部の後ろに別の見出しで足す — 根拠: docs/requirements/fail-logs.md NF-06 / docs/design/fail-logs.md §4 の 5
+- [ ] EV-33（境界 / must）: その他部の行のうち、`detected_by: "exit_code"`・`exit_code == 1` で、最後の単純コマンドの（環境変数の代入を除いた）先頭 1〜2 トークンが `summary.expected_nonzero_commands` に当たる行は集計しない（例: `grep`・`test`・`git diff`。`a && grep x` も除外し、`grep x && a` は除外しない） — 根拠: docs/requirements/fail-logs.md FR-04 受け入れ条件 3 / docs/design/fail-logs.md §4 の 6
+- [ ] EV-34（正常 / should）: その他部の `command_kind: "shell"` の行は、最後の単純コマンドの先頭 2 トークン（例 `git push`）をシグネチャにする — 根拠: docs/design/fail-logs.md §4 の 7
+- [ ] EV-35（境界 / should）: その他部の、Bash 以外のツール（`tool` が `Bash` でない）の `tool_error` は、`summary.include_non_bash_tool_errors: true` のときだけ集計する — 根拠: docs/design/fail-logs.md §4 の 8
 - [ ] EV-36（境界 / must）: ログの走査は末尾から `summary.max_scan_bytes` で止まり、注入するシグネチャは `top_signatures` + `top_signatures_new` 件が上限 — 根拠: docs/design/fail-logs.md §4 の有界性保証
 
 ### 教訓化（2026-11-03 追加。既定で無効）
