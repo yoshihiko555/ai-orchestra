@@ -18,6 +18,7 @@
     "config/image-generation.yaml",
     "config/styles/isometric.md",
     "config/styles/blueprint.md",
-    "config/styles/line-illust.md"
+    "config/styles/line-illust.md",
+    "config/styles/industrial-orange.md"
   ]
 }

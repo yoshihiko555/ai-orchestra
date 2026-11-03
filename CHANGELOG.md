@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`fail-logs`: 教訓化（既定で有効）**: 人の訂正や未解決の失敗があったセッションだけを、終了時に道具を持たない `claude -p` に渡して教訓候補を作る。費用が発生し（プロジェクトごとに 1 日 10 回・1 回 0.5 ドルまで）、抜粋は機密情報を伏せてから送る（`ANTHROPIC_BASE_URL` を差し替えていればその接続先へ）。`distill.enabled: false` で止められる。
 - **`fail-logs`: 教訓候補の CLI を追加**: `scripts/lessons_cli.py`（一覧・表示・追加・昇格する文面の検査。Bash の許可リストに入れてよい）と `scripts/lessons_admin.py`（状態の変更・反映の確認・Issue の作成。**許可リストに入れないこと**）。
 - **`/review-respond`: 採用した指摘のうち一般化できるものを教訓候補にする**（fail-logs を導入している場合。失敗しても返信・resolve は続ける）。
+- **`image-generation`: 同梱スタイル `industrial-orange` を追加**: 紺の設計図に白とスチールグレーの線画で描き、明るく赤みを抑えたオレンジを文字と細い線のアクセントにだけ使う工業的な図解スタイル。`/image-gen <prompt> --style industrial-orange` で適用できる。
 
 ### Changed
 
