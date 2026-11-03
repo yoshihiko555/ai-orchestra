@@ -78,7 +78,10 @@ capture（記録）──▶ inject（再発の集計・注入）
 | `masking.py`           | 強化版マスキングの読み込みと検査、PII の追加処理、伏せてから切り詰める処理（§7.4）         |
 | `sanitize.py`          | 文字種・参照の形式の検査（入力）と無害化（出力。境界フレーム・山括弧の中和）（§5.1・§8.3） |
 | `transcript_reader.py` | セッションの記録の安全な読み込みと、発言の構造的な分類（§7.3）                             |
-| `distill_worker.py`    | 教訓化の本体と spool の取り込み（§7・§8.5）                                                |
+| `command_signature.py` | 単純コマンドへの分割・シグネチャ・意図した非ゼロ終了の判定（§4 の 6・7、§7.3）             |
+| `distill_signals.py`   | 前段判定（人間の介入・絞り込んだ機械の失敗）（§7.3）                                       |
+| `distill_prompt.py`    | 教訓化の指示・出力スキーマ・抜粋の直列化・既存の候補の選び方（§7.4・§7.5）                |
+| `distill_worker.py`    | 教訓化の本体（上限・予約・ロック・呼び出し・形式検査・実行記録）と spool の取り込み（§7・§8.5） |
 
 ---
 
@@ -296,10 +299,10 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
   2. 入力の検査（§7.7）── 不正 → no_transcript で記録して終了
   3. 1 日の上限の確認（§7.2）── 超過 → daily_limit（その日の最初の 1 回だけ記録）して終了
   4. 前段判定（§7.3。読み取りだけ）── 合図なし → no_signal で記録して終了
-  5. 予約の確認（§7.2）── 該当しない → reserved で記録して終了
-  6. ロックを取る（§7.2）── 取れない → locked で記録して終了
-  7. ロックの中で 1 日の上限をもう一度確かめ、回数を 1 増やし、started を記録する
-  8. 抜粋を作り、伏せてから切り詰める（§7.4）── 伏せ字が使えない → no_masking で記録して終了
+  5. 伏せ字の確認（§7.4）── 使えない → no_masking で記録して終了（1 日の回数を使う前に確かめる）
+  6. 予約の確認（§7.2）── 該当しない → reserved で記録して終了
+  7. ロックを取る（§7.2）── 取れない → locked で記録して終了
+  8. ロックの中で 1 日の上限をもう一度確かめ、回数を 1 増やし、started を記録する。抜粋を作り、伏せてから切り詰める（§7.4）
   9. 教訓化セッションを呼ぶ（§7.5）
  10. 出力を形式検査し、台帳に追記する（§7.5・§8）
  11. 結果を記録する（§7.6）
@@ -324,9 +327,14 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
   「人間の介入」の合図があるセッションだけを通す（それ以外は `reserved` で終了）。予約の判定はロックの外で回数を読むため、
   境界で予約を 1 回ほど超えることがある（1 日の上限そのものはロックの中で確かめるので超えない）。
 - **ロック**: `distill.lock` に flock をかける。取れなければ最大 `distill.lock_wait_seconds`（既定 600）まで待ち、
-  それでも取れなければ `locked` で終了する。同じ root での同時実行は常に 1 つ。
+  それでも取れなければ `locked` で終了する。同じ root での同時実行は常に 1 つ。ロックを取った後、同じ sid の処理済みの位置が
+  待つ前と変わっていたら（同じセッションの別の実行が先に終えた）、前段判定をやり直す。
 - **1 回の費用の上限**: `claude -p` に `--max-budget-usd <distill.max_budget_usd>`（既定 0.5）を付ける。
 - **回収しない**: 上限・ロック待ちの打ち切りで落ちたセッションは、後から教訓化しない（要件 NF-02）。
+- **コード側の上限**: 設定（プロジェクトの `fail-logs.local.yaml` を含む）でも越えられない上限をコードに持つ
+  （`daily_limit` 50 回、`max_budget_usd` 2.0、`timeout_seconds` 900 秒、`lock_wait_seconds` 3600 秒、`max_transcript_bytes` 32 MiB、
+  `max_input_chars` 200,000 字など）。有限でない値（`.inf`）は既定値に戻す。`distill-daily.json` の回数が壊れている・負のときは、
+  上限に達したものとして扱う（書き換えで上限を外させない）。
 
 ### 7.3 前段判定（LLM を使わない）
 
@@ -355,13 +363,17 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- | ---- |
 | 人間の介入（拒否）       | ツール結果のブロックが `is_error: true` で、本文が手動の拒否を示す定型文（`distill.reject_markers`）で始まる                     | 強   |
 | 人間の介入（中断）       | `type: user` の行のテキストのブロック（または文字列の本文）が、中断を示す定型文（`distill.interrupt_markers`）と一致する         | 強   |
-| 人間の介入（訂正）       | 利用者の発言が、訂正の語彙（`distill.correction_cues`。日本語・英語）を含む。正規表現は使わず、文字列の部分一致だけで判定する    | 強   |
+| 人間の介入（訂正）       | エージェントが発言・操作した後の利用者の発言が、訂正の語彙（`distill.correction_cues`。日本語・英語）を含む。正規表現は使わず、文字列の部分一致だけで判定する（冒頭の依頼文の語を訂正と取り違えない。前回の位置から読むときは、その前にエージェントが動いているものとして扱う） | 強   |
 | 機械の失敗（絞り込み後） | ツールエラー（ツール結果の `is_error: true`）と失敗イベントのうち、§4 の 6・8 で除外されず、**未解決**または**反復**に当たるもの | 中   |
 
 - **未解決**: 同じシグネチャ（§4 の 2・7）の失敗の後に、同じシグネチャの成功したツール呼び出しが無いままセッションが終わった
 - **反復**: 同じシグネチャの失敗がセッション内で一定回数以上ある。回数の基準は、`test_failure` / `lint_failure` が
   `distill.repeat_threshold_test`（既定 3）、それ以外が `distill.repeat_threshold`（既定 2）
-- ツールエラーと失敗イベントは `tool_use_id` で突き合わせ、同じ呼び出しを二重に数えない
+- ツールエラーと失敗イベントは `tool_use_id` で突き合わせ、同じ呼び出しを二重に数えない。`tool_use_id` を持たない失敗イベント
+  （出力パターンで検知したテスト・lint）は記録と突き合わせられないので、反復の数にだけ足す。失敗イベントは、同じ sid の前回の
+  実行記録の日時より後のものだけを使う（処理済みの範囲を数え直さない）
+- 失敗のシグネチャは、Bash は §4 の 2・7 と同じ（shell は最後の単純コマンドの先頭 2 トークン、それ以外は先頭トークン）、
+  Bash 以外のツールはツール名。意図した非ゼロ終了（§4 の 6）は失敗に数えない
 - TDD の red → green だけのセッションは、未解決でも反復（3 回以上）でもないため「合図なし」になる
 
 どれか 1 つでもあれば「合図あり」。定型文と訂正の語彙は設定で持ち、評価用の記録（§7.8）で調整する。
@@ -409,7 +421,8 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
   `role` は §7.3 の構造的な判定で決め、本文の中身では決めない。
 - 配列全体を、実行ごとの乱数（nonce）を含む区切り `<<<UNTRUSTED-DATA-{nonce}>>>` 〜 `<<<END-UNTRUSTED-DATA-{nonce}>>>` で囲む。
   本文中に区切りに似た文字列があれば中和する。
-- 標準入力は固定の ASCII の見出しで始める。データの中の `@` のうち、先頭または空白の直後にあるものはすべて全角の `＠` に置き換える。
+- 標準入力は固定の ASCII の見出しで始める。データの中の `@` はすべて全角の `＠` に置き換える（値の先頭の `@` は JSON では引用符の
+  直後になるため、位置で絞らない）。
   `claude -p` は `--tools ""` でも、標準入力の行頭・語の先頭の `@<パス>` を作業ディレクトリ内のファイルの添付として展開する
   （2026-11-03 に確認。`＠<パス>` と `x@<パス>` は展開されず、`--restricted` では作業ディレクトリの外の絶対パスも展開されない。
   `/` や `!` で始まる行はコマンドとして解釈されない）。作業ディレクトリは空の一時ディレクトリなので、置き換えは多重の歯止めになる。
@@ -443,7 +456,8 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
 - **`distill.model`** は英数字・`.`・`-`・`[`・`]` だけを受け付ける。
 - **環境変数の許可リスト**（既定）: `PATH` `HOME` `USER` `LOGNAME` `LANG` `LC_*` `TMPDIR` `TERM`
   `HTTP_PROXY` `HTTPS_PROXY` `NO_PROXY` `ALL_PROXY`（小文字も）`SSL_CERT_FILE` `NODE_EXTRA_CA_CERTS`
-  `CLAUDE_CONFIG_DIR` `ANTHROPIC_*` `CLAUDE_CODE_USE_*`。Bedrock / Vertex を使う利用者は設定で足す。
+  `CLAUDE_CONFIG_DIR` `ANTHROPIC_*` `CLAUDE_CODE_USE_*`。Bedrock / Vertex を使う利用者は設定で足す（英字で始まる 3 文字以上の名前と、
+  末尾だけの `*` を受け付ける。`*` だけなど全件を渡す指定は捨てる）。
   それ以外（`GH_TOKEN`・`AWS_*` など）は渡さない。`ANTHROPIC_BASE_URL` を差し替えている環境では、抜粋はその先に送られる
   （README に明記する）。許可リストに絞っても OAuth（macOS のキーチェーン）で動くこと、プロキシの変数が無いとサンドボックスの中から
   API に届かないことを 2026-11-03 に確かめた。
@@ -494,8 +508,8 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
 
 **形式検査**（呼び出し側が行い、通ったものだけを台帳に入れる）: JSON として読めること、`lessons` は
 最大 `distill.max_lessons_per_session`（既定 5）件、列挙値と字数の上限を守ること、§8.3 の文字種検査を通ること。
-`merge_into` が台帳に無い ID なら `new` として扱う。形式に合わない出力は `invalid_output` で記録し、台帳には
-何も入れない。LLM の出力そのもの・標準エラー・例外の文言は記録しない。
+`merge_into` が、教訓化セッションに見せた既存の候補（§7.4 の一覧）の ID でなければ `new` として扱う（記録の中の文で
+任意の候補に合流させない）。形式に合わない出力は `invalid_output` で記録し、台帳には何も入れない。LLM の出力そのもの・標準エラー・例外の文言は記録しない。
 
 ### 7.6 実行記録と処理済みの位置
 
@@ -524,15 +538,17 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
 
 | `status`  | `reason`                                                                               | `transcript_offset` を進めるか             |
 | --------- | -------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `skipped` | `no_transcript`・`transcript_parse`・`daily_limit`・`reserved`・`locked`・`no_masking` | 進めない                                   |
+| `skipped` | `no_transcript`・`transcript_parse`・`daily_limit`・`reserved`・`locked`・`no_masking`・`no_executable`（`claude` が見つからない。回数も使わない） | 進めない                                   |
 | `skipped` | `no_signal`                                                                            | 進める                                     |
 | `started` | （なし）                                                                               | —                                          |
 | `done`    | （なし）                                                                               | 進める                                     |
-| `failed`  | `timeout`・`llm_error`・`invalid_output`                                               | 進める（同じ範囲で費用を繰り返さないため） |
+| `failed`  | `timeout`・`llm_error`・`invalid_output`・`ledger_error`（台帳に書けなかった）         | 進める（同じ範囲で費用を繰り返さないため） |
 
 - `transcript_offset` は、その実行で読み終えたセッションの記録のバイト位置。同じ `sid` の次の実行
   （`/resume` で再開したセッションが再び終わったとき）は、最後に進めた位置から読む（要件 FR-06）。
 - `last_uuid` は `transcript_offset` を進めるときに書く。フォークしたセッションの複写部分を飛ばすのに使う（§7.3）。
+- `started` を書いた後（1 日の回数を使った後）に想定外の例外が起きたときも、`failed`（`llm_error`）を書いて位置を進める
+  （同じ範囲で回数を使い続けない）。
 - `cost_usd` は `claude -p` の JSON 出力の `total_cost_usd` を写す。
 - `lids_new` / `lids_merged` で、汚染された実行が作った候補を後から特定できる。
 
@@ -552,6 +568,11 @@ distill_worker.py（hook とは別のプロセス。セッションの終了を�
 - LLM の判断（要件の「判定」の受け入れ条件）は、合成した評価用の記録を
   `packages/fail-logs/tests/fixtures/distill_corpus/` に置き、`packages/fail-logs/scripts/eval_distill.py` で
   手動実行して合格率を確かめる。CI では実行しない。
+- 評価用の記録はカテゴリごとの JSON（`correction` / `benign` / `critical` / `noncritical` / `tdd` / `transient` /
+  `merge_same` / `merge_diff` / `intervention`）で、各カテゴリ 5 件以上（`intervention` は 3 件）。会話は簡略な表記
+  （`["user", 文]`・`["bash", コマンド, {"error": ...}]`・`["reject", コマンド]`・`["interrupt"]` など）で書き、
+  `eval_distill.py` が transcript の形の行に組み立てる。前段判定の受け入れ条件（要件 FR-06 の 3〜5）は、同じ記録で CI のテストが確かめる。
+- `eval_distill.py` は LLM の判断を確かめるため、前段判定で合図が無い記録（TDD・一過性の失敗など）も教訓化セッションに渡す。
 
 ---
 
@@ -908,7 +929,8 @@ lessons:
 - 設定ファイルを変えたら `.claude/orchestra.json` の台帳を同じコミットで更新する。
 - **受け入れるリスク**（ADR-20261103-063 にも記載）:
   - `distill.enabled` はプロジェクトの `fail-logs.local.yaml` でも有効にできる。悪意のあるリポジトリが費用を発生させる余地は、
-    1 日の上限と 1 回の費用の上限で抑える。
+    1 日の上限と 1 回の費用の上限で抑え、その上限もコード側の上限（§7.2。1 日 50 回 × 1 回 2.0 ドル）を越えられない。
+  - 教訓化セッションが出す重大度・対象範囲は、そのまま候補に入る（重大で再発 1 の候補は §9 で ID だけを示し、昇格には人の承認が要る）。
   - `lessons_cli.py` の `--actor` と、`--actor review` の `kind: pr` の根拠は自己申告である。注入されたエージェントが
     偽の PR の根拠を付けて提示の基準に届かせる、実在する別のセッションの ID（`~/.claude/projects` から読める）を使って
     `kind: session` の根拠を作る、または `--actor skill` を名乗って変更の一覧から外れる余地がある。提示は
@@ -1001,7 +1023,7 @@ settings ファイルは変えていない。試行は利用者の scratchpad �
 | 1    | 評価セットの改訂（人のレビューを経る）                            | `docs/evaluation/fail-logs.md`、`docs/evaluation/skills/review-respond.md`、`docs/evaluation/skills/lessons.md`（新規）                                                  |
 | 2    | 記録の拡張と既存の集計の変更（§3(f)〜(i)、§4 の 5〜8）            | `hooks/capture-failures.py`、`hooks/inject-failure-summary.py`、`lib/masking.py`、`manifest.json`（hooks）、`config/fail-logs.yaml`                                      |
 | 3    | 台帳・CLI・提示（§8〜§10、§9）                                    | `lib/lessons_model.py`、`lib/lessons_store.py`、`lib/lessons_context.py`、`lib/promotion.py`、`lib/sanitize.py`、`scripts/lessons_cli.py`、`scripts/lessons_admin.py`、`hooks/present-lessons.py`、`manifest.json`（hooks・scripts・files） |
-| 4    | 教訓化（§7）と評価用の記録                                        | `hooks/distill-launch.py`、`lib/distill_worker.py`、`lib/transcript_reader.py`、`scripts/eval_distill.py`、`tests/fixtures/`                                             |
+| 4    | 教訓化（§7）と評価用の記録                                        | `hooks/distill-launch.py`、`lib/distill_worker.py`、`lib/distill_signals.py`、`lib/distill_prompt.py`、`lib/command_signature.py`、`lib/transcript_reader.py`、`scripts/eval_distill.py`、`tests/fixtures/` |
 | 5    | `/lessons` スキル（§10.2）                                        | `facets/instructions/lessons.md`、`facets/compositions/skills/lessons.yaml`、`manifest.json`（skills）、生成物（`.claude/skills/`・`.agents/skills/`）                   |
 | 6    | `/review-respond` の連携と memory-layers ルールの改訂、ADR の確定 | `facets/instructions/review-respond.md`、`facets/instructions/memory-layers.md`、生成物、ADR-20261103-063（accepted）、ADR-20260927-057（注記）、`docs/adr/DECISIONS.md` |
 | 7    | 文書の追従                                                        | `packages/fail-logs/README.md`、`docs/reference/hooks.md`、`docs/reference/logging.md`、`docs/reference/packages.md`、`CHANGELOG.md`                                     |

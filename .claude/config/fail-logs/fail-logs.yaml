@@ -58,3 +58,95 @@ lessons:
     max_items: 5 # 提示する候補の件数の上限
     max_chars: 1500 # 提示の文字数の上限
     promoting_stale_days: 14 # 昇格中のまま何日たったら反映の確認を促すか
+
+# 教訓化（docs/design/fail-logs.md §7）。既定で無効。有効にするとセッションの終了時に、合図（人の訂正・手動の拒否・中断、
+# 未解決や反復の失敗）があったセッションだけを、道具を持たない `claude -p` に渡して教訓候補を作る（費用が発生する）。
+# 有効にするには fail-logs.local.yaml に `distill: {enabled: true}` を書く。
+distill:
+  enabled: false
+  model: sonnet # 教訓化セッションのモデル（英数字・`.`・`-`・`[`・`]` だけ）
+  language: ja # 候補の文面の言語
+  include_noninteractive: false # `claude -p` など非対話のセッションも教訓化するか
+  daily_limit: 10 # 1 日に教訓化セッションを呼ぶ回数の上限
+  reserve_for_intervention: 2 # 残りがこの数以下のときは、人の介入があったセッションだけを通す
+  lock_wait_seconds: 600 # 同時に動く教訓化を 1 つにするロックを待つ秒数
+  timeout_seconds: 300 # 1 回の教訓化セッションの時間の上限
+  max_budget_usd: 0.5 # 1 回の教訓化セッションの費用の上限（`claude -p --max-budget-usd`）
+  max_transcript_bytes: 8388608 # セッションの記録を末尾から読む量の上限
+  max_input_chars: 60000 # 教訓化セッションに渡す抜粋の文字数の上限
+  max_known_lessons: 80 # 合流の判定に渡す既存の候補の数の上限
+  max_lessons_per_session: 5 # 1 回で作る候補の数の上限
+  context_before: 6 # 合図の前に抜粋するメッセージの数
+  context_after: 4 # 合図の後に抜粋するメッセージの数
+  repeat_threshold: 2 # テスト・lint 以外の同じ失敗を何回で「反復」とみなすか
+  repeat_threshold_test: 3 # テスト・lint の同じ失敗を何回で「反復」とみなすか
+  reject_markers: # 手動の拒否の定型文（ツール結果の本文の先頭と照合。Claude Code 2.1.317 で確認）
+    - "The user doesn't want to proceed with this tool use."
+    - "The user doesn't want to take this action right now."
+  interrupt_markers: # 中断の定型文（テキストの全体と照合。Claude Code 2.1.317 で確認）
+    - "[Request interrupted by user]"
+    - "[Request interrupted by user for tool use]"
+  correction_cues: # 訂正の語彙（文字列の部分一致。英語は大文字小文字を区別しない）
+    - "そうじゃない"
+    - "じゃない"
+    - "そうではない"
+    - "ではなく"
+    - "しないで"
+    - "と言った"
+    - "決まりだ"
+    - "ダメ"
+    - "だめ"
+    - "そうではなく"
+    - "じゃなくて"
+    - "ではなくて"
+    - "違います"
+    - "違う"
+    - "ちがう"
+    - "やめて"
+    - "戻して"
+    - "勝手に"
+    - "頼んでない"
+    - "頼んでいない"
+    - "指示していない"
+    - "言ったのに"
+    - "って言った"
+    - "やり直して"
+    - "間違って"
+    - "おかしい"
+    - "余計な"
+    - "that's not what"
+    - "not what i asked"
+    - "that's wrong"
+    - "this is wrong"
+    - "you shouldn't"
+    - "you should not"
+    - "don't do that"
+    - "i didn't ask"
+    - "i did not ask"
+    - "revert that"
+    - "undo that"
+    - "stop doing"
+    - "i told you"
+    - "why did you"
+  env_allowlist: # 教訓化セッションに渡す環境変数（`*` は前方一致）。Bedrock / Vertex の利用者は必要な変数を足す
+    - "PATH"
+    - "HOME"
+    - "USER"
+    - "LOGNAME"
+    - "LANG"
+    - "LC_*"
+    - "TMPDIR"
+    - "TERM"
+    - "HTTP_PROXY"
+    - "HTTPS_PROXY"
+    - "NO_PROXY"
+    - "ALL_PROXY"
+    - "http_proxy"
+    - "https_proxy"
+    - "no_proxy"
+    - "all_proxy"
+    - "SSL_CERT_FILE"
+    - "NODE_EXTRA_CA_CERTS"
+    - "CLAUDE_CONFIG_DIR"
+    - "ANTHROPIC_*"
+    - "CLAUDE_CODE_USE_*"

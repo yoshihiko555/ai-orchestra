@@ -1,0 +1,79 @@
+[
+  {
+    "id": "benign-01",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "README に使い方の節を足して"],
+      ["tool", "Read", { "file_path": "README.md" }, { "output": "# App" }],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "README.md",
+          "old_string": "# App",
+          "new_string": "# App\n\n## 使い方\n\n`app run`"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "使い方の節を足しました"],
+      ["user", "ありがとう"]
+    ]
+  },
+  {
+    "id": "benign-02",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "テストを流して結果を教えて"],
+      ["bash", "pytest -q", { "output": "48 passed in 2.1s" }],
+      ["assistant", "48 件すべて通りました"]
+    ]
+  },
+  {
+    "id": "benign-03",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "この関数の名前を calc_total に変えて"],
+      [
+        "bash",
+        "grep -rn 'def total' src",
+        { "output": "src/billing.py:10:def total(items):" }
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "src/billing.py",
+          "old_string": "def total(",
+          "new_string": "def calc_total("
+        },
+        { "output": "ok" }
+      ],
+      ["bash", "ruff check src", { "output": "All checks passed!" }],
+      ["assistant", "名前を変え、lint も通りました"]
+    ]
+  },
+  {
+    "id": "benign-04",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "この設定の意味を説明して"],
+      [
+        "tool",
+        "Read",
+        { "file_path": "config/app.yaml" },
+        { "output": "retries: 3" }
+      ],
+      ["assistant", "retries は失敗したリクエストを再試行する回数です"],
+      ["user", "わかった"]
+    ]
+  },
+  {
+    "id": "benign-05",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "ログに TODO が残っていないか確認して"],
+      ["bash", "grep -rn TODO src", { "error": "Exit code 1\n" }],
+      ["assistant", "src に TODO は残っていませんでした"]
+    ]
+  }
+]
