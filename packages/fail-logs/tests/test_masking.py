@@ -18,6 +18,9 @@ API_KEY_SAMPLE = "sk-" + "abcdefghijklmnopqrstuvwxyz012345"
 AWS_KEY_SAMPLE = "AK" + "IA" + "IOSFODNN7EXAMPLE"
 GITHUB_TOKEN_SAMPLE = "gh" + "p_" + "B" * 36
 MODULE_FILE_NAME = "secret_" + "masking.py"
+MASKED_OUTPUT_LIMIT_CHARS = 500
+LONG_FLAG_VALUE_CHARS = 600
+SECRET_RUN_CHECK_CHARS = 20
 
 
 def _fake_orchestra(tmp_path: Path, body: str) -> Path:
@@ -152,6 +155,63 @@ def test_partial_masker_fails_multi_canary(monkeypatch, tmp_path) -> None:
 )
 def test_mask_pii_flag_secrets(text: str, leaked: str) -> None:
     assert leaked not in masking.mask_pii(text)
+
+
+# EV-51: 引用符のエスケープ・空白・閉じ忘れがあっても、機密情報の単語全体を伏せる。
+@pytest.mark.parametrize(
+    ("text", "leaked_parts"),
+    [
+        (
+            r'tool --password "prefix\"' + "SECRET-" + "SUFFIX" + '"',
+            ("SECRET-" + "SUFFIX", "SUF" + "FIX"),
+        ),
+        (
+            "curl -u 'admin:" + "my secret " + "password'",
+            ("secret " + "password", "my " + "secret", "admin:" + "my"),
+        ),
+        (
+            'tool --password "' + "abc " + "def",
+            ("a" + "bc", "abc " + "def", "d" + "ef"),
+        ),
+    ],
+    ids=["escaped-quote", "quoted-user-password", "unterminated-quote"],
+)
+def test_shell_word_secrets_are_fully_masked(
+    monkeypatch: pytest.MonkeyPatch, text: str, leaked_parts: tuple[str, ...]
+) -> None:
+    monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
+    masker = masking.load_masker()
+    assert masker is not None
+
+    result = masking.mask_then_truncate(text, MASKED_OUTPUT_LIMIT_CHARS, masker)
+
+    assert all(part not in result for part in leaked_parts)
+    assert "[REDACTED]" in result
+
+
+# EV-51: 認証情報を渡さない -u は、一般のコマンドのフラグとして残す。
+@pytest.mark.parametrize("text", ["git push -u origin main", "sort -u file.txt"])
+def test_mask_pii_keeps_noncredential_user_flags(text: str) -> None:
+    assert masking.mask_pii(text) == text
+
+
+# EV-27: 長い値も末尾まで伏せてから切るため、512 文字より後ろの機密情報も残らない。
+def test_long_flag_secret_is_fully_masked_before_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
+    masker = masking.load_masker()
+    assert masker is not None
+    head = "dummy-" + "head"
+    tail = "TAIL" + "MARKER-" + "END"
+    value = head + "x" * (LONG_FLAG_VALUE_CHARS - len(head) - len(tail)) + tail
+
+    result = masking.mask_then_truncate("tool --token " + value, MASKED_OUTPUT_LIMIT_CHARS, masker)
+
+    assert head not in result
+    assert tail not in result
+    assert "x" * SECRET_RUN_CHECK_CHARS not in result
+    assert "[REDACTED]" in result
 
 
 # NF-01 / NF-03: PII の正規表現は 64 KiB の悪意のある入力でも短時間で終わる（ReDoS の回帰防止）。

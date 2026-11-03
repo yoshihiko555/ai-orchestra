@@ -94,7 +94,15 @@ OTHER_SIGNATURE_TOKENS = 2
 
 # 単純コマンドの区切り。引用符を解釈できないとき（閉じていない引用符）の予備の分割に使う。
 _COMMAND_SEPARATORS = re.compile(r"&&|\|\||;|\||\n")
-_OPERATOR_CHARS = ";&|\n"
+_SHELL_TOKEN = re.compile(
+    r"""
+    (?P<space>[^\S\n]+)
+    | (?P<redir>&>>?|\d*(?:>>|>\||<<<|<<|<>|>|<)&?)
+    | (?P<sep>&&|\|[|&]?|;|\n|&)
+    | (?P<word>(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s;|&<>"'\\])+)
+    """,
+    re.VERBOSE | re.DOTALL,
+)
 MAX_LABEL_PART_CHARS = 40
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -204,8 +212,13 @@ def _tail_records(log_path: str, max_records: int) -> list[dict]:
 
     壊れた行はスキップする（SessionStart を止めない）。
     """
+    return _parse_tail_lines(_read_tail_lines(log_path, max_records))
+
+
+def _parse_tail_lines(lines: list[str]) -> list[dict]:
+    """末尾の物理行をパースし、空行・壊れた行・辞書でない行は読み飛ばす。"""
     records: list[dict] = []
-    for line in _read_tail_lines(log_path, max_records):
+    for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
@@ -339,21 +352,43 @@ def _signature_key(data: dict) -> tuple[str, str, str]:
     return (failure_type, tool, "")
 
 
+def _tokenize_shell(command: str) -> list[tuple[str, str]] | None:
+    """引用符を保持して分類する。閉じていない引用符・末尾のエスケープでは None を返す。"""
+    tokens: list[tuple[str, str]] = []
+    position = 0
+    while position < len(command):
+        match = _SHELL_TOKEN.match(command, position)
+        if match is None:
+            return None
+        kind = match.lastgroup
+        if kind and kind != "space":
+            tokens.append((kind, match.group()))
+        position = match.end()
+    return tokens
+
+
+def _dequote_shell_word(word: str) -> str:
+    """単語内の引用符・エスケープを取り除く。"""
+    return "".join(shlex.split(word))
+
+
 def _split_simple_commands(command: str) -> list[list[str]]:
-    """コマンドを ``&&`` ``||`` ``;`` ``|`` と改行で単純コマンドに分ける（引用符の中では分けない）。"""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=_OPERATOR_CHARS)
-        lexer.whitespace = " \t\r"
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
+    """引用符の外の演算子で単純コマンドに分け、リダイレクトとその宛先を除く。"""
+    tokens = _tokenize_shell(command)
+    if tokens is None:
         return [segment.split() for segment in _COMMAND_SEPARATORS.split(command)]
     segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token and set(token) <= set(_OPERATOR_CHARS):
+    skip_next_word = False
+    for kind, token in tokens:
+        if kind == "sep":
             segments.append([])
+            skip_next_word = False
+        elif kind == "redir":
+            skip_next_word = True
+        elif skip_next_word:
+            skip_next_word = False
         else:
-            segments[-1].append(token)
+            segments[-1].append(_dequote_shell_word(token))
     return segments
 
 
@@ -627,13 +662,14 @@ def main() -> None:
 
     # O_APPEND writer 間で物理順と時系列がずれても、広めの tail から新しい記録を選ぶ。
     read_limit = summary_cfg["max_records"] * TAIL_READ_MULTIPLIER
-    records = _tail_records(log_path, read_limit)
+    tail_lines = _read_tail_lines(log_path, read_limit)
+    records = _parse_tail_lines(tail_lines)
     if not records:
         return
     legacy = [record for record in records if not _is_other_record(record)]
     others = [record for record in records if _is_other_record(record)]
-    if len(records) >= read_limit:
-        # 読み取り窓が埋まっているときは、窓の外にその他部の行が残っているか、その他部の行が
+    if len(tail_lines) >= read_limit:
+        # 物理行数で読み取り窓が埋まっているときは、窓の外にその他部の行が残っているか、その他部の行が
         # 窓を占めて従来部（テスト・lint）が押し出されている可能性がある。走査量の上限の範囲で
         # 両方を上限まで集め直す（設計 §4 の 5）。その他部の行が見つからなければ、従来部は
         # 読み取り窓のものを使い、従来と同じ出力にする（NF-06）。
