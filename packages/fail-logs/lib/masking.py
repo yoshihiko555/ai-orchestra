@@ -44,14 +44,15 @@ _EMAIL = re.compile(
 )
 _HOME_PATH = re.compile(r"/(?:Users|home)/[^/\s'\"]{1,256}")
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-# 空白区切りのフラグで渡す機密情報（`--password x`・`--token=x`・`curl -u user:pass`）。
+# フラグで渡す機密情報は、引用符・エスケープを含めて値のシェル単語全体を伏せる。
+# 閉じていない引用符は行末まで伏せる。各選択肢の先頭を分け、長さの上限なしでも線形に照合する。
 # 強化版の key=value の形（`[:=]` 区切り）に当たらないものを補う。`mysql -pSECRET` のような
 # 1 文字のフラグに続けて書く形は、`cp -pR` などと区別できないため伏せない（設計 §7.4 の限界）。
+_SHELL_WORD = r"""(?:"(?:[^"\\\n]|\\.)*"?|'[^'\n]*'?|\\.|[^\s"'\\])+"""
 _FLAG_SECRET = re.compile(
-    r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key|auth[-_]?token)(?:=|\s+))"
-    r"(?:\"[^\"\n]{0,512}\"|'[^'\n]{0,512}'|[^\s\"']{1,512})"
+    r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key|auth[-_]?token)(?:=|\s+))" + _SHELL_WORD
 )
-_USER_PASS_FLAG = re.compile(r"((?:^|\s)(?:-u|--user)(?:=|\s+))[^\s:]{1,256}:[^\s]{1,512}")
+_USER_PASS_FLAG = re.compile(r"((?:^|\s)(?:-u|--user)(?:=|\s+))" + f"({_SHELL_WORD})")
 
 
 def _candidate_module_path() -> str | None:
@@ -101,6 +102,11 @@ def load_strong_masker(path: str | None = None) -> Masker | None:
     return _strong
 
 
+def _mask_user_pass(match: re.Match[str]) -> str:
+    """-u / --user の値は、認証情報の区切りを持つ単語だけ伏せる。"""
+    return match.group(1) + "[REDACTED]" if ":" in match.group(2) else match.group(0)
+
+
 def mask_pii(text: str) -> str:
     """URL の認証情報とクエリ・メールアドレス・ホームディレクトリのパス・IPv4 アドレス・
     空白区切りのフラグで渡す機密情報を伏せる。該当する記号を含まない入力では照合を省く。
@@ -114,7 +120,7 @@ def mask_pii(text: str) -> str:
         text = _HOME_PATH.sub("~", text)
     if "-" in text:
         text = _FLAG_SECRET.sub(r"\1[REDACTED]", text)
-        text = _USER_PASS_FLAG.sub(r"\1[REDACTED]", text)
+        text = _USER_PASS_FLAG.sub(_mask_user_pass, text)
     return _IPV4.sub("[IP]", text)
 
 
