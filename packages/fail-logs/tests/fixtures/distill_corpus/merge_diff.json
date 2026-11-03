@@ -1,0 +1,179 @@
+[
+  {
+    "id": "merge-diff-01",
+    "expect": { "signal": true, "merge": false },
+    "existing": [
+      {
+        "id": "L-00000101",
+        "title": "sandbox 内で mktemp を引数なしで使わず TMPDIR をテンプレートに渡す",
+        "scope": "claude"
+      }
+    ],
+    "turns": [
+      ["user", "変更を push して"],
+      [
+        "bash",
+        "git push origin feat/y",
+        {
+          "error": "Exit code 1\n! [rejected] feat/y -> feat/y (non-fast-forward)"
+        }
+      ],
+      [
+        "bash",
+        "git push origin feat/y",
+        {
+          "error": "Exit code 1\n! [rejected] feat/y -> feat/y (non-fast-forward)"
+        }
+      ],
+      ["assistant", "リモートの変更を取り込んでから push します"],
+      [
+        "bash",
+        "git pull --rebase origin feat/y && git push origin feat/y",
+        { "output": "feat/y -> feat/y" }
+      ],
+      ["assistant", "push しました"]
+    ]
+  },
+  {
+    "id": "merge-diff-02",
+    "expect": { "signal": true, "merge": false },
+    "existing": [
+      {
+        "id": "L-00000111",
+        "title": "Codex CLI は Claude Code の sandbox の外で実行する",
+        "scope": "claude"
+      }
+    ],
+    "turns": [
+      ["user", "README のバッジを足して"],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "README.md",
+          "old_string": "# App",
+          "new_string": "# App ![ci](badge.svg)"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "README にバッジを足しました"],
+      [
+        "user",
+        "README は生成物だと言ったよね。templates/readme.md を直して build して"
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "templates/readme.md",
+          "old_string": "# App",
+          "new_string": "# App ![ci](badge.svg)"
+        },
+        { "output": "ok" }
+      ],
+      ["bash", "python scripts/build.py readme", { "output": "generated" }],
+      ["assistant", "正本を直して作り直しました"]
+    ]
+  },
+  {
+    "id": "merge-diff-03",
+    "expect": { "signal": true, "merge": false },
+    "existing": [
+      {
+        "id": "L-00000121",
+        "title": "同期される設定ファイルを直接編集せず .local.yaml に上書きを書く",
+        "scope": "all"
+      }
+    ],
+    "turns": [
+      ["user", "PR を作って"],
+      [
+        "bash",
+        "gh pr create --title fix --body fix",
+        { "output": "https://github.com/o/r/pull/30" }
+      ],
+      ["assistant", "PR を作りました"],
+      ["user", "PR テンプレートを使ってと言ったのに。本文を直して"],
+      ["bash", "gh pr edit 30 --body-file body.md", { "output": "updated" }],
+      ["assistant", "テンプレートに沿って直しました"]
+    ]
+  },
+  {
+    "id": "merge-diff-04",
+    "expect": { "signal": true, "merge": false },
+    "existing": [
+      {
+        "id": "L-00000131",
+        "title": "グローバルの Python に pip install せず uv でプロジェクトの .venv に入れる",
+        "scope": "all"
+      }
+    ],
+    "turns": [
+      ["user", "スクリプトを書いて実行して"],
+      [
+        "bash",
+        "cat > run.sh <<EOF\necho `date`\nEOF\nbash run.sh",
+        { "error": "Exit code 1\nrun.sh: line 1: unexpected EOF" }
+      ],
+      [
+        "bash",
+        "cat > run.sh <<EOF\necho `date`\nEOF\nbash run.sh",
+        { "error": "Exit code 1\nrun.sh: line 1: unexpected EOF" }
+      ],
+      [
+        "assistant",
+        "クォートしない heredoc では本文のバッククォートが展開されていました。クォートして書き直します"
+      ],
+      [
+        "bash",
+        "cat > run.sh <<'EOF'\necho \"$(date)\"\nEOF\nbash run.sh",
+        { "output": "Mon Nov 3" }
+      ],
+      ["assistant", "実行できました"]
+    ]
+  },
+  {
+    "id": "merge-diff-05",
+    "expect": { "signal": true, "merge": false },
+    "existing": [
+      {
+        "id": "L-00000141",
+        "title": "PR 本文はリポジトリの PR テンプレートに沿って書く",
+        "scope": "all"
+      }
+    ],
+    "turns": [
+      ["user", "テストを足して"],
+      [
+        "tool",
+        "Write",
+        {
+          "file_path": "tests/test_x.py",
+          "content": "def test_x():\n    assert f() == 42\n"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "実装の出力に合わせてテストを足しました"],
+      [
+        "user",
+        "実装の出力をそのまま期待値にしないで。評価セットの観点から期待値を決めて"
+      ],
+      [
+        "tool",
+        "Read",
+        { "file_path": "docs/evaluation/x.md" },
+        { "output": "EV-03: 空入力で 0 を返す" }
+      ],
+      [
+        "tool",
+        "Write",
+        {
+          "file_path": "tests/test_x.py",
+          "content": "def test_empty():\n    assert f('') == 0\n"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "評価セットの EV-03 から期待値を決めました"]
+    ]
+  }
+]

@@ -1,0 +1,90 @@
+[
+  {
+    "id": "transient-01",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "依存を入れて"],
+      [
+        "bash",
+        "uv sync",
+        {
+          "error": "Exit code 2\nerror: Failed to fetch: https://pypi.org/simple/requests/ (connection reset by peer)"
+        }
+      ],
+      ["bash", "uv sync", { "output": "Resolved 40 packages" }],
+      ["assistant", "一時的な通信エラーでしたが、再実行で入りました"]
+    ]
+  },
+  {
+    "id": "transient-02",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "最新を取得して"],
+      [
+        "bash",
+        "git fetch origin",
+        {
+          "error": "Exit code 128\nfatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com"
+        }
+      ],
+      ["bash", "git fetch origin", { "output": "" }],
+      ["assistant", "取得しました"]
+    ]
+  },
+  {
+    "id": "transient-03",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "API の状態を確認して"],
+      [
+        "bash",
+        "curl -fsS https://status.example.com/api",
+        {
+          "error": "Exit code 28\ncurl: (28) Operation timed out after 10001 milliseconds"
+        }
+      ],
+      [
+        "bash",
+        "curl -fsS https://status.example.com/api",
+        { "output": "{\"status\":\"ok\"}" }
+      ],
+      ["assistant", "API は正常です"]
+    ]
+  },
+  {
+    "id": "transient-04",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "PR の一覧を見て"],
+      [
+        "bash",
+        "gh pr list",
+        {
+          "error": "Exit code 1\nHTTP 502: Bad Gateway (https://api.github.com/graphql)"
+        }
+      ],
+      ["bash", "gh pr list", { "output": "12 fix: typo" }],
+      ["assistant", "開いている PR は 1 件です"]
+    ]
+  },
+  {
+    "id": "transient-05",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "イメージを取得して"],
+      [
+        "bash",
+        "docker pull python:3.12-slim",
+        {
+          "error": "Exit code 1\nError response from daemon: toomanyrequests: rate limit exceeded"
+        }
+      ],
+      [
+        "bash",
+        "docker pull python:3.12-slim",
+        { "output": "Status: Downloaded newer image" }
+      ],
+      ["assistant", "取得しました"]
+    ]
+  }
+]

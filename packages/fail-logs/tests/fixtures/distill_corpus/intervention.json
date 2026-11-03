@@ -1,0 +1,55 @@
+[
+  {
+    "id": "intervention-reject-01",
+    "expect": { "signal": true },
+    "turns": [
+      ["user", "不要になったブランチを整理して"],
+      ["assistant", "マージ済みのブランチを削除します"],
+      ["reject", "git branch -D feat/old feat/wip"],
+      ["user", "wip はまだ使っている。マージ済みのものだけにして"],
+      ["bash", "git branch --merged main", { "output": "feat/old" }],
+      [
+        "bash",
+        "git branch -d feat/old",
+        { "output": "Deleted branch feat/old" }
+      ],
+      ["assistant", "マージ済みの feat/old だけを削除しました"]
+    ]
+  },
+  {
+    "id": "intervention-interrupt-01",
+    "expect": { "signal": true },
+    "turns": [
+      ["user", "依存を最新にして"],
+      ["bash", "uv lock --upgrade", { "output": "Resolved 80 packages" }],
+      ["interrupt"],
+      ["user", "全部ではなく pytest だけ上げて"],
+      [
+        "bash",
+        "uv lock --upgrade-package pytest",
+        { "output": "Updated pytest" }
+      ],
+      ["assistant", "pytest だけを更新しました"]
+    ]
+  },
+  {
+    "id": "intervention-interrupt-tool-01",
+    "expect": { "signal": true },
+    "turns": [
+      ["user", "テストを全部流して"],
+      ["assistant", "全テストを実行します"],
+      [
+        "user",
+        [
+          {
+            "type": "text",
+            "text": "[Request interrupted by user for tool use]"
+          }
+        ]
+      ],
+      ["user", "e2e は時間がかかるので unit だけにして"],
+      ["bash", "pytest -q tests/unit", { "output": "120 passed" }],
+      ["assistant", "unit テストは全て通りました"]
+    ]
+  }
+]

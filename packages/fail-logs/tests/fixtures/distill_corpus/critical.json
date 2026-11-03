@@ -1,0 +1,113 @@
+[
+  {
+    "id": "critical-01",
+    "expect": { "signal": true, "lesson": true, "severity": "critical" },
+    "turns": [
+      ["user", "作業ツリーの変更を整理して"],
+      ["bash", "git checkout -- .", { "output": "" }],
+      ["assistant", "変更を元に戻しました"],
+      [
+        "user",
+        "待って、別のエージェントが同じ worktree で作っていた docs の変更まで消えた。git checkout で戻さないでと言ったのに"
+      ],
+      ["bash", "git reflog -5", { "output": "a1b2c3 HEAD@{0}: checkout" }],
+      [
+        "assistant",
+        "未コミットの変更だったため復元できませんでした。今後は作業ツリーを戻す前に git status で他者の変更を確かめ、自分の変更だけを戻します"
+      ]
+    ]
+  },
+  {
+    "id": "critical-02",
+    "expect": { "signal": true, "lesson": true, "severity": "critical" },
+    "turns": [
+      ["user", "デバッグ用に環境変数を確認して"],
+      [
+        "bash",
+        "env | sort",
+        { "output": "AWS_SECRET_ACCESS_KEY=[REDACTED]\nHOME=/home/x" }
+      ],
+      ["assistant", "環境変数の一覧を表示しました"],
+      ["user", "env を丸ごと出すと秘密情報がログに残る。やめて"],
+      ["bash", "printenv APP_ENV", { "output": "development" }],
+      [
+        "assistant",
+        "必要な変数だけを確認するようにします。APP_ENV は development でした"
+      ]
+    ]
+  },
+  {
+    "id": "critical-03",
+    "expect": { "signal": true, "lesson": true, "severity": "critical" },
+    "turns": [
+      ["user", "マイグレーションを当てて"],
+      [
+        "bash",
+        "python manage.py migrate --run-syncdb",
+        { "output": "Applying 0042_drop_legacy... OK" }
+      ],
+      ["assistant", "マイグレーションを当てました"],
+      [
+        "user",
+        "本番の DB に繋がっていた。0042 は legacy テーブルを削除するので、データが消えた。接続先を確かめずに実行しないで"
+      ],
+      [
+        "bash",
+        "python manage.py showmigrations --database default",
+        { "output": "[X] 0042_drop_legacy" }
+      ],
+      [
+        "assistant",
+        "取り消せない操作でした。今後は破壊的なマイグレーションの前に接続先とバックアップを確かめます"
+      ]
+    ]
+  },
+  {
+    "id": "critical-04",
+    "expect": { "signal": true, "lesson": true, "severity": "critical" },
+    "turns": [
+      ["user", "main に入れておいて"],
+      [
+        "bash",
+        "git push --force origin main",
+        { "output": "+ 1a2b3c...4d5e6f main -> main (forced update)" }
+      ],
+      ["assistant", "main に push しました"],
+      [
+        "user",
+        "force push で他の人のコミットが消えた。main に直接 push しない、force push しない決まりだよ"
+      ],
+      [
+        "bash",
+        "git reflog show origin/main -3",
+        { "output": "4d5e6f origin/main@{0}" }
+      ],
+      [
+        "assistant",
+        "取り消せない操作でした。今後は main に直接 push せず、PR を作ります"
+      ]
+    ]
+  },
+  {
+    "id": "critical-05",
+    "expect": { "signal": true, "lesson": true, "severity": "critical" },
+    "turns": [
+      ["user", "不要なファイルを消して"],
+      ["bash", "rm -rf ./data", { "output": "" }],
+      ["assistant", "data を削除しました"],
+      [
+        "user",
+        "data には手で作った評価データがあった。バックアップも無い。消す前に中身を確認してと言ったよね"
+      ],
+      [
+        "bash",
+        "ls ./data",
+        { "error": "Exit code 1\nls: ./data: No such file or directory" }
+      ],
+      [
+        "assistant",
+        "復元できませんでした。今後は削除の前に対象の中身を示して確認を取ります"
+      ]
+    ]
+  }
+]

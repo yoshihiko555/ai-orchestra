@@ -1,0 +1,149 @@
+[
+  {
+    "id": "noncritical-01",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "一時ファイルを作って結果を書き出して"],
+      [
+        "bash",
+        "F=$(mktemp) && echo ok > $F",
+        {
+          "error": "Exit code 1\nmktemp: mkstemp failed on /var/folders/xx/T/tmp.XXXX: Operation not permitted"
+        }
+      ],
+      [
+        "bash",
+        "F=$(mktemp -t out) && echo ok > $F",
+        {
+          "error": "Exit code 1\nmktemp: mkstemp failed on /var/folders/xx/T/out.XXXX: Operation not permitted"
+        }
+      ],
+      [
+        "assistant",
+        "sandbox では既定の一時ディレクトリに書けないようです。TMPDIR をテンプレートに渡します"
+      ],
+      [
+        "bash",
+        "F=$(mktemp \"${TMPDIR:-/tmp}/out.XXXXXX\") && echo ok > $F",
+        { "output": "" }
+      ],
+      ["assistant", "書き出しました"]
+    ]
+  },
+  {
+    "id": "noncritical-02",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "変更を push して"],
+      [
+        "bash",
+        "git push origin feat/x",
+        { "error": "Exit code 1\n! [rejected] feat/x -> feat/x (fetch first)" }
+      ],
+      [
+        "bash",
+        "git push origin feat/x",
+        { "error": "Exit code 1\n! [rejected] feat/x -> feat/x (fetch first)" }
+      ],
+      [
+        "assistant",
+        "リモートに新しいコミットがあるため取り込んでから push します"
+      ],
+      [
+        "bash",
+        "git pull --rebase origin feat/x && git push origin feat/x",
+        { "output": "feat/x -> feat/x" }
+      ],
+      ["assistant", "push しました"]
+    ]
+  },
+  {
+    "id": "noncritical-03",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "Codex に設計を相談して"],
+      [
+        "bash",
+        "codex exec --model m --sandbox read-only 'review the design'",
+        {
+          "error": "Exit code 1\nfailed to initialize in-process app-server client: Operation not permitted"
+        }
+      ],
+      [
+        "bash",
+        "codex exec --model m --sandbox read-only 'review the design'",
+        {
+          "error": "Exit code 1\nfailed to initialize in-process app-server client: Operation not permitted"
+        }
+      ],
+      [
+        "assistant",
+        "Codex は Claude Code の sandbox の中では起動できません。sandbox を外して再実行します"
+      ],
+      [
+        "bash",
+        "codex exec --model m --sandbox read-only 'review the design' < /dev/null",
+        { "output": "Recommendation: ..." }
+      ],
+      ["assistant", "Codex の助言を得ました"]
+    ]
+  },
+  {
+    "id": "noncritical-04",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "パッケージを入れてテストして"],
+      [
+        "bash",
+        "pip install requests",
+        { "error": "Exit code 1\nerror: externally-managed-environment" }
+      ],
+      [
+        "bash",
+        "pip install --user requests",
+        { "error": "Exit code 1\nerror: externally-managed-environment" }
+      ],
+      [
+        "user",
+        "グローバルの Python に入れないで。プロジェクトの .venv に uv で入れる決まりだよ"
+      ],
+      [
+        "bash",
+        "uv add requests && uv run pytest -q",
+        { "output": "12 passed" }
+      ],
+      ["assistant", "uv でプロジェクトに追加し、テストも通りました"]
+    ]
+  },
+  {
+    "id": "noncritical-05",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "生成物を作り直して"],
+      [
+        "bash",
+        "orchex facet build --project .",
+        {
+          "error": "Exit code 1\nError: facets/ not found under /root/checkout"
+        }
+      ],
+      [
+        "bash",
+        "orchex facet build --project .",
+        {
+          "error": "Exit code 1\nError: facets/ not found under /root/checkout"
+        }
+      ],
+      [
+        "assistant",
+        "orchex は root のチェックアウトを見ています。worktree の facets を使うため、AI_ORCHESTRA_DIR を指定してスクリプトを直接実行します"
+      ],
+      [
+        "bash",
+        "AI_ORCHESTRA_DIR=$PWD python scripts/orchestra-manager.py facet build --project $PWD",
+        { "output": "built 12 skills" }
+      ],
+      ["assistant", "作り直しました"]
+    ]
+  }
+]

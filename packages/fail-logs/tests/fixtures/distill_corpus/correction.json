@@ -1,0 +1,179 @@
+[
+  {
+    "id": "correction-01",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "設定ファイルにタイムアウトの項目を足して"],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "config/app.yaml",
+          "old_string": "retries: 3",
+          "new_string": "retries: 3\ntimeout: 30"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "config/app.yaml に timeout を足しました"],
+      [
+        "user",
+        "そうじゃない。ベースの app.yaml は自動で同期されるので、上書きは app.local.yaml に書く決まりだよ"
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "config/app.yaml",
+          "old_string": "retries: 3\ntimeout: 30",
+          "new_string": "retries: 3"
+        },
+        { "output": "ok" }
+      ],
+      [
+        "tool",
+        "Write",
+        { "file_path": "config/app.local.yaml", "content": "timeout: 30\n" },
+        { "output": "ok" }
+      ],
+      ["assistant", "ベースを元に戻し、app.local.yaml に timeout を書きました"]
+    ]
+  },
+  {
+    "id": "correction-02",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "この関数にテストを足して"],
+      [
+        "tool",
+        "Write",
+        {
+          "file_path": "tests/test_calc.py",
+          "content": "def test_add():\n    assert add(1, 2) == 3\n"
+        },
+        { "output": "ok" }
+      ],
+      ["bash", "pytest -q tests/test_calc.py", { "output": "1 passed" }],
+      ["assistant", "テストを足して通しました"],
+      [
+        "user",
+        "テストの期待値を実装の出力からコピーしないで。仕様（評価セット）から期待値を決める決まりだったはず"
+      ],
+      [
+        "tool",
+        "Read",
+        { "file_path": "docs/evaluation/calc.md" },
+        { "output": "EV-01: 負の数の加算で桁あふれしない" }
+      ],
+      [
+        "tool",
+        "Write",
+        {
+          "file_path": "tests/test_calc.py",
+          "content": "def test_add_negative():\n    assert add(-2, -3) == -5\n"
+        },
+        { "output": "ok" }
+      ],
+      ["bash", "pytest -q tests/test_calc.py", { "output": "1 passed" }],
+      ["assistant", "評価セットの EV-01 から期待値を決めたテストに直しました"]
+    ]
+  },
+  {
+    "id": "correction-03",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "README のコマンド例を新しいオプション名に直して"],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "README.md",
+          "old_string": "--out",
+          "new_string": "--output"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "README を直しました"],
+      [
+        "user",
+        "README は生成物だよ。正本の templates/readme.md を直して build し直して"
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "templates/readme.md",
+          "old_string": "--out",
+          "new_string": "--output"
+        },
+        { "output": "ok" }
+      ],
+      [
+        "bash",
+        "python scripts/build.py readme",
+        { "output": "generated README.md" }
+      ],
+      ["assistant", "正本を直して README を作り直しました"]
+    ]
+  },
+  {
+    "id": "correction-04",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "ログの出力先を変えたいので logger の初期化を見て"],
+      [
+        "tool",
+        "Read",
+        { "file_path": "src/log.py" },
+        { "output": "def setup(): ..." }
+      ],
+      [
+        "assistant",
+        "src/log.py の setup を書き換えて出力先を /var/log/app に固定します"
+      ],
+      [
+        "user",
+        "勝手に固定しないで。出力先は環境変数 APP_LOG_DIR で上書きできる設計にしているはず"
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "src/log.py",
+          "old_string": "path = DEFAULT",
+          "new_string": "path = os.environ.get('APP_LOG_DIR', DEFAULT)"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "APP_LOG_DIR で上書きできる形にしました"]
+    ]
+  },
+  {
+    "id": "correction-05",
+    "expect": { "signal": true, "lesson": true, "severity": "normal" },
+    "turns": [
+      ["user", "PR を出して"],
+      [
+        "bash",
+        "gh pr create --title 'fix: typo' --body 'typo fix' --base main",
+        { "output": "https://github.com/o/r/pull/12" }
+      ],
+      ["assistant", "PR を作りました"],
+      [
+        "user",
+        "テンプレートを使っていないし、ラベルも無い。PR 本文は PULL_REQUEST_TEMPLATE に沿って書いてと言ったのに"
+      ],
+      [
+        "tool",
+        "Read",
+        { "file_path": ".github/PULL_REQUEST_TEMPLATE.md" },
+        { "output": "## Summary\n## Testing" }
+      ],
+      [
+        "bash",
+        "gh pr edit 12 --body-file /tmp/body.md --add-label bug",
+        { "output": "updated" }
+      ],
+      ["assistant", "テンプレートに沿った本文とラベルに直しました"]
+    ]
+  }
+]

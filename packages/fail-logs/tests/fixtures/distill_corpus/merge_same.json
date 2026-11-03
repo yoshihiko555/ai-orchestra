@@ -1,0 +1,210 @@
+[
+  {
+    "id": "merge-same-01",
+    "expect": { "signal": true, "merge": true },
+    "existing": [
+      {
+        "id": "L-00000001",
+        "title": "sandbox 内で mktemp を引数なしで使わず TMPDIR をテンプレートに渡す",
+        "scope": "claude"
+      },
+      {
+        "id": "L-00000002",
+        "title": "PR 本文はリポジトリの PR テンプレートに沿って書く",
+        "scope": "all"
+      }
+    ],
+    "turns": [
+      ["user", "ログを一時ファイルにまとめて"],
+      [
+        "bash",
+        "T=$(mktemp) && cat a.log b.log > $T",
+        {
+          "error": "Exit code 1\nmktemp: mkstemp failed on /var/folders/q/T/tmp.XXXX: Operation not permitted"
+        }
+      ],
+      [
+        "bash",
+        "T=$(mktemp) && cat a.log b.log > $T",
+        {
+          "error": "Exit code 1\nmktemp: mkstemp failed on /var/folders/q/T/tmp.XXXX: Operation not permitted"
+        }
+      ],
+      [
+        "assistant",
+        "既定の一時ディレクトリは sandbox で書けないので、TMPDIR を使ったテンプレートにします"
+      ],
+      [
+        "bash",
+        "T=$(mktemp \"${TMPDIR:-/tmp}/logs.XXXXXX\") && cat a.log b.log > $T",
+        { "output": "" }
+      ],
+      ["assistant", "まとめました"]
+    ]
+  },
+  {
+    "id": "merge-same-02",
+    "expect": { "signal": true, "merge": true },
+    "existing": [
+      {
+        "id": "L-00000011",
+        "title": "同期される設定ファイルを直接編集せず .local.yaml に上書きを書く",
+        "scope": "all"
+      },
+      {
+        "id": "L-00000012",
+        "title": "git push が拒否されたら pull --rebase で取り込んでから push する",
+        "scope": "all"
+      }
+    ],
+    "turns": [
+      ["user", "リトライ回数を 5 にして"],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": ".claude/config/agent/routing.yaml",
+          "old_string": "retries: 3",
+          "new_string": "retries: 5"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "routing.yaml を 5 にしました"],
+      [
+        "user",
+        "そのファイルは同期で上書きされるからダメ。routing.local.yaml に書いて"
+      ],
+      [
+        "tool",
+        "Write",
+        {
+          "file_path": ".claude/config/agent/routing.local.yaml",
+          "content": "retries: 5\n"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "routing.local.yaml に書きました"]
+    ]
+  },
+  {
+    "id": "merge-same-03",
+    "expect": { "signal": true, "merge": true },
+    "existing": [
+      {
+        "id": "L-00000021",
+        "title": "Codex CLI は Claude Code の sandbox の外で実行する",
+        "scope": "claude"
+      },
+      {
+        "id": "L-00000022",
+        "title": "テストの期待値は評価セットから決める",
+        "scope": "all"
+      }
+    ],
+    "turns": [
+      ["user", "Codex にレビューしてもらって"],
+      [
+        "bash",
+        "codex exec --sandbox read-only 'review this diff'",
+        {
+          "error": "Exit code 1\nfailed to initialize in-process app-server client: Operation not permitted"
+        }
+      ],
+      [
+        "bash",
+        "codex exec --sandbox read-only 'review this diff'",
+        {
+          "error": "Exit code 1\nfailed to initialize in-process app-server client: Operation not permitted"
+        }
+      ],
+      [
+        "assistant",
+        "sandbox の中では Codex が起動しないため、sandbox を外して実行します"
+      ],
+      [
+        "bash",
+        "codex exec --sandbox read-only 'review this diff' < /dev/null",
+        { "output": "LGTM with nits" }
+      ],
+      ["assistant", "レビュー結果を得ました"]
+    ]
+  },
+  {
+    "id": "merge-same-04",
+    "expect": { "signal": true, "merge": true },
+    "existing": [
+      {
+        "id": "L-00000031",
+        "title": "生成物を直接編集せず正本を直してから build し直す",
+        "scope": "all"
+      },
+      {
+        "id": "L-00000032",
+        "title": "heredoc は必ずクォートする",
+        "scope": "all"
+      }
+    ],
+    "turns": [
+      ["user", "スキルの説明文の誤字を直して"],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": ".claude/skills/review/SKILL.md",
+          "old_string": "レビュワー",
+          "new_string": "レビュアー"
+        },
+        { "output": "ok" }
+      ],
+      ["assistant", "SKILL.md を直しました"],
+      [
+        "user",
+        "そこは facet build の生成物。facets/instructions/review.md を直してから build して"
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "facets/instructions/review.md",
+          "old_string": "レビュワー",
+          "new_string": "レビュアー"
+        },
+        { "output": "ok" }
+      ],
+      [
+        "bash",
+        "python scripts/orchestra-manager.py facet build --project .",
+        { "output": "built" }
+      ],
+      ["assistant", "正本を直して作り直しました"]
+    ]
+  },
+  {
+    "id": "merge-same-05",
+    "expect": { "signal": true, "merge": true },
+    "existing": [
+      {
+        "id": "L-00000041",
+        "title": "グローバルの Python に pip install せず uv でプロジェクトの .venv に入れる",
+        "scope": "all"
+      },
+      { "id": "L-00000042", "title": "main に直接 push しない", "scope": "all" }
+    ],
+    "turns": [
+      ["user", "yaml を読むライブラリを入れて"],
+      [
+        "bash",
+        "pip3 install pyyaml",
+        { "error": "Exit code 1\nerror: externally-managed-environment" }
+      ],
+      [
+        "bash",
+        "python3 -m pip install pyyaml",
+        { "error": "Exit code 1\nerror: externally-managed-environment" }
+      ],
+      ["user", "システムの Python に入れようとしないで。uv add を使って"],
+      ["bash", "uv add pyyaml", { "output": "Added pyyaml" }],
+      ["assistant", "uv でプロジェクトに追加しました"]
+    ]
+  }
+]

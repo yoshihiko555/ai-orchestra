@@ -7,18 +7,25 @@
     "PostToolUse": ["capture-failures.py"],
     "PostToolUseFailure": ["capture-failures.py"],
     "PermissionDenied": ["capture-failures.py"],
-    "SessionStart": ["inject-failure-summary.py", "present-lessons.py"]
+    "SessionStart": ["inject-failure-summary.py", "present-lessons.py"],
+    "SessionEnd": ["distill-launch.py"]
   },
   "files": [
     "hooks/capture-failures.py",
     "hooks/inject-failure-summary.py",
     "hooks/present-lessons.py",
+    "hooks/distill-launch.py",
     "lib/masking.py",
     "lib/sanitize.py",
     "lib/lessons_model.py",
     "lib/lessons_store.py",
     "lib/lessons_context.py",
-    "lib/promotion.py"
+    "lib/promotion.py",
+    "lib/command_signature.py",
+    "lib/transcript_reader.py",
+    "lib/distill_signals.py",
+    "lib/distill_prompt.py",
+    "lib/distill_worker.py"
   ],
   "skills": [],
   "agents": [],
@@ -31,6 +38,10 @@
     {
       "path": "scripts/lessons_admin.py",
       "description": "教訓候補の人向け CLI（revise / set-state / merge / ack / verify / issue / rebuild。/lessons で人が承認した操作だけに使う。許可リストに入れない）"
+    },
+    {
+      "path": "scripts/eval_distill.py",
+      "description": "教訓化の判断の手動評価（評価用の記録で前段判定と教訓化セッションを実行し、合格率と費用を出す。CI では実行しない）"
     }
   ],
   "config": ["config/fail-logs.yaml"]

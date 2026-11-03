@@ -15,9 +15,11 @@ for _path in (str(CORE_HOOKS), str(LIB_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+import distill_signals as signals_lib  # noqa: E402, F401  （テストから h.signals_lib で使う）
 import lessons_model as model  # noqa: E402
 import lessons_store as store_lib  # noqa: E402
 import masking  # noqa: E402
+import transcript_reader as reader  # noqa: E402, F401  （テストから h.reader で使う）
 
 cli = load_module("lessons_cli_under_test", "packages/fail-logs/scripts/lessons_cli.py")
 admin = load_module("lessons_admin_under_test", "packages/fail-logs/scripts/lessons_admin.py")

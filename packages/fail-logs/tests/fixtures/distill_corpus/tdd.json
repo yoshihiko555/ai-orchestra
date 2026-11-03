@@ -1,0 +1,142 @@
+[
+  {
+    "id": "tdd-01",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "TDD で add 関数を作って"],
+      [
+        "tool",
+        "Write",
+        {
+          "file_path": "tests/test_math.py",
+          "content": "def test_add():\n    assert add(1, 2) == 3\n"
+        },
+        { "output": "ok" }
+      ],
+      [
+        "bash",
+        "pytest -q tests/test_math.py",
+        {
+          "error": "Exit code 1\nE NameError: name 'add' is not defined\n1 failed"
+        }
+      ],
+      [
+        "tool",
+        "Write",
+        {
+          "file_path": "src/math.py",
+          "content": "def add(a, b):\n    return a + b\n"
+        },
+        { "output": "ok" }
+      ],
+      ["bash", "pytest -q tests/test_math.py", { "output": "1 passed" }],
+      ["assistant", "red → green で add を実装しました"]
+    ]
+  },
+  {
+    "id": "tdd-02",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "バリデーションのテストを先に書いて実装して"],
+      [
+        "bash",
+        "pytest -q tests/test_validate.py",
+        {
+          "error": "Exit code 1\nFAILED tests/test_validate.py::test_empty - AssertionError\n1 failed"
+        }
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "src/validate.py",
+          "old_string": "return True",
+          "new_string": "return bool(value)"
+        },
+        { "output": "ok" }
+      ],
+      ["bash", "pytest -q tests/test_validate.py", { "output": "3 passed" }],
+      ["assistant", "テストが通りました"]
+    ]
+  },
+  {
+    "id": "tdd-03",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "パーサーにエッジケースのテストを足して直して"],
+      [
+        "bash",
+        "uv run pytest -q tests/test_parser.py -k edge",
+        {
+          "error": "Exit code 1\nE AssertionError: assert [] == ['a']\n1 failed"
+        }
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "src/parser.py",
+          "old_string": "if not text:",
+          "new_string": "if text is None:"
+        },
+        { "output": "ok" }
+      ],
+      [
+        "bash",
+        "uv run pytest -q tests/test_parser.py",
+        { "output": "14 passed" }
+      ],
+      ["assistant", "エッジケースも通るようにしました"]
+    ]
+  },
+  {
+    "id": "tdd-04",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "型注釈を足して lint を通して"],
+      [
+        "bash",
+        "ruff check src",
+        {
+          "error": "Exit code 1\nsrc/a.py:3:5: ANN001 Missing type annotation\nFound 1 error."
+        }
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "src/a.py",
+          "old_string": "def f(x):",
+          "new_string": "def f(x: int) -> int:"
+        },
+        { "output": "ok" }
+      ],
+      ["bash", "ruff check src", { "output": "All checks passed!" }],
+      ["assistant", "lint が通りました"]
+    ]
+  },
+  {
+    "id": "tdd-05",
+    "expect": { "signal": false, "lesson": false },
+    "turns": [
+      ["user", "失敗するテストを書いてから修正して"],
+      [
+        "bash",
+        "go test ./pkg/...",
+        { "error": "Exit code 1\n--- FAIL: TestSplit (0.00s)\nFAIL" }
+      ],
+      [
+        "tool",
+        "Edit",
+        {
+          "file_path": "pkg/split.go",
+          "old_string": "strings.Split(s, \",\")",
+          "new_string": "strings.FieldsFunc(s, isSep)"
+        },
+        { "output": "ok" }
+      ],
+      ["bash", "go test ./pkg/...", { "output": "ok  pkg 0.01s" }],
+      ["assistant", "テストが通りました"]
+    ]
+  }
+]
