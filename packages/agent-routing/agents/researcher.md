@@ -132,6 +132,10 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{research question}" < /
   `antigravity-delegation` のリトライプロトコル（最大 2 回のリトライ）に従う。それでも失敗したら `claude-direct` で続行する。
   CLI 未導入・sandbox の権限拒否など再試行できない実行エラーは、確認したエラーを報告して直接調査に切り替えてよい。
   Bash がコマンドをバックグラウンドへ移しただけでは失敗ではない（完了を待って判定する）。
+  Claude Code の権限による拒否（`Permission to use Bash with command … has been denied.` / auto mode classifier の
+  拒否）は `agy` が起動していないので、リトライプロトコルの対象にしない。依頼文を言い換えて再実行せず（判定器が
+  回避とみなす）、拒否の種類と当たったと思われる語を報告して直接調査に切り替える（`antigravity-delegation` の
+  「Claude Code の権限による拒否」）。
 - `tool: codex` の場合は、実際に `codex exec` を試行して実行エラーを確認した後に限り、`claude-direct` で続行する。
 - CLI を試行せずに「利用できない」と推測してフォールバックしてはならない。
 
@@ -151,7 +155,7 @@ codex exec --model <model> --sandbox <sandbox> <flags> "{research question}" < /
 
 - 実効 tool: {antigravity / codex / claude-direct}
 - CLI 試行: {実行した CLI と成功・失敗 / claude-direct 指定のため未試行}
-- フォールバック理由: {なし / 無効化などの解決理由 / 実行エラー・リトライ結果}
+- フォールバック理由: {なし / 無効化などの解決理由 / 実行エラー・リトライ結果 / 権限による拒否の文言}
 
 ### Key Findings
 

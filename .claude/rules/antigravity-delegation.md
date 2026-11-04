@@ -108,10 +108,30 @@ Claude Code は Bash コマンドが `timeout` に達すると、止めずにバ
 
 短い質問を直接呼び出す場合も、バックグラウンドへ移されたら同じく完了を待つ（メインセッションでは完了通知が届く）。
 
+### Claude Code の権限による拒否（MUST）
+
+Bash の結果が次の文言なら、Claude Code が実行前に止めたもので、`agy` は起動していない。`agy` の失敗ではないので、
+下記「リトライプロトコル」の対象にしない。
+
+- `Permission to use Bash with command … has been denied.` — permissions の deny 規則に一致した
+- `Permission for this action was denied by the Claude Code auto mode classifier. Reason: …` — auto mode の判定器が拒否した
+
+対応:
+
+- **依頼文を言い換えたり、コマンドを組み替えたりして再実行しない。** 拒否の後にエージェントが自分で再実行すると、
+  auto mode の判定器は拒否の回避（`[Auto-Mode Bypass]`）とみなして拒否する
+- 拒否の種類（上のどちらの文言か）と、当たったと思われる語を報告に書き、claude-direct にフォールバックする。
+  規則を見直すかどうかは利用者が決める
+- `Bash(*secret*)` のようなワイルドカードの deny 規則は、コマンド文字列の部分一致で判定する。`agy -p` の依頼文の語や
+  パスにも当たる。1 万文字を超えるコマンドは解析が打ち切られ、heredoc の本文を含む全文から deny 規則が探される
+  （Claude Code 2.1.318 で確認）。これは原因を報告するための知識で、依頼文から語を抜いて通すために使わない
+  （上の言い換えに当たる）
+
 ### リトライプロトコル
 
 `agy` がエラー終了した場合、出力が空の場合、または出力に質問が含まれている場合にリトライする。
-タイムアウト（`--print-timeout`）はリトライしない。
+タイムアウト（`--print-timeout`）はリトライしない。Claude Code の権限による拒否（`agy` が起動していない）も
+リトライしない（上記）。
 
 #### タイムアウト/エラーの検出
 
@@ -184,7 +204,9 @@ based on the available information." --model <antigravity.model> --print-timeout
 （出力はファイルに受ける）。Bash がバックグラウンドへ移しても失敗ではない。完了を待って出力を読み、
 agy の結果を判定するまで報告を返さない。
 リトライ: エラー終了・空出力・質問検出時は上記「リトライプロトコル」に従う。
-sandbox エラーや権限拒否が発生した場合は claude-direct にフォールバックすること。
+sandbox エラーが発生した場合は claude-direct にフォールバックすること。
+Claude Code の権限による拒否（"Permission to use Bash ... has been denied." / auto mode classifier）は
+agy が起動していないので、言い換えて再実行せず、拒否の種類を報告して claude-direct にフォールバックすること。
 
 結果を .claude/docs/research/{topic}.md に保存し、
 要点を絞った要約を返してください。
