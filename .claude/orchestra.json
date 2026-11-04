@@ -65,6 +65,7 @@
     "config/git-workflow/sandbox-requirements.json",
     "config/image-generation/image-generation.yaml",
     "config/image-generation/styles/blueprint.md",
+    "config/image-generation/styles/industrial-orange.md",
     "config/image-generation/styles/isometric.md",
     "config/image-generation/styles/line-illust.md",
     "config/loop-harness/loop-harness.yaml",
@@ -125,7 +126,8 @@
       "agents/image-generator.md": "d976b4dbcd21834c24f64ed05a65885e5e8b04c34c3884e8b177f40473c55a3d",
       "config/image-generation/styles/isometric.md": "821224582cf75c6148d683b67407bd5de6d9d7b208742de27ba5df5650a10861",
       "config/image-generation/styles/blueprint.md": "70d4d9843bff8b04dd1cbc80753ccd10b897e31def54a45c0764adbe480be8a8",
-      "config/image-generation/styles/line-illust.md": "763b37dd0247fc2aa60a523424663e8bb671e4a00cbb9b220982922ed36e2983"
+      "config/image-generation/styles/line-illust.md": "763b37dd0247fc2aa60a523424663e8bb671e4a00cbb9b220982922ed36e2983",
+      "config/image-generation/styles/industrial-orange.md": "1b196042aec22a7d423b44d43df2976ec392ed117a4c0d50c1c27813776c9b51"
     },
     "loop-harness": {
       "config/loop-harness/loop-harness.yaml": "e899bc9dfa30ffd636e4629ee635e65a9c2841b47828cc68ac55fc2a80d19b59",

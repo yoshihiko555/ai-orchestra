@@ -92,7 +92,7 @@ codex exec --model gpt-6.1-sol \
   英語のままでもよく、ユーザープロンプトに画像内テキストの言語を明記した場合はその指定を優先する。
   恒久的な変更は `.claude/config/image-generation/image-generation.local.yaml` で上書きできる。
 - `--style <name>` は `.claude/config/image-generation/styles/<name>.md` を外観 prompt として適用する。
-  bundled style は `isometric` / `blueprint` / `line-illust`。未指定時は `default_style`、それも未設定なら style なしになる。
+  bundled style は `isometric` / `blueprint` / `line-illust` / `industrial-orange`。未指定時は `default_style`、それも未設定なら style なしになる。
   `--style none` はその実行だけ既定 style を無効化する。未知名は生成前に利用可能一覧から選び直す。
 - レートリミット/利用上限は連打由来。**1 タスク 1 回**で回避する。
 - レートリミット時に Codex が Pillow で描く代替画像（非 AI）は**検知して失敗扱い**にする。
