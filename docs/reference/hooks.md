@@ -49,16 +49,16 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 
 ### core
 
-| フック                       | イベント         | 対象       | 説明                                                                                   |
-| ---------------------------- | ---------------- | ---------- | -------------------------------------------------------------------------------------- |
-| `load-task-state.py`         | SessionStart     | —          | plan ファイル（`.claude/plans/*.md`）からタスク状態を読み込みサマリーを出力            |
-| `set-plan-gate.py`           | PostToolUse      | Agent/Task | プラン完了後にプランゲートを設定                                                       |
-| `check-plan-gate.py`         | PreToolUse       | Agent/Task | プランゲート確認（実装エージェントをブロック）                                         |
-| `clear-plan-gate.py`         | UserPromptSubmit | —          | ユーザー入力時にプランゲートをクリア                                                   |
-| `inject-shared-context.py`   | PreToolUse       | Agent/Task | サブエージェントに解決済みルーティング（`[Resolved Routing]`）と共有コンテキストを注入 |
-| `capture-task-result.py`     | PostToolUse      | Agent/Task | サブエージェント結果を `.claude/context/session/entries/` に記録                       |
-| `update-working-context.py`  | PostToolUse      | Edit/Write | 変更ファイルを `working-context.json` に追記                                           |
-| `cleanup-session-context.py` | SessionEnd       | —          | `.claude/context/session/` をクリーンアップ                                            |
+| フック                       | イベント                   | 対象           | 説明                                                                                                                                                                                                                                                                                              |
+| ---------------------------- | -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `load-task-state.py`         | SessionStart               | —              | plan ファイル（`.claude/plans/*.md`）からタスク状態を読み込みサマリーを出力                                                                                                                                                                                                                       |
+| `set-plan-gate.py`           | PostToolUse                | Agent/Task     | プラン完了後にプランゲートを設定                                                                                                                                                                                                                                                                  |
+| `check-plan-gate.py`         | PreToolUse                 | Agent/Task     | プランゲート確認（実装エージェントをブロック）                                                                                                                                                                                                                                                    |
+| `clear-plan-gate.py`         | UserPromptSubmit           | —              | ユーザー入力時にプランゲートをクリア                                                                                                                                                                                                                                                              |
+| `inject-shared-context.py`   | SubagentStart / PreToolUse | — / Agent/Task | SubagentStart で、解決済みルーティング（`[Resolved Routing]`）と共有コンテキストをサブエージェントに `additionalContext` で注入。PreToolUse（Agent/Task）は routing の値だけをオーケストレーターに表示のみ（共有コンテキストは見せず、入力は書き換えない。[ADR-064](../adr/ADR-20261104-064.md)） |
+| `capture-task-result.py`     | PostToolUse                | Agent/Task     | サブエージェント結果を `.claude/context/session/entries/` に記録                                                                                                                                                                                                                                  |
+| `update-working-context.py`  | PostToolUse                | Edit/Write     | 変更ファイルを `working-context.json` に追記                                                                                                                                                                                                                                                      |
+| `cleanup-session-context.py` | SessionEnd                 | —              | `.claude/context/session/` をクリーンアップ                                                                                                                                                                                                                                                       |
 
 ### agent-routing
 
@@ -311,9 +311,14 @@ if __name__ == "__main__":
 - `audit-prompt.py`（audit）
 - `agent-router.py`（agent-routing）
 
+### SubagentStart
+
+- `inject-shared-context.py`（core。SubagentStart でサブエージェントに routing と共有コンテキストを注入）
+- `audit-subagent-start.py`（audit）
+
 ### PreToolUse
 
-- `Agent/Task`: `check-plan-gate.py`, `inject-shared-context.py`
+- `Agent/Task`: `check-plan-gate.py`, `inject-shared-context.py`（PreToolUse では表示のみ）
 - `Edit/Write`: `check-codex-before-write.py`
 - `Read/Grep/Bash`: `check-context-optimization.py`
 - `WebSearch/WebFetch`: `suggest-antigravity-research.py`

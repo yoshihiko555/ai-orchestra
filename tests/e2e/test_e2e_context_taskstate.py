@@ -396,8 +396,8 @@ class TestInjectSharedContext:
                 json.dumps(entry), encoding="utf-8"
             )
 
-    def test_injects_context_into_prompt(self, tmp_path: Path) -> None:
-        """#14: entries がある状態で Agent ツール実行時にコンテキスト注入"""
+    def test_pre_tool_use_does_not_show_shared_context(self, tmp_path: Path) -> None:
+        """#14: PreToolUse は共有コンテキストを表示せず、入力も書き換えない（ADR-20261104-064）"""
         self._setup_entries(tmp_path, count=1)
         result = _run_hook(
             "inject-shared-context.py",
@@ -408,20 +408,35 @@ class TestInjectSharedContext:
             project=tmp_path,
         )
         assert result.returncode == 0
-        output = json.loads(result.stdout)
-        ctx = output["hookSpecificOutput"]["additionalContext"]
-        assert "[Shared Context]" in ctx
-        assert "agent-0" in ctx
+        # routing の config が無い project なので、表示するものも書き換えも無い
+        assert result.stdout.strip() == ""
+
+    def test_injects_context_on_subagent_start(self, tmp_path: Path) -> None:
+        """SubagentStart で起動したサブエージェントに additionalContext として届ける"""
+        self._setup_entries(tmp_path, count=1)
+        result = _run_hook(
+            "inject-shared-context.py",
+            {
+                "hook_event_name": "SubagentStart",
+                "session_id": "session-1",
+                "agent_id": "agent-x",
+                "agent_type": "backend-python-dev",
+            },
+            project=tmp_path,
+        )
+        assert result.returncode == 0
+        hook_output = json.loads(result.stdout)["hookSpecificOutput"]
+        assert hook_output["hookEventName"] == "SubagentStart"
+        assert "[Shared Context]" in hook_output["additionalContext"]
+        assert "agent-0" in hook_output["additionalContext"]
+        assert "updatedInput" not in hook_output
 
     def test_limits_to_five_entries(self, tmp_path: Path) -> None:
         """#15: 最新5件のみ注入される"""
         self._setup_entries(tmp_path, count=7)
         result = _run_hook(
             "inject-shared-context.py",
-            {
-                "tool_name": "Agent",
-                "tool_input": {"subagent_type": "tester", "prompt": "test"},
-            },
+            {"hook_event_name": "SubagentStart", "agent_type": "tester"},
             project=tmp_path,
         )
         output = json.loads(result.stdout)
@@ -437,10 +452,7 @@ class TestInjectSharedContext:
         self._setup_entries(tmp_path, count=7)
         result = _run_hook(
             "inject-shared-context.py",
-            {
-                "tool_name": "Agent",
-                "tool_input": {"subagent_type": "tester", "prompt": "test"},
-            },
+            {"hook_event_name": "SubagentStart", "agent_type": "tester"},
             project=tmp_path,
         )
         output = json.loads(result.stdout)
@@ -465,10 +477,7 @@ class TestInjectSharedContext:
         )
         result = _run_hook(
             "inject-shared-context.py",
-            {
-                "tool_name": "Agent",
-                "tool_input": {"subagent_type": "tester", "prompt": "test"},
-            },
+            {"hook_event_name": "SubagentStart", "agent_type": "tester"},
             project=tmp_path,
         )
         output = json.loads(result.stdout)
@@ -480,10 +489,7 @@ class TestInjectSharedContext:
         """#18: entries も working-context も空の場合は注入なし"""
         result = _run_hook(
             "inject-shared-context.py",
-            {
-                "tool_name": "Agent",
-                "tool_input": {"subagent_type": "tester", "prompt": "test"},
-            },
+            {"hook_event_name": "SubagentStart", "agent_type": "tester"},
             project=tmp_path,
         )
         # 注入するものがないので stdout は空（approve 出力なし）
