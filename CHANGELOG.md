@@ -19,9 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`fail-logs`: コマンドの非ゼロ終了・ツールのエラー・auto mode の拒否も記録する**: 新しい種別 `permission_denied`（`targets.permission_denied`）を足し、再発サマリーではテスト・lint 以外の再発を別の見出しで出す（設定 `summary.top_signatures_new` ほか）。既存のテスト・lint の再発の出力は変わらない。
 - **`memory-layers` ルール: 作業中に得た落とし穴と回避策は、fail-logs を導入していれば auto-memory ではなく教訓候補にする**（`lessons_cli.py add`）。昇格先にプロジェクト独自の `.claude/rules` とガードの Issue を加えた。
+- **`core`: `[Resolved Routing]` / `[Shared Context]` を SubagentStart の `additionalContext` で届ける（ADR-20261104-064）**: Agent / Task の prompt には書き足さなくなり、サブエージェントは hook が注入したブロックだけに従う。次回の SessionStart 同期で有効になる。
 
 ### Fixed
 
+- **auto mode で Agent / Task の起動が classifier に「no verdict」で拒否される**: 初回の起動で通るようになった。送り直したときに `[Resolved Routing]` / `[Shared Context]` が 2 重に付く問題も起きなくなった。
 - **Antigravity（`agy`）の調査が途中で Claude の直接調査に切り替わる**: Bash がコマンドをバックグラウンドへ移しても失敗とせず、`agy` の完了を待ってから結果を読むようにした（`antigravity-delegation` ルール、`antigravity-system` / `reverse` スキル、`researcher` / `general-purpose` / `reverse-coordinator` エージェント）。`agy` には `--print-timeout 30m` を付け、タイムアウトは stderr で判定してリトライしない。
 - **Antigravity（`agy`）の呼び出しが Claude Code の権限で拒否された後、言い換えて再実行して auto mode にも拒否される**: 拒否の文言（deny 規則・auto mode の判定器）なら `agy` は起動していないので、リトライせず拒否の種類を報告して Claude の直接調査に切り替えるようにした（`antigravity-delegation` ルール、`researcher` エージェント）。
 

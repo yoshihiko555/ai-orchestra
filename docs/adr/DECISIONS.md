@@ -76,3 +76,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20261028-061 | agency-agents のエージェントを commit 固定の vendor で取り込み、upstream.yaml で付け外しする                                       | accepted   | 2026-10-28 |
 | ADR-20261029-062 | エージェント提案に任意の Jev 判定を入れ、キーワード判定は依頼の文に限定して残す | accepted | 2026-10-29 |
 | ADR-20261103-063 | 失敗から教訓候補を自動で蓄積し、昇格候補の提示までを自動化する（ADR-057 の部分 supersede） | accepted | 2026-11-03 |
+| [ADR-20261104-064](./ADR-20261104-064.md) | サブエージェントへの routing と共有コンテキストを SubagentStart の additionalContext で届け、Agent の入力を書き換えない | accepted | 2026-11-04 |

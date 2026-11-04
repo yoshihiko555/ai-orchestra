@@ -109,9 +109,10 @@ Task tool parameters:
 
     2) Bash (disable the sandbox only when the codex-delegation conditions allow it; run `codex exec`
        alone; write the printed path literally because shell variables do not survive
-       between Bash calls). `<codex.sandbox>` is `codex.sandbox` from `[Resolved Routing]`;
-       if the block lists `codex.sandbox.analysis` / `codex.sandbox.implementation` instead,
-       use the analysis one. Resolve from the config files only when there is no block:
+       between Bash calls). `<codex.sandbox>` is `codex.sandbox` from the hook-injected
+       `[Resolved Routing]`; if the block lists `codex.sandbox.analysis` /
+       `codex.sandbox.implementation` instead, use the analysis one. Resolve from the config files
+       only when the hook injected no block:
     codex exec --model <codex.model> --sandbox <codex.sandbox> <codex.flags> "$(cat '<printed path>')" < /dev/null 2>/dev/null
 
     Return CONCISE summary (recommendation + rationale).
@@ -127,7 +128,7 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 
 ### Implementation Task (when route == codex)
 
-サブエージェント内であれば `[Resolved Routing]` の `codex.sandbox` を使う（ブロックに
+サブエージェント内であれば hook が注入した `[Resolved Routing]` の `codex.sandbox` を使う（ブロックに
 `codex.sandbox.implementation` が出ている場合はその値。ブロックがなければ
 `<codex.sandbox.implementation>` のまま）。
 

@@ -6,6 +6,7 @@ codd:
   depends_on:
     - id: "design:architecture"
       relation: refines
+      synced: "298850af321d1b51ad4571de2a2864a2670750c1"
   owner: ai-orchestra
 ---
 
