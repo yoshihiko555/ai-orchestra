@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **auto mode で Agent / Task の起動が classifier に「no verdict」で拒否される**: 初回の起動で通るようになった。送り直したときに `[Resolved Routing]` / `[Shared Context]` が 2 重に付く問題も起きなくなった。
 - **Antigravity（`agy`）の調査が途中で Claude の直接調査に切り替わる**: Bash がコマンドをバックグラウンドへ移しても失敗とせず、`agy` の完了を待ってから結果を読むようにした（`antigravity-delegation` ルール、`antigravity-system` / `reverse` スキル、`researcher` / `general-purpose` / `reverse-coordinator` エージェント）。`agy` には `--print-timeout 30m` を付け、タイムアウトは stderr で判定してリトライしない。
+- **Antigravity（`agy`）の呼び出しが Claude Code の権限で拒否された後、言い換えて再実行して auto mode にも拒否される**: 拒否の文言（deny 規則・auto mode の判定器）なら `agy` は起動していないので、リトライせず拒否の種類を報告して Claude の直接調査に切り替えるようにした（`antigravity-delegation` ルール、`researcher` エージェント）。
 
 ## [0.3.7] - 2026-11-01
 
