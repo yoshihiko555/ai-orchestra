@@ -253,7 +253,11 @@ PreToolUse(Edit|Write):
 
 PreToolUse(Agent|Task):
   - check-plan-gate.py (core)            実装エージェントのブロック判定
-  - inject-shared-context.py (core)      前回サブエージェント結果 + 作業コンテキスト注入
+  - inject-shared-context.py (core)      PreToolUse では routing の値の表示のみ（入力は書き換えない）
+
+SubagentStart:
+  - inject-shared-context.py (core)      SubagentStart で前回結果 + 作業コンテキスト + routing を注入
+  - audit-subagent-start.py (audit)      サブエージェント開始を記録
 
 PreToolUse(WebSearch|WebFetch):
   - suggest-antigravity-research.py (antigravity)  リサーチ向きクエリで [Antigravity Suggestion] 出力

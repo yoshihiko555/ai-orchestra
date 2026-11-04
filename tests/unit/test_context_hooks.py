@@ -446,7 +446,7 @@ class TestBuildInjectionText:
 
 
 class TestInjectSharedContextMain:
-    def test_appends_injection_to_prompt(self, tmp_path: Path) -> None:
+    def test_injects_shared_context_on_subagent_start(self, tmp_path: Path) -> None:
         # Arrange
         context_store.write_entry(
             str(tmp_path),
@@ -461,9 +461,9 @@ class TestInjectSharedContextMain:
         )
         stdin_data = json.dumps(
             {
-                "tool_name": "Task",
+                "hook_event_name": "SubagentStart",
+                "agent_type": "backend-python-dev",
                 "cwd": str(tmp_path),
-                "tool_input": {"subagent_type": "backend-python-dev", "prompt": "implement X"},
             }
         )
 
@@ -479,8 +479,9 @@ class TestInjectSharedContextMain:
         assert output  # something was printed
         parsed = json.loads(output)
         hook_output = parsed["hookSpecificOutput"]
+        assert hook_output["hookEventName"] == "SubagentStart"
         assert "[Shared Context]" in hook_output["additionalContext"]
-        assert "[Shared Context]" in hook_output["updatedInput"]["prompt"]
+        assert "updatedInput" not in hook_output
 
     def test_does_nothing_for_non_task_tool(self, tmp_path: Path) -> None:
         # Arrange
@@ -813,7 +814,8 @@ class TestAgentToolNameCompat:
         assert stored["agent_id"] == "tester"
         assert stored["status"] == "done"
 
-    def test_inject_appends_context_for_agent_tool_name(self, tmp_path: Path) -> None:
+    def test_pre_tool_use_does_not_show_shared_context(self, tmp_path: Path) -> None:
+        """PreToolUse は routing の値だけを表示する。共有コンテキストは見せない（ADR-20261104-064）。"""
         context_store.write_entry(
             str(tmp_path),
             "tester",
@@ -839,9 +841,5 @@ class TestAgentToolNameCompat:
                 with patch.object(inject_mod, "_CONTEXT_STORE_AVAILABLE", True):
                     inject_mod.main()
 
-        output = output_buf.getvalue()
-        assert output
-        parsed = json.loads(output)
-        hook_output = parsed["hookSpecificOutput"]
-        assert "[Shared Context]" in hook_output["additionalContext"]
-        assert "[Shared Context]" in hook_output["updatedInput"]["prompt"]
+        # routing の config が無い project なので表示するものが無く、入力も書き換えない
+        assert output_buf.getvalue() == ""

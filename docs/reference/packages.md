@@ -56,30 +56,30 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 
 ### コンポーネント
 
-| 種別   | 名前                         | 説明                                                                                                           |
-| ------ | ---------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| hook   | `load-task-state.py`         | SessionStart: plan ファイル（`.claude/plans/*.md`）からタスク状態を読み込みサマリーを出力                      |
-| hook   | `set-plan-gate.py`           | PostToolUse(Agent/Task): プランゲートを設定                                                                    |
-| hook   | `check-plan-gate.py`         | PreToolUse(Agent/Task): プランゲートの確認                                                                     |
-| hook   | `clear-plan-gate.py`         | UserPromptSubmit: プランゲートのクリア                                                                         |
-| hook   | `inject-shared-context.py`   | PreToolUse(Agent/Task): サブエージェントに解決済みルーティング（`[Resolved Routing]`）と共有コンテキストを注入 |
-| hook   | `capture-task-result.py`     | PostToolUse(Agent/Task): サブエージェント結果を記録                                                            |
-| hook   | `update-working-context.py`  | PostToolUse(Edit/Write): 変更ファイルを working-context に追記                                                 |
-| hook   | `cleanup-session-context.py` | SessionEnd: セッションコンテキストをクリーンアップ                                                             |
-| util   | `hook_common.py`             | 全 hook 共通ユーティリティ（config 読み込み、JSON 操作等）                                                     |
-| util   | `log_common.py`              | ログ関連ユーティリティ                                                                                         |
-| util   | `context_store.py`           | コンテキスト共有ストア                                                                                         |
-| skill  | `task-state`                 | plan ファイル（`.claude/plans/<slug>.md`）の作成・更新・片付け                                                 |
-| skill  | `design`                     | 要件定義・設計ドキュメント作成                                                                                 |
-| skill  | `handoff`                    | plan ファイルの発注書と状態から Codex CLI 向けの引き継ぎファイルを生成                                         |
-| skill  | `grasp-view`                 | 計画・差分・PR/Issue を図解 HTML にして説明                                                                    |
-| skill  | `grasp-check`                | 計画・差分を自分の言葉で説明し、把握の抜けを確かめる                                                           |
-| rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                                                                             |
-| rule   | `coding-principles`          | コード品質の共通ルール                                                                                         |
-| rule   | `task-memory-usage`          | plan ファイル（`.claude/plans/<slug>.md`）によるタスク管理ルール                                               |
-| rule   | `context-sharing`            | CLI 間コンテキスト共有ルール                                                                                   |
-| rule   | `memory-layers`              | 記憶の層（plan ファイル / ADR / AGENTS.md / auto-memory / claude-mem）の分担ルール                                  |
-| config | `task-memory.yaml`           | マーカー定義・表示上限（plan ファイルの置き場所は `.claude/plans/` 固定）                                      |
+| 種別   | 名前                         | 説明                                                                                                                                                                                                |
+| ------ | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| hook   | `load-task-state.py`         | SessionStart: plan ファイル（`.claude/plans/*.md`）からタスク状態を読み込みサマリーを出力                                                                                                           |
+| hook   | `set-plan-gate.py`           | PostToolUse(Agent/Task): プランゲートを設定                                                                                                                                                         |
+| hook   | `check-plan-gate.py`         | PreToolUse(Agent/Task): プランゲートの確認                                                                                                                                                          |
+| hook   | `clear-plan-gate.py`         | UserPromptSubmit: プランゲートのクリア                                                                                                                                                              |
+| hook   | `inject-shared-context.py`   | SubagentStart: サブエージェントに解決済みルーティング（`[Resolved Routing]`）と共有コンテキストを注入。PreToolUse(Agent/Task): routing の値だけをオーケストレーターに表示のみ（入力は書き換えない） |
+| hook   | `capture-task-result.py`     | PostToolUse(Agent/Task): サブエージェント結果を記録                                                                                                                                                 |
+| hook   | `update-working-context.py`  | PostToolUse(Edit/Write): 変更ファイルを working-context に追記                                                                                                                                      |
+| hook   | `cleanup-session-context.py` | SessionEnd: セッションコンテキストをクリーンアップ                                                                                                                                                  |
+| util   | `hook_common.py`             | 全 hook 共通ユーティリティ（config 読み込み、JSON 操作等）                                                                                                                                          |
+| util   | `log_common.py`              | ログ関連ユーティリティ                                                                                                                                                                              |
+| util   | `context_store.py`           | コンテキスト共有ストア                                                                                                                                                                              |
+| skill  | `task-state`                 | plan ファイル（`.claude/plans/<slug>.md`）の作成・更新・片付け                                                                                                                                      |
+| skill  | `design`                     | 要件定義・設計ドキュメント作成                                                                                                                                                                      |
+| skill  | `handoff`                    | plan ファイルの発注書と状態から Codex CLI 向けの引き継ぎファイルを生成                                                                                                                              |
+| skill  | `grasp-view`                 | 計画・差分・PR/Issue を図解 HTML にして説明                                                                                                                                                         |
+| skill  | `grasp-check`                | 計画・差分を自分の言葉で説明し、把握の抜けを確かめる                                                                                                                                                |
+| rule   | `config-loading`             | 設定ファイルのレイヤード構成ルール                                                                                                                                                                  |
+| rule   | `coding-principles`          | コード品質の共通ルール                                                                                                                                                                              |
+| rule   | `task-memory-usage`          | plan ファイル（`.claude/plans/<slug>.md`）によるタスク管理ルール                                                                                                                                    |
+| rule   | `context-sharing`            | CLI 間コンテキスト共有ルール                                                                                                                                                                        |
+| rule   | `memory-layers`              | 記憶の層（plan ファイル / ADR / AGENTS.md / auto-memory / claude-mem）の分担ルール                                                                                                                  |
+| config | `task-memory.yaml`           | マーカー定義・表示上限（plan ファイルの置き場所は `.claude/plans/` 固定）                                                                                                                           |
 
 ---
 

@@ -728,6 +728,72 @@ class TestSyncHooks:
         assert not (home / ".claude" / "settings.json").exists()
 
 
+class TestCoreInjectSharedContextRegistration:
+    """core の manifest の inject-shared-context.py 登録（ADR-20261104-064）。
+
+    routing と共有コンテキストは SubagentStart の additionalContext で届けるため、実際の core の
+    manifest に SubagentStart の登録があり、導入済みプロジェクトにも同期で足されることを確かめる。
+    """
+
+    _HOOK_FILE = "inject-shared-context.py"
+
+    def _registered(self, settings_hooks: dict, event: str) -> list[tuple[str | None, str]]:
+        return [
+            (entry.get("matcher"), hook["command"])
+            for entry in settings_hooks.get(event, [])
+            for hook in entry.get("hooks", [])
+        ]
+
+    def test_core_manifest_registers_subagent_start_and_keeps_pre_tool_use(self):
+        manifest = json.loads(
+            (_repo_root / "packages" / "core" / "manifest.json").read_text(encoding="utf-8")
+        )
+        hooks = manifest["hooks"]
+
+        subagent_start = [sync_engine.parse_hook_entry(e) for e in hooks["SubagentStart"]]
+        pre_tool_use = [sync_engine.parse_hook_entry(e) for e in hooks["PreToolUse"]]
+
+        # SubagentStart は matcher 無し（未定義のエージェントにも共有コンテキストを届けるため）
+        assert (self._HOOK_FILE, None) in [(f, m) for f, m, _ in subagent_start]
+        # PreToolUse はオーケストレーターへの表示用に残す
+        assert (self._HOOK_FILE, "Agent|Task") in [(f, m) for f, m, _ in pre_tool_use]
+
+    def test_sync_adds_subagent_start_to_project_registered_only_for_pre_tool_use(self, tmp_path):
+        """PreToolUse だけが登録された既存プロジェクトに、同期で SubagentStart の登録が足される。"""
+        project_dir = tmp_path / "project"
+        claude_dir = project_dir / ".claude"
+        claude_dir.mkdir(parents=True)
+        command = hook_utils.get_hook_command("core", self._HOOK_FILE)
+        settings_path = claude_dir / "settings.local.json"
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Agent|Task",
+                                "hooks": [{"type": "command", "command": command, "timeout": 5}],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        changes = sync_engine.sync_hooks(project_dir, _repo_root, ["core"])
+
+        settings_hooks = json.loads(settings_path.read_text(encoding="utf-8"))["hooks"]
+        assert changes > 0
+        assert (None, command) in self._registered(settings_hooks, "SubagentStart")
+        assert ("Agent|Task", command) in self._registered(settings_hooks, "PreToolUse")
+
+        # 2 回目の同期では何も変わらない（登録が重複しない）
+        assert sync_engine.sync_hooks(project_dir, _repo_root, ["core"]) == 0
+        settings_hooks = json.loads(settings_path.read_text(encoding="utf-8"))["hooks"]
+        assert self._registered(settings_hooks, "SubagentStart").count((None, command)) == 1
+
+
 class TestSyncPackagesAgentsHashGuard:
     """sync_packages() の agents ハッシュガードのテスト（Issue #241）。"""
 
