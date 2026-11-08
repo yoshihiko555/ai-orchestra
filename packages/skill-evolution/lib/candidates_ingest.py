@@ -37,6 +37,10 @@ LESSONS_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
 FAILURE_LINE_LIMIT_BYTES = 256 * 1024
 
 
+class LessonsCommandFailed(CandidatesError):
+    pass
+
+
 def _skip(reasons: dict[str, int], source: str, reason: str) -> None:
     key = f"{source}: {reason}"
     reasons[key] = reasons.get(key, 0) + 1
@@ -167,7 +171,7 @@ def _lessons_command(context: CandidatesContext, arguments: list[str], *, deadli
     if returncode == 2:
         raise MaskingUnavailable("fail-logs の伏せ字が使えません")
     if returncode:
-        raise CandidatesError("fail-logs の CLI が失敗しました")
+        raise LessonsCommandFailed("fail-logs の CLI が失敗しました")
     try:
         payload = json.loads(output)
         if isinstance(payload, dict):
@@ -187,6 +191,9 @@ def read_lessons(context: CandidatesContext, skipped: dict[str, int]) -> list[di
         try:
             if not isinstance(lesson, dict):
                 raise ValidationError("fail-logs の教訓候補が正しくありません")
+            if lesson.get("state") == "spooled":
+                _skip(skipped, "lesson", "spooled lesson (not yet imported by fail-logs)")
+                continue
             lid = require_id(lesson.get("lid"), "L")
             # list の概要だけでは根拠の失敗を数えられないので、公開 CLI の詳細を読む。
             if "evidence" not in lesson:
@@ -194,7 +201,7 @@ def read_lessons(context: CandidatesContext, skipped: dict[str, int]) -> list[di
                 if not isinstance(lesson, dict) or lesson.get("lid") != lid:
                     raise ValidationError("fail-logs の候補詳細が正しくありません")
             detailed.append(lesson)
-        except ValidationError as exc:
+        except (ValidationError, LessonsCommandFailed) as exc:
             _skip(skipped, "lesson", str(exc))
     return detailed
 

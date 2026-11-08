@@ -213,6 +213,46 @@ def test_ev57_malformed_records_are_skipped_and_offsets_advance(candidate_contex
     assert ingest(candidate_context)["ingested"] == 0
 
 
+def test_ev57_spooled_lesson_is_skipped_and_failure_offset_advances(candidate_context):
+    script = candidate_context.orchestra / "packages/fail-logs/scripts/lessons_cli.py"
+    script.write_text(
+        "import json, sys\n"
+        "assert sys.argv[1] == 'list'\n"
+        f"print(json.dumps({{'lessons': [{{'lid': 'L-00000002', 'state': 'spooled'}}, {lesson()!r}]}}))\n"
+    )
+    path = write_failures(candidate_context, [failure()])
+    result = ingest(candidate_context)
+    assert result["ingested"] == 2
+    assert result["skipped"] == 1
+    assert result["skip_reasons"] == {"lesson: spooled lesson (not yet imported by fail-logs)": 1}
+    assert result["failure_offset"] == path.stat().st_size
+    assert candidate_context.store.ingest_state()["failure_offset"] == path.stat().st_size
+    observations = candidate_context.store.read()["observations"].values()
+    assert {item["evidence"]["kind"] for item in observations} == {"failure", "lesson"}
+
+
+def test_ev57_lesson_show_exit_five_is_skipped_and_ingest_continues(candidate_context):
+    script = candidate_context.orchestra / "packages/fail-logs/scripts/lessons_cli.py"
+    script.write_text(
+        "import json, sys\n"
+        "if sys.argv[1] == 'list':\n"
+        "    print(json.dumps({'lessons': [{'lid': 'L-00000001'}, {'lid': 'L-00000002'}]}))\n"
+        "elif sys.argv[2] == 'L-00000001':\n"
+        "    sys.exit(5)\n"
+        "else:\n"
+        f"    print(json.dumps({{'lesson': {{**{lesson()!r}, 'lid': 'L-00000002'}}}}))\n"
+    )
+    path = write_failures(candidate_context, [failure()])
+    result = ingest(candidate_context)
+    assert result["ingested"] == 2
+    assert result["skipped"] == 1
+    assert result["skip_reasons"] == {"lesson: fail-logs の CLI が失敗しました": 1}
+    assert result["failure_offset"] == path.stat().st_size
+    assert candidate_context.store.ingest_state()["failure_offset"] == path.stat().st_size
+    observations = candidate_context.store.read()["observations"].values()
+    assert {item["evidence"]["ref"] for item in observations} == {"000000000001", "L-00000002"}
+
+
 @pytest.mark.parametrize(
     "malformation",
     [

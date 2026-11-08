@@ -303,6 +303,8 @@
     - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_missing_fail_logs_does_not_stop_hooks"
     - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev57_ingest_cli_json_reports_skipped_record_reasons"
     - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_malformed_records_are_skipped_and_offsets_advance"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_spooled_lesson_is_skipped_and_failure_offset_advances"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_lesson_show_exit_five_is_skipped_and_ingest_continues"
     - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_bad_lesson_does_not_block_following_evidence"
     - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_overlong_failure_lines_are_bounded_and_skipped"
     - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_missing_or_ill_typed_failure_fields_do_not_block_ingest"
