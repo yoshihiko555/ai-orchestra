@@ -3,7 +3,7 @@
 **パッケージ**: `packages/skill-evolution`
 **類型**: hook 型（主: スキルの実行範囲の記録）+ CLI ツール型（副: 改善候補の台帳・meta-harness への受け渡し）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-07-28（v1）。2026-11-08 に v2（ADR-20261108-065）へ全面改訂した。v2 の観点は人間レビューを経て、この日付を更新する
+**最終レビュー日**: 2026-11-08（v2（ADR-20261108-065）へ全面改訂し、人間レビューで承認。v1 の観点は欠番）。2026-07-28（v1）
 **情報源**: `docs/requirements/skill-evolution.md`（v2。FT-01〜FT-22、NF-01〜NF-09、受け入れ基準）、`docs/design/skill-evolution.md`（v2）、
 `docs/adr/ADR-20261108-065.md`、`docs/adr/ADR-20260728-046.md`（root への集約）。
 補助参照（構成要素の列挙のみ）: `packages/skill-evolution/manifest.json`。

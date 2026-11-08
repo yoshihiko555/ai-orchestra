@@ -1,16 +1,26 @@
-# skill-evolution: スキル自己改善ループの設定
-#
-# プロジェクト固有の上書きは skill-evolution.local.yaml で行う（config-loading ルール参照）。
-# 数値ガード（コスト上限・反復上限・holdout・停止しきい値）はここが正本。
-
-# 機能全体の有効/無効。
+# skill-evolution v2: 実行範囲の記録
+# プロジェクト固有の上書きは skill-evolution.local.yaml（config-loading ルール参照）。
 enabled: true
 
-# データ保存先。metrics のみ root worktree に集約し、lessons/pending/locks は worktree ローカルに保つ。
 storage:
-  dir: ".claude/skill-evolution" # lessons 専用。root worktree 解決しない
-  logs_dir: ".claude/logs/skill-evolution" # metrics は root、pending/locks は project ローカルで同じ相対パスを使う
+  dir: ".claude/skill-evolution" # 非推奨の v1 設定。v2 では使わない。
+  logs_dir: ".claude/logs/skill-evolution" # root worktree に集約する。
 
+runs:
+  hash_max_files: 200
+  hash_max_bytes: 1048576
+ledger:
+  excerpt_max_chars: 300
+  lock_wait_seconds: 5
+draft:
+  model: sonnet
+  max_budget_usd: 1.0
+  timeout_seconds: 300
+  max_files: 4
+  max_file_bytes: 16384
+  max_attempts_per_candidate: 3
+
+# 以下は非推奨の v1 設定。既存の local.yaml との互換性のため残すが、v2 では使わない。
 # lessons/<skill>.md の肥大化管理（NF-01: 注入コンテキストを膨らませない）。
 lessons:
   max_lines: 40 # 「学び」セクションの保持行数。超過分は archive へ退避

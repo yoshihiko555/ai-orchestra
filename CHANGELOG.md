@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`skill-evolution`: 実行範囲を記録する hook を追加**: UserPromptExpansion・UserPromptSubmit・SubagentStart を登録し、直接起動とターン・サブエージェントの開始を記録する。
+
 - **`fail-logs`: 失敗から教訓候補を貯め、繰り返し現れた候補を知らせる（ADR-20261103-063）**: 教訓候補を root worktree の台帳（人が読む一覧は `.claude/logs/fail-logs/lessons.md`）に貯め、異なるセッション・PR から 2 回以上現れた候補などをセッション開始時に `<fail-logs-lessons>` 枠で知らせる。同じ内容は 1 日 1 回まで（`lessons.present.enabled: false` で止められる）。
 - **`/lessons` スキルを追加**: 教訓候補を 1 件ずつ確認し、承認した文面だけを AGENTS.md の記述欄・プロジェクト独自の `.claude/rules`・ガードの Issue に書き込む。却下・反映の確認・重複のまとめもここで行う。
 - **`fail-logs`: 教訓化（既定で有効）**: 人の訂正や未解決の失敗があったセッションだけを、終了時に道具を持たない `claude -p` に渡して教訓候補を作る。費用が発生し（プロジェクトごとに 1 日 10 回・1 回 0.5 ドルまで）、抜粋は機密情報を伏せてから送る（`ANTHROPIC_BASE_URL` を差し替えていればその接続先へ）。`distill.enabled: false` で止められる。
@@ -17,9 +19,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`skill-evolution`: v2 の実行範囲記録へ移行**: lessons と自己申告の指示を注入せず、実行範囲を root worktree の `.claude/logs/skill-evolution/` に記録する。
+
 - **`fail-logs`: コマンドの非ゼロ終了・ツールのエラー・auto mode の拒否も記録する**: 新しい種別 `permission_denied`（`targets.permission_denied`）を足し、再発サマリーではテスト・lint 以外の再発を別の見出しで出す（設定 `summary.top_signatures_new` ほか）。既存のテスト・lint の再発の出力は変わらない。
 - **`memory-layers` ルール: 作業中に得た落とし穴と回避策は、fail-logs を導入していれば auto-memory ではなく教訓候補にする**（`lessons_cli.py add`）。昇格先にプロジェクト独自の `.claude/rules` とガードの Issue を加えた。
 - **`core`: `[Resolved Routing]` / `[Shared Context]` を SubagentStart の `additionalContext` で届ける（ADR-20261104-064）**: Agent / Task の prompt には書き足さなくなり、サブエージェントは hook が注入したブロックだけに従う。次回の SessionStart 同期で有効になる。
+
+### Deprecated
+
+- **`skill_evolution.py` の v1 サブコマンドを非推奨化**: `status` / `check-trigger` / `evaluate` / `provenance` / `lock` は案内だけを返し、`check-trigger` は起動を勧めない（ADR-20261108-065）。
 
 ### Fixed
 

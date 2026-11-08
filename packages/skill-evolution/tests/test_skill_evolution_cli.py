@@ -1,101 +1,90 @@
-"""skill_evolution.py CLI のスモークテスト。"""
+"""EV-28、EV-29、EV-81: v1 CLI の引数と非推奨案内。"""
 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
-from tests.module_loader import load_module
+import pytest
 
-se = load_module("skill_evolution_common", "packages/skill-evolution/lib/skill_evolution_common.py")
-cli = load_module("skill_evo_cli", "packages/skill-evolution/scripts/skill_evolution.py")
+CLI = Path(__file__).resolve().parents[1] / "scripts/skill_evolution.py"
 
 
-def test_status_outputs_summary(tmp_path, capsys) -> None:
-    p = str(tmp_path)
-    se.append_metric(
-        p,
-        "s",
-        {
-            "run_id": "a",
-            "success": True,
-            "machine": {"critical_pass_rate": 1.0, "tool_uses": 5, "duration_ms": 100},
-            "self_report": None,
-        },
+@pytest.mark.parametrize(
+    "arguments,code",
+    [
+        (["status", "review"], 0),
+        (["check-trigger", "review"], 1),
+        (["evaluate", "--history", "missing.json"], 0),
+        (["evaluate", "--history", "-"], 0),
+        (["provenance", "review"], 0),
+        (["lock", "acquire", "review"], 0),
+        (["lock", "release", "review"], 0),
+    ],
+)
+def test_ev28_v1_subcommands_are_deprecated_with_compatible_arguments(project, arguments, code):
+    completed = subprocess.run(
+        [sys.executable, str(CLI), "--project", str(project), *arguments],
+        input="壊れた JSON も読み込まない",
+        text=True,
+        capture_output=True,
+        timeout=5,
     )
-    rc = cli.main(["--project", p, "status", "s"])
-    assert rc == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out["count"] == 1 and out["skill"] == "s"
+    assert completed.returncode == code
+    payload = json.loads(completed.stdout)
+    assert payload["deprecated"] is True
+    assert "ADR-20261108-065" in payload["message"]
+    assert "非推奨" in payload["message"]
+    assert completed.stderr == ""
+    assert not (project / ".claude/logs").exists()
 
 
-def test_check_trigger_not_triggered(tmp_path, capsys) -> None:
-    p = str(tmp_path)
-    se.append_lesson(p, "s", "one")
-    rc = cli.main(["--project", p, "check-trigger", "s"])
-    out = json.loads(capsys.readouterr().out)
-    assert rc == 1 and out["triggered"] is False
-    assert "suggested_command" not in out
-
-
-def test_check_trigger_suggests_meta_harness_for_valid_slug(tmp_path, capsys) -> None:
-    p = str(tmp_path)
-    for index in range(20):
-        se.append_lesson(p, "issue-create", f"lesson-{index}")
-
-    rc = cli.main(["--project", p, "check-trigger", "issue-create"])
-
-    out = json.loads(capsys.readouterr().out)
-    assert rc == 0
-    assert out["triggered"] is True
-    assert out["suggested_command"] == (
-        f"orchex meta propose --target skill:issue-create --project {tmp_path}"
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        [],
+        ["unknown"],
+        ["status"],
+        ["check-trigger"],
+        ["evaluate"],
+        ["evaluate", "--from-json", "broken"],
+        ["provenance"],
+        ["lock"],
+        ["lock", "invalid", "review"],
+        ["lock", "acquire"],
+        ["status", "review", "--unknown"],
+    ],
+)
+def test_ev29_bad_or_missing_arguments_keep_argparse_errors(project, arguments):
+    completed = subprocess.run(
+        [sys.executable, str(CLI), "--project", str(project), *arguments],
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
-    assert "suggested_command_skipped_reason" not in out
+    assert completed.returncode == 2
+    assert "usage:" in completed.stderr and "error:" in completed.stderr
+    assert "Traceback" not in completed.stderr
+    assert completed.stdout == ""
 
 
-def test_check_trigger_skips_command_for_invalid_target_slug(tmp_path, capsys) -> None:
-    p = str(tmp_path)
-    for index in range(20):
-        se.append_lesson(p, "Issue_Create", f"lesson-{index}")
-
-    rc = cli.main(["--project", p, "check-trigger", "Issue_Create"])
-
-    out = json.loads(capsys.readouterr().out)
-    assert rc == 0
-    assert out["triggered"] is True
-    assert "suggested_command" not in out
-    assert out["suggested_command_skipped_reason"]
-
-
-def test_provenance_unknown(tmp_path, capsys, monkeypatch) -> None:
-    monkeypatch.setenv("AI_ORCHESTRA_DIR", "")
-    rc = cli.main(["--project", str(tmp_path), "provenance", "whatever"])
-    out = json.loads(capsys.readouterr().out)
-    assert rc == 0 and out["provenance"] == "unknown"
-    assert out["reflection_target"] == "lessons_only"
-
-
-def test_lock_acquire_then_conflict(tmp_path, capsys) -> None:
-    p = str(tmp_path)
-    assert cli.main(["--project", p, "lock", "acquire", "s"]) == 0
-    capsys.readouterr()
-    assert cli.main(["--project", p, "lock", "acquire", "s"]) == 1
-
-
-def test_evaluate_cost_guard(tmp_path, capsys) -> None:
-    p = str(tmp_path)
-    hist = tmp_path / "hist.json"
-    hist.write_text(
-        json.dumps([{"score": 1, "cost_usd": 0}, {"score": 2, "cost_usd": 6}]),
-        encoding="utf-8",
+def test_ev81_check_trigger_never_recommends_starting_even_with_many_lessons(project):
+    directory = project / ".claude/skill-evolution/lessons"
+    directory.mkdir(parents=True)
+    path = directory / "review.md"
+    path.write_text("\n".join(f"- 教訓 {index}" for index in range(100)))
+    before = path.read_bytes()
+    completed = subprocess.run(
+        [sys.executable, str(CLI), "--project", str(project), "check-trigger", "review"],
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
-    rc = cli.main(["--project", p, "evaluate", "--history", str(hist)])
-    out = json.loads(capsys.readouterr().out)
-    assert rc == 0 and out["should_stop"] is True and out["guard"] == "cost"
-
-
-def test_evaluate_rejects_non_dict_elements(tmp_path) -> None:
-    hist = tmp_path / "bad.json"
-    hist.write_text(json.dumps([1, "a", None]), encoding="utf-8")
-    rc = cli.main(["--project", str(tmp_path), "evaluate", "--history", str(hist)])
-    assert rc == 2
+    assert completed.returncode == 1
+    payload = json.loads(completed.stdout)
+    assert payload["deprecated"] is True and payload["triggered"] is False
+    assert "suggested_command" not in payload
+    assert "ADR-20261108-065" in payload["message"]
+    assert path.read_bytes() == before
