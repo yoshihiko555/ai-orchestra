@@ -94,6 +94,8 @@ Claude Code (Orchestrator)
 
 スキル実行範囲を root worktree の `.claude/logs/skill-evolution/runs-YYYYMM.jsonl` に記録します。
 lessons や自己申告の指示は注入せず、引数・プロンプト本文・transcript は読み取りません。
+`/skill-candidates` で fail-logs の失敗・教訓候補を取り込み、帰属と改善候補を 1 件ずつ確認できます。
+一覧は `skill_candidates.py`、状態の変更は承認が必要な `skill_candidates_admin.py` を使います。
 既存の Skill・Stop・SubagentStop hook に、UserPromptExpansion（直接起動）・UserPromptSubmit・SubagentStart の記録を追加します。
 直接起動（`/<skill>`）の記録には UserPromptExpansion に対応した Claude Code が要ります。対応していない版ではその hook が動かないだけで、ほかの hook は動きます（2.1.319 で、settings にある未知の出来事の名前が無視されることを確認）。
 `skill_evolution.py` の v1 サブコマンドは引数を維持して非推奨の案内を返し、`check-trigger` は常に起動を勧めません（ADR-20261108-065）。

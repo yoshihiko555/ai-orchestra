@@ -28,7 +28,7 @@ def test_ev84_manifest_preserves_existing_hooks_and_adds_scope_hooks():
         "UserPromptSubmit": [{"file": "record-skill-scope.py", "timeout": 10}],
         "SubagentStart": [{"file": "record-skill-scope.py", "timeout": 10}],
     }
-    assert set(manifest["files"]) == {
+    assert {path for path in manifest["files"] if path.startswith("hooks/")} == {
         "hooks/inject-lessons.py",
         "hooks/capture-skill-telemetry.py",
         "hooks/capture-subagent-skill.py",
