@@ -182,3 +182,227 @@
     - "packages/skill-evolution/tests/test_skill_evolution_manifest.py::test_ev84_manifest_preserves_existing_hooks_and_adds_scope_hooks"
     - "packages/skill-evolution/tests/test_skill_evolution_manifest.py::test_ev84_sync_and_uninstall_support_new_events_with_legacy_local_config"
   notes: "旧 hook と新 3 イベントを保持し、一時 settings へ同期、実際の uninstall で除去。旧 local 設定を保持。"
+
+# Phase 2: 取り込み・帰属・候補台帳と読み取り / 管理 CLI。
+
+- ev_id: EV-25
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev25"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev25_fail_logs_local_override_and_custom_root_log_dir"
+  notes: "fail-logs のベース設定と local.yaml 上書き、保存先と enabled の解決。"
+
+- ev_id: EV-29
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev29"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev29_unknown_ids_and_arguments_have_no_stacktrace"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev29_corrupt_ledger_lines_do_not_break_cli"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev29_ingest_distinct_failure_exit_codes_and_no_tracebacks"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev29_invalid_lessons_json_and_timeout_are_explained"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev29_admin_invalid_text_json_is_rejected_without_append"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev29_lessons_cli_output_is_bounded"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev29_all_lesson_details_share_one_deadline"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev29_lesson_details_cannot_extend_total_runtime"
+  notes: "未知 ID・不正引数・不正 JSON・壊れた行・subprocess の失敗と時間切れを、スタックトレースなしで扱う。"
+
+- ev_id: EV-50
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev50"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev50_main_boundary_ignores_same_prompt_and_compares_utc"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev50_first_stop_or_other_prompt_and_session_isolation"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev50_duplicate_run_and_tool_events_count_once"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev50_month_selection_and_malformed_lines"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev50_ingest_reads_following_month_only_until_boundary"
+  notes: "UTC 比較、同一 prompt の無視、月境界、重複、run.confirmed、必要な後続月だけの読み取り。"
+
+- ev_id: EV-51
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev51"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev51_background_scope_survives_main_stop_until_matching_agent_stop"
+  notes: "バックグラウンド実行は同じ agent_id の終了で区切る。"
+
+- ev_id: EV-52
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev52"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev52_ingest_uses_scope_not_failure_tool_id"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev52_unique_closed_unnested_scope_is_auto_without_tool_id"
+  notes: "一意・区切りあり・入れ子なし・稼働サブエージェントなし。失敗の tool_use_id を使わない。"
+
+- ev_id: EV-53
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev53"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_overlapping_scopes_are_unknown"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_later_nested_start_disqualifies_earlier_failure"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_a_b_a_continuation_is_unknown"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_running_subagent_without_skill_is_unknown"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_missing_boundary_is_unknown"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_no_scope_and_resumed_turn_are_unknown"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_agent_interval_is_start_inclusive_end_exclusive"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_subagent_started_in_older_month_still_prevents_attribution"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_skill_tool_requires_matching_confirmation"
+    - "packages/skill-evolution/tests/test_candidates_runs.py::test_ev53_unconfirmed_nested_scope_prevents_attribution"
+  notes: "重複、後発の入れ子、A→B→A、稼働中サブエージェント、区切り不明、範囲なしを独立検証。"
+
+- ev_id: EV-54
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev54"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev54_lessons_public_summary_is_enriched_but_never_auto_attributed"
+  notes: "list の概要を公開 show CLI で補完し、教訓候補は常に unknown。"
+
+- ev_id: EV-55
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev55"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev55_cli_human_attributes_to_run_after_boundary_or_skill"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev55_run_attribution_refuses_wrong_session_and_future_scope"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev55_unknown_not_counted_until_human_attribution"
+  notes: "人のスキル指定と同一セッションの過去の実行範囲への帰属。unknown は数えない。"
+
+- ev_id: EV-56
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev56"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev56_repeated_ingest_offsets_truncation_and_partial_lines"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev56_retry_after_ingest_state_failure_keeps_one_observation"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev56_failure_and_lesson_evidence_are_flattened_once"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev56_duplicate_eid_and_evidence_key_are_applied_once"
+  notes: "byte offset、縮小・中断・再取り込みの冪等性、失敗と教訓候補の根拠の重複排除。"
+
+- ev_id: EV-57
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev57"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_absent_disabled_and_cli_exit_four_stop_without_writes"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_masking_unavailable_does_not_advance_ingest"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_missing_fail_logs_does_not_stop_hooks"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev57_ingest_cli_json_reports_skipped_record_reasons"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_malformed_records_are_skipped_and_offsets_advance"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_bad_lesson_does_not_block_following_evidence"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_overlong_failure_lines_are_bounded_and_skipped"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_missing_or_ill_typed_failure_fields_do_not_block_ingest"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_lessons_cli_uses_trusted_path_interpreter_and_minimal_env"
+  notes: "未導入・無効・伏せ字不可は異なる終了コードで停止。hook の記録は継続。"
+
+- ev_id: EV-58
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev58"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev58_masking_precedes_truncation_and_unavailable_is_empty"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev58_masking_canaries_fail_closed"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev58_real_masking_contract_uses_absolute_module_path"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev58_rejected_unicode_categories_never_enter_ledger"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev58_human_text_limits_and_newline_contract"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev58_excerpt_replaces_rejected_characters_after_masking"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev58_excerpt_bounds_raw_input_and_discards_cut_secret_tail"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev58_loaded_masker_uses_existing_bounded_helper"
+    - "packages/skill-evolution/tests/test_candidates_ingest.py::test_ev57_malformed_records_are_skipped_and_offsets_advance"
+  notes: "絶対パスからの伏せ字読み込み・3 カナリア・伏せてから切り詰め・空の抜粋・文字種と字数。"
+
+- ev_id: EV-59
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev59"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev59_cli_candidate_lifecycle_and_human_hypothesis"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev59_manifest_declares_scripts_skill_and_library_files"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev59_full_transition_table_and_unlisted_transitions"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev59_rejection_requires_reason_and_archive_never_deletes"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev59_candidate_merge_add_and_dismiss_preserve_evidence"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev59_invalid_event_batch_appends_nothing"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev59_admin_free_text_uses_stdin_json_without_shell_expansion"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev59_cli_merge_refuses_non_candidate_states_without_append"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev59_merge_requires_both_candidates_in_candidate_state"
+  notes: "全 64 組の遷移と操作の検査。後続記録を要する許可経路は単体テストの写像に記録を用意し、不在の拒否は EV-60 で検証。"
+
+- ev_id: EV-60
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev60"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev60_later_phase_guards_refuse_missing_cross_candidate_or_old_records"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev60_verify_suite_mismatch_transition_waits_for_later_phase"
+  notes: "後続フェーズの必須記録がない・別候補・前の状態周期の記録では遷移を拒否。"
+
+- ev_id: EV-61
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev61"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev61_cli_nonfacet_candidate_is_displayed_as_ineligible"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev61_only_facet_slug_candidates_can_enter_drafting"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev61_installed_project_with_no_facets_is_ineligible"
+  notes: "composition と slug、対象リポジトリの境界、対象外表示と drafting の拒否。"
+
+- ev_id: EV-62
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev62"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev62_admin_permission_error_returns_exit_three"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_writer_timeout_no_append_and_reader_keeps_stale_projection"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_rebuild_catchup_newline_repair_and_corrupt_event_rollback"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_partial_projection_failure_is_recovered_on_next_read"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_private_modes_no_follow_and_permission_error"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_directory_symlink_inside_root_is_refused"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_parseable_corrupt_projection_is_rebuilt"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_concurrent_admin_writers_preserve_all_events"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev62_lock_timeout_keeps_exit_one_with_distinct_message"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_applied_eids_are_sets_and_serialize_as_sorted_lists"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_failed_atomic_projection_cleans_only_its_temp_file"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_existing_auto_attribution_remains_readable_without_new_condition"
+  notes: "flock と待ち切れ、復旧・追いつき・改行補修、厳密な追記前検査、権限と symlink、書けない時は終了 3。"
+
+- ev_id: EV-63
+  phase: 2
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev63"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev63_unknown_show_includes_earlier_scopes_and_audit_context"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev63_pending_states_appear_before_grouped_candidates"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev63_all_nested_display_values_are_neutralized"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev63_readonly_commands_catch_up_without_any_disk_writes"
+  notes: "JSON とテキストの全階層の無害化、確認待ちの表示と帰属用の audit 文脈。"
+
+- ev_id: EV-79
+  phase: 2
+  priority: should
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev79"
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev79_cross_session_similar_observations_are_first_and_suggestion_only"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev79_suggestion_requires_same_skill_kind_overlap_and_distinct_origins"
+    - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev79_cjk_bigrams_and_pending_items_precede_state_groups"
+  notes: "英単語と CJK 2-gram の重なり・異なる session/PR を条件に、提案だけを先頭表示。"

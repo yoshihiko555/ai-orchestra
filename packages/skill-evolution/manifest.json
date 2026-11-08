@@ -1,7 +1,7 @@
 {
   "name": "skill-evolution",
   "version": "0.2.0",
-  "description": "スキル改善候補の収集に向けた v2 実行範囲の記録（コンテキスト注入なし）。core 依存",
+  "description": "スキル実行範囲の記録と、失敗の帰属・改善候補の台帳（コンテキスト注入なし）。core 依存",
   "depends": [
     "core"
   ],
@@ -56,15 +56,33 @@
     "hooks/capture-skill-telemetry.py",
     "hooks/capture-subagent-skill.py",
     "hooks/capture-skill-stop.py",
-    "hooks/record-skill-scope.py"
+    "hooks/record-skill-scope.py",
+    "lib/candidates_safety.py",
+    "lib/candidates_runs.py",
+    "lib/candidates_model.py",
+    "lib/candidates_store.py",
+    "lib/candidates_ingest.py",
+    "lib/candidates_view.py",
+    "lib/candidates_cli.py",
+    "lib/skill_evolution_common.py"
   ],
-  "skills": [],
+  "skills": [
+    "skill-candidates"
+  ],
   "agents": [],
   "rules": [],
   "scripts": [
     {
       "path": "scripts/skill_evolution.py",
       "description": "v1 互換 CLI（非推奨）: status / check-trigger / evaluate / provenance / lock"
+    },
+    {
+      "path": "scripts/skill_candidates.py",
+      "description": "改善候補の一覧・詳細・実行範囲（読み取り。許可リストに入れてよい）"
+    },
+    {
+      "path": "scripts/skill_candidates_admin.py",
+      "description": "証拠の取り込み・帰属・改善候補の操作（人の承認が必要。許可リストに入れない）"
     }
   ],
   "config": [

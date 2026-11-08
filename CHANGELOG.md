@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/skill-candidates` と改善候補の CLI を追加**: fail-logs の失敗・教訓候補の帰属と改善候補を確認する。`skill_candidates.py` は読み取り用、`skill_candidates_admin.py` は人が承認した変更用（許可リストに入れない）。
+
 - **`skill-evolution`: 実行範囲を記録する hook を追加**: UserPromptExpansion・UserPromptSubmit・SubagentStart を登録し、直接起動とターン・サブエージェントの開始を記録する。
 
 - **`fail-logs`: 失敗から教訓候補を貯め、繰り返し現れた候補を知らせる（ADR-20261103-063）**: 教訓候補を root worktree の台帳（人が読む一覧は `.claude/logs/fail-logs/lessons.md`）に貯め、異なるセッション・PR から 2 回以上現れた候補などをセッション開始時に `<fail-logs-lessons>` 枠で知らせる。同じ内容は 1 日 1 回まで（`lessons.present.enabled: false` で止められる）。

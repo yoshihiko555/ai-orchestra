@@ -1,0 +1,13 @@
+name: skill-candidates
+description: スキルに帰属する失敗の観測と改善候補を、人が確認して整理する
+frontmatter:
+  name: skill-candidates
+  description: |
+    fail-logs の失敗・教訓候補を取り込み、スキルの実行範囲への帰属と改善候補を人が確認する。
+    「改善候補を見たい」「スキルの失敗を確認したい」「skill-candidates」や /skill-candidates で使用する。
+    スキルに依らない教訓の昇格は /lessons を使う。
+  metadata:
+    short-description: スキルの失敗の帰属と改善候補を確認する
+policies:
+  - dialog-rules
+instruction: skill-candidates
