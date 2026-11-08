@@ -10,6 +10,7 @@ codd:
 # Meta-Harness（ハーネス最適化基盤）要件定義
 
 **作成日**: 2026-07-06
+**改訂日**: 2026-11-08（skill-evolution v2（ADR-20261108-065）に合わせて §3.1 と FT-09 を改めた）
 **ステータス**: draft
 **起点**: arXiv:2603.28052 "Meta-Harness: End-to-End Optimization of Model Harnesses"（Stanford/KRAFTON/MIT, 2026-03）
 **関連**: `design:meta-harness`（`docs/design/meta-harness.md`）, `adr:ADR-20260706-032`
@@ -45,7 +46,8 @@ AI Orchestra 自身も `.claude/` 配下の skills / rules / hooks / config、fa
   候補管理・評価・提案・昇格の全ループ設計
 - 全候補の来歴・生トレースを保存する永続ストア（filesystem store）
 - 品質（二軸 judge）× コスト（トークン/ツール数/時間）の多目的評価と Pareto frontier 算出
-- skill-evolution オフライン層（未実装）への委譲による責務統合
+- skill-evolution が人の承認を経てスイートに入れたシナリオでの `target=skill` の評価と、その受け渡しの記録に要る値の出力
+  （skill-evolution v2。skill-evolution はオフライン層を持たず、改善案の生成・評価・昇格は meta-harness が担う）
 
 ### 3.2 Out of Scope
 
@@ -54,7 +56,7 @@ AI Orchestra 自身も `.claude/` 配下の skills / rules / hooks / config、fa
 | 外部 CLI（Codex/Antigravity）ハーネスの最適化   | 将来拡張。まず Claude Code ハーネスで基盤を検証する           |
 | モデル重み自体の最適化                          | 本機構はハーネス（足場）側の最適化に限定                      |
 | 評価の完全自動化（rubric_judge 以上の自動判定） | LLM 評価には分散があり、人間レビューを完全代替しない          |
-| facet への完全自動昇格（無人）                  | 品質ガバナンス上、当面は人間承認ゲート必須（ADR-028 D3 踏襲） |
+| facet への完全自動昇格（無人）                  | 品質ガバナンス上、当面は人間承認ゲート必須（ADR-028 D3 踏襲。ADR-065 でも維持） |
 
 ## 4. 機能要件（FT）
 
@@ -68,7 +70,7 @@ AI Orchestra 自身も `.claude/` 配下の skills / rules / hooks / config、fa
 | FT-06 | proposer（Claude Code サブエージェント）が store を選択的に検査し、1 イテレーション 1 候補のオーバーレイと仮説ノートを生成できる | must   |
 | FT-07 | budget・停止条件・発散/過学習/コストガード付きの自動探索ループを実行できる                                                       | should |
 | FT-08 | 勝者オーバーレイを PR ベース（facet build / context build / context sync 経由）で反映できる。人間承認必須                        | must   |
-| FT-09 | skill-evolution オフライン層からの `target=skill` 委譲を受け付ける I/F を持つ                                                    | must   |
+| FT-09 | skill-evolution が承認してスイートに入れたシナリオで `target=skill` を評価でき、`evaluate --json` で評価の ID・`own_suite_hash`・`evaluator_hash`・holdout かどうかを返す（skill-evolution が受け渡しを記録するため） | must   |
 | FT-10 | `docs/evaluation/<pkg>.checks.yaml` sidecar により must 観点を段階的に oracle 化できる                                           | should |
 
 ## 5. 非機能要件

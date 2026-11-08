@@ -40,7 +40,7 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20260612-025 | 失敗ログ記録基盤 fail-logs の新設と失敗検知ロジックの共通化                                                                       | accepted   | 2026-06-12 |
 | ADR-20260624-026 | CODD 整合性レイヤーの新設（思想借用・独立パッケージ・essential 化）                                                               | accepted   | 2026-06-24 |
 | ADR-20260630-027 | fail-logs 活用フェーズ — SessionStart で再発失敗シグネチャを注入する                                                              | accepted   | 2026-06-30 |
-| ADR-20260701-028 | スキル自己改善ループの設計判断（二層構成・二軸評価・反映先の塩梅）                                                                | accepted   | 2026-07-01 |
+| ADR-20260701-028 | スキル自己改善ループの設計判断（二層構成・二軸評価・反映先の塩梅）                                                                | superseded | 2026-07-01 |
 | ADR-20260703-029 | 評価セット（docs/evaluation/）の導入 — あるべき状態の自然言語定義でテストを判定する                                               | accepted   | 2026-07-03 |
 | ADR-20260705-030 | Codex Review Gate による PR required status check の導入                                                                          | accepted   | 2026-07-05 |
 | ADR-20260706-031 | ループエンジニアリング基盤（loop-harness）の導入とコア共有型制御モデルの採用                                                      | accepted   | 2026-07-06 |
@@ -77,3 +77,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20261029-062 | エージェント提案に任意の Jev 判定を入れ、キーワード判定は依頼の文に限定して残す | accepted | 2026-10-29 |
 | ADR-20261103-063 | 失敗から教訓候補を自動で蓄積し、昇格候補の提示までを自動化する（ADR-057 の部分 supersede） | accepted | 2026-11-03 |
 | [ADR-20261104-064](./ADR-20261104-064.md) | サブエージェントへの routing と共有コンテキストを SubagentStart の additionalContext で届け、Agent の入力を書き換えない | accepted | 2026-11-04 |
+| [ADR-20261108-065](./ADR-20261108-065.md) | skill-evolution は改善候補を集めて meta-harness に渡し、昇格後の再発を確かめる役だけを担う | accepted | 2026-11-08 |

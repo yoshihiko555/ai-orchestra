@@ -59,7 +59,7 @@ Constraints / Open Questions + Phase ごとの Acceptance Criteria と Tasks）�
 
 1. **スキル改修 PR のレビュー時**: `facets/instructions/order.md`・`development-workflow.md`・`issue-create.md` の変更が本評価セットと矛盾しないか突合する。仕様変更は本評価セットを先に更新して人間レビューを経る
 2. **`/config-analyze`**: 指示書のルーブリック評価・トリガーテストで観点の記述漏れを検出する
-3. **実行観察**: 実際の `/order` 実行（または skill-evolution のテレメトリ）で観点どおりに振る舞ったかを確認する
+3. **実行観察**: 実際の `/order` 実行（または skill-evolution の実行範囲の記録と改善候補の台帳）で観点どおりに振る舞ったかを確認する
 
 ## 5. レビュー判断基準（フロー固有）
 

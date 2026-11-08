@@ -302,26 +302,28 @@ meta-harness.yaml`）で調整可能な形にし、既定値は保守的に設�
 
 ## 9. skill-evolution との関係（責務分界）
 
-meta-harness と skill-evolution は **sibling package + delegation** の関係とする。
+> 2026-11-08 改訂: ADR-20261108-065 で skill-evolution v2 に置き換えた。v1 のオンライン層（自己申告と lessons の注入）と、
+> 未実装だったオフライン層（Issue #139）は廃止した。
 
-| 項目           | skill-evolution オンライン層                                     | skill-evolution オフライン層（未実装）     | meta-harness                                   |
-| -------------- | ---------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------- |
-| 実装状態       | 実装済み                                                         | 未実装（Issue #139）                       | 本設計で新設                                   |
-| 実行頻度       | 毎回・軽量                                                       | 閾値/手動起動時                            | 手動起動 or 自動ループ（Phase 3）              |
-| 役割           | テレメトリ収集（`metrics/<skill>.jsonl` / `lessons/<skill>.md`） | 単一系譜の漸進改善                         | population ベースの探索・比較・Pareto frontier |
-| 本設計での扱い | 維持し、meta-harness のシグナル/シナリオ種として活用             | `meta-harness target=skill` への委譲で実現 | オフライン層の実装先を提供                     |
+meta-harness と skill-evolution は **sibling package** で、互いに import しない。結び目は、シナリオのファイルの形、
+スイートのハッシュの計算方法、`orchex meta` の CLI の入出力の 3 つだけである（`design:skill-evolution` §3.2）。
 
-ADR-20260701-028 の決定 D1（二層構成）・D2（二軸 judge）・D3（改善反映先の出自による塩梅、
-facet 自動昇格は当面しない）は、この統合後も **保存** される。D1 のオンライン層はそのまま
-シグナル源として使い続け、D2 の二軸 judge ロジック（`score_run`）は meta-harness の evaluator に
-流用し、D3 の人間承認ゲート必須という方針は meta-harness の promotion 設計（`## 8`）にそのまま
-引き継がれる。
+| 項目     | skill-evolution（v2）                                                                                  | meta-harness                                         |
+| -------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| 役割     | 実運用の失敗をスキルの実行に結び付けて改善候補として溜め、人が承認したシナリオにして渡す。昇格後の再発を確かめる | 候補の生成・評価（学習用と holdout）・Pareto frontier・昇格 PR |
+| 入力     | fail-logs の失敗・教訓候補、audit のセッションの記録（読むだけ）                                       | `scenarios/skill/<slug>/` のシナリオ（人が承認したもの） |
+| 出力     | 承認したシナリオを足す PR、受け渡しの記録（候補 → スイートのハッシュ → 評価の ID → 昇格 PR → マージ） | `evaluate --json`（評価の ID・`own_suite_hash`・`evaluator_hash` を含む）、昇格 PR |
+| 人の承認 | シナリオの承認                                                                                         | 昇格 PR のマージ                                     |
+
+ADR-20260701-028 の D3（人間承認ゲート必須、facet の無人での自動昇格はしない）は、ADR-20261108-065 の「決定」5 でも維持され、
+meta-harness の promotion 設計（`## 8`）にそのまま引き継がれる。D2 の二軸 judge のうち自己申告の減点は、meta-harness が評価用に
+独自に持つもので、実運用の自己申告（v2 で廃止）とは別である。
 
 責務は 3 層で整理する。
 
 | 層                         | 対象                                                             |
 | -------------------------- | ---------------------------------------------------------------- |
-| skill-evolution            | スキル実行そのものの品質（実行時の不明瞭点・裁量補完・再試行等） |
+| skill-evolution            | 実運用でのスキル実行の欠陥の発見と、改善の受け渡し・昇格後の確認 |
 | skill-review-policy 4 視点 | 成果物の品質（Security/Perf/Quality/a11y）                       |
 | meta-harness               | ハーネス構成（facet/config）自体の最適化                         |
 
@@ -334,15 +336,14 @@ facet/config 対象の改善も同じ store・evaluator・proposer・promotion �
 
 ```
 packages/meta-harness/
-  manifest.json          # depends: [core]（skill-evolution への依存は最小に留め、必須にしない）
+  manifest.json          # depends: [core]（skill-evolution とはコードで依存しない）
   scripts/
   config/meta-harness.yaml
   scenarios/<target>/*.yaml
   schemas/
 ```
 
-`manifest.json` の依存は `core` のみを推奨とする。skill-evolution への依存は `target=skill` の
-委譲を使う場合にのみ必要になるため、必須依存にはしない。
+`manifest.json` の依存は `core` のみとする。skill-evolution とはコードで依存せず、シナリオのファイルと CLI の入出力で結ぶ（`## 9`）。
 
 `orchex meta` サブコマンド群:
 

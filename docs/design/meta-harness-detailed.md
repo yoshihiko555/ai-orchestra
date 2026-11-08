@@ -2121,26 +2121,28 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
 
 ## 4. skill-evolution 委譲 I/F（target=skill）
 
+> 2026-11-08 改訂: skill-evolution v2（ADR-20261108-065、`design:skill-evolution` §7・§8）に合わせた。v1 の lessons・metrics・
+> `check-trigger` による起動の提案と、lessons を `[critical]` の正本とする扱いは廃止した。
+
 - 結合は **CLI レベルのみ**とする。Python の import 結合は行わない。`packages/meta-harness/manifest.json`
   の `depends` は `[core]` のみを維持し、`skill-evolution` への依存は追加しない
   （`design:meta-harness` §10 の方針を継続）。責務境界は次の通り。
 
 | 責務 | 所有パッケージ | 契約 |
 | --- | --- | --- |
-| lessons / metrics の保存、trigger 判定、`[critical]` 正本 | skill-evolution | `check-trigger` JSON に実行候補を返す |
+| 実運用の証拠の帰属、改善候補の台帳、シナリオの下書きと人の承認、受け渡しの記録、昇格後の再発の確認 | skill-evolution | 承認したシナリオを `scenarios/skill/<slug>/` に足す PR と、`orchex meta` の CLI の入出力 |
 | propose / evaluate / loop / promote、scenario suite、frontier | meta-harness | `target=skill:<slug>` を独立した探索対象として扱う |
-| パッケージ間連携 | どちらにも import 依存を置かない | `orchex meta propose --target skill:<slug>` という CLI 文字列のみ |
+| パッケージ間連携 | どちらにも import 依存を置かない | シナリオのファイルの形、スイートのハッシュの計算方法、`evaluate --json` などの CLI の入出力 |
 
-- skill-evolution の check-trigger（lessons 閾値超過検知）は、slug が妥当な場合だけ JSON の
-  `suggested_command` として `orchex meta propose --target skill:<name>` を**提案する**。コマンドは
-  実行しない。meta-harness 側も skill-evolution の内部状態を直接読まない。
+- skill-evolution は meta-harness のコマンドを自動では実行しない。利用者の確認を得て `orchex meta` を 1 手順ずつ実行し、
+  `evaluate --json` の出力から評価の ID・`own_suite_hash`・`evaluator_hash` を読む（この 3 つと holdout かどうかを `evaluate --json` に足す）。
+  meta-harness 側も skill-evolution の台帳を読まない。
 - `orchex meta propose` が起動する proposer の実行隔離（filtered view + `--bare` + `--add-dir`）
   は target が `skill:<name>` の場合も含め共通の仕組みである（§3-6 参照）。skill 向けシナリオの
   holdout 分離も同じ filtered view 方式に従う。
 - スキル向けシナリオは `packages/meta-harness/scenarios/skill/<name>/*.yaml` に配置する。
-  `[critical]` の唯一の正本は `.claude/skill-evolution/lessons/<name>.md` の
-  `## [critical] チェックリスト` である。scenario oracle への写像は自動生成せず、人間が次の規則で
-  suite に明示的に固定する。
+  シナリオは人が手で書くか、skill-evolution が実運用の証拠から下書きして人が承認したものを PR で入れる
+  （下書きに許す実行される行の形は `design:skill-evolution` §7.4）。scenario oracle は次の規則で選ぶ。
   - 機械判定可能な基準（成果物の存在・コマンドの exit code）→ `artifact_exists` / `command_exit`
   - 主観的・文章品質的な基準 → `rubric_judge`
 - `skill:<slug>` の baseline は `facets/compositions/skills/<slug>.yaml` を起点に、composition が参照する
@@ -2176,7 +2178,7 @@ proposer は同一 workspace 内で起動される限り、`Glob` / `Read` 等�
   環境注入できる。promptにPATH操作を指示せず、注入値はrun metadataへ記録する。
 - register / loop の target 検証では suite が train 1 本以上かつ holdout 1 本以上を持つことを必須とする。
   初回は引用可能 run が無いため、empty overlay の baseline 候補を `register` → train/holdout を
-  `evaluate` → `frontier --target <target> --rebuild` の順で作る。その後に check-trigger が示す
+  `evaluate` → `frontier --target <target> --rebuild` の順で作る。その後に
   `propose` を実行する。bootstrap 前の propose は exit 2 とこの手順を返す。
 - skill target の run metadata は、実効 `allowed_tools`、由来（scenario/global）、モデル公開 tool、
   `max_output_tokens` と由来、`path_prepend`、`permission_mode` と由来（scenario/global。PR #273、

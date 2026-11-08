@@ -77,6 +77,7 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 | grasp-view     | `skills/grasp-view.md`     | 計画・差分・PR を図解 HTML にして人間に読ませるフロー（旧 explain-visually）                       |
 | grasp-check    | `skills/grasp-check.md`    | 人間が自分の言葉で説明し、AI が答えを見せずに抜けを指摘して把握度を確かめるフロー                  |
 | lessons        | `skills/lessons.md`        | fail-logs の教訓候補を人が確認し、承認して AGENTS.md・rules・ガードの Issue へ昇格させるフロー     |
+| skill-candidates | `skills/skill-candidates.md` | skill-evolution の改善候補を人が確認し、承認したシナリオを meta-harness に渡して昇格後の再発を確かめるフロー |
 
 ## 共通フォーマット
 

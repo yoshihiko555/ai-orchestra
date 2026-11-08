@@ -1,45 +1,7 @@
 # Machine-readable oracle seed for docs/evaluation/skill-evolution.md.
 # The Markdown evaluation set remains the SSOT.
-
-- ev_id: EV-35
-  phase: 3
-  priority: must
-  oracle: command_exit
-  command: >-
-    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
-    packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_not_triggered
-    packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_suggests_meta_harness_for_valid_slug
-  covered_by:
-    - packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_not_triggered
-    - packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_suggests_meta_harness_for_valid_slug
-  notes: the command is returned only for a triggered valid slug and is never executed.
-
-- ev_id: EV-36
-  phase: 3
-  priority: must
-  oracle: command_exit
-  command: >-
-    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
-    packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_skips_command_for_invalid_target_slug
-  covered_by:
-    - packages/skill-evolution/tests/test_skill_evolution_cli.py::test_check_trigger_skips_command_for_invalid_target_slug
-  notes: invalid target slugs preserve trigger and exit semantics while returning a machine-readable skip reason.
-
-- ev_id: EV-37
-  phase: 3
-  priority: must
-  oracle: command_exit
-  command: >-
-    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
-    packages/skill-evolution/tests/test_skill_evolution_root_resolution.py
-  covered_by:
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_worktree_metrics_are_written_to_root_log
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_root_resolution_failure_writes_metrics_to_project
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_lessons_remain_worktree_local
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_pending_and_locks_resolve_to_project_local
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_legacy_metrics_are_migrated_once_and_stale_claim_is_untouched
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_migration_leaves_transient_state_and_lessons_at_legacy_path
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_metrics_migration_caps_tail_at_line_boundary
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_root_resolution_is_cached_per_project
-    - packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_logs_dir_rejects_traversal
-  notes: metrics alone use the root worktree; pending and locks resolve project-local (not root-aggregated); lessons also stay project-local; only legacy metrics receive fail-open one-shot migration.
+#
+# 2026-11-08: the v1 entries (EV-35, EV-36, EV-37) were removed together with the v1
+# observations (ADR-20261108-065). Entries for the v2 must observations (EV-38 and later)
+# are added by the implementer when the v2 tests are written.
+[]
