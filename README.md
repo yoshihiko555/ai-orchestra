@@ -80,7 +80,7 @@ Claude Code (Orchestrator)
     │   ├── quality-gates/      # 品質ゲート
     │   ├── codd/              # ドキュメント整合性レイヤー（scan/validate/ack/impact/verdict）
     │   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
-    │   ├── skill-evolution/   # スキル自己改善ループ（二軸テレメトリ + オフライン反復）
+    │   ├── skill-evolution/   # スキル実行範囲の記録（v2、注入なし）
     │   └── git-workflow/     # Git/GitHub ワークフロー
     │
     └── 30 Specialized Agents
@@ -89,6 +89,15 @@ Claude Code (Orchestrator)
         ├── Implementation: frontend-dev, backend-*-dev, ai-*, debugger, tester
         └── Review: code-reviewer, security-reviewer, performance-reviewer, ...
 ```
+
+### skill-evolution v2
+
+スキル実行範囲を root worktree の `.claude/logs/skill-evolution/runs-YYYYMM.jsonl` に記録します。
+lessons や自己申告の指示は注入せず、引数・プロンプト本文・transcript は読み取りません。
+既存の Skill・Stop・SubagentStop hook に、UserPromptExpansion（直接起動）・UserPromptSubmit・SubagentStart の記録を追加します。
+直接起動（`/<skill>`）の記録には UserPromptExpansion に対応した Claude Code が要ります。対応していない版ではその hook が動かないだけで、ほかの hook は動きます（2.1.319 で、settings にある未知の出来事の名前が無視されることを確認）。
+`skill_evolution.py` の v1 サブコマンドは引数を維持して非推奨の案内を返し、`check-trigger` は常に起動を勧めません（ADR-20261108-065）。
+`enabled: false` で記録を停止でき、`skill-evolution.local.yaml` の上書きも引き続き使えます。
 
 ### 仕組み
 
@@ -529,7 +538,7 @@ ai-orchestra/
 │   ├── antigravity-suggestions/ # Antigravity リサーチ提案 hooks
 │   ├── quality-gates/     # 品質ゲート hooks
 │   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
-│   ├── skill-evolution/  # スキル自己改善ループ（テレメトリ hooks + オフライン CLI）
+│   ├── skill-evolution/  # スキル実行範囲の記録（v2、v1 CLI は非推奨）
 │   └── git-workflow/    # Git/GitHub ワークフロー（Issue・PR・開発フロー）
 ├── scripts/          # 管理CLI（エントリポイント + lib/ 共有ライブラリ）
 ├── templates/        # テンプレート（エージェント・スキル・プロジェクト）

@@ -1,7 +1,184 @@
-# Machine-readable oracle seed for docs/evaluation/skill-evolution.md.
-# The Markdown evaluation set remains the SSOT.
-#
-# 2026-11-08: the v1 entries (EV-35, EV-36, EV-37) were removed together with the v1
-# observations (ADR-20261108-065). Entries for the v2 must observations (EV-38 and later)
-# are added by the implementer when the v2 tests are written.
-[]
+# Markdown 評価セットを正本とする Phase 1 の自動検証。
+
+- ev_id: EV-25
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev25"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev25_disabled_config_or_local_override_writes_nothing"
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev25_local_reenables_recording_and_env_project_precedes_cwd"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev25_config_defaults_and_local_deep_merge"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev25_config_copies_and_ledger_match_defaults"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev25_config_and_core_import_fallback"
+  notes: "enabled と local.yaml の優先順位・再帰マージ、配布設定と同期台帳の整合性。"
+
+- ev_id: EV-28
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev28"
+  covered_by:
+    - "packages/skill-evolution/tests/test_skill_evolution_cli.py::test_ev28_v1_subcommands_are_deprecated_with_compatible_arguments"
+  notes: "v1 の引数を維持。データは読まず非推奨の JSON を返す。check-trigger は終了コード 1。"
+
+- ev_id: EV-29
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev29"
+  covered_by:
+    - "packages/skill-evolution/tests/test_skill_evolution_cli.py::test_ev29_bad_or_missing_arguments_keep_argparse_errors"
+  notes: "Phase 1 は argparse の未知・欠落引数を検証。非推奨 evaluate は履歴ファイル自体を読み込まない。"
+
+- ev_id: EV-38
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev38"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev38_skill_tool_records_exact_run_started"
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev38_fallback_name_and_subagent_fields"
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev38_hook_cwd_is_used_when_env_is_absent"
+  notes: "Skill と skill_name の入力、全フィールド・入手元・サブエージェント・cwd のフォールバック。"
+
+- ev_id: EV-39
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev39"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev39_direct_skill_records_without_tool_id"
+  notes: "project・user・スキルディレクトリの symlink を解決した直接起動。"
+
+- ev_id: EV-40
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev40"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev40_non_skill_commands_are_ignored"
+  notes: "旧 commands・MCP・未解決・plugin の直接起動を記録しない。"
+
+- ev_id: EV-41
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev41"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev41_confirmation_requires_session_and_tool_match"
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev41_previous_month_and_bounded_tail"
+  notes: "sid と tool_use_id の照合、前月・有界末尾・壊れた行と窓外の始まり。"
+
+- ev_id: EV-42
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev42"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev42_scope_boundaries"
+  notes: "ターンとサブエージェントの開始・終了の記録形式。"
+
+- ev_id: EV-43
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev43"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev43_missing_optional_values_are_null_and_model_is_never_inferred"
+  notes: "任意値の null と src、入力の model を推定に使わない。"
+
+- ev_id: EV-44
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev44"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev44_invalid_fields_drop_entire_event"
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev44_invalid_project_name_drops_event"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev44_writer_rejects_invalid_event_without_creating_logs"
+  notes: "スキル名・ID・agent_type・project の不正値と記録禁止フィールドを全体拒否。"
+
+- ev_id: EV-45
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev45"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev45_invalid_json_and_oversized_input_are_safe"
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev45_write_failure_is_safe"
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev45_lock_timeout_is_safe_and_bounded"
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev45_unrelated_or_malformed_tool_input_is_ignored"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev45_event_writer_uses_utc_month_and_private_permissions"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev45_writer_rejects_file_symlink_and_returns_false_on_lock_timeout"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev45_concurrent_writers_keep_complete_json_lines"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev45_writer_retries_after_lock_release"
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev45_unexpected_configuration_exception_is_safe"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev45_writer_starts_a_new_line_after_a_truncated_previous_write"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev45_writer_returns_false_for_malformed_ledger_config"
+  notes: "全 hook の不正 JSON・巨大入力・書込み失敗・ロック待ち切れで無出力・終了 0。追記の排他と権限も検証。"
+
+- ev_id: EV-46
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev46"
+  covered_by:
+    - "packages/skill-evolution/tests/test_capture_skill_stop.py::test_ev46_no_injection_or_v1_data_or_transcript_access"
+  notes: "全 hook の無出力、v1 ファイルと transcript を触らず、入力本文・応答を保存しない。"
+
+- ev_id: EV-47
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev47"
+  covered_by:
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev47_hash_encoding_and_order_are_deterministic"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev47_hash_excludes_hidden_cache_and_internal_symlinks"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev47_root_skill_symlink_and_project_precedence"
+  notes: "POSIX パスの UTF-8 + NUL + 内容 sha256 の順序、隠しファイル・cache・内部 symlink の除外。"
+
+- ev_id: EV-48
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev48"
+  covered_by:
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev48_hash_cap_boundaries"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev48_unresolved_skill_hash_is_null"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev48_resolved_direct_skill_with_exceeded_cap_still_records"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev48_malformed_hash_limits_resolve_to_unresolved"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev48_unreadable_directory_is_unresolved"
+  notes: "ファイル数・バイト数の境界、未発見・plugin、解決できる直接起動の上限超過。"
+
+- ev_id: EV-49
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev49"
+  covered_by:
+    - "packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_ev49_linked_worktree_events_are_written_to_root"
+    - "packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_ev49_git_failure_falls_back_to_project"
+    - "packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_ev49_traversal_and_symlink_escape_fall_back_to_default"
+    - "packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_ev49_default_directory_escape_fails_without_writing"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev49_regular_checkout_resolves_root_without_git"
+  notes: "Phase 1 の runs のみ。core の root 解決を使い、失敗時は project に戻る。台帳は後続フェーズ。"
+
+- ev_id: EV-81
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev81"
+  covered_by:
+    - "packages/skill-evolution/tests/test_skill_evolution_cli.py::test_ev81_check_trigger_never_recommends_starting_even_with_many_lessons"
+  notes: "教訓数に関係なく triggered false、suggested_command なし、非推奨案内。"
+
+- ev_id: EV-84
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev84"
+  covered_by:
+    - "packages/skill-evolution/tests/test_skill_evolution_manifest.py::test_ev84_manifest_preserves_existing_hooks_and_adds_scope_hooks"
+    - "packages/skill-evolution/tests/test_skill_evolution_manifest.py::test_ev84_sync_and_uninstall_support_new_events_with_legacy_local_config"
+  notes: "旧 hook と新 3 イベントを保持し、一時 settings へ同期、実際の uninstall で除去。旧 local 設定を保持。"

@@ -3,7 +3,7 @@
 **対象スキル群**: `/skill-candidates`（仮称。正本: `facets/instructions/skill-candidates.md`（未作成）、所属パッケージ: `packages/skill-evolution`）
 **単位**: スキルフロー（取り込み → 一覧 → 帰属の確定 → 候補の認定 → 下書きと承認 → スイートへの導入 → meta-harness への受け渡し → マージの確認 → 再発の確認、を人と対話して進める単一スキルの一連の振る舞い）
 **作成日**: 2026-11-08
-**最終レビュー日**: 未レビュー（2026-11-08 にスキルの実装前に作成した。人間レビューを経て、この日付を更新する）
+**最終レビュー日**: 2026-11-08（スキルの実装前に作成し、人間レビューで承認）
 **情報源**: `docs/requirements/skill-evolution.md`（v2。FT-04・FT-08〜FT-15・FT-18・NF-03・NF-09）, `docs/design/skill-evolution.md`（§2・§6.4・§7・§8・§9・§10）, `docs/adr/ADR-20261108-065.md`, `docs/evaluation/skill-evolution.md`（`skill_candidates.py` / `skill_candidates_admin.py` の契約）
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。

@@ -137,7 +137,7 @@
       "config/fail-logs/fail-logs.yaml": "e05d0bb19d86ce9a517fea9308e50c9e9bb63249a4c1804d426274b59181eeda"
     },
     "skill-evolution": {
-      "config/skill-evolution/skill-evolution.yaml": "b50bae0454bca2df0f7a91c8d4855a7c7b382cf0d2afecc9ff3c9e3ba43734fc"
+      "config/skill-evolution/skill-evolution.yaml": "5a4b6e809d68ed2b9e522c505a81cc50a158bdd442828915ad465e4441f07afc"
     },
     "reverse": {
       "agents/reverse-coordinator.md": "7a321d65227f729111ca19a4283fb864aa03eeaf6f0813b5c1c0d37707d196c3"
