@@ -115,7 +115,7 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
 ### 3.7 v1 の廃止と移行
 
 - [ ] EV-81（正常 / must）: `check-trigger` は lessons の件数によらず起動を勧めず、`suggested_command` を返さず、非推奨の旨を返す — 根拠: req FT-21; design §12.1
-- [ ] EV-82（異常 / must）: `purge-v1` は `--apply` が無ければ削除せずに絶対パスの一覧だけを出し、`--apply` でも worktree の `.claude/` の下に収まらないパス（設定の値が `.` や `src` を指す場合を含む）と symlink は削除しない — 根拠: req FT-22; design §12.3
+- [ ] EV-82（異常 / must）: `purge-v1` は `--apply` が無ければ削除せずに絶対パスの一覧だけを出し、`--apply` でも worktree の `.claude/` の下に収まらないパス（設定の値が `.` や `src` を指す場合を含む）、v2 の保存先とその祖先、symlink は削除しない — 根拠: req FT-22; design §12.3
 - [ ] EV-83（異常 / must）: hook と、`purge-v1` 以外の CLI の操作は、v1 のデータ（lessons・metrics・pending・locks）を削除しない — 根拠: req FT-22; design §12.3
 - [ ] EV-84（正常 / must）: manifest は v1 の hook のエントリ（PreToolUse:Skill・PostToolUse:Skill・SubagentStop・Stop）を同じファイル名で持ち、v1 の設定のキーを `.local.yaml` に残した導入先で `orchex sync` と `orchex uninstall skill-evolution` が成功する — 根拠: req FT-22、NF-07; design §12.2
 

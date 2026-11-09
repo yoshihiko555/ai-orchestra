@@ -120,6 +120,7 @@ def test_ev82_apply_deletes_only_v1_in_all_worktrees_and_preserves_v2(worktrees,
                     ".claude/logs/skill-evolution/candidates.jsonl",
                     ".claude/logs/skill-evolution/candidates.lock",
                     ".claude/logs/skill-evolution/candidates-state.json",
+                    ".claude/logs/skill-evolution/ingest-state.json",
                     ".claude/logs/skill-evolution/runs.lock",
                     ".claude/logs/skill-evolution/drafts/C-00000001/train.yaml",
                 ),
@@ -133,6 +134,117 @@ def test_ev82_apply_deletes_only_v1_in_all_worktrees_and_preserves_v2(worktrees,
     assert all(not Path(target["path"]).exists() for target in targets)
     assert all(not path.exists() for path in legacy)
     assert_preserved(protected)
+
+
+@pytest.mark.parametrize("apply", [False, True], ids=["list", "apply"])
+@pytest.mark.parametrize("as_json", [False, True], ids=["text", "json"])
+@pytest.mark.parametrize("invocation", [0, 1], ids=["root", "linked"])
+@pytest.mark.parametrize(
+    ("storage_dir", "logs_dir"),
+    [
+        (".claude/skill-evolution", ".claude/skill-evolution/lessons"),
+        (".claude/x", ".claude/x/lessons/logs"),
+    ],
+    ids=["v2-storage", "v2-ancestor"],
+)
+def test_ev82_v2_storage_and_ancestors_are_refused(
+    worktrees, storage_dir, logs_dir, invocation, as_json, apply
+):
+    root = worktrees[0]
+    snapshot = write_files(
+        root / logs_dir,
+        (
+            "runs-202611.jsonl",
+            "candidates.jsonl",
+            "ingest-state.json",
+            "drafts/C-00000001/train.yaml",
+        ),
+    )
+    snapshot.update(write_files(root, (f"{storage_dir}/lessons/review.md",)))
+    config = root / ".claude/config/skill-evolution/skill-evolution.local.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(f"storage:\n  dir: {storage_dir}\n  logs_dir: {logs_dir}\n")
+    completed = run_purge(
+        worktrees[invocation], *(["--apply"] if apply else []), *(["--json"] if as_json else [])
+    )
+    assert completed.returncode == 0, completed.stderr
+    if as_json:
+        [target] = json.loads(completed.stdout)["targets"]
+        assert target["path"] == str(root / storage_dir / "lessons")
+        assert target["status"] == "skipped"
+        assert target["message"] == "v2 の保存先を含むため消さない"
+    else:
+        assert str(root / storage_dir / "lessons") in completed.stdout
+        assert "v2 の保存先を含むため消さない" in completed.stdout
+        assert "削除しました" not in completed.stdout
+    assert_preserved(snapshot)
+
+
+def test_ev82_linked_worktree_v2_storage_is_protected_in_root(worktrees):
+    root, linked = worktrees
+    snapshot = write_files(
+        root / ".claude/skill-evolution/lessons",
+        ("runs-202611.jsonl", "candidates.jsonl", "ingest-state.json", "drafts/train.yaml"),
+    )
+    config = linked / ".claude/config/skill-evolution/skill-evolution.local.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("storage: {logs_dir: .claude/skill-evolution/lessons}\n")
+    completed = run_purge(root, "--apply", "--json")
+    assert completed.returncode == 0, completed.stderr
+    [target] = json.loads(completed.stdout)["targets"]
+    assert target["path"] == str(root / ".claude/skill-evolution/lessons")
+    assert target["status"] == "skipped"
+    assert target["message"] == "v2 の保存先を含むため消さない"
+    assert_preserved(snapshot)
+
+
+def test_ev82_worktree_local_v2_storage_is_preserved_after_root_resolution_recovers(
+    worktrees, monkeypatch
+):
+    root, linked = worktrees
+    config = linked / ".claude/config/skill-evolution/skill-evolution.local.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("storage: {logs_dir: .claude/skill-evolution/lessons}\n")
+    loaded_config = common.load_config(str(linked))
+    with monkeypatch.context() as patch:
+        patch.setattr(common, "_resolve_log_root_cached", lambda project_dir: project_dir)
+        local_logs = Path(common.logs_dir(str(linked), loaded_config))
+        snapshot = write_files(
+            local_logs,
+            ("runs-202611.jsonl", "candidates.jsonl", "ingest-state.json", "drafts/train.yaml"),
+        )
+    assert local_logs == linked / ".claude/skill-evolution/lessons"
+    assert (
+        Path(common.logs_dir(str(linked), loaded_config))
+        == root / loaded_config["storage"]["logs_dir"]
+    )
+    payload = purge.purge_v1(str(root), apply=True)
+    [target] = payload["targets"]
+    assert target["path"] == str(local_logs)
+    assert target["status"] == "skipped"
+    assert target["message"] == "v2 の保存先を含むため消さない"
+    assert_preserved(snapshot)
+
+
+def test_ev82_symlinked_v2_storage_is_protected_by_realpath(worktrees):
+    root = worktrees[0]
+    snapshot = write_files(
+        root / ".claude/skill-evolution/lessons",
+        ("runs-202611.jsonl", "candidates.jsonl", "ingest-state.json", "drafts/train.yaml"),
+    )
+    alias = root / ".claude/alias"
+    alias.symlink_to(root / ".claude/skill-evolution", target_is_directory=True)
+    config = root / ".claude/config/skill-evolution/skill-evolution.local.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("storage: {logs_dir: .claude/alias/lessons}\n")
+    completed = run_purge(root, "--apply", "--json")
+    assert completed.returncode == 0, completed.stderr
+    [target] = json.loads(completed.stdout)["targets"]
+    assert target["path"] == str(root / ".claude/skill-evolution/lessons")
+    assert target["status"] == "skipped"
+    assert target["message"] == "v2 の保存先を含むため消さない"
+    assert alias.is_symlink()
+    assert_preserved(snapshot)
 
 
 @pytest.mark.parametrize(
@@ -467,8 +579,8 @@ def test_ev82_target_replaced_by_symlink_before_deletion_is_preserved(
     inspect_target = purge._inspect_target
     moved = lessons.with_name("saved-lessons")
 
-    def swap_after_inspection(worktree, relative, name, core):
-        inspected = inspect_target(worktree, relative, name, core)
+    def swap_after_inspection(worktree, relative, name, core, v2_storage_dirs):
+        inspected = inspect_target(worktree, relative, name, core, v2_storage_dirs)
         if worktree == root and name == "lessons" and not moved.exists():
             lessons.rename(moved)
             lessons.symlink_to(link_target, target_is_directory=True)
@@ -483,6 +595,46 @@ def test_ev82_target_replaced_by_symlink_before_deletion_is_preserved(
     assert moved.joinpath("review.md").read_bytes() == original[lessons / "review.md"]
     assert_preserved(protected)
     assert all(not path.exists() for path in original if not path.is_relative_to(lessons))
+
+
+@pytest.mark.parametrize("suffix", ["", "/logs"], ids=["v2-storage", "v2-ancestor"])
+def test_ev82_parent_redirected_to_v2_storage_before_deletion_is_preserved(
+    worktrees, monkeypatch, suffix
+):
+    root = worktrees[0]
+    legacy = root / ".claude/legacy-target"
+    protected = root / ".claude/protected"
+    snapshot = write_files(legacy, ("lessons/review.md",))
+    snapshot.update(
+        write_files(
+            protected / f"lessons{suffix}",
+            ("runs-202611.jsonl", "candidates.jsonl", "ingest-state.json", "drafts/train.yaml"),
+        )
+    )
+    alias = root / ".claude/legacy"
+    alias.symlink_to(legacy, target_is_directory=True)
+    config = root / ".claude/config/skill-evolution/skill-evolution.local.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        f"storage: {{dir: .claude/legacy, logs_dir: .claude/protected/lessons{suffix}}}\n"
+    )
+    inspect_target = purge._inspect_target
+
+    def redirect_after_inspection(worktree, relative, name, core, v2_storage_dirs):
+        inspected = inspect_target(worktree, relative, name, core, v2_storage_dirs)
+        if worktree == root and name == "lessons" and alias.resolve() == legacy:
+            alias.unlink()
+            alias.symlink_to(protected, target_is_directory=True)
+        return inspected
+
+    monkeypatch.setattr(purge, "_inspect_target", redirect_after_inspection)
+    payload = purge.purge_v1(str(root), apply=True)
+    [target] = payload["targets"]
+    assert target["path"] == str(alias / "lessons")
+    assert target["status"] == "skipped"
+    assert target["message"] == "v2 の保存先を含むため消さない"
+    assert alias.is_symlink() and alias.resolve() == protected
+    assert_preserved(snapshot)
 
 
 @pytest.mark.parametrize("relative", [".claude/archive", "src", ".claude", ".git/archive"])

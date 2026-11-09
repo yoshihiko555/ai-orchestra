@@ -690,6 +690,11 @@
     - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_target_replaced_by_symlink_before_deletion_is_preserved"
     - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_symlinked_parent_inside_worktree_obeys_claude_boundary"
     - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_lexical_path_outside_claude_pointing_inside_is_refused"
+    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_v2_storage_and_ancestors_are_refused"
+    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_linked_worktree_v2_storage_is_protected_in_root"
+    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_symlinked_v2_storage_is_protected_by_realpath"
+    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_parent_redirected_to_v2_storage_before_deletion_is_preserved"
+    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_worktree_local_v2_storage_is_preserved_after_root_resolution_recovers"
   notes: "全 worktree の明示的な旧データ削除、範囲外・symlink の拒否、v2 データの保持。"
 
 - ev_id: EV-83

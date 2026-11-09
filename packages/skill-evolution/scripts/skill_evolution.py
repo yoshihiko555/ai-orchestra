@@ -109,7 +109,9 @@ def _count_tree(path: Path) -> tuple[int, int]:
     return directories, files
 
 
-def _inspect_target(worktree: Path, relative: object, name: str, core: Any) -> dict | None:
+def _inspect_target(
+    worktree: Path, relative: object, name: str, core: Any, v2_storage_dirs: set[Path]
+) -> dict | None:
     configured = Path(relative) if isinstance(relative, str) else None
     path = Path(os.path.abspath(worktree / configured / name)) if configured else worktree / name
     target = {
@@ -149,6 +151,8 @@ def _inspect_target(worktree: Path, relative: object, name: str, core: Any) -> d
         return refused
     if mode is None:
         return None
+    if any(directory.is_relative_to(Path(resolved)) for directory in v2_storage_dirs):
+        return {**target, "message": "v2 の保存先を含むため消さない"}
     if not stat.S_ISDIR(mode):
         return {**target, "kind": "file", "message": "ディレクトリではないため消さない"}
     directories, files = _count_tree(path)
@@ -170,13 +174,21 @@ def purge_v1(project_dir: str, *, apply: bool = False) -> dict:
     if core is None:
         raise RuntimeError("core のパス検証を読み込めません")
     worktrees, targets = _worktrees(Path(project_dir).resolve(), core)
-    for worktree in worktrees:
-        config = common.load_config(str(worktree))
+    configs = {worktree: common.load_config(str(worktree)) for worktree in worktrees}
+    v2_storage_dirs = {
+        Path(common.logs_dir(str(worktree), config)).resolve()
+        for worktree, config in configs.items()
+    }
+    v2_storage_dirs.update(
+        Path(common._resolve_logs_subdir(str(worktree), config)).resolve()
+        for worktree, config in configs.items()
+    )
+    for worktree, config in configs.items():
         storage = config.get("storage") or {}
         for key, names in (("dir", ("lessons",)), ("logs_dir", ("metrics", "pending", "locks"))):
             relative = storage.get(key, common.DEFAULTS["storage"][key])
             for name in names:
-                target = _inspect_target(worktree, relative, name, core)
+                target = _inspect_target(worktree, relative, name, core, v2_storage_dirs)
                 if target is not None:
                     targets.append(target)
     if apply:
@@ -188,7 +200,7 @@ def purge_v1(project_dir: str, *, apply: bool = False) -> dict:
             worktree = Path(target["worktree"])
             relative = str(path.parent.relative_to(worktree))
             try:
-                current = _inspect_target(worktree, relative, path.name, core)
+                current = _inspect_target(worktree, relative, path.name, core, v2_storage_dirs)
                 if current is None or current["status"] != "would_delete":
                     target.update(
                         current or {"status": "skipped", "message": "対象がなくなりました"}
@@ -204,7 +216,7 @@ def purge_v1(project_dir: str, *, apply: bool = False) -> dict:
 def _purge_command(args: argparse.Namespace) -> int:
     try:
         payload = purge_v1(args.project, apply=args.apply)
-    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         print(f"[skill-evolution] v1 データを削除できません: {exc}", file=sys.stderr)
         return 1
     if args.json:
