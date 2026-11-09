@@ -3,7 +3,7 @@
 **対象スキル群**: `/grasp-check`（正本: `facets/instructions/grasp-check.md`、所属パッケージ: `packages/core`）と、案内を出す `/pr-create`（`facets/instructions/pr-create.md`、実装後）・`/order`（`facets/instructions/order.md`、実装前）。前段の `/grasp-view`（`docs/evaluation/skills/grasp-view.md`）は任意
 **単位**: スキルフロー（対象の読解 → 採点基準の作成 → 問い → 人間の自由記述 → 抜けの指摘 → 再説明 → 結果の報告）
 **作成日**: 2026-09-28
-**最終レビュー日**: 2026-10-27（ADR-20261027-059 で Plans.md を Project ごとの plan ファイル `.claude/plans/<slug>.md` に分割したのに合わせ、表の行 1・6 と EV-02 / 05 / 19 を改めた。2026-10-27 人間レビュー済み。前回 2026-09-28: 初版。実装前の先行作成。2026-09-28 人間レビュー済み）
+**最終レビュー日**: 2026-11-10（Issue #521 で旧 `.claude/Plans.md` の扱いを廃止したのに合わせ、EV-19 から「旧 `.claude/Plans.md` には書かない」を外した。2026-11-10 人間レビュー済み。前回 2026-10-27: ADR-20261027-059 で Plans.md を Project ごとの plan ファイル `.claude/plans/<slug>.md` に分割したのに合わせ、表の行 1・6 と EV-02 / 05 / 19 を改めた。2026-10-27 人間レビュー済み。前回 2026-09-28: 初版。実装前の先行作成。2026-09-28 人間レビュー済み）
 **情報源**: 2026-09-28 の設計相談での合意事項、`docs/evaluation/skills/grasp-view.md`、`facets/instructions/pr-create.md`、`.claude/rules/skill-review-policy.md`（パスパターン表）、`.claude/rules/memory-layers.md`、Storey「From Technical Debt to Cognitive and Intent Debt」（arXiv 2603.22106）、Shen & Tamkin「How AI Impacts Skill Formation」（arXiv 2601.20245）
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
@@ -71,7 +71,7 @@
 
 - [ ] EV-17（正常 / must）: 最後に、採点基準の観点と問いごとの状態（把握 / 再説明で把握 / 開示 / 未把握）を並べ、未把握の観点・読む場所を一覧で報告する（採点基準を見せるのはここが初めて）。合否や点数は出さない — 根拠: 設計合意（ゲートにしない） / 検証: 実行観察
 - [ ] EV-18（異常 / must）: 人間の説明は、全文・抜粋・言い換え・要約のいずれの形でも保存しない。PR 本文・Issue・コミットメッセージにも書かない — 根拠: 設計合意（永続化しない）、Codex レビュー（2026-09-28） / 検証: 実行観察
-- [ ] EV-19（境界 / should）: 記録先の plan ファイルがある場合だけ、その `## Notes` に 1 行（日付・対象・未把握の観点の件数と種類。説明の内容は含めない）を追記する。記録先は、対象が plan ファイルならそのファイル、それ以外の対象なら未完了の plan ファイルがちょうど 1 つのときのそのファイルとする。決まらない場合（plan ファイルが無い・未完了が複数）は書かず、plan ファイルを新しく作らず、会話での報告だけで終える。旧 `.claude/Plans.md` には書かない — 根拠: 設計合意、`.claude/rules/memory-layers.md`「plan ファイルを持たないエンジンで作業しているときに、記録のために plan ファイルを新しく作らない」、ADR-20261027-059 / 検証: 実行観察
+- [ ] EV-19（境界 / should）: 記録先の plan ファイルがある場合だけ、その `## Notes` に 1 行（日付・対象・未把握の観点の件数と種類。説明の内容は含めない）を追記する。記録先は、対象が plan ファイルならそのファイル、それ以外の対象なら未完了の plan ファイルがちょうど 1 つのときのそのファイルとする。決まらない場合（plan ファイルが無い・未完了が複数）は書かず、plan ファイルを新しく作らず、会話での報告だけで終える — 根拠: 設計合意、`.claude/rules/memory-layers.md`「plan ファイルを持たないエンジンで作業しているときに、記録のために plan ファイルを新しく作らない」、ADR-20261027-059 / 検証: 実行観察
 
 ### 案内（`/pr-create` 側）
 

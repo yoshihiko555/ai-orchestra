@@ -77,7 +77,7 @@ class TestTaskStateSummary:
     """テスト計画 1.1: SessionStart サマリー出力"""
 
     def test_summary_with_all_states(self, tmp_path: Path) -> None:
-        """#1: Plans.md に WIP/TODO/done タスクがある状態でサマリー出力"""
+        """#1: plan ファイルに WIP/TODO/done タスクがある状態でサマリー出力"""
         plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "example.md").write_text(
@@ -139,13 +139,13 @@ class TestTaskStateSummary:
         assert "waiting for API" in result.stdout
 
     def test_no_plans_file(self, tmp_path: Path) -> None:
-        """#4: Plans.md が存在しない場合"""
+        """#4: plan ファイルが存在しない場合"""
         result = _run_load_task_state(tmp_path)
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 
     def test_empty_plans_file(self, tmp_path: Path) -> None:
-        """#5: Plans.md が空の場合"""
+        """#5: plan ファイルが空の場合"""
         plans_dir = tmp_path / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "example.md").write_text("", encoding="utf-8")

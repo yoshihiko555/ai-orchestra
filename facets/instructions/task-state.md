@@ -48,7 +48,6 @@ slug は `[a-z0-9][a-z0-9-]*`（ASCII 小文字・数字・ハイフン）に完
 1. `.claude/plans/` 直下の `<slug>.md` を列挙する（symlink と命名規則に合わないファイルは読まない）
 2. ファイルごとに状態マーカー別にタスクを集計し、完了かどうかを判定する
 3. 未完了のファイルは WIP → TODO → blocked の優先度でサマリーを表示し、完了したファイルは slug の一覧と `close` の案内を表示する
-4. 旧形式の `.claude/Plans.md` があれば、読み込まれないことと `.claude/plans/<slug>.md` への移し方を伝える
 
 ### new モード
 
@@ -176,6 +175,5 @@ worktree で作業している場合は worktree ごと消えるので不要。w
 - plan ファイルは `.claude/plans/<slug>.md` に置く。1 ファイルに `## Project:` は 1 つ
 - 手動編集も可能（フォーマットに従うこと）
 - plan ファイルはローカル管理（`.gitignore`）。共有が必要な作業は Issue を発注書にする（`task-memory-usage.md` ルール参照）
-- 旧形式の `.claude/Plans.md` には書かない（読み込まれない）
 - 発注書の 5 節（Goal / Context / Out of Scope / Constraints / Open Questions）には `cc:` マーカーを書かない。タスクは Phase 配下の `#### Tasks` にだけ書く
 - 状態マーカーはバッククォートで囲む: `` `cc:WIP` ``

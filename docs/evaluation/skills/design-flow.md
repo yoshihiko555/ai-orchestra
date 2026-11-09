@@ -3,7 +3,7 @@
 **対象スキル群**: `design` と、その下流の発注書スキル `/order`（ADR-20260926-056 で新設）。`preflight` / `startproject` は同 ADR で廃止済み（正本: `facets/instructions/design.md`, `facets/knowledge/design-review.md` ほか knowledge 6 本）
 **単位**: スキルフロー（設計 → タスク分解 → 実装の一連の振る舞い）
 **作成日**: 2026-07-04
-**最終レビュー日**: 2026-10-27（ADR-20261027-059 に合わせ EV-07 のタスク化先を「plan ファイル」に改めた（文言のみ）。2026-10-27 人間レビュー済み。前回 2026-09-26: ADR-20260926-056 §決定 6 の 5: `preflight` / `startproject` の実ファイル削除に伴い EV-14〜EV-23 を欠番化し、移管先を「廃止した観点」に残す。前回: 同日、廃止決定に伴い EV-14〜EV-21 を廃止予定とし、新フロー用に EV-25・EV-26 を追加。`/order` 自体の観点は `docs/evaluation/skills/order.md`）
+**最終レビュー日**: 2026-11-10（表の行 3 の出力先を「plan ファイルか Issue」に改めた（文言のみ）。2026-11-10 人間レビュー済み。前回 2026-10-27: ADR-20261027-059 に合わせ EV-07 のタスク化先を「plan ファイル」に改めた（文言のみ）。2026-10-27 人間レビュー済み。前回 2026-09-26: ADR-20260926-056 §決定 6 の 5: `preflight` / `startproject` の実ファイル削除に伴い EV-14〜EV-23 を欠番化し、移管先を「廃止した観点」に残す。前回: 同日、廃止決定に伴い EV-14〜EV-21 を廃止予定とし、新フロー用に EV-25・EV-26 を追加。`/order` 自体の観点は `docs/evaluation/skills/order.md`）
 **情報源**: docs/adr/ADR-20260926-056.md, facets/instructions/design.md, facets/knowledge/design-review.md, .claude/rules/skill-review-policy.md, .claude/rules/codd-frontmatter-policy.md, PR #144
 
 > **パッケージ評価セットとの違い**: スキルは Markdown 指示書であり pytest で強制できない。
@@ -28,7 +28,7 @@
 | -------- | ----------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1        | design Phase 0    | 既存コード              | `.claude/docs/impact-analysis/{date}_{slug}.md`（researcher 経由）                                                                                             |
 | 2        | design Phase 1-3  | 対話 + 上流成果物       | `docs/` 配下の設計書（codd フロントマター付き）+ 各フェーズ末の品質ゲート通過                                                                                  |
-| 3        | `/order`          | 対話の結論 + 設計成果物 | 発注書（Goal / Context / Out of Scope / Constraints / Open Questions + Phase の AC + Tasks）を Plans.md か Issue に 1 回だけ書く。Context に設計書パスを載せる |
+| 3        | `/order`          | 対話の結論 + 設計成果物 | 発注書（Goal / Context / Out of Scope / Constraints / Open Questions + Phase の AC + Tasks）を plan ファイルか Issue に 1 回だけ書く。Context に設計書パスを載せる |
 | 4        | 実行エンジン      | 発注書                  | 設計書を参照した実装（エンジン側の責務。本評価セットの対象外）                                                                                                 |
 | 5        | `/review`         | 実装 diff + 設計書      | Phase 1 で spec-reviewer を必須選定し、実装と設計書を突合（`docs/evaluation/skills/review.md` EV-24 の責務）                                                   |
 

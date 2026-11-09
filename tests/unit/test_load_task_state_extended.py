@@ -278,7 +278,7 @@ class TestBuildMarkerParser:
 
 class TestMainAdditionalScenarios:
     def test_no_plans_file_exits_silently(self, tmp_path: Path, monkeypatch) -> None:
-        """Plans.md が存在しない場合は何も出力しない。"""
+        """plan ファイルが存在しない場合は何も出力しない。"""
         monkeypatch.setattr(_mod, "read_hook_input", lambda: {"cwd": str(tmp_path)})
         monkeypatch.setattr(
             _mod,

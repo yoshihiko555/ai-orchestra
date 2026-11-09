@@ -178,6 +178,6 @@ files, not part of the change). Do not push; Claude Code creates the PR with
 ## 注意事項
 
 - 引き継ぎファイルは `.claude/handoffs/` に蓄積される（ローカル管理。`.gitignore` に自動追加される（gitignore 同期の対象）。コミットに含めない）
-- 引き継ぐ plan ファイルが決まらない場合（未完了の plan ファイルが無い等）はその旨を表示して終了。旧形式の `.claude/Plans.md` は読まない
+- 引き継ぐ plan ファイルが決まらない場合（未完了の plan ファイルが無い等）はその旨を表示して終了
 - diff が大きすぎる場合（100行超）は `--stat` のみに切り詰める
 - 機密情報（.env 等）は diff に含めない

@@ -24,8 +24,6 @@ ENTRIES = [
     ".codex/runs/",
     ".codex/reports/",
     ".claude/plans/",
-    ".claude/Plans.md",
-    ".claude/Plans.archive.md",
     ".claude/handoffs/",
 ]
 

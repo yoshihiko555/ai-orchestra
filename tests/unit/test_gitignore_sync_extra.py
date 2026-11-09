@@ -27,13 +27,16 @@ class TestBuildBlock:
         assert ".claude/codd/" in gitignore_mod.ENTRIES
         assert ".claude/codd/" in gitignore_mod.build_block()
 
-    def test_contains_plan_directory_and_legacy_files(self) -> None:
-        """plan ディレクトリと旧形式の残存ファイルはすべて無視対象にする。"""
+    def test_contains_plan_directory_without_legacy_files(self) -> None:
+        """plan ディレクトリを無視対象にし、旧形式のファイルは含めない。"""
         lines = gitignore_mod.build_block().splitlines()
 
         assert ".claude/plans/" in lines
-        assert ".claude/Plans.md" in lines
-        assert ".claude/Plans.archive.md" in lines
+        assert ".claude/Plans.md" not in lines
+        assert ".claude/Plans.archive.md" not in lines
+        assert ".claude/plans/" in gitignore_mod.ENTRIES
+        assert ".claude/Plans.md" not in gitignore_mod.ENTRIES
+        assert ".claude/Plans.archive.md" not in gitignore_mod.ENTRIES
 
     def test_repository_managed_block_matches_build_block(self) -> None:
         """配布元の管理ブロックも生成結果と一致する。"""
@@ -111,10 +114,10 @@ class TestSyncGitignore:
         assert changed is True
         content = path.read_text(encoding="utf-8")
         assert ".claude/old/" not in content
-        assert ".claude/Plans.md" in content
+        assert ".claude/Plans.md" not in content
 
     def test_managed_block_regeneration_adds_plan_directory(self, tmp_path: Path) -> None:
-        """旧ファイルの除外を残したまま、新しい plan ディレクトリの除外を加える。"""
+        """plan ディレクトリの除外を加え、旧形式のファイルは含めない。"""
         path = tmp_path / ".gitignore"
         stale_entries = [entry for entry in gitignore_mod.ENTRIES if entry != ".claude/plans/"]
         path.write_text(
@@ -128,8 +131,8 @@ class TestSyncGitignore:
         content = path.read_text(encoding="utf-8")
         assert content == gitignore_mod.build_block()
         assert ".claude/plans/" in content.splitlines()
-        assert ".claude/Plans.md" in content.splitlines()
-        assert ".claude/Plans.archive.md" in content.splitlines()
+        assert ".claude/Plans.md" not in content.splitlines()
+        assert ".claude/Plans.archive.md" not in content.splitlines()
 
     def test_managed_block_regeneration_restores_meta_harness_entry(self, tmp_path: Path) -> None:
         """Phase 1a の実装漏れ回帰確認: 手編集で `.claude/meta-harness/` 行が管理ブロック内から

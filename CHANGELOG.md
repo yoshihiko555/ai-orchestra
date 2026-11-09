@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **BREAKING** **`skill-evolution`: v1 の互換の CLI・設定のキー・gitignore のエントリを外した（ADR-20261108-065）**: `skill_evolution.py`（`status` / `check-trigger` / `evaluate` / `provenance` / `lock` と `purge-v1`）、設定の `storage.dir`・`lessons`・`pending`・`offline`・`trigger`、`.gitignore` の管理ブロックの `.claude/skill-evolution/metrics/`・`pending/` を削除した。`.local.yaml` に v1 のキーが残っていても動作に影響はない（値は使われない）。
   v1 のデータは自動では消さないので、不要なら手で消す（場所は `docs/reference/logging.md` §2）。更新の前なら v0.3.8 の `skill_evolution.py purge-v1 --apply` でも消せる。
+- **旧 `.claude/Plans.md` の移行期間の扱いを外した（ADR-20261027-059）**: SessionStart の移行の警告と、`.gitignore` 管理ブロックの `.claude/Plans.md` / `.claude/Plans.archive.md` を外した。
+  旧ファイルが残っていると git の未追跡ファイルとして表示される。誤ってコミットしないよう、Project ごとに `.claude/plans/<slug>.md` へ移してから消す。
 
 ## [0.3.8] - 2026-11-09
 

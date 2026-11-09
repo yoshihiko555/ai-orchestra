@@ -134,7 +134,6 @@ plan ファイル（`.claude/plans/<slug>.md`。Project ごとに 1 ファイル
 2. `.claude/plans/` 直下の `<slug>.md` を列挙（symlink と命名規則に合わないファイルは読まない）
 3. ファイルごとに状態マーカー（`cc:TODO` / `cc:WIP` / `cc:done` / `cc:blocked`）と AC を解析し、完了かどうかを判定
 4. 未完了のファイルごとに Goal / Open Questions / WIP / 次の TODO / blocked を stdout に出力。完了したファイルは件数と `/task-state close` の案内だけを出す
-5. 旧形式の `.claude/Plans.md` があれば、移行を促す警告を 1 行出す（中身は読まない）
 
 plan ファイルは読むだけで書き換えない（ADR-20260928-058）。表示するタスクの合計は `max_display_tasks` までで、上限を超えたファイルは件数だけの 1 行になる。
 
