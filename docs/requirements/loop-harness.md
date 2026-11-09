@@ -13,6 +13,7 @@ codd:
 **ステータス**: active
 **起点**: Impact Analysis `.claude/docs/impact-analysis/2026-07-06_loop-harness.md`
 **関連**: `design:loop-harness`（未作成。本要件を受けて `docs/design/loop-harness.md` を作成予定）
+**注記（2026-11-09）**: 本文が参照する skill-evolution の `evaluate_stop()`・ロック（`acquire_lock` / `_is_stale`）・オフライン層は v1 のもので、v2（ADR-20261108-065）で廃止した。loop-harness は考え方だけを踏襲しており、それらの実装には依存しない。
 
 ## 1. 背景
 
@@ -68,7 +69,7 @@ AI Orchestra は harness engineering（hooks / rules / agent-routing / quality-g
 
 | 項目                                             | 理由                                                                                            |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| Issue #139（skill-evolution オフライン層）の統合 | 目的が異なる（スキル定義の最適化 vs 開発タスクの消化）。将来の載せ替え候補として ADR に記録     |
+| Issue #139（skill-evolution オフライン層）の統合 | 目的が異なる（スキル定義の最適化 vs 開発タスクの消化）。オフライン層は ADR-20261108-065 で作らないことにした |
 | PR の auto-merge                                 | ユーザーの手動マージポリシー（PR レビュー対応反復が完了しても、最終的なマージ判断は人間が行う） |
 | core の `log_common`（events.jsonl）への配線     | 既存 2 系統併存（`log_common` / `audit.event_logger`）を悪化させる未使用系統を増やさない        |
 | スキル・エージェント定義の自動改善               | skill-evolution の責務                                                                          |

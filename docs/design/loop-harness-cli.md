@@ -15,6 +15,7 @@ codd:
 **ステータス**: active（詳細設計。Phase 3 相当。`scripts/` 配下 4 CLI + config 全キーの実装可能仕様）
 **対象**: `feat/loop` ブランチ
 **関連**: `design:loop-harness`（基本設計。本書はこれを refines する）
+**注記（2026-11-09）**: 本文が参照する skill-evolution の `evaluate_stop()`・ロック（`acquire_lock` / `_is_stale`）・オフライン層は v1 のもので、v2（ADR-20261108-065）で廃止した。loop-harness は考え方だけを踏襲しており、それらの実装には依存しない。
 
 > 本書は基本設計（`design:loop-harness`）が「詳細設計フェーズで確定する」と申し送った事項
 > （12 節）のうち、`scripts/` 配下 4 CLI（`loop_step.py` / `loop_driver.py` / `loop_scheduler.py` /

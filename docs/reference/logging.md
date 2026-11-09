@@ -27,12 +27,12 @@ codd:
 蓄積ログの配置・root 解決方針の決定は **ADR-20260728-046** を正本とします。要点は以下の3点です。
 
 1. **機械が書く蓄積ログ**は `.claude/logs/<pkg>/` 配下に配置する（例: `.claude/logs/audit/`, `.claude/logs/fail-logs/`, `.claude/logs/skill-evolution/`）。
-2. **蓄積型 gitignore ログ**（`.claude/logs/` 配下のうち fail-logs の `failures.jsonl`・教訓候補の台帳と、skill-evolution の metrics）は **root worktree 解決**で書く。
+2. **蓄積型 gitignore ログ**（`.claude/logs/` 配下のうち fail-logs の `failures.jsonl`・教訓候補の台帳と、skill-evolution の実行範囲の記録・改善候補の台帳）は **root worktree 解決**で書く。
    - `git rev-parse --path-format=absolute --git-common-dir` の親ディレクトリを root worktree として使用し、そこに集約する。
    - git コマンドが失敗する場合（非リポジトリ・タイムアウト等）は `project_dir` へフォールバックする（fail-safe。破壊的動作へは進まない）。
    - root 解決は hook 内部の git 呼び出しに限定し、config 経由で `project_dir` 外パスを指定させない（既存のパストラバーサルガードは維持）。
-   - **pending / locks は対象外**（ADR-20260728-046 Amendment）。セッション単位の一時状態であり、複数 worktree 間で共有すると他 worktree の実行中セッションを stale と誤判定して回収してしまうため、常に `project_dir` ローカルの `.claude/logs/skill-evolution/` 配下で解決する。
-3. **人が読む git 管理下の知識ファイル**（skill-evolution の `lessons/*.md` 等）は root 解決の**対象外**。コミット → PR マージが生存経路であり、worktree 削除で消失する問題自体が発生しないため。
+   - v1 の skill-evolution の pending / locks は対象外だった（ADR-20260728-046 Amendment。セッション単位の一時状態のため `project_dir` ローカル）。v2（ADR-20261108-065）はこれらを書かない。
+3. **人が読む git 管理下の知識ファイル**（`docs/`・`.claude/rules/` 等）は root 解決の**対象外**。コミット → PR マージが生存経路であり、worktree 削除で消失する問題自体が発生しないため。
 
 > 詳細な検討経緯・却下した代替案は `docs/adr/ADR-20260728-046.md` を参照してください。
 
@@ -41,7 +41,7 @@ codd:
 凡例（root 解決列）:
 
 - **実装済み**: 現在のコードが root worktree 解決を行っている
-- **対象外**: 性質上 root 解決の対象にしない（state はセッション/worktree スコープ、lessons は git 管理下）
+- **対象外**: 性質上 root 解決の対象にしない（state はセッション/worktree スコープ）
 
 | 書き込み元 | パス | 形式 | git管理 | root解決 | 用途 |
 |---|---|---|---|---|---|
@@ -52,19 +52,15 @@ codd:
 | `fail-logs`（`capture-failures.py`） | `.claude/logs/fail-logs/failures.jsonl` | JSONL | ignore（`.claude/logs/`） | **実装済み** | ツール実行失敗イベントの記録 |
 | `fail-logs`（台帳・CLI） | `.claude/logs/fail-logs/lessons.jsonl` / `lessons-state.json` / `lessons.md` | JSONL / JSON / Markdown | ignore（`.claude/logs/`） | **実装済み** | 教訓候補の出来事の履歴・現在の状態・人が読む一覧 |
 | `fail-logs`（教訓化） | `.claude/logs/fail-logs/distill-runs.jsonl` / `distill-daily.json` | JSONL / JSON | ignore（`.claude/logs/`） | **実装済み** | 教訓化の実行記録（理由付き。LLM の出力は書かない）とその日の回数 |
-| `skill-evolution`（`skill_evolution_common.py: metrics_path`） | `.claude/logs/skill-evolution/metrics/<skill>.jsonl` | JSONL | ignore（`.claude/logs/`） | **実装済み**（one-shot migration 付き） | スキル実行のオフライン評価メトリクス |
-| `skill-evolution`（`skill_evolution_common.py: pending_path`） | `.claude/logs/skill-evolution/pending/<run_id>.json` | JSON | ignore（`.claude/logs/`） | 対象外（project_dir ローカル） | フォーク中サブエージェント実行の一時状態（Stop hook が回収） |
-| `skill-evolution`（`skill_evolution_common.py: lock_path`） | `.claude/logs/skill-evolution/locks/<skill>.lock` | lockfile | ignore（`.claude/logs/`） | 対象外（project_dir ローカル） | スキル単位の並行実行排他制御 |
-| `skill-evolution`（`skill_evolution_common.py: lessons_path` / `lessons_archive_path`） | `.claude/skill-evolution/lessons/<skill>.md`（+ `.archive.md`） | Markdown | git 管理下（`.gitignore` 対象外） | **対象外**（ADR-20260728-046 決定4。git 管理のため worktree 削除で消失しない） | 学び（教訓）の蓄積。SessionStart/発火前注入の入力 |
+| `skill-evolution`（v2 の hook） | `.claude/logs/skill-evolution/runs-YYYYMM.jsonl` | JSONL | ignore（`.claude/logs/`） | **実装済み** | スキルの実行範囲の出来事（開始・確認・ターンとサブエージェントの区切り）。追記だけ。古い月は人が `skill_candidates_admin.py prune-runs` で消す |
+| `skill-evolution`（`skill_candidates_admin.py`） | `.claude/logs/skill-evolution/candidates.jsonl` / `candidates-state.json` / `candidates.lock` / `ingest-state.json` | JSONL / JSON / lockfile | ignore（`.claude/logs/`） | **実装済み** | 改善候補の台帳（追記だけ）・その写像・更新の排他・取り込みの位置 |
+| `skill-evolution`（`skill_candidates_admin.py draft`） | `.claude/logs/skill-evolution/drafts/<cid>/<n>/` | YAML / JSON | ignore（`.claude/logs/`） | **実装済み** | シナリオの下書きと、LLM が出した元の写し |
+| `skill-evolution`（v1。非推奨） | `.claude/logs/skill-evolution/metrics/`・`pending/`・`locks/`、`.claude/skill-evolution/lessons/` | — | — | — | v2 は読みも書きもしない。残っていれば `skill_evolution.py purge-v1 --apply` で消す（既定は一覧だけ） |
 | （予約領域・現状書き込み元なし） | `.claude/logs/orchestration/`（`scripts/lib/scaffold.py` が新規プロジェクトに `.gitkeep` 付きで作成） | — | ignore（`.claude/logs/`） | 対象外（未使用） | 将来のオーケストレーションログ用に予約されたディレクトリ。現時点で書き込む hook / スクリプトは存在しない |
 
-### one-shot migration の挙動（実装済み）
+### v1 の metrics の移行
 
-skill-evolution の旧 metrics は、以下の fail-safe な one-shot migration で新配置へ移行します（ADR-20260728-046 決定3）。metrics の読み書き時に legacy ファイルが残っていれば、移行先に metrics が既に存在していても新パスへ merge 追記します。同一 legacy ファイルは rename claim により一回だけ移行され、段階移行で複数 worktree の legacy が同一 run_id を含む場合の重複は許容します。pending/locks はセッション単位の一時データなので移行せず、新配置で fresh start します。
-
-- metrics の読み書き前に、旧 `metrics/*.jsonl` を一意な `.migrating.*` 名で claim し、新パスへ追記してから `.migrated.*` 名で保存する。
-- 移行量は各ファイル末尾 1 MiB までに制限し、先頭の部分行は捨てる。stale な `.migrating.*` は自動変更せず、手動復旧用に残す。
-- 移行処理が失敗しても hook を止めない（fail-open）。
+v1 の metrics の one-shot migration（ADR-20260728-046 決定3）は、v2 では行わない（v2 の hook は metrics を読まない）。残った v1 のデータは `skill_evolution.py purge-v1` で確かめて消す。
 
 ## 3. 主なイベント種別（audit sessions ログ）
 
@@ -102,8 +98,9 @@ skill-evolution の旧 metrics は、以下の fail-safe な one-shot migration 
 
 ### skill-evolution
 
-- `packages/skill-evolution/scripts/skill_evolution.py` の `status` / `check-trigger` / `evaluate` / `provenance` / `lock` サブコマンドで metrics / トリガー判定 / 停止条件を確認します。
-- 数値ガード（コスト上限・反復上限・holdout・停止しきい値）の正本は `packages/skill-evolution/config/skill-evolution.yaml` です。
+- 実行範囲と改善候補は `packages/skill-evolution/scripts/skill_candidates.py` の `list` / `show` / `runs`（読み取り）で確認し、状態の変更は `/skill-candidates` から `skill_candidates_admin.py` で行います（`docs/design/skill-evolution.md` §10）。
+- 記録・台帳・下書きの設定（`runs.*`・`ledger.*`・`draft.*`）の正本は `packages/skill-evolution/config/skill-evolution.yaml` です。
+- `skill_evolution.py` の v1 のサブコマンドは非推奨の案内だけを返します。v1 のデータは `skill_evolution.py purge-v1` で一覧にし、`--apply` で消します。
 
 ## 5. 補足
 

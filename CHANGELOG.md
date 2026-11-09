@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`skill-evolution`: v1 のデータを消す `skill_evolution.py purge-v1` を追加**: root と全 worktree の v1 の lessons・metrics・pending・locks を絶対パスの一覧で示し、`--apply` を付けたときだけ消す。v2 の記録・台帳と、symlink・worktree の外のパスは消さない。
+
 - **`/skill-candidates`: meta-harness への受け渡し・マージの確認・再発の確認を追加**: `evaluate --json` / `propose --json` の出力と昇格 PR を候補に結び付け（`link`）、`gh` でマージを確かめて昇格済みにする（`confirm-merge`）。昇格後は「N 回の該当する機会で、確認された再発なし」を示し、同じ欠陥を人が確定すると候補に戻す。
 
 - **`/skill-candidates`: シナリオの下書き・承認・導入・スイート確認を追加**: 全文と実行行を確認して承認し、用意した worktree へ導入する。main の `verify-suite` で承認済みハッシュと Docker backend を確認して改善へ進む。

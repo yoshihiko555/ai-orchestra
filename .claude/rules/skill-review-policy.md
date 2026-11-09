@@ -199,5 +199,5 @@ Tiered Output 形式（Critical/High/Medium/Low）で報告してください。
 
 - a11y 視点は UI 成果物（`components/` `pages/` `views/` `ui/` 等）を含む場合のみ有効化する。
 - 4 視点は並列実行し、結果は Tiered Output（Critical/High/Medium/Low）に集約する。
-- スキル自己改善ループ（`packages/skill-evolution`）の二軸評価とは独立。こちらは「成果物の品質」を、
-  skill-evolution は「スキル実行そのものの品質」を対象とする（責務が異なる）。
+- skill-evolution（`packages/skill-evolution`。スキルの実行範囲の記録と改善候補の台帳）とは独立。こちらは「成果物の品質」を、
+  skill-evolution は「実運用で起きた失敗のスキルの実行への帰属と、その改善の受け渡し」を対象とする（責務が異なる）。

@@ -36,7 +36,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [docker-runtime](#docker-runtime)                   | ハーネス共通の Docker/broker ライフサイクル基盤                                                  | 基盤         |
 | [meta-harness](#meta-harness)                       | 候補ハーネス・スキル・ルーティング設定の評価・進化基盤（Docker 隔離実行 + propose/promote/loop） | ハーネス     |
 | [reverse](#reverse)                                 | 既存コードベースの 5 フェーズ対話型リバースエンジニアリング                                      | 解析         |
-| [skill-evolution](#skill-evolution)                 | スキル自己改善ループ（二軸テレメトリ＋オフライン反復改善）                                       | 学習         |
+| [skill-evolution](#skill-evolution)                 | スキルの実行範囲の記録と改善候補の台帳（meta-harness への受け渡し）                              | 学習         |
 
 ### プリセット
 
@@ -561,21 +561,25 @@ Phase 1b 以降の `evaluate` は Docker コンテナで OS レベル隔離さ�
 
 ## skill-evolution
 
-スキル自己改善ループ（Issue #5）。スキル実行の品質を二軸（自己申告＋機械計測）で計測し、学び（lessons）を次回実行へ還元しつつ、停止条件付きのオフライン反復でスキル自体を改善する。設計判断は ADR-20260701-028 を参照。
+スキルの実行範囲を記録し、fail-logs の失敗・教訓候補をスキルの実行に帰属させて改善候補として溜め、人が承認したシナリオで meta-harness に渡し、昇格後の再発を確かめる（v2）。コンテキストは注入しない。設計判断は ADR-20261108-065（ADR-20260701-028 を置き換え）を参照。
 
-- **バージョン**: 0.1.0
+- **バージョン**: 0.2.0
 - **依存**: core
 
 ### コンポーネント
 
-| 種別   | 名前                         | 説明                                                       |
-| ------ | ---------------------------- | ---------------------------------------------------------- |
-| hook   | `inject-lessons.py`          | PreToolUse(Skill): 過去の学びをスキル実行前に注入          |
-| hook   | `capture-skill-telemetry.py` | PostToolUse(Skill): スキル実行のテレメトリを記録           |
-| hook   | `capture-subagent-skill.py`  | SubagentStop: サブエージェント経由のスキル実行を記録       |
-| hook   | `capture-skill-stop.py`      | Stop: セッション終了時にスキル実行結果を確定               |
-| script | `skill_evolution.py`         | CLI: status / check-trigger / evaluate / provenance / lock |
-| config | `skill-evolution.yaml`       | 二軸評価・停止条件・反映先の設定                           |
+| 種別   | 名前                         | 説明                                                                                                                 |
+| ------ | ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| hook   | `inject-lessons.py`          | PreToolUse(Skill): Skill ツールによる実行範囲の開始を記録する（v2 では何も注入しない。ファイル名は互換のため維持）   |
+| hook   | `capture-skill-telemetry.py` | PostToolUse(Skill): 実行の確認（`run.confirmed`）を記録する                                                          |
+| hook   | `capture-subagent-skill.py`  | SubagentStop: サブエージェントの終了を記録する                                                                       |
+| hook   | `capture-skill-stop.py`      | Stop: ターンの終了を記録する                                                                                         |
+| hook   | `record-skill-scope.py`      | UserPromptExpansion / UserPromptSubmit / SubagentStart: 直接起動・ターン・サブエージェントの開始を記録する           |
+| skill  | `skill-candidates`           | 失敗の帰属と改善候補を人が確認し、シナリオの承認・meta-harness への受け渡し・再発の確認を進める                      |
+| script | `skill_candidates.py`        | 改善候補の一覧・詳細・実行範囲（読み取り。許可リストに入れてよい）                                                   |
+| script | `skill_candidates_admin.py`  | 取り込み・帰属・候補の操作・下書きと承認・導入・受け渡し・マージと再発の確認（人の承認が必要。許可リストに入れない） |
+| script | `skill_evolution.py`         | v1 互換 CLI（非推奨）と、v1 のデータを消す `purge-v1`（既定は一覧だけ。`--apply` で削除）                            |
+| config | `skill-evolution.yaml`       | 記録（`runs.*`）・台帳（`ledger.*`）・下書き（`draft.*`）の設定。v1 のキーは非推奨期間のあいだ残す                   |
 
 ---
 

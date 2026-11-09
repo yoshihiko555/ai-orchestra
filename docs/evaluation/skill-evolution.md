@@ -3,7 +3,7 @@
 **パッケージ**: `packages/skill-evolution`
 **類型**: hook 型（主: スキルの実行範囲の記録）+ CLI ツール型（副: 改善候補の台帳・meta-harness への受け渡し）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-11-09（EV-85・EV-86 を追加し、人間レビューで承認）。2026-11-08（v2（ADR-20261108-065）へ全面改訂し、人間レビューで承認。v1 の観点は欠番）。2026-07-28（v1）
+**最終レビュー日**: 2026-11-09（EV-85・EV-86 を追加し、EV-82 を `.claude/` の下に限る形に改め、人間レビューで承認）。2026-11-08（v2（ADR-20261108-065）へ全面改訂し、人間レビューで承認。v1 の観点は欠番）。2026-07-28（v1）
 **情報源**: `docs/requirements/skill-evolution.md`（v2。FT-01〜FT-22、NF-01〜NF-09、受け入れ基準）、`docs/design/skill-evolution.md`（v2）、
 `docs/adr/ADR-20261108-065.md`、`docs/adr/ADR-20260728-046.md`（root への集約）。
 補助参照（構成要素の列挙のみ）: `packages/skill-evolution/manifest.json`。
@@ -115,7 +115,7 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
 ### 3.7 v1 の廃止と移行
 
 - [ ] EV-81（正常 / must）: `check-trigger` は lessons の件数によらず起動を勧めず、`suggested_command` を返さず、非推奨の旨を返す — 根拠: req FT-21; design §12.1
-- [ ] EV-82（異常 / must）: `purge-v1` は `--apply` が無ければ削除せずに絶対パスの一覧だけを出し、`--apply` でも worktree の中に収まらないパスと symlink は削除しない — 根拠: req FT-22; design §12.3
+- [ ] EV-82（異常 / must）: `purge-v1` は `--apply` が無ければ削除せずに絶対パスの一覧だけを出し、`--apply` でも worktree の `.claude/` の下に収まらないパス（設定の値が `.` や `src` を指す場合を含む）、v2 の保存先とその祖先、symlink は削除しない — 根拠: req FT-22; design §12.3
 - [ ] EV-83（異常 / must）: hook と、`purge-v1` 以外の CLI の操作は、v1 のデータ（lessons・metrics・pending・locks）を削除しない — 根拠: req FT-22; design §12.3
 - [ ] EV-84（正常 / must）: manifest は v1 の hook のエントリ（PreToolUse:Skill・PostToolUse:Skill・SubagentStop・Stop）を同じファイル名で持ち、v1 の設定のキーを `.local.yaml` に残した導入先で `orchex sync` と `orchex uninstall skill-evolution` が成功する — 根拠: req FT-22、NF-07; design §12.2
 
