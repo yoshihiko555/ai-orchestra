@@ -14,8 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import candidates_model as model
 import skill_evolution_common as common
 from candidates_cli import Parser, execute
+from candidates_draft import draft
 from candidates_ingest import CandidatesContext, ingest
 from candidates_safety import MaskingUnavailable, ValidationError, load_masker, validate_text
+from candidates_scenarios import approve, install, send_back, verify_suite
 
 STATE_COMMANDS = {
     "reject": "rejected",
@@ -55,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
         state = subparsers.add_parser(command)
         state.add_argument("cid")
         state.add_argument("--json", dest="json_input", choices=["-"], required=command == "reject")
+    for command in ("draft", "approve", "send-back", "install", "verify-suite"):
+        scenario = subparsers.add_parser(command)
+        scenario.add_argument("cid")
+        if command in {"approve", "send-back"}:
+            scenario.add_argument("--json", dest="json_input", choices=["-"], required=True)
+        if command == "install":
+            scenario.add_argument("--dest", type=Path, required=True)
     return parser
 
 
@@ -68,12 +77,19 @@ def read_text_input(args: argparse.Namespace) -> None:
             payload = json.loads(raw)
         except (ValueError, UnicodeError) as exc:
             raise ValidationError("標準入力の JSON が正しくありません") from exc
-        allowed = {"title", "description"} if args.command == "promote-observation" else {"note"}
+        allowed = (
+            {"title", "description"}
+            if args.command == "promote-observation"
+            else {"draft", "files", "answers", "human_written_lines"}
+            if args.command == "approve"
+            else {"note"}
+        )
         if not isinstance(payload, dict) or payload.keys() - allowed:
             raise ValidationError("入力 JSON の項目が正しくありません")
     if args.command == "promote-observation":
         args.title, args.description = payload.get("title"), payload.get("description")
     args.note = payload.get("note", "")
+    args.payload = payload
 
 
 def _human_text(value: str, field: str, limit: int, *, multiline: bool = False) -> str:
@@ -167,6 +183,16 @@ def admin_command(context: CandidatesContext, args: argparse.Namespace) -> dict:
     if args.command == "ingest":
         return ingest(context)
     read_text_input(args)
+    if args.command == "draft":
+        return draft(context, args.cid)
+    if args.command == "approve":
+        return approve(context, args.cid, args.payload)
+    if args.command == "send-back":
+        return send_back(context, args.cid, _human_text(args.note, "note", 200))
+    if args.command == "install":
+        return install(context, args.cid, args.dest)
+    if args.command == "verify-suite":
+        return verify_suite(context, args.cid)
     records = []
 
     def prepare(snapshot: dict) -> list[dict]:

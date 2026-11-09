@@ -64,6 +64,11 @@
     "lib/candidates_ingest.py",
     "lib/candidates_view.py",
     "lib/candidates_cli.py",
+    "lib/candidates_schema.py",
+    "lib/candidates_checks.py",
+    "lib/candidates_draft.py",
+    "lib/candidates_scenario_events.py",
+    "lib/candidates_scenarios.py",
     "lib/skill_evolution_common.py"
   ],
   "skills": [

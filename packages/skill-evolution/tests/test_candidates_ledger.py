@@ -175,9 +175,28 @@ def test_ev59_full_transition_table_and_unlisted_transitions(
         eid = f"{index + 100:012x}"
         refs.append(eid)
         snapshot["records"][eid] = {
+            "eid": eid,
             "type": kind,
             "cid": candidate["cid"],
             "ts": candidate["state_since"],
+            "data": {},
+        }
+    if target in {"scenario_approved", "improving"} and (source, target) in GUARDS:
+        draft_eid = "dddddddddddd"
+        approval_eid = refs[0] if target == "scenario_approved" else "aaaaaaaaaaaa"
+        snapshot["records"][draft_eid] = {
+            "eid": draft_eid,
+            "cid": candidate["cid"],
+            "type": "scenario.drafted",
+            "ts": candidate["state_since"],
+            "data": {"draft": 1},
+        }
+        snapshot["records"][approval_eid] = {
+            "eid": approval_eid,
+            "cid": candidate["cid"],
+            "type": "scenario.approved",
+            "ts": candidate["state_since"],
+            "data": {"draft_eid": draft_eid},
         }
     record = model.event(
         "candidate.state_changed",
@@ -534,7 +553,7 @@ def test_ev60_verify_suite_mismatch_transition_waits_for_later_phase(
         "C-00000001",
         {"from": "improving", "to": "drafting", "note": "人が確認した理由"},
     )
-    with pytest.raises(ValidationError, match="後続バージョン"):
+    with pytest.raises(ValidationError, match="不一致確認"):
         model.apply_event(snapshot, record)
     assert snapshot["candidates"]["C-00000001"]["state"] == "improving"
 
@@ -605,3 +624,16 @@ def test_ev62_existing_auto_attribution_remains_readable_without_new_condition(
     assert store.read()["observations"] == snapshot["observations"]
     (store.directory / "candidates-state.json").write_text("broken")
     assert store.read()["observations"] == snapshot["observations"]
+
+
+def test_ev62_projection_accepts_registered_future_record_types(
+    candidate_context, observation_event, candidate_event, monkeypatch
+):
+    store = candidate_context.store
+    snapshot = store.write(lambda _: [observation_event(), candidate_event()])
+    record = model.event("handoff.future", "C-00000001", {"reference": "synthetic"})
+    snapshot["records"][record["eid"]] = record
+    snapshot["applied_eids"].add(record["eid"])
+    monkeypatch.setattr(model, "EVENT_TYPES", model.EVENT_TYPES | {"handoff.future"})
+    store._atomic_json("candidates-state.json", snapshot)
+    assert record["eid"] in store._projection()["records"]

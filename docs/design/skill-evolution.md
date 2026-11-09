@@ -378,6 +378,7 @@ claude -p --restricted --tools "" --strict-mcp-config --no-session-persistence \
 - 出力は、シナリオの YAML の文字列の配列を持つ JSON にし、JSON として読めない出力は捨てる
 - 指示: 実データの写しではなく再現用に作ったシナリオにする。実在のパス・ID・人名・URL・リポジトリ名を書かない。学習用と holdout を
   各 1 本以上書き、holdout は学習用と別の入力で同じ欠陥を確かめる。実行される行は §7.4 の形だけで書く
+- LLM の呼び出しのあいだは台帳のロックを持たない。呼ぶ前に回数を確保し、結果を保存する前にロックを取り直して、候補の状態と回数が変わっていないことを確かめる
 - 下書きは `drafts/<cid>/<n>/` に置く。スイート（`packages/meta-harness/scenarios/`）には書かない。meta-harness の proposer の
   読み取りは、`$HOME`・root・全 worktree を拒み、filtered view と追加の許可（`proposer.isolation.allow_read_extra`）だけを許す
   （`isolation.py` の `build_srt_settings`）。台帳と下書きは root の下にあるので proposer から読めない。`allow_read_extra` に台帳を足さないことを、§14.3 の回帰テストで守る
@@ -399,7 +400,8 @@ claude -p --restricted --tools "" --strict-mcp-config --no-session-persistence \
 
 LLM の出力は信頼できないものとして扱う。次のすべてを通ったものだけを、人の承認に出す。
 
-- YAML として読め（`yaml.safe_load`）、`schemas/scenario.schema.json` に合う（スキーマのファイルを読んで検査する。meta-harness のコードは import しない）
+- YAML として読め（`yaml.safe_load`）、`schemas/scenario.schema.json` に合う（スキーマのファイルを読んで検査する。meta-harness のコードは import しない）。
+  読む前にアンカーとエイリアスを拒み、ノードの数と入れ子の深さに上限を設ける（エイリアスの展開で検査が止まらないようにする）
 - `target` が `skill:<slug>`、`id` が `^[a-z0-9-]+$` で `sevo-<cid の 8 桁>-` で始まり、既存のシナリオの `id` と重ならない
 - 学習用（`holdout` が無いか false）と holdout（`holdout: true`）が各 1 本以上
 - 学習用のシナリオの `graded` の有無が、同じスイートの既存の学習用シナリオとそろっている（meta-harness の `validate_target_suite` が、学習用のすべてが
@@ -408,8 +410,9 @@ LLM の出力は信頼できないものとして扱う。次のすべてを通�
 - 公開してはいけない文字列が無い。次を見つけたら不合格にする
   - 伏せ字で変わる文字列（機密情報らしきもの）
   - 絶対パス（`/` で始まるパス。`~` で始まるパス）、`..` を含むパス
-  - メールアドレス、URL、IP アドレス、`owner/repo` の形の文字列
-  - 根拠の観測の抜粋と 20 字以上一致する部分（実データの写し）
+  - メールアドレス、URL、IP アドレス、ホスト名、`github.com/…` などのリポジトリの参照、`owner/repo#N`、先頭の `/` の無いホームのパス（`Users/<名前>/`）
+  - 照合は NFKC で正規化し、大文字小文字をそろえてから行う（全角の URL などで避けられないようにする）
+  - 根拠の観測の抜粋と、正規化した 12 字以上が一致する部分（実データの写し）
 - 文字種の検査（§6.3）
 
 ### 7.4 実行される行の形（2026-11-08 利用者の決定）
@@ -419,12 +422,16 @@ LLM の出力は信頼できないものとして扱う。次のすべてを通�
 | 項目                           | 下書きに許す形                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 検査（`critical` の `oracle`） | `artifact_exists`・`json_schema`・`rubric_judge`。`command_exit` は、`python3 packages/meta-harness/scenarios/fixtures/<既存のスクリプト>.py` に、`^[A-Za-z0-9._=:/-]+$` の引数（`/` で始まらず `..` を含まない）を並べた形だけ。使えるスクリプトとフラグは、`scenarios/skill/` の既存のシナリオでそのスクリプトに渡しているものだけ（2026-11-08 時点では `assert-task-state-outcome.py`・`assert-issue-fix-decision.py`・`assert-cli-skill-route.py`・`merge-local-cli-tools-override.py`）。`assert-function-behavior.py`（引数のモジュールを実行する）と、`merge-local-cli-tools-override.py` の `--project-root`（書き込み先を変える）は使わせない |
-| 準備（`setup`）                | `mkdir -p <相対パス>`、`touch <相対パス>`、`printf '<文字列>' > <相対パス>`（文字列に `'`・`$`・バッククォート・`\`・`%` を含まない）、`cp packages/meta-harness/scenarios/fixtures/<既存のファイル> <相対パス>`                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 準備（`setup`）                | `mkdir -p <作業パス>`、`touch <作業パス>`、`printf '<文字列>' > <作業パス>`、`cp packages/meta-harness/scenarios/fixtures/<既存のファイル> <作業パス>`。`<作業パス>` は `.meta-harness/` の下で、その後の要素が `.` で始まらないもの。`cp` だけは、既存のシナリオにある（fixtures のファイル, コピー先）の組（例: `fake-gh-issue-view.py` → `bin/gh`）も許す。`printf` の文字列は `[A-Za-z0-9 ._,:#/-]` の文字だけ |
 | `permission_mode`              | `acceptEdits` だけ（`bypassPermissions` は下書きに書かせない）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `allowed_tools`                | 同じスキルの既存の学習用シナリオにある値の部分集合                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `allowed_tools`                | 省略しない。同じスイートの既存の学習用シナリオの値の部分集合。既存のシナリオが無ければ Read・Write・Edit・Glob・Grep の部分集合 |
+| 予算・回数・時間（`budget`・`repeat`・`timeout_ms`・`command_timeout_ms` など） | 書かないか、同じスイートの既存のシナリオの最大値以下。既存のシナリオが無ければ書かない |
+| 評価に渡る文（`prompt`・`rubric`・検査の `text`） | 長さの上限（`prompt` 4,000 字、ほかは 2,000 字）。実行される行と並べて承認のときに見せる |
 
 - パイプ・リダイレクト（`printf` の `>` を除く）・`;`・`&&`・コマンド置換・環境変数の展開は、どの行にも許さない
-- `<相対パス>` は `^[A-Za-z0-9._/-]+$` で、`/`・`-` で始まらず、`..` を含まないものだけ（§7.3 の公開の検査とは別に、この形の検査でも拒む）
+- パスは `^[A-Za-z0-9._/-]+$` で、`/`・`-` で始まらず、`..` を含まないものだけ（§7.3 の公開の検査とは別に、この形の検査でも拒む）。検査の `path`・`schema` も同じ
+- 「既存のシナリオ」は人が書いたもの（`id` が `sevo-` で始まらないもの）だけを指す。承認したシナリオを、次の下書きの許可の根拠にしない
+- `.claude/`・`.git`・`.mcp.json`・`CLAUDE.md`・`AGENTS.md`・`packages/` への書き込みや、fixtures の上書きは、すべて人が書く行になる
 - 抜粋との一致の検査（§7.3）は言い換えで避けられるので、公開してよいかの最後の判断は人の承認（§7.5）で行う
 - これ以外の行（`git` を使う検査、`bypassPermissions` が要るスキルなど）が要るときは、人が下書きを直して書く。人が書いた行は、
   承認のときに「人が書いた」と確認項目で明示し、`scenario.approved` に残す。人が直した下書きも §7.3 の形以外の検査（公開してはいけない文字列など）は通す
@@ -441,8 +448,10 @@ LLM の出力は信頼できないものとして扱う。次のすべてを通�
   - 公開してよい内容か（このリポジトリは公開されている。実データの写し・個人の情報・社内の名前が無いか）
   - 実行される行に、人が書いた行があるか。あるなら、その行を確かめたか
 
+承認には、表示したときの各ファイルの sha256 を添える。承認の時点のファイルがそれと違えば承認しない（表示から承認までのあいだに書き換えられた内容を承認しない）。
+「人が書いた」とする行は、LLM が出した元の下書き（下書きのディレクトリに残す写し）と違う行だけを受け付ける。
 承認すると `scenario.approved` に、ファイルごとの `scenario_hash`（ファイルの中身の sha256。meta-harness の `compute_scenario_hash` と同じ）を記録する。
-承認の後に下書きが変わったら、承認は無効になる。
+承認の後に下書きが変わったら、承認は使う時点（`install`・`verify-suite`）で拒む。状態を `drafting` に戻すのは `verify-suite` の不一致のときだけ。
 
 ### 7.6 スイートへの導入と一致の確認
 
@@ -451,7 +460,7 @@ meta-harness は昇格 PR を origin/main から作り、昇格の時点で、�
 
 1. `skill_candidates_admin.py install --candidate C-… --dest <checkout>` が、承認したファイルを `<checkout>/packages/meta-harness/scenarios/skill/<slug>/`
    にコピーする。skill-evolution は commit・push をしない
-   - `<checkout>` は、このリポジトリの `git worktree list` に出る worktree のどれかで、main から切ったブランチであること
+   - `<checkout>` は、このリポジトリの `git worktree list` に出る worktree のどれかで、既定のブランチでなく、origin/main を祖先に持つブランチであること
    - 書き込み先の途中のディレクトリを `lstat` で確かめ、symlink があれば止める。ファイルは `O_NOFOLLOW | O_EXCL` で作り、既存のファイルを上書きしない
    - コピーした後に、ファイルの `scenario_hash` が承認と同じかを確かめる
 2. 新しいスキルのスイートを作るとき、または既存のスイートにシナリオを足すときは、meta-harness の回帰の予算（`regression.max_budget_usd` と
@@ -461,9 +470,10 @@ meta-harness は昇格 PR を origin/main から作り、昇格の時点で、�
    ほかのターゲットを含む評価済みの候補もすべて昇格できなくなる（評価のやり直しが要る）。進行中の meta-harness の昇格が無いときに PR をマージする
 3. 人が PR を作り（`/pr-create`）、マージする。PR は ① で承認した内容を git に入れる手順で、PR の本文に候補 ID と承認したハッシュを書く
 4. `skill_candidates_admin.py verify-suite --candidate C-…` を main の checkout で実行し、次を確かめて `scenario.suite_verified` を記録する
-   - 承認したファイルがすべてあり、`scenario_hash` が承認と同じ
+   - シナリオ置き場に未コミットの変更が無く、既定のブランチの checkout であること。ファイルの一覧と中身は作業ツリーではなく HEAD のコミットから読む
+   - 承認したファイルがすべてあり、`scenario_hash` が承認と同じ。置き場の `sevo-` で始まるファイルは、どれも台帳のいずれかの候補で承認したものと一致する
    - スイート全体の `suite_hash` を、meta-harness と同じ方法（シナリオ置き場の全 `*.yaml` の `scenario_hash` をファイル名の順に連結した sha256）で計算する
-   - そのコミットが origin/main から辿れる
+   - そのコミットが origin/main から辿れる（ローカルの追跡の参照で判定するので、先に `git fetch origin main` する）
    - meta-harness の設定（`.local.yaml` の上書きを含む）の `scenario_run.isolation.execution_backend` が `docker`
 
 スイートのハッシュは置き場の全ファイルから作られるので、手で書いた既存のシナリオが変わっても変わる。承認したファイルが同じままなら、

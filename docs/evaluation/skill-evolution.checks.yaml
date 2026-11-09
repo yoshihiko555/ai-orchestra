@@ -384,6 +384,7 @@
     - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_applied_eids_are_sets_and_serialize_as_sorted_lists"
     - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_failed_atomic_projection_cleans_only_its_temp_file"
     - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_existing_auto_attribution_remains_readable_without_new_condition"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev62_projection_accepts_registered_future_record_types"
   notes: "flock と待ち切れ、復旧・追いつき・改行補修、厳密な追記前検査、権限と symlink、書けない時は終了 3。"
 
 - ev_id: EV-63
@@ -408,3 +409,138 @@
     - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev79_suggestion_requires_same_skill_kind_overlap_and_distinct_origins"
     - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev79_cjk_bigrams_and_pending_items_precede_state_groups"
   notes: "英単語と CJK 2-gram の重なり・異なる session/PR を条件に、提案だけを先頭表示。"
+
+- ev_id: EV-64
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev64'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev64_draft_uses_restricted_empty_session_and_private_atomic_files"
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev64_nonce_delimits_hypothesis_and_masked_evidence_without_at_expansion"
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev64_ineligible_or_approved_candidate_never_invokes_cli"
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev64_draft_executable_is_injectable_and_raw_json_is_accepted"
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev64_draft_releases_lock_while_llm_runs_and_preserves_other_writers"
+  notes: "偽 claude の隔離・入力・権限と atomic な非公開保存。"
+
+- ev_id: EV-65
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev65'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev65_limit_or_invalid_output_never_creates_a_draft"
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev65_successful_and_failed_attempts_both_count_toward_redraft_limit"
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev65_failed_atomic_write_leaves_no_partial_draft"
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev65_corrupt_attempt_counter_never_resets_the_budget"
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev65_draft_discards_output_after_concurrent_state_or_attempt_change"
+    - "packages/skill-evolution/tests/test_candidates_draft.py::test_ev65_stdout_over_one_mib_is_refused"
+  notes: "本数・サイズ・費用・時間・失敗を含む回数の上限。"
+
+- ev_id: EV-66
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev66'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev66_allowed_setup_shapes_pass"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev66_unsafe_setup_is_reported_with_exact_line"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev66_unsafe_commands_and_added_flags_are_rejected"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev66_flags_are_derived_per_script_and_only_safe_privileges_pass"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev66_human_override_requires_every_exact_line_and_never_bypasses_publish"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev66_setup_writes_are_confined_to_work_directory"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev66_sevo_scenarios_cannot_expand_fixture_or_copy_allowlists"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev66_bash_subset_requires_reviewed_human_edit"
+  notes: "実行行の許可リスト、追加フラグとシェル構文の拒否、人の行の明示。"
+
+- ev_id: EV-67
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev67'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev67_private_strings_are_rejected_in_every_field_and_comments"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev67_twenty_character_overlap_is_rejected_without_paraphrasing"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev67_normalized_publish_leaks_are_rejected"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev67_relative_artifacts_are_publishable_and_overlap_is_normalized"
+  notes: "機密情報・識別情報・文字種・正規化した 12 字一致の拒否。"
+
+- ev_id: EV-68
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev68'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_invalid_schema_target_ids_and_split_are_rejected"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_missing_train_requires_tools_to_be_absent"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_schema_accepts_every_existing_meta_harness_skill_scenario"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_schema_keyword_constraints_are_enforced"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_resource_limits_use_only_human_suite_maxima"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_omitted_tools_and_resources_without_baseline_are_refused"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_oracle_paths_reject_environment_expansion"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_evaluation_text_is_listed_and_bounded"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_aliases_and_yaml_limits_are_rejected_within_one_second"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_broken_existing_yaml_is_a_file_finding"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev68_existing_scenario_warnings_are_shown_without_blocking_draft_approval"
+  notes: "スキーマ・target・ID・train/holdout・graded と既存スキーマ互換契約。"
+
+- ev_id: EV-69
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev69'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_approval_records_raw_hashes_and_replays_after_projection_loss"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_approval_requires_current_draft_and_complete_confirmations"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_send_back_needs_reason_and_old_approval_cannot_approve_redraft"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_changed_approved_draft_blocks_install_and_verification"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_show_contains_full_control_escaped_raw_text_and_separate_lines"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_scenario_events_reject_invalid_actor_hash_and_stale_draft"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_admin_and_read_cli_cover_draft_approval_send_back_install_and_verify"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_cli_approval_failure_returns_findings_and_exit_five"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_stale_review_hash_and_unmodified_llm_human_line_are_refused"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_show_marks_changed_approval_invalid_without_state_change"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_missing_approved_draft_is_invalid_and_only_verify_sends_back"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_show_prints_per_file_original_diff_of_human_changes_and_additions"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev69_show_refuses_diff_against_tampered_original"
+  notes: "承認回答・全文表示・差し戻し・最新下書き参照・承認後の変更の拒否。"
+
+- ev_id: EV-70
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev70'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev70_install_refuses_unsafe_destinations_without_copying"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev70_install_copies_exact_approved_bytes_and_gives_budget_guidance"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev70_suite_descriptor_rejects_non_slug_names"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev70_missing_destination_is_input_error"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev70_install_and_ev71_verify_use_real_git_linked_worktree"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev70_default_branch_falls_back_to_main_only_for_absent_tracking_head"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev70_install_and_ev71_verify_share_resolved_default_branch"
+  notes: "worktree・ブランチ・途中の symlink・既存ファイルの拒否と安全なコピー。"
+
+- ev_id: EV-71
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev71'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev71_suite_hash_matches_meta_harness_for_every_existing_suite"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev71_verify_suite_enters_improving_and_reverification_tracks_whole_suite"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev71_verify_hashes_committed_blobs_instead_of_working_files"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev70_install_and_ev71_verify_share_resolved_default_branch"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev71_verify_cli_accepts_approved_files_from_merged_candidate_aliases"
+  notes: "既存の全 skill スイートのハッシュ互換契約と再確認。"
+
+- ev_id: EV-72
+  phase: 3
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev72'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_verification_failure_records_no_suite_verification"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_changed_approved_main_file_sends_improving_back_to_drafting"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_effective_config_mirrors_project_base_local_and_package_fallback"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_non_mismatch_errors_preserve_state_and_record_no_events"
+  notes: "main 到達性・承認ハッシュ・実効 Docker backend の拒否と差し戻し。"
