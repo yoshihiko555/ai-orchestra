@@ -615,11 +615,6 @@ def build_plans_summary(
                 remaining - sum(len(tasks[state]) for state in ("WIP", "TODO", "blocked")), 0
             )
 
-    if os.path.lexists(Path(project_dir) / ".claude" / "Plans.md"):
-        parts.append(
-            "[task-memory] 警告: .claude/Plans.md は読み込まれません。"
-            "Project ごとに .claude/plans/<slug>.md へ移してください"
-        )
     if invalid_names:
         printable_names = [
             "".join(char if char.isprintable() else "?" for char in name) for name in invalid_names

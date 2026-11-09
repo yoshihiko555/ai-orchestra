@@ -109,7 +109,7 @@ def main():
                     "- Architecture alignment\n"
                     "- Potential risks\n"
                     "- Missing considerations\n"
-                    "- Task granularity in Plans.md\n\n"
+                    "- Task granularity in the plan file\n\n"
                     f"Use: {codex_cmd}"
                 ),
             }

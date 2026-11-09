@@ -9,7 +9,7 @@ description:
 
   どちらか 1 か所に書く。plan ファイルを Issue に引き渡すこともできる。
 
-  「発注書にして」「Plans.md に起こして」「plan に起こして」「Issue に出して」「計画を固めて」といった
+  「発注書にして」「plan に起こして」「Issue に出して」「計画を固めて」といった
 
   依頼や /order で使用する。
 
@@ -113,7 +113,7 @@ metadata:
   Phase（AC と Tasks）+ `## Decisions` / `## Notes` を 1 回で書く（書式は `task-memory-usage` ルールの「plan ファイルのフォーマット」に従う）。
   1 つの発注書につき 1 ファイルで、既存の plan ファイルには追記しない。`.claude/plans/` が無ければ作る。書く直前に
   同じ名前のファイルがあれば上書きせず、使われていない slug を示して「別の slug にする / 上書きする」を
-  AskUserQuestion で確認する（上書きは利用者が選んだときだけ）。旧形式の `.claude/Plans.md` には書かない。
+  AskUserQuestion で確認する（上書きは利用者が選んだときだけ）。
   以後の状態更新は `/task-state` で行う
 - **issue**: `issue-create` の task テンプレートで Issue を作る（本文は `/order` が組み立て、`issue-create` は
   AC 確定済み経路で Step 4 / 5 の検査だけ行う）。写し方: `## タスク内容` に Goal（冒頭）・`### 前提`（Context /

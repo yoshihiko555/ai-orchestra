@@ -9,7 +9,6 @@
 - 名前が `<slug>.md` の規則に合わないファイル（大文字・空白を含む、`.MD` 等）と symlink は読まれない
 - 1 つのファイルに `## Project:` を複数書かない。別の作業は別のファイルにする
 - plan ファイルはローカル管理とし、git にはコミットしない（配布する `.gitignore` 管理ブロックに `.claude/plans/` が入る）
-- 旧形式の `.claude/Plans.md` は読まれない。残っていると SessionStart が警告を出すので、中の Project をそれぞれ `.claude/plans/<slug>.md` に移してから消す
 
 ## plan ファイルのフォーマット
 
@@ -169,7 +168,6 @@ SessionStart hook は `.claude/plans/*.md` を読むだけで、書き換えも�
 - WIP タスクを持つファイルを先に、同じ順位の中ではファイル名順に並べる
 - 表示するタスクの合計は `task-memory.yaml` の `max_display_tasks`（既定 20）まで。上限に達した後のファイルは slug と件数だけの 1 行になる
 - 完了したファイルは中身を出さず、件数と片付けの案内（`/task-state close <slug>`）だけを出す
-- 旧 `.claude/Plans.md` があれば、移行を促す 1 行の警告を出す（中身は注入しない）
 
 ## 運用ルール
 

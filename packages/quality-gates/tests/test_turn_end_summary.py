@@ -120,7 +120,7 @@ class TestMain:
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
     ) -> None:
-        """Plans.md も working-context も空なら何も出力しないことを確認する。"""
+        """plan ファイルも working-context も空なら何も出力しないことを確認する。"""
         (tmp_path / ".claude").mkdir()
         payload = {"session_id": "s1", "cwd": str(tmp_path)}
         output = self._invoke(payload, monkeypatch, capsys)
@@ -132,7 +132,7 @@ class TestMain:
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
     ) -> None:
-        """Plans.md と working-context から systemMessage を組み立てることを確認する。"""
+        """plan ファイルと working-context から systemMessage を組み立てることを確認する。"""
         claude_dir = tmp_path / ".claude"
         (claude_dir / "context" / "shared").mkdir(parents=True)
         (claude_dir / "context" / "shared" / "working-context.json").write_text(

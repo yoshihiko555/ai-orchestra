@@ -278,6 +278,7 @@ def test_main_preserves_completed_unfinished_and_legacy_files(
     assert "/task-state close <slug>" in output
     assert "Completed goal" not in output
     assert "Finished task" not in output
+    assert "Plans.md" not in output
     assert {path: path.read_bytes() for path in contents} == before
     assert set(plans_dir.iterdir()) == {path for path in contents if path.parent == plans_dir}
     assert not (tmp_path / ".claude" / "Plans.archive.md").exists()
@@ -979,7 +980,7 @@ def test_wip_files_then_other_files_are_sorted_and_keep_their_own_orders(tmp_pat
 
 
 @pytest.mark.parametrize("has_plans_dir", [False, True])
-def test_legacy_warning_does_not_read_legacy_content(tmp_path, has_plans_dir) -> None:
+def test_legacy_plans_file_is_ignored_without_warning(tmp_path, has_plans_dir) -> None:
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
     if has_plans_dir:
@@ -988,18 +989,8 @@ def test_legacy_warning_does_not_read_legacy_content(tmp_path, has_plans_dir) ->
 
     summary = load_task_state.build_plans_summary(str(tmp_path), {})
 
-    assert summary == (
-        "[task-memory] 警告: .claude/Plans.md は読み込まれません。"
-        "Project ごとに .claude/plans/<slug>.md へ移してください"
-    )
+    assert summary == ""
     assert "legacy unique text" not in summary
-
-
-def test_broken_legacy_symlink_still_warns(tmp_path) -> None:
-    (tmp_path / ".claude").mkdir()
-    (tmp_path / ".claude" / "Plans.md").symlink_to(tmp_path / "missing.md")
-
-    assert "警告" in load_task_state.build_plans_summary(str(tmp_path), {})
 
 
 def test_summary_disabled_emits_neither_summary_nor_diagnostics(
@@ -1007,7 +998,6 @@ def test_summary_disabled_emits_neither_summary_nor_diagnostics(
 ) -> None:
     _write_plan(tmp_path, "example", "- `cc:TODO` Pending\n")
     _write_plan(tmp_path, "Invalid", "- `cc:TODO` Invalid task\n")
-    (tmp_path / ".claude" / "Plans.md").write_text("legacy")
     monkeypatch.setattr(load_task_state, "read_hook_input", lambda: {"cwd": str(tmp_path)})
     monkeypatch.setattr(
         load_task_state,

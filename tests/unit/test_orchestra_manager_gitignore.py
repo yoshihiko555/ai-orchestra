@@ -54,8 +54,8 @@ class TestMergeGitignoreContent:
         assert merged.startswith("node_modules/\n.env\n")
         assert merged.count(BLOCK_START) == 1
         assert ".claude/plans/" in merged
-        assert ".claude/Plans.md" in merged
-        assert ".claude/Plans.archive.md" in merged
+        assert ".claude/Plans.md" not in merged
+        assert ".claude/Plans.archive.md" not in merged
 
     def test_replaces_existing_managed_block(self) -> None:
         existing = "\n".join(
