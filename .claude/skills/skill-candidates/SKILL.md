@@ -227,7 +227,7 @@ python3 "$CANDIDATES_ADMIN" install {cid} --dest "{利用者が用意したworkt
 - 回帰予算の `regression.max_budget_usd` と `max_affected_suites` を見直し、変更を同じ PR に含める。
 - `.claude/orchestra.json` の `file_hashes` も更新する。
 - 予算の変更は `evaluator_hash` を変え、ほかの候補も再評価が必要になる。進行中の meta-harness の昇格が無いときにマージする。
-- PR 本文には候補 ID と承認したハッシュを書く。commit・push・PR の作成・マージは人の通常手順に委ねる。**このスキルは commit・push・PR の作成・マージを行わない。**
+- PR 本文には候補 ID と承認したハッシュを書く。シナリオ導入用の commit・push・PR の作成・マージは人の通常手順に委ねる。**このスキルはシナリオ導入用の commit・push・PR の作成・マージを行わない。**
 
 マージ後は既定ブランチの checkout で、操作の確認を取って一致を確かめる。
 
@@ -242,4 +242,162 @@ Git・権限・symlink のエラーは状態を変えずに停止する。欠落
 成功したら `improving` へ進む。承認したファイルが変わっていれば `drafting` に戻るので、理由を示して下書きと承認をやり直す。
 承認したファイルが同じで既存シナリオだけが変わったときは `verify-suite` を再実行してよい。
 
-meta-harness への受け渡し・昇格後の確認は後続バージョンで提供する。
+## 8. meta-harness へ一手ずつ渡す
+
+`improving` の候補について、次の操作を順に案内する。評価には費用がかかる。
+**各コマンドの直前に AskUserQuestion で操作・候補・費用を確認し、承認された 1 操作だけをサンドボックスの外で実行する。まとめて自動実行しない。**
+`link` も別の状態変更として確認する。下のコマンド例を一括実行しない。
+
+1. 空の overlay ディレクトリを用意し、baseline を登録する。返された baseline の候補 ID を保持する。
+
+   ```bash
+   CANDIDATES_BASELINE_OVERLAY="$(mktemp -d)"
+   orchex meta register --target skill:{slug} --overlay "$CANDIDATES_BASELINE_OVERLAY"
+   ```
+
+2. baseline の評価の直前に、既定ブランチの checkout で `verify-suite` を再実行する。
+   一致が確認できたら、あらためて評価を確認する。`evaluate` に `--scenario` や `--repeat` を付けない。
+
+   ```bash
+   python3 "$CANDIDATES_ADMIN" --project "{既定ブランチのcheckout}" verify-suite {cid}
+   ```
+
+   ```bash
+   CANDIDATES_BASELINE_JSON="$(mktemp)"
+   orchex meta evaluate --candidate {baselineの候補ID} --json > "$CANDIDATES_BASELINE_JSON"
+   ```
+
+   成功した JSON の一時ファイルを、確認後に結び付ける。
+
+   ```bash
+   python3 "$CANDIDATES_ADMIN" link {cid} --from-json "$CANDIDATES_BASELINE_JSON"
+   ```
+
+3. frontier を再構築する。baseline の学習用シナリオの run ID を出力から選び、提案に使う。
+
+   ```bash
+   orchex meta frontier --target skill:{slug} --rebuild
+   ```
+
+4. 提案を作る。`--json` の出力は必ず一時ファイルに保存する。
+
+   ```bash
+   CANDIDATES_PROPOSAL_JSON="$(mktemp)"
+   orchex meta propose --target skill:{slug} --focus-run {学習用runのID} --json > "$CANDIDATES_PROPOSAL_JSON"
+   ```
+
+   別途確認してから結び付け、返された提案候補 ID を保持する。
+
+   ```bash
+   python3 "$CANDIDATES_ADMIN" link {cid} --from-json "$CANDIDATES_PROPOSAL_JSON"
+   ```
+
+5. 提案候補の評価の直前にも `verify-suite` を再実行する。その後、評価の確認を得る。
+   `evaluate` は学習用と holdout を 1 回の呼び出しで評価する。`--scenario`・`--repeat` は付けない。
+
+   ```bash
+   python3 "$CANDIDATES_ADMIN" --project "{既定ブランチのcheckout}" verify-suite {cid}
+   ```
+
+   ```bash
+   CANDIDATES_EVALUATION_JSON="$(mktemp)"
+   orchex meta evaluate --candidate {提案候補ID} --json > "$CANDIDATES_EVALUATION_JSON"
+   ```
+
+   別途確認してから結び付ける。評価 ID・候補 ID・holdout・`own_suite_hash`・`evaluator_hash` を示す。
+
+   ```bash
+   python3 "$CANDIDATES_ADMIN" link {cid} --from-json "$CANDIDATES_EVALUATION_JSON"
+   ```
+
+6. meta-harness の採用基準を満たしたら、昇格 PR の作成を確認して実行する。
+   昇格する提案候補の holdout 評価が必要で、baseline の holdout 評価だけでは進めない。
+
+   ```bash
+   orchex meta promote {提案候補ID}
+   ```
+
+   PR の URL を示し、別途確認して結び付ける。
+
+   ```bash
+   python3 "$CANDIDATES_ADMIN" link {cid} --pr {昇格PRのURL}
+   ```
+
+7. 人が昇格 PR をマージした後、meta-harness の確認と候補のマージ確認を、それぞれ確認して実行する。
+   先に利用者へ `git fetch origin <既定ブランチ>` を案内する。
+
+   ```bash
+   orchex meta promote {提案候補ID} --confirm
+   ```
+
+   ```bash
+   python3 "$CANDIDATES_ADMIN" confirm-merge {cid}
+   ```
+
+`verify-suite` または `link` が不一致で止まったら、先へ進めず、理由と戻り先を示す。
+承認したシナリオの欠落・変更なら `verify-suite` による `drafting` への差し戻しから下書きと承認をやり直す。
+承認したファイルが同じでスイートが変わった場合は、`verify-suite` → evaluate → `link` をやり直す。
+meta-harness が `evaluator_hash` の変化で昇格を拒んだときも、評価の直前の `verify-suite` からやり直す。
+採用基準は meta-harness が判定する。スキル側で判定を置き換えない。
+
+採用基準を満たさない場合は、利用者に戻すか保留するかを選んでもらう。
+戻す場合だけ、対象・理由・状態変更を AskUserQuestion で確認して実行する。承認したシナリオは残す。
+
+```bash
+python3 "$CANDIDATES_ADMIN" withdraw {cid} --json - <<'JSON'
+{"note": "{利用者が確認した理由}"}
+JSON
+```
+
+昇格 PR がマージされずに閉じられた場合は、理由を確認してから `close-pr` で候補に戻す。
+
+```bash
+python3 "$CANDIDATES_ADMIN" close-pr {cid} --json - <<'JSON'
+{"note": "{利用者が確認した理由}"}
+JSON
+```
+
+## 9. 昇格後の機会と再発を確認する
+
+`list` / `show` の `recurrence` を使い、昇格済みの候補はそのまま次の文で示す。
+**「N 回の該当する機会で、確認された再発なし（帰属 unknown の証拠 M 件）」**。
+成功率や再発率などの率・パーセントを出さない。マージ後の版のハッシュが null なら、該当する機会を数えられないと示す。
+機会は、マージ後に始まり、同じスキル・同じ版で、直接起動または `run.confirmed` のある実行範囲だけ。
+帰属 unknown の証拠は、該当する機会と同じセッションのマージ後のもの。
+
+`trace` の承認ハッシュ・スイートのハッシュとコミット・評価 ID / 候補 ID・提案・PR・マージのコミット・マージ後の版・時刻・外したファイルを辿れるように示す。
+`rerun_hint` があれば「シナリオの再実行を勧める」と案内する。
+`recurrence_suggestions` は語の重なり順の**確認の提案だけ**。一覧や提案を表示しても再発を確定しない。
+
+同じ欠陥かどうかは、利用者がマージ後の版の観測を明示的に選んだときだけ確定する。
+対象候補・観測・実行範囲・候補への再開を AskUserQuestion で確認してから実行する。
+
+```bash
+python3 "$CANDIDATES_ADMIN" confirm-recurrence {cid} --observation {利用者が選んだoid}
+```
+
+以前の受け渡し記録と承認したシナリオを残し、`promoted` から `candidate` に戻る。
+語の重なりや件数を根拠に自動確定しない。
+
+## 10. シナリオと古い実行記録を整理する
+
+シナリオを外すときは、承認済みの対象ファイルを示し、人が削除用 PR を作ってマージする。
+AskUserQuestion で対象と PR を確認後、マージと既定ブランチからの到達性・コミットでの欠落を確かめて記録する。
+
+```bash
+python3 "$CANDIDATES_ADMIN" retire-scenario {cid} --json - <<'JSON'
+{"files": ["{承認済みのsevo-ファイル名.yaml}"], "pr": "{利用者が確認したPRのURL}"}
+JSON
+```
+
+古い月別記録は、まず対象月と一覧操作を確認して `prune-runs --before YYYYMM` で JSON の対象一覧を示す。
+削除はその一覧を利用者に示し、別途 AskUserQuestion で確認後にだけ `--apply` を付ける。
+現在月と、昇格済み候補のマージ月以降と、昇格 PR を結び付けた候補（`promotion_pr`）の PR の作成月以降は残す。symlink は整理しない。
+
+```bash
+python3 "$CANDIDATES_ADMIN" prune-runs --before {YYYYMM}
+```
+
+```bash
+python3 "$CANDIDATES_ADMIN" prune-runs --before {YYYYMM} --apply
+```

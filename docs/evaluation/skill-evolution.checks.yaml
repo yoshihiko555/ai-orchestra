@@ -552,3 +552,114 @@
     - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_non_mismatch_errors_preserve_state_and_record_no_events"
     - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_verify_suite_uses_real_evaluate_backend_and_local_override"
   notes: "main 到達性・承認ハッシュ・実効 Docker backend の拒否と差し戻し。"
+
+- ev_id: EV-73
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev73'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev73_any_suite_hash_mismatch_refuses_entire_link"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev73_link_rejects_unsafe_files_and_unknown_payloads_without_events"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev73_link_validates_every_evaluation_field"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev73_evaluation_links_head_hash_and_validates_run_result_types"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev73_complete_evaluate_payload_checks_nested_run_fields"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev73_evaluation_reference_uses_base_commit_and_detects_changed_head"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev73_missing_local_evaluation_base_records_null_without_reading_tree"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev73_every_evaluation_requires_valid_base_commit"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev73_evaluation_run_ids_and_candidate_must_match_payload_runs"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev73_mixed_evaluation_base_commits_refuse_entire_link_without_events"
+  notes: "評価ハッシュの不一致・安全な入力・公開出力契約の検査。"
+
+- ev_id: EV-74
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev74'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev74_show_traces_approval_evaluation_proposal_pr_and_merge"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev74_retirement_refuses_unapproved_or_unremoved_files"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev74_cli_supports_positional_ids_stdin_and_sanitized_trace"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev74_retirement_refuses_scenario_that_never_existed_on_first_parent"
+  notes: "承認からマージとシナリオ廃止までの追跡・CLI の表示。"
+
+- ev_id: EV-75
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev75'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev75_merge_refusals_preserve_state_and_ledger"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev75_confirm_merge_uses_default_branch_and_allows_unresolved_hash"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev75_close_pr_requires_unmerged_closed_and_withdraw_requires_reason"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev75_withdraw_preserves_approved_scenarios"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev75_cli_withdraw_and_close_notes_use_stdin"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev75_gh_runner_uses_list_argv_timeout_and_validation"
+  notes: "マージの拒否条件と既定ブランチ・閉鎖・撤回の戻り道。"
+
+- ev_id: EV-76
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev76'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_recurrence.py::test_ev76_opportunities_require_post_merge_same_skill_hash_and_execution"
+    - "packages/skill-evolution/tests/test_candidates_recurrence.py::test_ev76_prune_lists_then_deletes_only_unprotected_old_months"
+    - "packages/skill-evolution/tests/test_candidates_recurrence.py::test_ev76_prune_protects_current_month_and_respects_before"
+    - "packages/skill-evolution/tests/test_candidates_recurrence.py::test_ev76_prune_refuses_symlinks_without_deleting_any_file"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev76_prune_protects_latest_promotion_link_month_and_later_months"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev76_invalid_month_filenames_are_ignored_by_listing_and_never_pruned"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev76_prune_protects_pr_creation_month_before_later_link"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev76_legacy_promotion_without_creation_time_validates_and_protects_link_month"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev76_pr_creation_time_requires_timezone_for_cli_and_event_guard"
+  notes: "同じ版で実行された機会と月別記録の保護・整理。"
+
+- ev_id: EV-77
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev77'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_recurrence.py::test_ev77_message_counts_only_unknown_evidence_in_matching_sessions_after_merge"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev77_unreadable_runs_degrades_recurrence_without_failing_view"
+  notes: "確認された再発なしの定型表示と unknown 証拠の件数。"
+
+- ev_id: EV-78
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev78'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_recurrence.py::test_ev78_human_confirmation_attaches_observation_and_reopens_with_history"
+    - "packages/skill-evolution/tests/test_candidates_recurrence.py::test_ev78_invalid_recurrence_is_refused_without_events"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev78_recurrence_cli_and_event_guard_reject_observation_owned_by_another_candidate"
+  notes: "人の確認による観測の追加・再開と不適格な再発の拒否。"
+
+- ev_id: EV-85
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev85'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev85_promotion_requires_current_proposal_holdout_and_verified_suite"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev85_transition_guard_checks_holdout_candidate_not_only_record_types"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev85_matching_proposal_holdout_links_repository_pr"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev85_foreign_or_noncanonical_pr_urls_are_refused"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev85_handoff_records_reject_nonhuman_actor_and_wrong_shapes"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev85_nonpassing_holdout_links_but_cli_and_transition_guard_refuse_promotion"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev85_pr_link_refuses_closed_unrelated_or_foreign_pr_without_events"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev85_pr_link_accepts_open_or_merged_pr_with_nested_skill_files"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev85_newer_nonpassing_holdout_overrides_stale_pass_for_cli_and_transition_guard"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev85_newer_passing_holdout_allows_promotion_after_failure"
+  notes: "最新の提案候補の holdout 評価と遷移ガード・PR URL。"
+
+- ev_id: EV-86
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev86'
+  covered_by:
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev86_git_tree_hash_matches_hooks_with_modes_exclusions_symlinks_and_limits"
+    - "packages/skill-evolution/tests/test_candidates_handoff.py::test_ev86_git_reader_skips_submodules_and_symlinks"
+    - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev86_over_limit_tree_never_reads_any_blob"
+  notes: "実 git の blob と hook のハッシュ互換・上限・除外。"

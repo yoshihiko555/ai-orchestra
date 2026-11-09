@@ -150,7 +150,7 @@ def git_read(
         capture_output=True,
         text=not binary,
         env=env,
-        timeout=15,
+        timeout=30,
     )
     if check and completed.returncode:
         raise ValidationError("git の読み取り検査に失敗しました")

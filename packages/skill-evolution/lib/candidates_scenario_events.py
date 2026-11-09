@@ -61,7 +61,8 @@ def validate_scenario_event(snapshot: dict, candidate: dict, record: dict) -> No
     payload, kind = record["data"], record["type"]
     if record["actor"] != "human":
         raise ValidationError("シナリオの操作には人の確認が必要です")
-    validate_files(payload.get("files"))
+    if kind != "scenario.retired":
+        validate_files(payload.get("files"))
     if kind in {"scenario.drafted", "scenario.approved"}:
         if (
             candidate["state"] != "drafting"
@@ -104,6 +105,27 @@ def validate_scenario_event(snapshot: dict, candidate: dict, record: dict) -> No
         if not re.fullmatch(r"[0-9a-f]{40,64}", str(payload.get("commit"))):
             raise ValidationError("コミットの形式が正しくありません")
     elif kind == "scenario.retired":
+        files = payload.get("files")
+        approved = {
+            name
+            for item in snapshot["records"].values()
+            if item["type"] == "scenario.approved" and item["cid"] == candidate["cid"]
+            for name in item["data"]["files"]
+        }
+        if (
+            payload.keys() != {"files", "pr_url", "merge_commit"}
+            or not isinstance(files, list)
+            or not files
+            or any(
+                not isinstance(name, str)
+                or not re.fullmatch(r"sevo-[a-z0-9-]+\.yaml", name)
+                or name not in approved
+                for name in files
+            )
+            or len(set(files)) != len(files)
+            or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", str(payload.get("merge_commit")))
+        ):
+            raise ValidationError("外す対象は、この候補で承認したシナリオを指定してください")
         if not re.fullmatch(
             r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*",
             str(payload.get("pr_url")),

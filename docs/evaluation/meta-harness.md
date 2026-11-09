@@ -3,7 +3,7 @@
 **パッケージ**: `packages/meta-harness`
 **類型**: 主: CLI ツール型、副: hook 型（config-loading レイヤリングへの依存）
 **作成日**: 2026-07-06
-**最終レビュー日**: 2026-08-17
+**最終レビュー日**: 2026-11-09（EV-119・EV-120 を追加し、人間レビューで承認）。2026-08-17
 **情報源**: docs/design/meta-harness.md（基本設計）, docs/design/meta-harness-detailed.md（詳細設計 §1〜§14）, docs/design/meta-harness-proposer-routing-unlock.md, docs/requirements/meta-harness.md, docs/adr/ADR-20260706-032.md, docs/adr/ADR-20260716-041.md, docs/adr/ADR-20260717-042.md, docs/adr/ADR-20260726-045.md
 
 ## 1. 責務定義
@@ -200,6 +200,8 @@
 - [ ] EV-116（異常 / must）[2026-08-17 追加（Issue #378、ADR-20260817-051、PR #379 レビュー対応）]: `cache_neutral_cost_usd` の usage ソースは `cli`（CLI result event の usage）> `model_usage`（budget-latch run の modelUsage fallback）> `broker_metrics`（broker `isolation.broker.metrics.usage`）の優先順位で決定する。broker metrics は (1)(2) が全フィールド 0 のときのみ参照し、`anomaly`/`budget_exceeded` が立っている場合は不信任として扱い参照しない。採用したソースは `cache_neutral_source` フィールドに記録する — 根拠: Issue #378、ADR-20260817-051 決定2（judge コスト混入回避）。対応テスト: `test_evaluator_cost_extraction.py::TestApplyCacheNeutralCost`
 - [ ] EV-117（境界 / must）[2026-08-17 追加（Issue #378、ADR-20260817-051、PR #379 レビュー対応）]: ledger event の cost スキーマは後方互換を保つ。新設 4 フィールド（`cache_creation_input_tokens`/`cache_read_input_tokens`/`cache_neutral_cost_usd`/`cache_neutral_source`）は全て optional であり、これらを持たない旧 7 キー構成の cost オブジェクトを持つ既存 ledger イベントは、schema 更新後も引き続き validate を通過する — 根拠: Issue #378、ADR-20260817-051。対応テスト: `test_schema_validator.py` の後方互換テスト
 - [ ] EV-118（異常 / must）[2026-08-17 追加（Issue #267 残スコープ、PR #380 レビュー対応）]: 候補による oracle fixtures（`packages/meta-harness/scenarios/fixtures/`）改ざん試行は fail-closed で扱う。候補プロセス実行後・oracle 実行直前の復元 materialize の直前に、worktree 側の fixtures 内容を信頼済み immutable copy とファイル単位の digest（`_snapshot_fixture_digests`。候補側ファイルは `read_bytes()` による全内容メモリ保持を行わずチャンク読みのストリーミング sha256 で digest 化し、`_TAMPER_DETECTION_MAX_FILE_BYTES` 超過ファイルとシンボリックリンクは内容を読まずサイズ/種別のみで即座に改ざん扱いとする）で比較し、不一致であれば attempt を `hard_failure`（verdict=error）にしたうえで、`result.json` の `errors` に `type: "run_error"`・`message` 先頭固定 prefix `oracle-fixtures-tampered:` に続けて差分パス一覧を JSON 配列（`json.dumps(paths, ensure_ascii=False)`）として記録する。検出・記録・復元は候補の成否に関わらず必ず実行される（`run_headless_scenario` 呼び出しを覆う `try`/`finally` の `finally` 側に置くことで、workspace export 後に result event 欠落・is_error・skill activation 検証失敗等の例外が送出されても検出へ到達する）。検出後も従来どおり信頼済み内容への復元（materialize）は維持され、後続の oracle・collateral 診断を壊さない — 根拠: Issue #267、PR #380 レビュー対応（P1: OOM 対策、P2: 失敗経路でも検出、P2: パス符号化の機械可読性）。対応テスト: `test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection`
+- [ ] EV-119（正常 / must）[2026-11-09 追加（ADR-20261108-065、skill-evolution v2 Phase 4）]: `evaluate --json` の成功時の出力は、既存の項目（`status`・`runs` 等）の名前と形を変えずに `evaluations` を足す。`evaluations` は、その呼び出しが記録した `evaluation_completed`（own suite と holdout のそれぞれ）ごとに 1 件で、`evaluation_id`・`cand_id`・`holdout`・`own_suite_hash`・`evaluator_hash`・`own_run_ids`・`verdict`・`evaluation_base_commit` を持ち、値は ledger に書いたイベントと同じ（出力のために計算し直さない） — 根拠: req meta-harness FT-09; design skill-evolution §8.2
+- [ ] EV-120（異常 / must）[2026-11-09 追加（ADR-20261108-065、skill-evolution v2 Phase 4）]: proposer の読み取りの制限（`derive_deny_read_paths` / `build_srt_settings`）は、メインルートの `.claude/logs/skill-evolution/` と `.claude/logs/fail-logs/` を拒む（実運用の失敗の記録と改善候補の台帳を proposer に読ませない） — 根拠: design skill-evolution §7.1; req skill-evolution NF-04
 - N/A: hook 型の類型別観点（PreToolUse/PostToolUse ブロック挙動等）は本パッケージが hook を持たないため非該当。config-loading への依存のみが hook 型的性質であり、EV-22 でカバーする
 
 ### 運用メモ

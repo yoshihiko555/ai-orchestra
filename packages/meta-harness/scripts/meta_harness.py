@@ -718,6 +718,7 @@ def _run_evaluate_under_lock(
         print(f"error: CLI capability gate failed: {caps.reason}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
 
+    evaluation_events: list[dict] = []
     try:
         results = ev.evaluate_candidate(
             main_root=main_root,
@@ -730,6 +731,7 @@ def _run_evaluate_under_lock(
             scenario_ids=scenario_ids,
             repeat_override=repeat,
             cli_capabilities=caps.as_dict(),
+            evaluation_events=evaluation_events,
         )
     except ev.EvaluationBatchError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -743,12 +745,31 @@ def _run_evaluate_under_lock(
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_VALIDATION_ERROR
 
+    exit_code = EXIT_OK if all(r["verdict"] != "error" for r in results) else EXIT_RUNTIME_ERROR
+    payload = {"status": "ok", "runs": results}
+    if as_json and exit_code == EXIT_OK:
+        payload["evaluations"] = [
+            {
+                key: event[key]
+                for key in (
+                    "evaluation_id",
+                    "cand_id",
+                    "holdout",
+                    "own_suite_hash",
+                    "evaluator_hash",
+                    "own_run_ids",
+                    "verdict",
+                    "evaluation_base_commit",
+                )
+            }
+            for event in evaluation_events
+        ]
     _emit(
-        {"status": "ok", "runs": results},
+        payload,
         as_json,
         [f"{r['run_id']}: {r['verdict']} (quality={r['quality_score']:.2f})" for r in results],
     )
-    return EXIT_OK if all(r["verdict"] != "error" for r in results) else EXIT_RUNTIME_ERROR
+    return exit_code
 
 
 def _add_common_args(parser: argparse.ArgumentParser, *, is_top_level: bool = False) -> None:

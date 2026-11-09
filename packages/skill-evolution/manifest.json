@@ -2,9 +2,7 @@
   "name": "skill-evolution",
   "version": "0.2.0",
   "description": "スキル実行範囲の記録と、失敗の帰属・改善候補の台帳（コンテキスト注入なし）。core 依存",
-  "depends": [
-    "core"
-  ],
+  "depends": ["core"],
   "hooks": {
     "PreToolUse": [
       {
@@ -64,6 +62,10 @@
     "lib/candidates_ingest.py",
     "lib/candidates_view.py",
     "lib/candidates_cli.py",
+    "lib/candidates_git.py",
+    "lib/candidates_handoff.py",
+    "lib/candidates_handoff_events.py",
+    "lib/candidates_recurrence.py",
     "lib/candidates_schema.py",
     "lib/candidates_checks.py",
     "lib/candidates_draft.py",
@@ -71,9 +73,7 @@
     "lib/candidates_scenarios.py",
     "lib/skill_evolution_common.py"
   ],
-  "skills": [
-    "skill-candidates"
-  ],
+  "skills": ["skill-candidates"],
   "agents": [],
   "rules": [],
   "scripts": [
@@ -90,7 +90,5 @@
       "description": "証拠の取り込み・帰属・改善候補の操作（人の承認が必要。許可リストに入れない）"
     }
   ],
-  "config": [
-    "config/skill-evolution.yaml"
-  ]
+  "config": ["config/skill-evolution.yaml"]
 }

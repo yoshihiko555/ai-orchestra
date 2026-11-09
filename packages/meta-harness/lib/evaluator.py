@@ -3762,6 +3762,7 @@ def evaluate_candidate(
     cli_capabilities: dict,
     evaluation_id: str | None = None,
     runner: SubprocessRunner = subprocess.run,
+    evaluation_events: list[dict] | None = None,
 ) -> list[dict]:
     """Evaluate own scenarios plus affected skill suites in atomic ledger batches."""
     if repeat_override is not None and repeat_override < 1:
@@ -3830,6 +3831,7 @@ def evaluate_candidate(
                 runner=runner,
                 evaluation_id=evaluation_id,
                 regression_budget=regression_budget,
+                evaluation_events=evaluation_events,
             )
         )
     return results
@@ -3901,6 +3903,7 @@ def _evaluate_scenario_batch(
     runner: SubprocessRunner,
     evaluation_id: str | None = None,
     regression_budget: dict[str, float] | None = None,
+    evaluation_events: list[dict] | None = None,
 ) -> list[dict]:
     evaluation_id = evaluation_id or generate_evaluation_id()
     resolved_repeat = repeat_override
@@ -3960,6 +3963,8 @@ def _evaluate_scenario_batch(
             errors=[f"affected regression suites exceed max_affected_suites={max_suites}"],
         )
         _append_evaluation_events(main_root, config, schema_dir, [summary])
+        if evaluation_events is not None:
+            evaluation_events.append(summary)
         raise EvaluationBatchError(summary["errors"][0])
 
     results: list[dict] = []
@@ -4091,6 +4096,8 @@ def _evaluate_scenario_batch(
             0.0, float(regression_budget["remaining_usd"]) - regression_cost
         )
     _append_evaluation_events(main_root, config, schema_dir, [*ledger_events, summary])
+    if evaluation_events is not None:
+        evaluation_events.append(summary)
     if batch_errors:
         raise EvaluationBatchError("; ".join(batch_errors))
     return results

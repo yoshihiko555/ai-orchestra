@@ -141,7 +141,7 @@ class CandidateStore:
                     return None
                 model.require_candidate(snapshot, record["cid"])
                 timestamp(record["ts"])
-                if record["type"] in SCENARIO_EVENTS:
+                if record["type"] in SCENARIO_EVENTS - {"scenario.retired"}:
                     validate_files(record["data"].get("files"))
         except (KeyError, TypeError, ValidationError):
             return None

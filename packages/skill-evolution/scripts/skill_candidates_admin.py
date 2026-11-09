@@ -15,7 +15,9 @@ import candidates_model as model
 import skill_evolution_common as common
 from candidates_cli import Parser, execute
 from candidates_draft import draft
+from candidates_handoff import close_pr, confirm_merge, link, retire_scenario, withdraw
 from candidates_ingest import CandidatesContext, ingest
+from candidates_recurrence import confirm_recurrence, prune_runs
 from candidates_safety import MaskingUnavailable, ValidationError, load_masker, validate_text
 from candidates_scenarios import approve, install, send_back, verify_suite
 
@@ -64,6 +66,29 @@ def build_parser() -> argparse.ArgumentParser:
             scenario.add_argument("--json", dest="json_input", choices=["-"], required=True)
         if command == "install":
             scenario.add_argument("--dest", type=Path, required=True)
+    linking = subparsers.add_parser("link")
+    linking.add_argument("cid")
+    source = linking.add_mutually_exclusive_group(required=True)
+    source.add_argument("--from-json", type=Path)
+    source.add_argument("--pr")
+    for command in (
+        "withdraw",
+        "confirm-merge",
+        "close-pr",
+        "retire-scenario",
+        "confirm-recurrence",
+    ):
+        handoff = subparsers.add_parser(command)
+        handoff.add_argument("cid")
+        if command in {"withdraw", "close-pr", "retire-scenario"}:
+            handoff.add_argument(
+                "--json", dest="json_input", choices=["-"], required=command != "close-pr"
+            )
+        if command == "confirm-recurrence":
+            handoff.add_argument("--observation", required=True)
+    pruning = subparsers.add_parser("prune-runs")
+    pruning.add_argument("--before", required=True)
+    pruning.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -82,6 +107,8 @@ def read_text_input(args: argparse.Namespace) -> None:
             if args.command == "promote-observation"
             else {"draft", "files", "answers", "human_written_lines"}
             if args.command == "approve"
+            else {"files", "pr"}
+            if args.command == "retire-scenario"
             else {"note"}
         )
         if not isinstance(payload, dict) or payload.keys() - allowed:
@@ -193,6 +220,20 @@ def admin_command(context: CandidatesContext, args: argparse.Namespace) -> dict:
         return install(context, args.cid, args.dest)
     if args.command == "verify-suite":
         return verify_suite(context, args.cid)
+    if args.command == "link":
+        return link(context, args.cid, path=args.from_json, pr=args.pr)
+    if args.command == "confirm-merge":
+        return confirm_merge(context, args.cid)
+    if args.command == "close-pr":
+        return close_pr(context, args.cid, _human_text(args.note, "note", 200))
+    if args.command == "withdraw":
+        return withdraw(context, args.cid, _human_text(args.note, "note", 200))
+    if args.command == "retire-scenario":
+        return retire_scenario(context, args.cid, args.payload)
+    if args.command == "confirm-recurrence":
+        return confirm_recurrence(context, args.cid, args.observation)
+    if args.command == "prune-runs":
+        return prune_runs(context, args.before, apply=args.apply)
     records = []
 
     def prepare(snapshot: dict) -> list[dict]:
