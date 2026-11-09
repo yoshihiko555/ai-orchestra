@@ -15,6 +15,7 @@ codd:
 **ステータス**: active（基本設計。関数シグネチャの完全定義・config キーの全網羅は詳細設計〔Phase 3〕で確定する）
 **対象**: `feat/loop` ブランチ
 **関連**: `req:loop-harness`
+**注記（2026-11-09）**: 本文が参照する skill-evolution の `evaluate_stop()`・ロック（`acquire_lock` / `_is_stale`）・オフライン層は v1 のもので、v2（ADR-20261108-065）で廃止した。loop-harness は考え方だけを踏襲しており、それらの実装には依存しない。
 
 > 本書は「何を・どう構成するか」の一覧と方針を定める基本設計である。`loop_common.py` 等の
 > 関数シグネチャ、config の全キー、テストケースの網羅は詳細設計フェーズに委ねる。

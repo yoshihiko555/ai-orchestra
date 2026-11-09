@@ -102,8 +102,9 @@ meta-harness の `runs/` は候補（`cand_id`）に紐づく複数シナリオ�
 
 **`.claude/context/` との違い**: `context-sharing` の `.claude/context/` はセッションスコープで
 `SessionEnd` に削除される（NF-05, `context-sharing.md`）。meta-harness のストアは複数セッション・
-複数世代にまたがる永続的な比較を目的とするため、性質が根本的に異なる。skill-evolution が
-`metrics/` / `lessons/` を `.claude/context/` と分離した保存先に置いたのと同じ理由で、
+複数世代にまたがる永続的な比較を目的とするため、性質が根本的に異なる。skill-evolution v1 が
+`metrics/` / `lessons/` を `.claude/context/` と分離した保存先に置いていたのと同じ理由で（v2 は実行範囲の記録と改善候補の台帳を
+`.claude/logs/skill-evolution/` に置く。ADR-20261108-065）、
 `.claude/meta-harness/` は独立ディレクトリとし、gitignore はするが SessionEnd クリーンアップの
 対象には含めない。
 

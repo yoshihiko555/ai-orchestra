@@ -21,7 +21,7 @@ worktree 隔離・機械検証＋ LLM レビューの二層 Checker・無進捗/
 
 ### Non-Goals
 
-- skill-evolution（Issue #139 のオフライン層）の統合。目的が異なる（スキル定義の最適化 vs 開発タスクの消化）ため統合しない
+- skill-evolution（Issue #139 のオフライン層）の統合。目的が異なる（スキル定義の最適化 vs 開発タスクの消化）ため統合しない（オフライン層自体も ADR-20261108-065 で作らないことにした）
 - PR の auto-merge。マージ判断は常に人間が行う（ユーザーの手動マージポリシー）
 - `core` の `log_common`（events.jsonl）への配線。既存 2 系統併存を悪化させないため行わない
 - スキル・エージェント定義の自動改善（skill-evolution の責務）

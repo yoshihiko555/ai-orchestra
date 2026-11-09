@@ -667,7 +667,8 @@ trigger: { lessons_threshold: 20 }
 - hook と CLI の通常の操作は、旧データを自動で削除しない
 - `skill_evolution.py purge-v1` が、root と `git worktree list` に出る全 worktree の v1 のデータ（`storage.dir` の lessons、
   `logs_dir` の `metrics/`・`pending/`・`locks/`）を、絶対パスの一覧にして出す。`--apply` を付けたときだけ消す
-  - 消す対象は、各 worktree の中に `resolve_path_within` で収まることを確かめたものだけ
+  - 消す対象は、各 worktree の `.claude/` の下に `resolve_path_within` で収まることを確かめたものだけ（設定の値が `.` や `src` を指していても、`.claude/` の外と `.git` の下は消さない）
+  - 削除に失敗した対象も含めて、消したもの・消さなかったものを必ず出力する。`--apply` は省略形（`--a` など）では受け付けない
   - `lstat` で確かめ、symlink はたどらずにリンク自体も消さない（一覧に「symlink のため消さない」と出す）
 - このリポジトリの `.claude/skill-evolution/lessons/`（git 管理）は、v2 の PR で削除する
 - 非推奨期間は、v2 を含むリリースの次のマイナーリリースまでとする。その後、別の PR で、非推奨のサブコマンドと設定のキー、

@@ -15,6 +15,7 @@ codd:
 **ステータス**: active（`loop_common.py` / `loop_definition.py` / `worktree_manager.py` の実装可能仕様）
 **対象**: `feat/loop` ブランチ
 **関連**: `design:loop-harness`（基本設計）・`req:loop-harness`（要件）
+**注記（2026-11-09）**: 本文が参照する skill-evolution の `evaluate_stop()`・ロック（`acquire_lock` / `_is_stale`）・オフライン層は v1 のもので、v2（ADR-20261108-065）で廃止した。loop-harness は考え方だけを踏襲しており、それらの実装には依存しない。
 
 > 本書は `design:loop-harness`（基本設計）を **refines** する詳細設計である。基本設計が「何を・どう
 > 構成するか」を定めたのに対し、本書は `loop_common.py` / `loop_definition.py` / `worktree_manager.py`

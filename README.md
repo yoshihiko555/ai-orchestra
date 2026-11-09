@@ -101,6 +101,7 @@ lessons や自己申告の指示は注入せず、引数・プロンプト本文
 既存の Skill・Stop・SubagentStop hook に、UserPromptExpansion（直接起動）・UserPromptSubmit・SubagentStart の記録を追加します。
 直接起動（`/<skill>`）の記録には UserPromptExpansion に対応した Claude Code が要ります。対応していない版ではその hook が動かないだけで、ほかの hook は動きます（2.1.319 で、settings にある未知の出来事の名前が無視されることを確認）。
 `skill_evolution.py` の v1 サブコマンドは引数を維持して非推奨の案内を返し、`check-trigger` は常に起動を勧めません（ADR-20261108-065）。
+v1 のデータ（lessons・metrics・pending・locks）は自動では消しません。`skill_evolution.py purge-v1` で root と全 worktree の対象を一覧にし、`--apply` を付けたときだけ消します（symlink と worktree の外のパスは消しません）。
 `enabled: false` で記録を停止でき、`skill-evolution.local.yaml` の上書きも引き続き使えます。
 
 ### 仕組み
