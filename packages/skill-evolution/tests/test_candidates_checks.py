@@ -185,6 +185,28 @@ def test_ev67_twenty_character_overlap_is_rejected_without_paraphrasing(
     assert not inspect(scenario_context, scenario_texts(), masker=lambda _: "masked")["passed"]
 
 
+@pytest.mark.parametrize("location", ["description", "nested-check"])
+def test_ev68_duplicate_yaml_keys_cannot_hide_evidence(scenario_context, scenario_texts, location):
+    if location == "description":
+        texts = scenario_texts(description="ABCDEFGHIJKLMNO")
+        texts[0] += "description: synthetic\n"
+    else:
+        texts = scenario_texts()
+        texts[0] += (
+            "checks:\n- id: nested\n"
+            "  text: ABCDEFGHIJKLMNO\n  text: synthetic\n"
+            "  oracle: artifact_exists\n  path: result.json\n"
+        )
+    checks = inspect(scenario_context, texts, excerpts=["prefix ABCDEFGHIJKLMNO suffix"])
+    assert checks["passed"] is False
+    assert any(
+        finding["file"] == "draft-0.yaml"
+        and finding["category"] == "schema"
+        and "キーが重複" in finding["reason"]
+        for finding in checks["findings"]
+    )
+
+
 @pytest.mark.parametrize(
     "variation",
     [
@@ -248,6 +270,32 @@ def test_ev68_missing_train_requires_tools_to_be_absent(scenario_context, scenar
     assert inspect(scenario_context, scenario_texts(allowed_tools=[]))["passed"]
     assert inspect(scenario_context, scenario_texts(allowed_tools=["Edit", "Glob"]))["passed"]
     assert not inspect(scenario_context, scenario_texts(allowed_tools=["Bash"]))["passed"]
+
+
+@pytest.mark.parametrize("existing_graded", [False, True])
+@pytest.mark.parametrize("draft_graded", [False, True])
+def test_ev68_graded_consistency_includes_committed_sevo_train(
+    scenario_context, scenario_texts, existing_graded, draft_graded
+):
+    suite = scenario_context.orchestra / "packages/meta-harness/scenarios/skill/review"
+    baseline = yaml.safe_load((suite / "existing.yaml").read_text())
+    baseline["id"] = "sevo-ffffffff-train"
+    if existing_graded:
+        baseline["graded"] = [dict(check) for check in baseline["critical"]]
+    (suite / "existing.yaml").unlink()
+    (suite / "sevo-ffffffff-train.yaml").write_text(yaml.safe_dump(baseline))
+    documents = [yaml.safe_load(text) for text in scenario_texts()]
+    if draft_graded:
+        documents[0]["graded"] = [dict(check) for check in documents[0]["critical"]]
+    checks = inspect(scenario_context, [yaml.safe_dump(document) for document in documents])
+    if existing_graded == draft_graded:
+        assert checks["passed"] is True
+    else:
+        assert checks["passed"] is False
+        assert any(
+            finding["category"] == "structure" and finding["path"] == "$.graded"
+            for finding in checks["findings"]
+        )
 
 
 def test_ev68_schema_accepts_every_existing_meta_harness_skill_scenario(meta_evaluator):
@@ -467,6 +515,7 @@ def test_ev66_sevo_scenarios_cannot_expand_fixture_or_copy_allowlists(
             }
         ],
         id="sevo-expanded-sample",
+        holdout=True,
         graded=[
             {"id": "extra", "text": "人工検査", "oracle": "artifact_exists", "path": "result.json"}
         ],

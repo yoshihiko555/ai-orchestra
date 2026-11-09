@@ -397,6 +397,11 @@
     - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev63_pending_states_appear_before_grouped_candidates"
     - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev63_all_nested_display_values_are_neutralized"
     - "packages/skill-evolution/tests/test_candidates_cli.py::test_ev63_readonly_commands_catch_up_without_any_disk_writes"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev63_listing_displays_shared_unknown_observation_in_full"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev63_listing_displays_shared_pending_candidate_in_full"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev63_display_cycles_terminate_with_reference_marker"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev63_listing_displays_all_300_unknown_observations"
+    - "packages/skill-evolution/tests/test_candidates_ledger.py::test_ev63_display_retains_node_and_depth_safety_limits"
   notes: "JSON とテキストの全階層の無害化、確認待ちの表示と帰属用の audit 文脈。"
 
 - ev_id: EV-79
@@ -482,6 +487,8 @@
     - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_aliases_and_yaml_limits_are_rejected_within_one_second"
     - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_broken_existing_yaml_is_a_file_finding"
     - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev68_existing_scenario_warnings_are_shown_without_blocking_draft_approval"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_duplicate_yaml_keys_cannot_hide_evidence"
+    - "packages/skill-evolution/tests/test_candidates_checks.py::test_ev68_graded_consistency_includes_committed_sevo_train"
   notes: "スキーマ・target・ID・train/holdout・graded と既存スキーマ互換契約。"
 
 - ev_id: EV-69
@@ -543,4 +550,5 @@
     - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_changed_approved_main_file_sends_improving_back_to_drafting"
     - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_effective_config_mirrors_project_base_local_and_package_fallback"
     - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_non_mismatch_errors_preserve_state_and_record_no_events"
+    - "packages/skill-evolution/tests/test_candidates_scenarios.py::test_ev72_verify_suite_uses_real_evaluate_backend_and_local_override"
   notes: "main 到達性・承認ハッシュ・実効 Docker backend の拒否と差し戻し。"

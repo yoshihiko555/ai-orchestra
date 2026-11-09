@@ -40,6 +40,14 @@ def normalized(text: str) -> str:
     return unicodedata.normalize("NFKC", text).casefold()
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        mapping = super().construct_mapping(node, deep=deep)
+        if len(mapping) != len(node.value):
+            raise ValueError("YAML のキーが重複しています")
+        return mapping
+
+
 def load_yaml(text: str) -> Any:
     nodes = depth = 0
     for event in yaml.parse(text):
@@ -55,7 +63,7 @@ def load_yaml(text: str) -> Any:
                 raise ValueError("YAML の深さが上限を超えています")
         elif isinstance(event, yaml.events.CollectionEndEvent):
             depth -= 1
-    return yaml.safe_load(text)
+    return yaml.load(text, Loader=UniqueKeyLoader)
 
 
 def relative_path(value: str) -> bool:
@@ -239,7 +247,13 @@ def inspect_draft(
         and scenario.get("target") == f"skill:{slug}"
         and not scenario.get("holdout", False)
     ]
-    graded = {"graded" in scenario for scenario in train}
+    graded = {
+        "graded" in scenario
+        for path, scenario in existing
+        if path.parent.name == slug
+        and scenario.get("target") == f"skill:{slug}"
+        and not scenario.get("holdout", False)
+    }
     tools = (
         set.intersection(*(set(scenario.get("allowed_tools", [])) for scenario in train))
         if train
@@ -317,8 +331,15 @@ def inspect_draft(
         try:
             scenario = load_yaml(raw.decode("utf-8"))
             errors = schema_errors(scenario, schema)
-        except (UnicodeError, yaml.YAMLError, RecursionError, TypeError, ValueError, OverflowError):
-            report(file, "$", text, "schema", "YAML を検査できません")
+        except (
+            UnicodeError,
+            yaml.YAMLError,
+            RecursionError,
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as exc:
+            report(file, "$", text, "schema", f"YAML を検査できません: {exc}")
             escaped = "".join(
                 f"\\u{ord(char):04x}"
                 if unicodedata.category(char) in REJECTED_CATEGORIES and char != "\n"

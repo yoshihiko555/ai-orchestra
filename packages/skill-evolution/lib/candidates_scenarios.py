@@ -434,12 +434,10 @@ def verify_suite(context: CandidatesContext, cid: str) -> dict:
                     "スイートに未承認の sevo- シナリオがあります。" + tracking_note
                 )
             config = effective_meta_config(context)
-            if ((config.get("scenario_run") or {}).get("isolation") or {}).get(
+            if ((config.get("evaluate") or {}).get("isolation") or {}).get(
                 "execution_backend"
             ) != "docker":
-                raise ValidationError(
-                    "scenario_run.isolation.execution_backend は docker が必要です"
-                )
+                raise ValidationError("evaluate.isolation.execution_backend は docker が必要です")
             suite_hash = hashlib.sha256(
                 "".join(hashes[name] for name in sorted(hashes)).encode("utf-8")
             ).hexdigest()

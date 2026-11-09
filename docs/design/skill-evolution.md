@@ -401,11 +401,13 @@ claude -p --restricted --tools "" --strict-mcp-config --no-session-persistence \
 LLM の出力は信頼できないものとして扱う。次のすべてを通ったものだけを、人の承認に出す。
 
 - YAML として読め（`yaml.safe_load`）、`schemas/scenario.schema.json` に合う（スキーマのファイルを読んで検査する。meta-harness のコードは import しない）。
-  読む前にアンカーとエイリアスを拒み、ノードの数と入れ子の深さに上限を設ける（エイリアスの展開で検査が止まらないようにする）
+  読む前にアンカーとエイリアスを拒み、ノードの数と入れ子の深さに上限を設ける（エイリアスの展開で検査が止まらないようにする）。
+  同じマッピングに重複したキーがあれば拒む（`safe_load` は後のキーで前の値を捨てるので、捨てられた値が公開の検査を通らずに承認されるのを防ぐ）
 - `target` が `skill:<slug>`、`id` が `^[a-z0-9-]+$` で `sevo-<cid の 8 桁>-` で始まり、既存のシナリオの `id` と重ならない
 - 学習用（`holdout` が無いか false）と holdout（`holdout: true`）が各 1 本以上
-- 学習用のシナリオの `graded` の有無が、同じスイートの既存の学習用シナリオとそろっている（meta-harness の `validate_target_suite` が、学習用のすべてが
-  `graded` を持つか、すべてが持たないかを求める）。meta-harness は `id` の重複を検査しないので、重複の検査はここで行う
+- 学習用のシナリオの `graded` の有無が、同じスイートの既存の学習用シナリオ（先に導入した `sevo-` のものを含む）とそろっている
+  （meta-harness の `validate_target_suite` が、学習用のすべてが `graded` を持つか、すべてが持たないかを求める）。
+  許可するツール・資源の上限・`cp` の組は、人が書いたシナリオ（`sevo-` でないもの）だけから決める。meta-harness は `id` の重複を検査しないので、重複の検査はここで行う
 - 実行される行が §7.4 の形に合う
 - 公開してはいけない文字列が無い。次を見つけたら不合格にする
   - 伏せ字で変わる文字列（機密情報らしきもの）
@@ -435,7 +437,7 @@ LLM の出力は信頼できないものとして扱う。次のすべてを通�
 - 抜粋との一致の検査（§7.3）は言い換えで避けられるので、公開してよいかの最後の判断は人の承認（§7.5）で行う
 - これ以外の行（`git` を使う検査、`bypassPermissions` が要るスキルなど）が要るときは、人が下書きを直して書く。人が書いた行は、
   承認のときに「人が書いた」と確認項目で明示し、`scenario.approved` に残す。人が直した下書きも §7.3 の形以外の検査（公開してはいけない文字列など）は通す
-- 評価は、meta-harness の `scenario_run.isolation.execution_backend` が `docker` のときだけ進める（§7.6 の `verify-suite` で確かめる）
+- 評価は、meta-harness の `evaluate.isolation.execution_backend` が `docker` のときだけ進める（§7.6 の `verify-suite` で確かめる）
 
 ### 7.5 承認（承認 ①、FT-11）
 
@@ -474,7 +476,7 @@ meta-harness は昇格 PR を origin/main から作り、昇格の時点で、�
    - 承認したファイルがすべてあり、`scenario_hash` が承認と同じ。置き場の `sevo-` で始まるファイルは、どれも台帳のいずれかの候補で承認したものと一致する
    - スイート全体の `suite_hash` を、meta-harness と同じ方法（シナリオ置き場の全 `*.yaml` の `scenario_hash` をファイル名の順に連結した sha256）で計算する
    - そのコミットが origin/main から辿れる（ローカルの追跡の参照で判定するので、先に `git fetch origin main` する）
-   - meta-harness の設定（`.local.yaml` の上書きを含む）の `scenario_run.isolation.execution_backend` が `docker`
+   - meta-harness の設定（`.local.yaml` の上書きを含む）の `evaluate.isolation.execution_backend` が `docker`（meta-harness がシナリオの実行の境界に使うキー）
 
 スイートのハッシュは置き場の全ファイルから作られるので、手で書いた既存のシナリオが変わっても変わる。承認したファイルが同じままなら、
 `verify-suite` をやり直して新しい `suite_hash` を記録してよい。承認したファイルが変わっていたら、`drafting` に戻す。

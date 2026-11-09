@@ -111,7 +111,7 @@ def installed(context, fake_git):
     fake_git["branch"] = "main"
     local = context.project / ".claude/config/meta-harness/meta-harness.local.yaml"
     local.parent.mkdir(parents=True, exist_ok=True)
-    local.write_text("scenario_run:\n  isolation:\n    execution_backend: docker\n")
+    local.write_text("evaluate:\n  isolation:\n    execution_backend: docker\n")
     return context.project / "packages/meta-harness/scenarios/skill/review"
 
 
@@ -366,6 +366,28 @@ def test_ev71_verify_suite_enters_improving_and_reverification_tracks_whole_suit
     assert context.store.read() == snapshot
 
 
+@pytest.mark.parametrize("backend", [None, "srt"], ids=["real-config", "local-srt"])
+def test_ev72_verify_suite_uses_real_evaluate_backend_and_local_override(
+    approved_context, fake_git, backend
+):
+    context = approved_context
+    installed(context, fake_git)
+    local = context.project / ".claude/config/meta-harness/meta-harness.local.yaml"
+    local.unlink()
+    relative = "packages/meta-harness/config/meta-harness.yaml"
+    assert (context.orchestra / relative).read_bytes() == (REPO / relative).read_bytes()
+    assert not local.with_name("meta-harness.yaml").exists()
+    assert not (context.orchestra / relative).with_name("meta-harness.local.yaml").exists()
+    if backend is None:
+        assert scenarios.verify_suite(context, CID)["verified"] is True
+    else:
+        local.write_text(f"evaluate:\n  isolation:\n    execution_backend: {backend}\n")
+        with pytest.raises(ValidationError, match=r"evaluate\.isolation\.execution_backend"):
+            scenarios.verify_suite(context, CID)
+        assert latest_record(context.store.read(), CID, "scenario.suite_verified") is None
+        assert context.store.read()["candidates"][CID]["state"] == "scenario_approved"
+
+
 @pytest.mark.parametrize(
     "variation",
     ["missing", "hash", "unreachable", "backend", "not-main", "corrupt-config", "local-null"],
@@ -390,9 +412,9 @@ def test_ev72_verification_failure_records_no_suite_verification(
         local.write_text(
             "[broken"
             if variation == "corrupt-config"
-            else "scenario_run: null\n"
+            else "evaluate: null\n"
             if variation == "local-null"
-            else "scenario_run:\n  isolation:\n    execution_backend: srt\n"
+            else "evaluate:\n  isolation:\n    execution_backend: srt\n"
         )
     if variation in {"missing", "hash"}:
         failure = scenarios.verify_suite(context, CID)
@@ -433,18 +455,18 @@ def test_ev72_changed_approved_main_file_sends_improving_back_to_drafting(
 def test_ev72_effective_config_mirrors_project_base_local_and_package_fallback(scenario_context):
     context = scenario_context
     base = context.orchestra / "packages/meta-harness/config/meta-harness.yaml"
-    base.write_text("scenario_run:\n  isolation:\n    execution_backend: srt\n    keep: yes\n")
+    base.write_text("evaluate:\n  isolation:\n    execution_backend: srt\n    keep: yes\n")
     local = context.project / ".claude/config/meta-harness/meta-harness.local.yaml"
     local.parent.mkdir(parents=True)
-    local.write_text("scenario_run:\n  isolation:\n    execution_backend: docker\n")
-    assert scenarios.effective_meta_config(context)["scenario_run"]["isolation"] == {
+    local.write_text("evaluate:\n  isolation:\n    execution_backend: docker\n")
+    assert scenarios.effective_meta_config(context)["evaluate"]["isolation"] == {
         "execution_backend": "docker",
         "keep": True,
     }
     local.with_name("meta-harness.yaml").write_text(
-        "scenario_run:\n  isolation:\n    execution_backend: srt\n    project: yes\n"
+        "evaluate:\n  isolation:\n    execution_backend: srt\n    project: yes\n"
     )
-    assert scenarios.effective_meta_config(context)["scenario_run"]["isolation"] == {
+    assert scenarios.effective_meta_config(context)["evaluate"]["isolation"] == {
         "execution_backend": "docker",
         "project": True,
     }
@@ -501,7 +523,7 @@ def test_ev69_admin_and_read_cli_cover_draft_approval_send_back_install_and_veri
     fake_git["branch"] = "main"
     local = context.project / ".claude/config/meta-harness/meta-harness.local.yaml"
     local.parent.mkdir(parents=True)
-    local.write_text("scenario_run:\n  isolation:\n    execution_backend: docker\n")
+    local.write_text("evaluate:\n  isolation:\n    execution_backend: docker\n")
     assert admin.main(["verify-suite", CID]) == 0
     assert json.loads(capsys.readouterr().out)["suite_hash"]
 
@@ -666,7 +688,7 @@ def test_ev70_install_and_ev71_verify_use_real_git_linked_worktree(
     git("update-ref", "refs/remotes/origin/trunk", commit)
     local = root / ".claude/config/meta-harness/meta-harness.local.yaml"
     local.parent.mkdir(parents=True)
-    local.write_text("scenario_run:\n  isolation:\n    execution_backend: docker\n")
+    local.write_text("evaluate:\n  isolation:\n    execution_backend: docker\n")
     untracked = suite / "sevo-untracked.yaml"
     untracked.write_text("# untracked\n")
     with pytest.raises(ValidationError, match="未コミット"):

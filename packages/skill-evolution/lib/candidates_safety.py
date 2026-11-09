@@ -20,6 +20,7 @@ REJECTED_CATEGORIES = frozenset({"Cc", "Cf", "Cn", "Zl", "Zp", "Co", "Cs"})
 Masker = Callable[[str], str]
 PRE_MASK_LIMIT_CHARS = 64 * 1024
 PRE_MASK_TAIL_GUARD_CHARS = 1024
+MAX_DISPLAY_NODES = 1_000_000
 
 
 class CandidatesError(Exception):
@@ -171,13 +172,12 @@ def excerpt(text: str, masker: Masker | None, max_chars: int) -> tuple[str, str]
 
 def sanitize(value: Any) -> Any:
     holder = [None]
-    pending = [(value, holder, 0, 0)]
-    visited = set()
+    pending = [(value, holder, 0, 0, frozenset())]
     count = 0
     while pending:
-        child, parent, key, depth = pending.pop()
+        child, parent, key, depth, ancestors = pending.pop()
         count += 1
-        if count > 5000 or depth > 50:
+        if count > MAX_DISPLAY_NODES or depth > 50:
             raise ValidationError("表示のノード数または深さが上限を超えています")
         if isinstance(child, str):
             escaped = "".join(
@@ -190,10 +190,10 @@ def sanitize(value: Any) -> Any:
                 else escaped.replace("<", "‹").replace(">", "›")
             )
         elif isinstance(child, (dict, list, tuple)):
-            if id(child) in visited:
+            if id(child) in ancestors:
                 parent[key] = "[再参照]"
                 continue
-            visited.add(id(child))
+            child_ancestors = ancestors | {id(child)}
             target = {} if isinstance(child, dict) else [None] * len(child)
             parent[key] = target
             entries = child.items() if isinstance(child, dict) else enumerate(child)
@@ -209,7 +209,7 @@ def sanitize(value: Any) -> Any:
                         .replace("<", "‹")
                         .replace(">", "›")
                     )
-                pending.append((item, target, child_key, depth + 1))
+                pending.append((item, target, child_key, depth + 1, child_ancestors))
         else:
             parent[key] = child
     return holder[0]
