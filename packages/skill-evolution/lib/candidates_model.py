@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import skill_evolution_common as common
+from candidates_handoff_events import HANDOFF_EVENTS, promotion_evaluation, validate_handoff_event
 from candidates_safety import (
     ValidationError,
     require_id,
@@ -46,16 +47,20 @@ REQUIRED_RECORDS = {
     ("promotion_pr", "candidate"): ("handoff.closed",),
     ("promoted", "candidate"): ("recurrence.confirmed",),
 }
-EVENT_TYPES = SCENARIO_EVENTS | frozenset(
-    {
-        "observation.created",
-        "observation.attributed",
-        "observation.dismissed",
-        "candidate.created",
-        "candidate.observation_added",
-        "candidate.merged",
-        "candidate.state_changed",
-    }
+EVENT_TYPES = (
+    SCENARIO_EVENTS
+    | HANDOFF_EVENTS
+    | frozenset(
+        {
+            "observation.created",
+            "observation.attributed",
+            "observation.dismissed",
+            "candidate.created",
+            "candidate.observation_added",
+            "candidate.merged",
+            "candidate.state_changed",
+        }
+    )
 )
 
 
@@ -317,6 +322,15 @@ def validate_transition(
                 for item in records
             ):
                 raise ValidationError(f"遷移に必要な記録がありません: {kind}")
+        if (source, target) == ("improving", "promotion_pr"):
+            promotion = latest_record(snapshot, candidate["cid"], "handoff.promotion_linked")
+            if not promotion or promotion["eid"] not in refs:
+                raise ValidationError("最新の昇格 PR の参照が必要です")
+            evaluation = promotion_evaluation(
+                snapshot, candidate, promotion["data"].get("mh_cand_id")
+            )
+            if evaluation["eid"] not in refs:
+                raise ValidationError("昇格する提案候補の holdout 評価の参照が必要です")
         if target in {"scenario_approved", "improving"}:
             draft = latest_record(snapshot, candidate["cid"], "scenario.drafted")
             approval = latest_record(snapshot, candidate["cid"], "scenario.approved")
@@ -378,6 +392,14 @@ def apply_event(
         candidate = require_candidate(snapshot, record.get("cid"))
         validate_scenario_event(snapshot, candidate, record)
         snapshot["records"][record["eid"]] = copy.deepcopy(record)
+    elif record["type"] in HANDOFF_EVENTS:
+        candidate = require_candidate(snapshot, record.get("cid"))
+        validate_handoff_event(snapshot, candidate, record)
+        snapshot["records"][record["eid"]] = copy.deepcopy(record)
+        if record["type"] == "recurrence.confirmed":
+            candidate["observations"] = list(
+                dict.fromkeys(candidate["observations"] + [record["data"]["oid"]])
+            )
     else:
         APPLIERS[record["type"]](snapshot, record)
     if record.get("cid"):

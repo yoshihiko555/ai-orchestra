@@ -41,14 +41,17 @@ def schema_errors(
             pending.append(("validate", child, target, child_path, output))
             continue
         matches = {
+            "null": child is None,
             "object": isinstance(child, dict),
             "array": isinstance(child, list),
             "string": isinstance(child, str),
             "boolean": type(child) is bool,
             "integer": type(child) is int,
-            "number": type(child) in (int, float) and math.isfinite(child),
+            "number": type(child) is int or (type(child) is float and math.isfinite(child)),
         }
-        if "type" in rules and not matches[rules["type"]]:
+        types = rules.get("type", [])
+        types = [types] if isinstance(types, str) else types
+        if types and not any(matches[kind] for kind in types):
             output.append((child_path, "型がスキーマと一致しません"))
             continue
         if "const" in rules and (
@@ -65,6 +68,8 @@ def schema_errors(
             output.append((child_path, "pattern に合いません"))
         if type(child) in (int, float) and "minimum" in rules and child < rules["minimum"]:
             output.append((child_path, "minimum 未満です"))
+        if type(child) in (int, float) and "maximum" in rules and child > rules["maximum"]:
+            output.append((child_path, "maximum を超えています"))
         if isinstance(child, dict):
             for key in rules.get("required", []):
                 if key not in child:

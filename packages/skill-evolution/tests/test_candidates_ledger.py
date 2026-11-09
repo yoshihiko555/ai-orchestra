@@ -182,6 +182,30 @@ def test_ev59_full_transition_table_and_unlisted_transitions(
             "ts": candidate["state_since"],
             "data": {},
         }
+    if (source, target) == ("improving", "promotion_pr"):
+        mh_cand_id = "cand-20261101-120000-review-abcd"
+        snapshot["records"][refs[0]]["data"] = {
+            "evaluations": [
+                {
+                    "cand_id": mh_cand_id,
+                    "holdout": True,
+                    "own_suite_hash": "a" * 64,
+                    "verdict": "pass",
+                }
+            ]
+        }
+        snapshot["records"][refs[1]]["data"] = {"mh_cand_id": mh_cand_id}
+        for eid, kind, payload in (
+            ("bbbbbbbbbbbb", "handoff.proposal_linked", {"mh_cand_id": mh_cand_id}),
+            ("cccccccccccc", "scenario.suite_verified", {"suite_hash": "a" * 64}),
+        ):
+            snapshot["records"][eid] = {
+                "eid": eid,
+                "type": kind,
+                "cid": candidate["cid"],
+                "ts": candidate["state_since"],
+                "data": payload,
+            }
     if target in {"scenario_approved", "improving"} and (source, target) in GUARDS:
         draft_eid = "dddddddddddd"
         approval_eid = refs[0] if target == "scenario_approved" else "aaaaaaaaaaaa"

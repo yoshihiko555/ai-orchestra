@@ -1542,3 +1542,33 @@
     - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_oversize_file_is_tampering_without_streaming_content
     - packages/meta-harness/tests/test_evaluator_worktree_lifecycle.py::TestOracleFixtureTamperDetection::test_tampering_is_detected_and_restored_even_when_run_headless_scenario_raises
   notes: oracle-fixture tamper detection is fail-closed (hard_failure -> verdict=error) and runs regardless of candidate success/exception because it lives in the `finally` of the `run_headless_scenario` try block; the message uses a fixed `oracle-fixtures-tampered:` prefix followed by a JSON array of sorted diff paths (not comma-joined, to stay unambiguous against candidate-controlled filenames); worktree-side files are digested via chunked streaming sha256 and never fully read into memory, and files over `_TAMPER_DETECTION_MAX_FILE_BYTES` or symlinks are treated as tampering by size/type alone without being opened.
+
+- ev_id: EV-119
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_evaluate_json.py -k evaluate_json
+  covered_by:
+    - packages/meta-harness/tests/test_evaluate_json.py::test_evaluate_json_evaluations_match_current_train_and_holdout_ledger_events
+    - packages/meta-harness/tests/test_evaluate_json.py::test_evaluate_json_preserves_existing_success_payload_golden
+    - packages/meta-harness/tests/test_evaluate_json.py::test_evaluate_json_includes_only_the_executed_batch[train]
+    - packages/meta-harness/tests/test_evaluate_json.py::test_evaluate_json_includes_only_the_executed_batch[holdout]
+    - packages/meta-harness/tests/test_evaluate_json.py::test_evaluate_json_runtime_error_preserves_existing_payload
+    - packages/meta-harness/tests/test_evaluate_json.py::test_evaluate_json_batch_error_preserves_empty_stdout
+  notes: 成功時の evaluations は今回台帳に保存した train/holdout の評価イベントから値を引き継ぐ。既存の status/runs の形とエラー時の出力を維持し、実行しなかったバッチは含めない。
+
+- ev_id: EV-120
+  phase: 4
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
+    packages/meta-harness/tests/test_isolation.py -k proposer_denies_evolution_and_failure_logs_without_allow_reexposure
+  covered_by:
+    - packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_proposer_denies_evolution_and_failure_logs_without_allow_reexposure[nested-codex]
+    - packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_proposer_denies_evolution_and_failure_logs_without_allow_reexposure[nested-claude-bare]
+    - packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_proposer_denies_evolution_and_failure_logs_without_allow_reexposure[external-codex]
+    - packages/meta-harness/tests/test_isolation.py::TestDenyReadAndStaticGuards::test_proposer_denies_evolution_and_failure_logs_without_allow_reexposure[external-claude-bare]
+  notes: メインルート配下と外部の worktree で、skill-evolution/fail-logs が拒否パス配下に含まれ、proposer 自身の worktree の許可パスを含めてログ領域を再公開しないことを検証する。隔離コードは変更しない。

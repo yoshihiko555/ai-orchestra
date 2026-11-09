@@ -3,7 +3,7 @@
 **パッケージ**: `packages/skill-evolution`
 **類型**: hook 型（主: スキルの実行範囲の記録）+ CLI ツール型（副: 改善候補の台帳・meta-harness への受け渡し）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-11-08（v2（ADR-20261108-065）へ全面改訂し、人間レビューで承認。v1 の観点は欠番）。2026-07-28（v1）
+**最終レビュー日**: 2026-11-09（EV-85・EV-86 を追加し、人間レビューで承認）。2026-11-08（v2（ADR-20261108-065）へ全面改訂し、人間レビューで承認。v1 の観点は欠番）。2026-07-28（v1）
 **情報源**: `docs/requirements/skill-evolution.md`（v2。FT-01〜FT-22、NF-01〜NF-09、受け入れ基準）、`docs/design/skill-evolution.md`（v2）、
 `docs/adr/ADR-20261108-065.md`、`docs/adr/ADR-20260728-046.md`（root への集約）。
 補助参照（構成要素の列挙のみ）: `packages/skill-evolution/manifest.json`。
@@ -101,6 +101,8 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
 - [ ] EV-73（異常 / must）: `own_suite_hash` が記録した `suite_hash` と違う評価は、`link` で受け渡しの記録に結び付けられない — 根拠: req FT-11、FT-12; design §8.1
 - [ ] EV-74（正常 / must）: 1 つの候補から、承認したシナリオのハッシュ・スイートのハッシュ・meta-harness の評価の ID と候補の ID・昇格 PR・マージのコミットを辿れる — 根拠: req FT-12; design §6.2、§8
 - [ ] EV-75（異常 / must）: `confirm-merge` は、PR が MERGED でない・URL のリポジトリが記録と違う・マージのコミットが origin/main から辿れない、のいずれかで `handoff.merged` を記録しない — 根拠: design §8.3
+- [ ] EV-85（異常 / must）[2026-11-09 追加]: `improving` → `promotion_pr` は、昇格 PR に結び付けた meta-harness の候補 ID の holdout の評価（`own_suite_hash` が記録と同じで `verdict` が `pass` のもの）が無ければ拒まれる。baseline の候補の holdout の評価や fail の評価だけでは進めない — 根拠: req FT-12; design §6.4、§8.1
+- [ ] EV-86（異常 / must）[2026-11-09 追加]: `confirm-merge` が記録するマージ後の版のハッシュは、同じ内容の作業ツリーで hook が計算する `skill_hash` と同じになる（symlink・submodule の項目と除外のパスは数えず、ファイル数と大きさの上限も同じ） — 根拠: req FT-13; design §4.3、§8.3
 
 ### 3.6 昇格後の確認
 

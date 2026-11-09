@@ -472,8 +472,8 @@ def test_ev72_effective_config_mirrors_project_base_local_and_package_fallback(s
     }
 
 
-def test_ev69_scenario_events_reject_invalid_actor_hash_and_stale_draft(drafted_context):
-    snapshot = drafted_context.store.read()
+def test_ev69_scenario_events_reject_invalid_actor_hash_and_stale_draft(approved_context):
+    snapshot = approved_context.store.read()
     drafted = latest_record(snapshot, CID, "scenario.drafted")
     for change in (
         {"actor": "ingest"},
@@ -485,7 +485,11 @@ def test_ev69_scenario_events_reject_invalid_actor_hash_and_stale_draft(drafted_
     retired = model.event(
         "scenario.retired",
         CID,
-        {"files": drafted["data"]["files"], "pr_url": "https://github.com/owner/repo/pull/1"},
+        {
+            "files": list(drafted["data"]["files"]),
+            "pr_url": "https://github.com/owner/repo/pull/1",
+            "merge_commit": "a" * 40,
+        },
     )
     assert retired["eid"] in model.apply_event(snapshot, retired)["records"]
 

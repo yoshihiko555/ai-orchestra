@@ -136,6 +136,53 @@ class TestSrtSettingsGeneration:
 
 
 class TestDenyReadAndStaticGuards:
+    @pytest.mark.parametrize("proposer_tool", ["codex", "claude-bare"])
+    @pytest.mark.parametrize("nested_worktree", [True, False], ids=["nested", "external"])
+    def test_proposer_denies_evolution_and_failure_logs_without_allow_reexposure(
+        self, tmp_path: Path, proposer_tool: str, nested_worktree: bool
+    ) -> None:
+        main_root = tmp_path / "main"
+        logs_dir = main_root / ".claude" / "logs"
+        protected_logs = [logs_dir / "skill-evolution", logs_dir / "fail-logs"]
+        for path in protected_logs:
+            path.mkdir(parents=True)
+        worktree_root = main_root / ".worktrees" if nested_worktree else tmp_path / "worktrees"
+        proposer_worktree = worktree_root / "proposer"
+        proposer_worktree.mkdir(parents=True)
+        other_worktree = worktree_root / "other"
+        other_worktree.mkdir()
+        view_dir, ephemeral_home = _make_view_and_home(proposer_worktree)
+        run_tmp_dir = proposer_worktree / "run-tmp"
+        run_tmp_dir.mkdir()
+        worktree_listing = "\n\n".join(
+            f"worktree {path}" for path in (main_root, proposer_worktree, other_worktree)
+        )
+
+        def fake_runner(*_args, **_kwargs) -> subprocess.CompletedProcess:
+            return _completed(stdout=worktree_listing)
+
+        deny_read = iso.derive_deny_read_paths(main_root, runner=fake_runner)
+        settings = iso.build_srt_settings(
+            view_dir=view_dir,
+            main_root=main_root,
+            config=_config(),
+            ephemeral_home=ephemeral_home,
+            proposer_tool=proposer_tool,
+            run_tmp_dir=run_tmp_dir,
+            runner=fake_runner,
+        )
+
+        for denied_paths in (deny_read, map(Path, settings["filesystem"]["denyRead"])):
+            denied_roots = list(denied_paths)
+            for protected in protected_logs:
+                assert any(protected.resolve().is_relative_to(path) for path in denied_roots)
+        for key, paths in settings["filesystem"].items():
+            if key.lower().startswith("allow"):
+                for path in paths:
+                    allowed = Path(path).resolve()
+                    assert not allowed.is_relative_to(logs_dir.resolve())
+                    assert not logs_dir.resolve().is_relative_to(allowed)
+
     def test_deny_read_derivation_includes_home_main_root_and_worktrees(
         self, git_project, add_feature_worktree
     ) -> None:

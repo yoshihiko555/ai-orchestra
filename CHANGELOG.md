@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/skill-candidates`: meta-harness への受け渡し・マージの確認・再発の確認を追加**: `evaluate --json` / `propose --json` の出力と昇格 PR を候補に結び付け（`link`）、`gh` でマージを確かめて昇格済みにする（`confirm-merge`）。昇格後は「N 回の該当する機会で、確認された再発なし」を示し、同じ欠陥を人が確定すると候補に戻す。
+
 - **`/skill-candidates`: シナリオの下書き・承認・導入・スイート確認を追加**: 全文と実行行を確認して承認し、用意した worktree へ導入する。main の `verify-suite` で承認済みハッシュと Docker backend を確認して改善へ進む。
 
 - **`/skill-candidates` と改善候補の CLI を追加**: fail-logs の失敗・教訓候補の帰属と改善候補を確認する。`skill_candidates.py` は読み取り用、`skill_candidates_admin.py` は人が承認した変更用（許可リストに入れない）。
@@ -22,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`image-generation`: 同梱スタイル `industrial-orange` を追加**: 紺の設計図に白とスチールグレーの線画で描き、明るく赤みを抑えたオレンジを文字と細い線のアクセントにだけ使う工業的な図解スタイル。`/image-gen <prompt> --style industrial-orange` で適用できる。
 
 ### Changed
+
+- **`meta-harness`: `evaluate --json` の出力に `evaluations` を追加**: 評価ごとの `evaluation_id`・`holdout`・`own_suite_hash`・`evaluator_hash`・run の ID を返す。既存の項目は変わらない。
 
 - **`skill-evolution`: v2 の実行範囲記録へ移行**: lessons と自己申告の指示を注入せず、実行範囲を root worktree の `.claude/logs/skill-evolution/` に記録する。
 

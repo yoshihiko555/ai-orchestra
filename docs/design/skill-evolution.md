@@ -281,7 +281,7 @@ hook は記録を 1 行追記するだけで、標準出力に何も出さない
 - spool（root に書けないときの退避）は作らない。hook はサンドボックスの外で動くので root に書ける。状態を変える CLI は、
   `/skill-candidates` が利用者の承認を得てサンドボックスの外で実行する（fail-logs の `lessons_admin.py` と同じ扱い）
 - `runs-YYYYMM.jsonl` は全セッションのターンの出来事を持つので、1 か月に数千行（1 行 200 バイト前後）になる。取り込みは必要な月のファイルだけを読む。
-  古い月のファイルは自動では消さず、人が `skill_candidates_admin.py prune-runs --before YYYYMM` で消す（昇格済みの候補の、マージ以降の月は消せない）
+  古い月のファイルは自動では消さず、人が `skill_candidates_admin.py prune-runs --before YYYYMM` で消す（昇格済みの候補のマージの月以降と、`promotion_pr` の候補の、`handoff.promotion_linked` の月と PR の作成の月の早いほう以降は消せない。マージの確認より前に機会の記録を失わないため）
 
 ### 6.2 出来事
 
@@ -303,11 +303,13 @@ hook は記録を 1 行追記するだけで、標準出力に何も出さない
 | `scenario.suite_verified`     | main の checkout で確かめた、承認したファイルの `scenario_hash`、スイート全体の `suite_hash`、コミット |
 | `scenario.retired`            | 承認したシナリオをスイートから外した PR（§7.7）                                                        |
 | `handoff.evaluation_linked`   | meta-harness の候補 ID、評価の ID、run の ID、`own_suite_hash`、`evaluator_hash`（§8）                 |
-| `handoff.promotion_linked`    | 昇格 PR の URL、meta-harness の候補 ID                                                                 |
+| `handoff.promotion_linked`    | 昇格 PR の URL、meta-harness の候補 ID、PR の作成時刻                                                  |
+| `handoff.closed`              | 昇格 PR がマージされずに閉じられたことを `gh` で確かめた。PR の URL                                    |
 | `handoff.merged`              | マージのコミット、マージ後のスキルの版のハッシュ、マージの時刻                                         |
 | `recurrence.confirmed`        | 同じ欠陥と人が確定した観測（§9.2）                                                                     |
 
 - ID は `O-` / `C-` + uuid4 の先頭 8 桁
+- 台帳の記録（`actor` を含む）を信頼できる根拠は、root の台帳のディレクトリに書けるのが利用者だけであること。`handoff.*` の記録は、`gh` と `git` の確認を通った CLI の経路だけが作る
 - `candidates.jsonl` は追記だけで、既存の行を書き換えない
 - `note`・仮説・確認項目への回答など人が書く文字列は、1 行 200 字（仮説の説明は 1,000 字）までとし、§6.3 の文字種の検査を通す。
   PR の URL は `https://github.com/<このリポジトリ>/pull/<番号>` の形だけを受け付ける
@@ -334,10 +336,10 @@ hook は記録を 1 行追記するだけで、標準出力に何も出さない
 | `scenario_approved` → `drafting`           | 戻り   | 差し戻し（人の操作、理由）。または承認したファイルが変わった（§7.6） |
 | `scenario_approved` → `improving`          | 主経路 | `scenario.suite_verified`（§7.6）                                    |
 | `improving` → `drafting`                   | 戻り   | 承認したファイルが main で変わった（`verify-suite` の不一致。§7.6）  |
-| `improving` → `promotion_pr`               | 主経路 | `handoff.evaluation_linked` と `handoff.promotion_linked`（§8）      |
+| `improving` → `promotion_pr`               | 主経路 | `handoff.evaluation_linked`（昇格する候補の holdout の評価を含む）と `handoff.promotion_linked`（§8） |
 | `improving` → `candidate`                  | 戻り   | 改善案が採用基準を満たさなかった（人の操作、理由）                   |
 | `promotion_pr` → `promoted`                | 主経路 | `handoff.merged`（マージの確認。§8.3）                               |
-| `promotion_pr` → `candidate`               | 戻り   | 昇格 PR がマージされずに閉じられた（`gh` で確かめる）                |
+| `promotion_pr` → `candidate`               | 戻り   | `handoff.closed`（昇格 PR がマージされずに閉じられた。`gh` で確かめる） |
 | `promoted` → `candidate`                   | 分岐   | 再開。`recurrence.confirmed`（§9.2）                                 |
 | `rejected` と `archived` 以外 → `rejected` | 分岐   | 人の操作、理由                                                       |
 | `rejected` → `candidate`                   | 分岐   | 却下の取り消し（人の操作）                                           |
@@ -360,7 +362,7 @@ hook は記録を 1 行追記するだけで、標準出力に何も出さない
 
 ### 7.1 下書きのセッション（FT-10）
 
-`skill_candidates_admin.py draft --candidate C-…` が、proposer とは別のプロセスで LLM を呼ぶ。呼び出し方は fail-logs の教訓化
+`skill_candidates_admin.py draft C-…` が、proposer とは別のプロセスで LLM を呼ぶ。呼び出し方は fail-logs の教訓化
 （ADR-20261103-063、`design:fail-logs` §7.5）と同じにする。
 
 ```text
@@ -460,7 +462,7 @@ LLM の出力は信頼できないものとして扱う。次のすべてを通�
 meta-harness は昇格 PR を origin/main から作り、昇格の時点で、実行している checkout のスイートのハッシュが評価のときと同じかを確かめる
 （`promoter._has_current_hash_pair`）。そのため、承認したシナリオは評価の前に main に入れる。
 
-1. `skill_candidates_admin.py install --candidate C-… --dest <checkout>` が、承認したファイルを `<checkout>/packages/meta-harness/scenarios/skill/<slug>/`
+1. `skill_candidates_admin.py install C-… --dest <checkout>` が、承認したファイルを `<checkout>/packages/meta-harness/scenarios/skill/<slug>/`
    にコピーする。skill-evolution は commit・push をしない
    - `<checkout>` は、このリポジトリの `git worktree list` に出る worktree のどれかで、既定のブランチでなく、origin/main を祖先に持つブランチであること
    - 書き込み先の途中のディレクトリを `lstat` で確かめ、symlink があれば止める。ファイルは `O_NOFOLLOW | O_EXCL` で作り、既存のファイルを上書きしない
@@ -471,7 +473,7 @@ meta-harness は昇格 PR を origin/main から作り、昇格の時点で、�
    `evaluator_hash` には `regression` の設定全体と `scenarios/fixtures/` が入る（`compute_configured_evaluator_hash`）ので、予算を変えると、
    ほかのターゲットを含む評価済みの候補もすべて昇格できなくなる（評価のやり直しが要る）。進行中の meta-harness の昇格が無いときに PR をマージする
 3. 人が PR を作り（`/pr-create`）、マージする。PR は ① で承認した内容を git に入れる手順で、PR の本文に候補 ID と承認したハッシュを書く
-4. `skill_candidates_admin.py verify-suite --candidate C-…` を main の checkout で実行し、次を確かめて `scenario.suite_verified` を記録する
+4. `skill_candidates_admin.py verify-suite C-…` を main の checkout で実行し、次を確かめて `scenario.suite_verified` を記録する
    - シナリオ置き場に未コミットの変更が無く、既定のブランチの checkout であること。ファイルの一覧と中身は作業ツリーではなく HEAD のコミットから読む
    - 承認したファイルがすべてあり、`scenario_hash` が承認と同じ。置き場の `sevo-` で始まるファイルは、どれも台帳のいずれかの候補で承認したものと一致する
    - スイート全体の `suite_hash` を、meta-harness と同じ方法（シナリオ置き場の全 `*.yaml` の `scenario_hash` をファイル名の順に連結した sha256）で計算する
@@ -487,7 +489,7 @@ main に入った後に `drafting` に戻した候補（`improving` → `draftin
 
 - 承認したシナリオは、実際に起きた欠陥の再現なので、候補が `improving` から `candidate` に戻ったとき・再開したときも、スイートに残して使う
 - 候補を却下したとき、またはシナリオが欠陥を正しく再現していないと人が判断したときは、人がシナリオを外す PR を作る。
-  `/skill-candidates` は外す対象のファイルを示し、マージを確かめて `scenario.retired` を記録する
+  `/skill-candidates` は外す対象のファイルを示し、マージを確かめて `scenario.retired` を記録する（そのファイルがマージのコミットの親にあり、マージのコミットに無いこと＝その PR が外したことを git で確かめる）
 - `scenario_approved` からの差し戻しと作り直しは main に入れる前に行うので、スイートは増えない。main に入った後の作り直しは、§7.6 の末尾のとおり古いファイルを外す
 
 ---
@@ -507,8 +509,12 @@ main に入った後に `drafting` に戻した候補（`improving` → `draftin
 | 5   | 採用基準を満たしたら `orchex meta promote <3 の候補>`                                                                                                          | 昇格 PR の URL。`handoff.promotion_linked`。満たさなければ人が `improving` → `candidate` に戻す |
 | 6   | 人が昇格 PR をマージした後、`orchex meta promote <3 の候補> --confirm`                                                                                         | §8.3                                                                                            |
 
-- 手順 2・4 の `--json` の出力を一時ファイルに受け、`skill_candidates_admin.py link --from-json <path>` で読む。
-  `own_suite_hash` が `scenario.suite_verified` の `suite_hash` と違う評価は、受け渡しの記録に結び付けない
+- 手順 2・3・4 の `--json` の出力を一時ファイルに受け、`skill_candidates_admin.py link C-… --from-json <path>` で読む。手順 5 の PR は `link C-… --pr <URL>` で結び付ける。
+  `own_suite_hash` が `scenario.suite_verified` の `suite_hash` と違う評価は、受け渡しの記録に結び付けない。
+  `improving` → `promotion_pr` には、手順 3 で記録した meta-harness の候補 ID の holdout の評価で `verdict` が `pass` のものが要る（その候補の holdout の評価のうち最新のもので判定する。baseline の候補の holdout の評価、fail の評価では進めない。採用基準の判定ではなく、通っていない評価を昇格の根拠にしないための確認）。
+  `evaluations` の run の ID は、同じ出力の `runs` にあり、その run の候補 ID が評価の候補 ID と同じであること。
+  `link --pr` は、`gh` で PR がこのリポジトリのもので OPEN か MERGED であり、`.claude/skills/<slug>/` の下のファイルを変えていることを確かめる
+- 採用基準を満たさなかったときは `skill_candidates_admin.py withdraw C-… --json -`（`{"note": …}`）で `improving` → `candidate` に戻す
 - いまの `evaluate --json` は run ごとの結果（`run_id`・`cand_id`・`scenario_id`・`verdict` など）しか出さず、評価の ID・`own_suite_hash`・
   `evaluator_hash`・holdout かどうかは meta-harness の台帳の `evaluation_completed` にしか無い（2026-11-08 にコードで確認）。
   skill-evolution は meta-harness の台帳を読まないので、これらを `evaluate --json` の出力に足す（§8.2）
@@ -527,9 +533,11 @@ main に入った後に `drafting` に戻した候補（`improving` → `draftin
 
 ### 8.3 マージの確認
 
-`skill_candidates_admin.py confirm-merge --candidate C-…` が、`gh pr view <番号> --repo <このリポジトリ> --json state,mergeCommit,url` で、
+`skill_candidates_admin.py confirm-merge C-…` が、`gh pr view <番号> --repo <このリポジトリ> --json state,mergeCommit,mergedAt,url` で、
 PR が MERGED であること、URL のリポジトリが記録と同じこと、マージのコミットが origin/main から辿れることを確かめる。
-マージのコミットの `.claude/skills/<slug>/` から版のハッシュを §4.3 の規則で計算して、`handoff.merged` を記録する。
+マージのコミットの `.claude/skills/<slug>/` から版のハッシュを §4.3 の規則で計算して、`handoff.merged` を記録する
+（ファイルは `git ls-tree -r` と `git cat-file blob` で読み、hook と同じハッシュの関数と除外の規則を使う。symlink と submodule の項目は、hook の走査と同じく数えない）。
+マージの時刻は `mergedAt`（タイムゾーン付き）を使う。
 meta-harness の `confirm_promotion` と同じ条件で、互いに独立に確かめる。
 
 ---
@@ -554,6 +562,7 @@ meta-harness の `confirm_promotion` と同じ条件で、互いに独立に確�
 
 - マージ後の版で同じスキルに帰属した観測は、候補の根拠の観測との語の重なり（fail-logs §7.4 と同じ数え方）が多い順に並べ、確認を促す。確定は人が行う
 - スキルの版が承認したシナリオの評価のときから変わった候補（`skill_hash` が変わった）には、シナリオの再実行を勧める。
+  比べる元は、昇格済みならマージ後の版、それより前なら評価のもとになったコミット（`evaluations` の `evaluation_base_commit`）の版。
   モデルの変化は hook の入力から分からないので扱わない（FT-17 のうちモデルの変化は対象外）
 
 ---
@@ -583,8 +592,8 @@ meta-harness の `confirm_promotion` と同じ条件で、互いに独立に確�
 
 - `skill_candidates.py`（読むだけ）: `list` / `show` / `runs`。Bash の許可リストに入れてよい
 - `skill_candidates_admin.py`（状態を変える）: `ingest` / `attribute` / `promote-observation` / `add-observation` / `merge` / `reject` / `unreject` /
-  `archive` / `restore` / `draft` / `approve` / `send-back` / `install` / `verify-suite` / `link` / `confirm-merge` / `close-pr` / `retire-scenario` /
-  `confirm-recurrence` / `prune-runs`。Bash の許可リストに入れない。root に書くため、`/skill-candidates` は利用者の承認を得てサンドボックスの外で実行する
+  `archive` / `restore` / `draft` / `approve` / `send-back` / `install` / `verify-suite` / `link`（`--from-json` と `--pr`）/ `withdraw` / `confirm-merge` /
+  `close-pr` / `retire-scenario` / `confirm-recurrence` / `prune-runs`。Bash の許可リストに入れない。root に書くため、`/skill-candidates` は利用者の承認を得てサンドボックスの外で実行する
 - 状態を変える操作は、スキルが AskUserQuestion で 1 件ずつ確認してから実行する
 
 ### 10.3 スキルの置き場
