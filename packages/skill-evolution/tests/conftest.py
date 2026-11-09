@@ -7,12 +7,27 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    from candidates_ingest import CandidatesContext
+
 REPO = Path(__file__).resolve().parents[3]
 PACKAGE = REPO / "packages" / "skill-evolution"
+
+
+@pytest.fixture(autouse=True)
+def no_real_claude(tmp_path):
+    executable = tmp_path / "blocked-claude"
+    executable.write_text(f"#!{sys.executable}\nraise SystemExit(97)\n")
+    executable.chmod(0o700)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("CLAUDE_CODE_EXECPATH", str(executable))
+        yield
 
 
 @pytest.fixture
@@ -82,18 +97,17 @@ def skill_dir(project):
 sys.path.insert(0, str(PACKAGE / "lib"))
 
 
-@pytest.fixture
-def candidate_context(project, monkeypatch):
-    import candidates_safety
-    from candidates_ingest import build_context
-
+@pytest.fixture(scope="session")
+def candidate_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    project = tmp_path_factory.mktemp("candidate-template")
     package = project / "packages/skill-evolution"
     for directory in ("lib", "scripts", "config"):
-        shutil.copytree(PACKAGE / directory, package / directory)
+        shutil.copytree(
+            PACKAGE / directory, package / directory, ignore=shutil.ignore_patterns("__pycache__")
+        )
     (project / "packages/core").symlink_to(REPO / "packages/core", target_is_directory=True)
-    monkeypatch.setattr(candidates_safety, "__file__", str(package / "lib/candidates_safety.py"))
-    monkeypatch.setenv("AI_ORCHESTRA_DIR", str(project))
     manifest = project / ".claude/orchestra.json"
+    manifest.parent.mkdir()
     manifest.write_text(json.dumps({"installed_packages": ["fail-logs", "skill-evolution"]}))
     scripts = project / "packages/fail-logs/scripts"
     scripts.mkdir(parents=True)
@@ -119,7 +133,44 @@ def candidate_context(project, monkeypatch):
     composition = project / "facets/compositions/skills/review.yaml"
     composition.parent.mkdir(parents=True)
     composition.write_text("name: review\n")
+    return project
+
+
+def build_candidate_context(project: Path, patch: pytest.MonkeyPatch) -> CandidatesContext:
+    import candidates_safety
+    from candidates_ingest import build_context
+
+    patch.setattr(
+        candidates_safety,
+        "__file__",
+        str(project / "packages/skill-evolution/lib/candidates_safety.py"),
+    )
+    patch.setenv("AI_ORCHESTRA_DIR", str(project))
+    patch.setenv("CLAUDE_PROJECT_DIR", str(project))
     return build_context(str(project))
+
+
+@pytest.fixture
+def candidate_context_factory(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> Callable[[Path], CandidatesContext]:
+    def create(template: Path) -> CandidatesContext:
+        # hardlink ではテスト中の書き換えが共有元にも伝わるため、通常のコピーで隔離する。
+        shutil.copytree(
+            template,
+            project,
+            symlinks=True,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+        return build_candidate_context(project, monkeypatch)
+
+    return create
+
+
+@pytest.fixture
+def candidate_context(candidate_context_factory, candidate_template):
+    return candidate_context_factory(candidate_template)
 
 
 @pytest.fixture
@@ -176,7 +227,7 @@ def write_runs(candidate_context):
     return write
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def observation_event():
     import candidates_model as model
 
@@ -205,7 +256,7 @@ def observation_event():
     return make
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def candidate_event():
     import candidates_model as model
 
@@ -220,3 +271,135 @@ def candidate_event():
         return model.event("candidate.created", f"C-{number:08x}", payload)
 
     return make
+
+
+@pytest.fixture(scope="session")
+def scenario_texts():
+    import yaml
+
+    def make(*, suffix="", **fields):
+        scenarios = []
+        for split in ("train", "holdout"):
+            scenario = {
+                "schema_version": "1.0",
+                "id": f"sevo-00000001-{split}{suffix}",
+                "target": "skill:review",
+                "description": "人工的な手順不足の再現",
+                "prompt": f"人工的な {split} の入力 {suffix} を確認してください。",
+                "critical": [
+                    {
+                        "id": "artifact",
+                        "text": "結果を保存",
+                        "oracle": "artifact_exists",
+                        "path": "result.json",
+                    }
+                ],
+                "holdout": split == "holdout",
+                "allowed_tools": ["Read"],
+                **fields,
+            }
+            scenarios.append(yaml.safe_dump(scenario, allow_unicode=True, sort_keys=False))
+        return scenarios
+
+    return make
+
+
+@pytest.fixture(scope="session")
+def scenario_template(
+    tmp_path_factory, candidate_template, observation_event, candidate_event, scenario_texts
+):
+    import yaml
+
+    project = tmp_path_factory.mktemp("scenario-template")
+    shutil.copytree(candidate_template, project, symlinks=True, dirs_exist_ok=True)
+    directory = project / "packages/meta-harness"
+    for name in ("schemas", "config"):
+        shutil.copytree(REPO / "packages/meta-harness" / name, directory / name)
+    scenario_root = directory / "scenarios"
+    scenario_root.mkdir()
+    (scenario_root / "fixtures").symlink_to(
+        REPO / "packages/meta-harness/scenarios/fixtures", target_is_directory=True
+    )
+    shutil.copytree(REPO / "packages/meta-harness/scenarios/skill", scenario_root / "skill")
+    skill = project / ".claude/skills/review/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("レビューの手順を確かめる\n")
+    suite = directory / "scenarios/skill/review"
+    suite.mkdir()
+    baseline = yaml.safe_load(scenario_texts()[0])
+    baseline.update(id="existing-train", allowed_tools=["Read", "Write"])
+    (suite / "existing.yaml").write_text(yaml.safe_dump(baseline, allow_unicode=True))
+    with pytest.MonkeyPatch.context() as patch:
+        context = build_candidate_context(project, patch)
+        context.store.write(lambda _: [observation_event(), candidate_event()])
+    return project
+
+
+@pytest.fixture
+def scenario_context(candidate_context_factory, scenario_template):
+    return candidate_context_factory(scenario_template)
+
+
+@pytest.fixture(scope="session")
+def fake_claude_factory():
+    def make(directory, scenarios=None, *, raw=None, cost=0.01, delay=0, exit_code=0):
+        executable = directory / "fake-claude"
+        capture = directory / "claude-call.json"
+        output = (
+            raw
+            if raw is not None
+            else json.dumps(
+                {
+                    "subtype": "success",
+                    "is_error": False,
+                    "total_cost_usd": cost,
+                    "structured_output": {"scenarios": scenarios},
+                }
+            )
+        )
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys, time\n"
+            "from pathlib import Path\n"
+            f"Path({str(capture)!r}).write_text(json.dumps({{'argv': sys.argv[1:], 'cwd': os.getcwd(), 'entries': os.listdir('.'), 'env': dict(os.environ), 'stdin': sys.stdin.read()}}))\n"
+            f"time.sleep({delay!r})\nprint({output!r})\nraise SystemExit({exit_code!r})\n"
+        )
+        executable.chmod(0o700)
+        return str(executable), capture
+
+    return make
+
+
+@pytest.fixture
+def fake_claude(tmp_path, fake_claude_factory):
+    def make(scenarios=None, **options):
+        return fake_claude_factory(tmp_path, scenarios, **options)
+
+    return make
+
+
+@pytest.fixture(scope="session")
+def drafted_template(tmp_path_factory, scenario_template, scenario_texts, fake_claude_factory):
+    from candidates_draft import draft
+
+    project = tmp_path_factory.mktemp("drafted-template")
+    shutil.copytree(scenario_template, project, symlinks=True, dirs_exist_ok=True)
+    executable, _ = fake_claude_factory(
+        tmp_path_factory.mktemp("drafted-template-cli"), scenario_texts()
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        context = build_candidate_context(project, patch)
+        draft(context, "C-00000001", executable=executable)
+    return project
+
+
+@pytest.fixture(scope="module")
+def meta_evaluator():
+    from tests.module_loader import load_module
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.syspath_prepend(str(REPO / "packages/meta-harness/lib"))
+        yield load_module(
+            "skill_evolution_contract_evaluator",
+            str(REPO / "packages/meta-harness/lib/evaluator.py"),
+        )

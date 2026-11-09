@@ -16,6 +16,7 @@ from candidates_safety import (
     validate_strings,
     validate_text,
 )
+from candidates_scenario_events import SCENARIO_EVENTS, latest_record, validate_scenario_event
 
 STATES = (
     "candidate",
@@ -45,7 +46,7 @@ REQUIRED_RECORDS = {
     ("promotion_pr", "candidate"): ("handoff.closed",),
     ("promoted", "candidate"): ("recurrence.confirmed",),
 }
-EVENT_TYPES = frozenset(
+EVENT_TYPES = SCENARIO_EVENTS | frozenset(
     {
         "observation.created",
         "observation.attributed",
@@ -291,8 +292,10 @@ def validate_transition(
     if payload.get("from") != source or target not in TRANSITIONS[source]:
         raise ValidationError("許可されていない状態遷移です")
     validate_text(payload.get("note", ""), "note", 200)
-    if (source, target) == ("improving", "drafting"):
-        raise ValidationError("verify-suite の不一致確認は後続バージョンで提供します")
+    if (source, target) == ("improving", "drafting") and payload.get(
+        "verification_mismatch"
+    ) is not True:
+        raise ValidationError("verify-suite の不一致確認が必要です")
     if target == "drafting" and source == "candidate":
         _require_human(record)
         eligible = candidate["handoff_eligible"]
@@ -314,11 +317,24 @@ def validate_transition(
                 for item in records
             ):
                 raise ValidationError(f"遷移に必要な記録がありません: {kind}")
+        if target in {"scenario_approved", "improving"}:
+            draft = latest_record(snapshot, candidate["cid"], "scenario.drafted")
+            approval = latest_record(snapshot, candidate["cid"], "scenario.approved")
+            if not draft or not approval or approval["data"].get("draft_eid") != draft["eid"]:
+                raise ValidationError("最新の下書きに対する承認が必要です")
+            expected = (
+                approval
+                if target == "scenario_approved"
+                else latest_record(snapshot, candidate["cid"], "scenario.suite_verified")
+            )
+            if not expected or expected["eid"] not in refs:
+                raise ValidationError("最新の承認・確認の参照が必要です")
     else:
         _require_human(record)
         if target == "rejected" or (source, target) in {
             ("scenario_approved", "drafting"),
             ("improving", "candidate"),
+            ("improving", "drafting"),
         }:
             if not payload.get("note", "").strip():
                 raise ValidationError("この遷移には理由が必要です")
@@ -358,6 +374,10 @@ def apply_event(
         raise ValidationError("観測の出来事に候補 ID は指定できません")
     if record["type"] == "candidate.state_changed":
         _transition(snapshot, record, orchestra, own_project)
+    elif record["type"] in SCENARIO_EVENTS:
+        candidate = require_candidate(snapshot, record.get("cid"))
+        validate_scenario_event(snapshot, candidate, record)
+        snapshot["records"][record["eid"]] = copy.deepcopy(record)
     else:
         APPLIERS[record["type"]](snapshot, record)
     if record.get("cid"):

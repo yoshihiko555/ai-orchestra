@@ -20,6 +20,7 @@ from candidates_safety import (
     display,
     excerpt,
     load_masker,
+    sanitize,
     validate_text,
 )
 from candidates_store import CandidateStore
@@ -175,9 +176,28 @@ def test_ev59_full_transition_table_and_unlisted_transitions(
         eid = f"{index + 100:012x}"
         refs.append(eid)
         snapshot["records"][eid] = {
+            "eid": eid,
             "type": kind,
             "cid": candidate["cid"],
             "ts": candidate["state_since"],
+            "data": {},
+        }
+    if target in {"scenario_approved", "improving"} and (source, target) in GUARDS:
+        draft_eid = "dddddddddddd"
+        approval_eid = refs[0] if target == "scenario_approved" else "aaaaaaaaaaaa"
+        snapshot["records"][draft_eid] = {
+            "eid": draft_eid,
+            "cid": candidate["cid"],
+            "type": "scenario.drafted",
+            "ts": candidate["state_since"],
+            "data": {"draft": 1},
+        }
+        snapshot["records"][approval_eid] = {
+            "eid": approval_eid,
+            "cid": candidate["cid"],
+            "type": "scenario.approved",
+            "ts": candidate["state_since"],
+            "data": {"draft_eid": draft_eid},
         }
     record = model.event(
         "candidate.state_changed",
@@ -408,6 +428,66 @@ def test_ev63_all_nested_display_values_are_neutralized(
     assert json.loads(output)["untrusted"] is True
 
 
+def test_ev63_listing_displays_shared_unknown_observation_in_full(
+    candidate_context, observation_event
+):
+    snapshot = candidate_context.store.write(lambda _: [observation_event(skill=None)])
+    observation = snapshot["observations"]["O-00000001"]
+    rendered = json.loads(display(listing(candidate_context, snapshot)))
+    assert rendered["pending_confirmation"]["unknown"] == [observation]
+    assert rendered["observations"] == [observation]
+
+
+def test_ev63_listing_displays_shared_pending_candidate_in_full(
+    candidate_context, observation_event, candidate_event
+):
+    snapshot = seeded(observation_event, candidate_event)
+    snapshot["candidates"]["C-00000001"]["state"] = "improving"
+    rendered = json.loads(display(listing(candidate_context, snapshot)))
+    assert rendered["candidates"][0]["cid"] == "C-00000001"
+    assert rendered["candidates"][0]["hypothesis"] == {
+        "title": "手順の不足",
+        "description": "検証の手順を追加する",
+    }
+    assert rendered["pending_confirmation"]["candidates"] == rendered["candidates"]
+
+
+@pytest.mark.parametrize("kind", ["dict", "list"])
+def test_ev63_display_cycles_terminate_with_reference_marker(kind):
+    if kind == "dict":
+        value = {}
+        value["self"] = value
+        expected = {"self": "[再参照]"}
+    else:
+        value = []
+        value.append(value)
+        expected = ["[再参照]"]
+    assert json.loads(display({"value": value}))["value"] == expected
+
+
+def test_ev63_listing_displays_all_300_unknown_observations(candidate_context, observation_event):
+    snapshot = candidate_context.store.write(
+        lambda _: [observation_event(number, skill=None) for number in range(1, 301)]
+    )
+    rendered = json.loads(display(listing(candidate_context, snapshot)))
+    expected = [snapshot["observations"][f"O-{number:08x}"] for number in range(1, 301)]
+    assert rendered["pending_confirmation"]["unknown"] == expected
+    assert rendered["observations"] == expected
+
+
+@pytest.mark.parametrize("limit", ["nodes", "depth"])
+def test_ev63_display_retains_node_and_depth_safety_limits(monkeypatch, limit):
+    if limit == "nodes":
+        monkeypatch.setattr("candidates_safety.MAX_DISPLAY_NODES", 5)
+        value = ["synthetic"] * 5
+    else:
+        value = "synthetic"
+        for _ in range(51):
+            value = [value]
+    with pytest.raises(ValidationError, match="表示のノード数または深さ"):
+        sanitize(value)
+
+
 def test_ev62_parseable_corrupt_projection_is_rebuilt(candidate_context, observation_event):
     store = candidate_context.store
     snapshot = store.write(lambda _: [observation_event()])
@@ -534,7 +614,7 @@ def test_ev60_verify_suite_mismatch_transition_waits_for_later_phase(
         "C-00000001",
         {"from": "improving", "to": "drafting", "note": "人が確認した理由"},
     )
-    with pytest.raises(ValidationError, match="後続バージョン"):
+    with pytest.raises(ValidationError, match="不一致確認"):
         model.apply_event(snapshot, record)
     assert snapshot["candidates"]["C-00000001"]["state"] == "improving"
 
@@ -605,3 +685,16 @@ def test_ev62_existing_auto_attribution_remains_readable_without_new_condition(
     assert store.read()["observations"] == snapshot["observations"]
     (store.directory / "candidates-state.json").write_text("broken")
     assert store.read()["observations"] == snapshot["observations"]
+
+
+def test_ev62_projection_accepts_registered_future_record_types(
+    candidate_context, observation_event, candidate_event, monkeypatch
+):
+    store = candidate_context.store
+    snapshot = store.write(lambda _: [observation_event(), candidate_event()])
+    record = model.event("handoff.future", "C-00000001", {"reference": "synthetic"})
+    snapshot["records"][record["eid"]] = record
+    snapshot["applied_eids"].add(record["eid"])
+    monkeypatch.setattr(model, "EVENT_TYPES", model.EVENT_TYPES | {"handoff.future"})
+    store._atomic_json("candidates-state.json", snapshot)
+    assert record["eid"] in store._projection()["records"]

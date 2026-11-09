@@ -158,7 +158,7 @@ def _lessons_command(context: CandidatesContext, arguments: list[str], *, deadli
                             if key.fileobj is process.stdout:
                                 output.extend(chunk)
                 returncode = process.wait(timeout=max(0, deadline - time.monotonic()))
-            except BaseException:
+            except Exception:
                 process.kill()
                 process.wait()
                 raise

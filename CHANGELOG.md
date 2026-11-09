@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`/skill-candidates`: シナリオの下書き・承認・導入・スイート確認を追加**: 全文と実行行を確認して承認し、用意した worktree へ導入する。main の `verify-suite` で承認済みハッシュと Docker backend を確認して改善へ進む。
+
 - **`/skill-candidates` と改善候補の CLI を追加**: fail-logs の失敗・教訓候補の帰属と改善候補を確認する。`skill_candidates.py` は読み取り用、`skill_candidates_admin.py` は人が承認した変更用（許可リストに入れない）。
 
 - **`skill-evolution`: 実行範囲を記録する hook を追加**: UserPromptExpansion・UserPromptSubmit・SubagentStart を登録し、直接起動とターン・サブエージェントの開始を記録する。

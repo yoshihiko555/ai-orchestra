@@ -88,16 +88,16 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
 
 - [ ] EV-64（正常 / must）: 下書きは、道具・hook・MCP を持たない別のセッション（`claude -p`）で作られ、学習用と holdout を各 1 本以上含み、スイートの外（`drafts/<cid>/<n>/`）に置かれる — 根拠: req FT-10; design §7.1
 - [ ] EV-65（境界 / must）: `draft.*` の上限（本数・1 本の大きさ・費用・時間・作り直しの回数）を超える出力は捨てられ、下書きは作られない — 根拠: req NF-09; design §7.2
-- [ ] EV-66（異常 / must）: 実行される行が design §7.4 の形に合わない下書き（コマンド置換・パイプ・`;`・環境変数の展開、許可されないスクリプトやフラグ、`bypassPermissions`、`/` で始まる・`..` を含むパス）は不合格になる — 根拠: design §7.4
-- [ ] EV-67（異常 / must）: 公開してはいけない文字列（伏せ字で変わる文字列、絶対パス、`~` で始まるパス、メールアドレス、URL、IP アドレス、`owner/repo`、根拠の抜粋との 20 字以上の一致）を含む下書きは不合格になる — 根拠: req NF-09; design §7.3
-- [ ] EV-68（異常 / must）: スキーマに合わない、`target` が違う、`id` が規定の接頭辞でない・既存と重なる、学習用の `graded` の有無が既存とそろわない下書きは不合格になる — 根拠: design §7.3
-- [ ] EV-69（異常 / must）: 承認の後に下書きのファイルが変わると承認は無効になり、`install` も `verify-suite` も通らない — 根拠: req FT-11; design §7.5
+- [ ] EV-66（異常 / must）: 実行される行が design §7.4 の形に合わない下書き（コマンド置換・パイプ・`;`・環境変数の展開、許可されないスクリプトやフラグ、`bypassPermissions`、`/` で始まる・`..` を含むパス、`.meta-harness/` の外への準備の書き込み（`.claude/`・`.git` など）、許可の外の `printf` の文字、`allowed_tools` の省略、既存より大きい予算・回数・時間）は不合格になる — 根拠: design §7.4
+- [ ] EV-67（異常 / must）: 公開してはいけない文字列（伏せ字で変わる文字列、絶対パス、`~` で始まるパス、先頭の `/` の無いホームのパス、メールアドレス、URL、IP アドレス、ホスト名、リポジトリの参照、根拠の抜粋との正規化した 12 字以上の一致）を含む下書きは、全角などで書き換えても不合格になる — 根拠: req NF-09; design §7.3
+- [ ] EV-68（異常 / must）: スキーマに合わない、`target` が違う、`id` が規定の接頭辞でない・既存と重なる、学習用の `graded` の有無が既存（導入済みの `sevo-` を含む）とそろわない、YAML のアンカー・エイリアスや重複したキーを使う下書きは不合格になる — 根拠: design §7.3
+- [ ] EV-69（異常 / must）: 承認に添えた sha256 が承認の時点のファイルと違えば承認されず、承認の後に下書きのファイルが変わると `install` も `verify-suite` も通らない。LLM が出した元の行を「人が書いた行」として挙げても受け付けない — 根拠: req FT-11; design §7.5
 
 ### 3.5 スイートへの導入と受け渡し
 
 - [ ] EV-70（異常 / must）: `install` は、`--dest` がこのリポジトリの worktree でないとき、書き込み先の途中に symlink があるとき、同じ名前のファイルが既にあるときに書き込まずに止まる — 根拠: design §7.6
 - [ ] EV-71（正常 / must）: `verify-suite` が計算する `suite_hash` は、同じシナリオ置き場について meta-harness の `compute_suite_hash` と同じ値になる — 根拠: req FT-11; design §7.6
-- [ ] EV-72（異常 / must）: `verify-suite` は、承認したファイルが無い・ハッシュが違う・コミットが origin/main から辿れない・meta-harness の実行の backend が `docker` でない、のいずれかで止まり、`scenario.suite_verified` を記録しない — 根拠: req FT-11; design §7.6
+- [ ] EV-72（異常 / must）: `verify-suite` は、シナリオ置き場に未コミットの変更がある・既定のブランチでない・承認したファイルが HEAD に無いかハッシュが違う・承認していない `sevo-` のファイルがある・コミットが origin/main から辿れない・meta-harness の実行の backend が `docker` でない、のいずれかで止まり、`scenario.suite_verified` を記録しない — 根拠: req FT-11; design §7.6
 - [ ] EV-73（異常 / must）: `own_suite_hash` が記録した `suite_hash` と違う評価は、`link` で受け渡しの記録に結び付けられない — 根拠: req FT-11、FT-12; design §8.1
 - [ ] EV-74（正常 / must）: 1 つの候補から、承認したシナリオのハッシュ・スイートのハッシュ・meta-harness の評価の ID と候補の ID・昇格 PR・マージのコミットを辿れる — 根拠: req FT-12; design §6.2、§8
 - [ ] EV-75（異常 / must）: `confirm-merge` は、PR が MERGED でない・URL のリポジトリが記録と違う・マージのコミットが origin/main から辿れない、のいずれかで `handoff.merged` を記録しない — 根拠: design §8.3

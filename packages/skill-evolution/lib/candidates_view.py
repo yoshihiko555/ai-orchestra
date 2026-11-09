@@ -10,6 +10,7 @@ import candidates_model as model
 import skill_evolution_common as common
 from candidates_ingest import CandidatesContext
 from candidates_safety import ValidationError, open_regular, timestamp, validate_directory
+from candidates_scenarios import draft_review
 
 PENDING_STATES = ("improving", "promotion_pr", "promoted")
 
@@ -165,10 +166,10 @@ def audit_context(context: CandidatesContext, sid: str | None, at: str) -> list[
 
 def show(context: CandidatesContext, snapshot: dict, object_id: str) -> dict:
     if object_id.startswith("C-"):
+        candidate = model.require_candidate(snapshot, object_id)
         return {
-            "candidate": candidate_summary(
-                context, snapshot, model.require_candidate(snapshot, object_id)
-            )
+            "candidate": candidate_summary(context, snapshot, candidate),
+            "draft_review": draft_review(context, snapshot, candidate),
         }
     observation = model.require_observation(snapshot, object_id)
     return {

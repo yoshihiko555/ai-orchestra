@@ -25,7 +25,11 @@ def execute(
         context = build_context(getattr(args, "project", None))
         payload = handler(context, args)
         print(display(payload, as_json=getattr(args, "json", True)))
-        return 0
+        return (
+            ValidationError.code
+            if payload.get("approved") is False or payload.get("verified") is False
+            else 0
+        )
     except LockTimeout:
         print("[skill-evolution] 台帳のロックを取得できません（待ち時間切れ）", file=sys.stderr)
         return 1

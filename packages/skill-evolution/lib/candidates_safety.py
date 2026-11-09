@@ -20,6 +20,7 @@ REJECTED_CATEGORIES = frozenset({"Cc", "Cf", "Cn", "Zl", "Zp", "Co", "Cs"})
 Masker = Callable[[str], str]
 PRE_MASK_LIMIT_CHARS = 64 * 1024
 PRE_MASK_TAIL_GUARD_CHARS = 1024
+MAX_DISPLAY_NODES = 1_000_000
 
 
 class CandidatesError(Exception):
@@ -46,6 +47,10 @@ class LockTimeout(CandidatesError):
     pass
 
 
+class RawDraftText(str):
+    pass
+
+
 def timestamp(value: object) -> datetime:
     try:
         parsed = datetime.fromisoformat(value) if isinstance(value, str) else None
@@ -67,16 +72,39 @@ def validate_text(value: object, field: str, limit: int, *, multiline: bool = Fa
     return value
 
 
+def walk_nodes(value: Any, path: str = "$"):
+    pending = [(path, value, 0)]
+    visited = set()
+    count = 0
+    while pending:
+        child_path, child, depth = pending.pop()
+        count += 1
+        if count > 5000 or depth > 50:
+            raise ValidationError("ノード数または深さが上限を超えています")
+        if isinstance(child, (dict, list, tuple)):
+            if id(child) in visited:
+                continue
+            visited.add(id(child))
+            entries = child.items() if isinstance(child, dict) else enumerate(child)
+            pending.extend(
+                (
+                    f"{child_path}.{key}" if isinstance(child, dict) else f"{child_path}[{key}]",
+                    item,
+                    depth + 1,
+                )
+                for key, item in reversed(list(entries))
+            )
+        yield child_path, child
+
+
 def validate_strings(value: Any) -> None:
-    if isinstance(value, str):
-        validate_text(value, "記録", len(value), multiline=True)
-    elif isinstance(value, dict):
-        for key, child in value.items():
-            validate_strings(key)
-            validate_strings(child)
-    elif isinstance(value, list):
-        for child in value:
-            validate_strings(child)
+    for _, child in walk_nodes(value):
+        if isinstance(child, str):
+            validate_text(child, "記録", len(child), multiline=True)
+        elif isinstance(child, dict):
+            for key in child:
+                if isinstance(key, str):
+                    validate_text(key, "記録", len(key), multiline=True)
 
 
 def require_id(value: object, prefix: str = "") -> str:
@@ -143,17 +171,48 @@ def excerpt(text: str, masker: Masker | None, max_chars: int) -> tuple[str, str]
 
 
 def sanitize(value: Any) -> Any:
-    if isinstance(value, str):
-        escaped = "".join(
-            f"\\u{ord(char):04x}" if unicodedata.category(char) in REJECTED_CATEGORIES else char
-            for char in value
-        )
-        return escaped.replace("<", "‹").replace(">", "›")
-    if isinstance(value, dict):
-        return {sanitize(str(key)): sanitize(child) for key, child in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [sanitize(child) for child in value]
-    return value
+    holder = [None]
+    pending = [(value, holder, 0, 0, frozenset())]
+    count = 0
+    while pending:
+        child, parent, key, depth, ancestors = pending.pop()
+        count += 1
+        if count > MAX_DISPLAY_NODES or depth > 50:
+            raise ValidationError("表示のノード数または深さが上限を超えています")
+        if isinstance(child, str):
+            escaped = "".join(
+                f"\\u{ord(char):04x}" if unicodedata.category(char) in REJECTED_CATEGORIES else char
+                for char in child
+            )
+            parent[key] = (
+                escaped
+                if isinstance(child, RawDraftText)
+                else escaped.replace("<", "‹").replace(">", "›")
+            )
+        elif isinstance(child, (dict, list, tuple)):
+            if id(child) in ancestors:
+                parent[key] = "[再参照]"
+                continue
+            child_ancestors = ancestors | {id(child)}
+            target = {} if isinstance(child, dict) else [None] * len(child)
+            parent[key] = target
+            entries = child.items() if isinstance(child, dict) else enumerate(child)
+            for child_key, item in reversed(list(entries)):
+                if isinstance(child, dict):
+                    child_key = (
+                        "".join(
+                            f"\\u{ord(char):04x}"
+                            if unicodedata.category(char) in REJECTED_CATEGORIES
+                            else char
+                            for char in str(child_key)
+                        )
+                        .replace("<", "‹")
+                        .replace(">", "›")
+                    )
+                pending.append((item, target, child_key, depth + 1, child_ancestors))
+        else:
+            parent[key] = child
+    return holder[0]
 
 
 def display(payload: dict, *, as_json: bool = True) -> str:

@@ -27,6 +27,7 @@ from candidates_safety import (
     validate_strings,
     validate_text,
 )
+from candidates_scenario_events import SCENARIO_EVENTS, validate_files
 
 
 class CandidateStore:
@@ -127,6 +128,21 @@ class CandidateStore:
                 )
             for alias in snapshot["aliases"]:
                 model.require_candidate(snapshot, alias)
+            for eid, record in snapshot["records"].items():
+                model.require_id(eid)
+                if (
+                    record["eid"] != eid
+                    or eid not in snapshot["applied_eids"]
+                    or record["type"] not in model.EVENT_TYPES
+                    or record["actor"] != "human"
+                    or record["v"] != 1
+                    or not isinstance(record["data"], dict)
+                ):
+                    return None
+                model.require_candidate(snapshot, record["cid"])
+                timestamp(record["ts"])
+                if record["type"] in SCENARIO_EVENTS:
+                    validate_files(record["data"].get("files"))
         except (KeyError, TypeError, ValidationError):
             return None
         snapshot["applied_eids"] = set(snapshot["applied_eids"])
