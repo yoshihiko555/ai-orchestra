@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-09
+
 ### Added
 
 - **`skill-evolution`: v1 のデータを消す `skill_evolution.py purge-v1` を追加**: root と全 worktree の v1 の lessons・metrics・pending・locks を絶対パスの一覧で示し、`--apply` を付けたときだけ消す。v2 の記録・台帳と、symlink・worktree の外のパスは消さない。
