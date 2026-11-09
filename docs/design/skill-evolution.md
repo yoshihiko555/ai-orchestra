@@ -12,7 +12,7 @@ codd:
 # Skill Evolution（スキル改善候補の受け渡し）設計ドキュメント
 
 **作成日**: 2026-07-01
-**改訂日**: 2026-11-08（v2: 改善候補を集めて meta-harness に渡し、昇格後も追う役に絞る）
+**改訂日**: 2026-11-10（v1 の互換の CLI・設定のキー・gitignore のエントリを外した。§12）。2026-11-08（v2: 改善候補を集めて meta-harness に渡し、昇格後も追う役に絞る）
 **ステータス**: draft（v2 の基本設計。実装は未着手）
 **対象**: `packages/skill-evolution`
 **関連**: `req:skill-evolution`、ADR-20261108-065（v2 の決定。ADR-20260701-028 を置き換える）、ADR-20260728-046（root への集約）、
@@ -93,7 +93,7 @@ git に入れる手順で、別の承認ではない（§7.6）。
 | `lib/`（新規のモジュール）                  | 取り込みと帰属、台帳、下書き、受け渡し、再発の確認                                                                 | 新規                                      |
 | `scripts/skill_candidates.py`（新規）       | 読むだけの CLI（一覧・詳細・状態）                                                                                 | 新規                                      |
 | `scripts/skill_candidates_admin.py`（新規） | 状態を変える CLI（§10.2）                                                                                          | 新規                                      |
-| `scripts/skill_evolution.py`                | v1 のサブコマンドを非推奨として残し、v1 のデータを消す `purge-v1` を足す（§12）                                    | 残す                                      |
+| `scripts/skill_evolution.py`                | v1 のサブコマンドを非推奨として残し、v1 のデータを消す `purge-v1` を足した。非推奨期間の後に丸ごと外した（§12.3）  | 外した                                    |
 | `/skill-candidates`（新規のスキル）         | 人が観測と候補を確認し、状態を進める（§10）                                                                        | 新規                                      |
 
 ### 3.2 他のパッケージとの境界
@@ -608,7 +608,6 @@ facet build で `.claude/skills/` と `.agents/skills/` に生成する。スキ
 ```yaml
 enabled: true
 storage:
-  dir: ".claude/skill-evolution" # 非推奨（v1 の lessons の置き場。purge-v1 が消す対象を探すのに使う）
   logs_dir: ".claude/logs/skill-evolution"
 runs:
   hash_max_files: 200
@@ -623,14 +622,10 @@ draft:
   max_files: 4
   max_file_bytes: 16384
   max_attempts_per_candidate: 3
-# 以下は v1 の設定。非推奨期間（§12.3）は読み込めるように残すが、v2 では使わない
-lessons: { max_lines: 40, inject_max_chars: 4000 }
-pending: { stale_after_seconds: 600 }
-offline: {} # v1 の既存の値をそのまま残す（省略）
-trigger: { lessons_threshold: 20 }
 ```
 
-- `*.local.yaml` の上書きの仕組みは変えない。v1 のキーを `.local.yaml` に置いたままでも、読み込みは失敗しない（NF-07）
+- `*.local.yaml` の上書きの仕組みは変えない
+- v1 のキー（`storage.dir`・`lessons`・`pending`・`offline`・`trigger`）は非推奨期間の後に外した（§12.3）。`.local.yaml` に置いたままでも読み込みは失敗せず、値は使われない（NF-07）
 - `enabled: false` のとき、hook は何も記録しない
 - config を変えたら `.claude/orchestra.json` の `file_hashes` の該当エントリを同じコミットで更新する（AGENTS.md の変更ガードレール）
 
@@ -645,7 +640,7 @@ trigger: { lessons_threshold: 20 }
 | 自己申告ブロックと lessons の注入 | `inject-lessons.py` は出力しない（NF-01）                      |
 | lessons の追記・圧縮              | 行わない。v2 の hook は lessons を読みも書きもしない           |
 | 自己申告による成功判定            | outcome は既定で `unknown`。自己申告を読まない（FT-03）        |
-| `check-trigger` の閾値            | サブコマンドは残すが、常に「起動を勧めない」と非推奨の旨を返す |
+| `check-trigger` の閾値            | 非推奨期間は「起動を勧めない」と返し、その後に外した（§12.3）  |
 | オフライン層の構想（Issue #139）  | 作らない。#139 は ADR-20261108-065 で置き換えたとして閉じる    |
 | metrics・pending・locks           | 書かない                                                       |
 | transcript からの自己申告の抽出   | 行わない                                                       |
@@ -658,22 +653,21 @@ trigger: { lessons_threshold: 20 }
 - 新しいエントリ（UserPromptExpansion・UserPromptSubmit・SubagentStart）は `orchex sync` で導入先の settings に足される。
   これらに対応していない古い Claude Code では、その hook が動かないだけで、ほかの hook は動く（§14.1 の 9 からの推定）。その環境では直接起動が記録されない
 - `orchex uninstall skill-evolution` は manifest から hook を外すので、manifest のエントリがそろっていれば成功する
-- `skill_evolution.py` の `status` / `check-trigger` / `evaluate` / `provenance` / `lock` は残し、非推奨の旨を出して終了コード 0 で戻る
-  （`check-trigger` は v1 の「起動しない」と同じ終了コード）
-- `gitignore_sync.py` の `.claude/skill-evolution/metrics/`・`.claude/skill-evolution/pending/` は、非推奨期間は残す
+- 非推奨期間は、`skill_evolution.py` の `status` / `check-trigger` / `evaluate` / `provenance` / `lock` を残して非推奨の旨を返し
+  （`check-trigger` は v1 の「起動しない」と同じ終了コード）、`gitignore_sync.py` の `.claude/skill-evolution/metrics/`・
+  `.claude/skill-evolution/pending/` も残した。期間の後に、v1 の設定のキーと一緒に外した（§12.3）
 
 ### 12.3 旧データの削除
 
 - hook と CLI の通常の操作は、旧データを自動で削除しない
-- `skill_evolution.py purge-v1` が、root と `git worktree list` に出る全 worktree の v1 のデータ（`storage.dir` の lessons、
-  `logs_dir` の `metrics/`・`pending/`・`locks/`）を、絶対パスの一覧にして出す。`--apply` を付けたときだけ消す
-  - 消す対象は、各 worktree の `.claude/` の下に `resolve_path_within` で収まることを確かめたものだけ（設定の値が `.` や `src` を指していても、`.claude/` の外と `.git` の下は消さない）
-  - v2 の保存先（root と各 worktree の、v2 のコードが解決する logs のディレクトリ）そのものと、その祖先に当たる対象は消さない（設定の組み合わせで v1 の lessons と v2 の保存先が重なっても、v2 の記録・台帳・下書きを消さない）
-  - 削除に失敗した対象も含めて、消したもの・消さなかったものを必ず出力する。`--apply` は省略形（`--a` など）では受け付けない
-  - `lstat` で確かめ、symlink はたどらずにリンク自体も消さない（一覧に「symlink のため消さない」と出す）
-- このリポジトリの `.claude/skill-evolution/lessons/`（git 管理）は、v2 の PR で削除する
-- 非推奨期間は、v2 を含むリリースの次のマイナーリリースまでとする。その後、別の PR で、非推奨のサブコマンドと設定のキー、
-  `gitignore_sync.py` のエントリを消す（CHANGELOG に **BREAKING** と書く）。hook のファイル名は v2 の役割で使い続けるので消さない
+- 非推奨期間（v0.3.8）は、`skill_evolution.py purge-v1` が root と全 worktree の v1 のデータ（`storage.dir` の lessons、
+  `logs_dir` の `metrics/`・`pending/`・`locks/`）を絶対パスの一覧にして出し、`--apply` を付けたときだけ消した
+  （`.claude/` の下に収まるものだけ。v2 の保存先とその祖先、symlink は消さない）。期間の後に、ほかの v1 のサブコマンドと一緒に外した
+- `purge-v1` を外した後に残った v1 のデータは、人が消す（場所は `docs/reference/logging.md` §2。`logs_dir` そのものは v2 の記録・台帳なので消さない）
+- このリポジトリの `.claude/skill-evolution/lessons/`（git 管理）は、v2 の PR で削除した
+- 非推奨期間は、v2 を含むリリース（v0.3.8）の 1 リリースとした。次のリリースで、`skill_evolution.py`（`purge-v1` を含む）、v1 の設定のキー、
+  `gitignore_sync.py` のエントリを外した（CHANGELOG に **BREAKING**）。当初は「次のマイナーリリースまで」としていたが、
+  2026-11-10 に利用者の決定で短くし、`purge-v1` も同時に外した（Issue #554）。hook のファイル名は v2 の役割で使い続けるので消さない
 
 ### 12.4 ドキュメントの追従
 

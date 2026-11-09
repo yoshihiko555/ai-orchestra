@@ -17,8 +17,6 @@ ENTRIES = [
     ".claude/state/",
     ".claude/context/",
     ".claude/codd/",
-    ".claude/skill-evolution/metrics/",
-    ".claude/skill-evolution/pending/",
     ".claude/meta-harness/",
     ".claude/loop/",
     ".claude/.cache/",

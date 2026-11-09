@@ -78,10 +78,6 @@
   "rules": [],
   "scripts": [
     {
-      "path": "scripts/skill_evolution.py",
-      "description": "v1 互換 CLI（非推奨）: status / check-trigger / evaluate / provenance / lock"
-    },
-    {
       "path": "scripts/skill_candidates.py",
       "description": "改善候補の一覧・詳細・実行範囲（読み取り。許可リストに入れてよい）"
     },

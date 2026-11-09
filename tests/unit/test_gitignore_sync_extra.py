@@ -43,12 +43,12 @@ class TestBuildBlock:
 
         assert content[start:end] + "\n" == gitignore_mod.build_block()
 
-    def test_contains_skill_evolution_data_entries(self) -> None:
-        """skill-evolution の metrics/pending は無視対象だが lessons/ は追跡対象のまま。"""
-        assert ".claude/skill-evolution/metrics/" in gitignore_mod.ENTRIES
-        assert ".claude/skill-evolution/pending/" in gitignore_mod.ENTRIES
-        assert ".claude/skill-evolution/metrics/" in gitignore_mod.build_block()
-        assert ".claude/skill-evolution/pending/" in gitignore_mod.build_block()
+    def test_excludes_skill_evolution_v1_data_entries(self) -> None:
+        """skill-evolution の v1 データディレクトリは管理エントリに含めない。"""
+        assert ".claude/skill-evolution/metrics/" not in gitignore_mod.ENTRIES
+        assert ".claude/skill-evolution/pending/" not in gitignore_mod.ENTRIES
+        assert ".claude/skill-evolution/metrics/" not in gitignore_mod.build_block()
+        assert ".claude/skill-evolution/pending/" not in gitignore_mod.build_block()
         assert ".claude/skill-evolution/" not in gitignore_mod.ENTRIES
 
     def test_contains_codex_harness_generated_entries(self) -> None:
