@@ -412,7 +412,8 @@ def test_ev45_unrelated_or_malformed_tool_input_is_ignored(run_hook, read_events
 def test_ev45_unexpected_configuration_exception_is_safe(
     skill_dir, write_config, run_hook, read_events, filename, payload
 ):
-    write_config("storage: not-a-mapping\n")
+    # storage の型違いは既定の保存先に戻すので（EV-49）、型を検査しない ledger で書き込み中の例外を起こす
+    write_config("ledger: not-a-mapping\n")
     completed = run_hook(filename, _input(**payload))
     assert b"Traceback" not in completed.stderr
     assert read_events() == []

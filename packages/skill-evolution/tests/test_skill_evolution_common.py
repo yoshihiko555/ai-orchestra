@@ -1,4 +1,4 @@
-"""EV-25、EV-44〜48: 設定、ハッシュ、追記の契約。"""
+"""EV-25、EV-44〜48、EV-84: 設定、ハッシュ、追記の契約。"""
 
 from __future__ import annotations
 
@@ -27,13 +27,12 @@ REPO = Path(__file__).resolve().parents[3]
 def test_ev25_config_defaults_and_local_deep_merge(project, write_config):
     write_config("enabled: false\nruns:\n  hash_max_files: 3\n")
     write_config(
-        "enabled: true\nruns:\n  hash_max_bytes: 42\nlessons:\n  max_lines: 1\n", local=True
+        "enabled: true\nruns:\n  hash_max_bytes: 42\nledger:\n  excerpt_max_chars: 1\n", local=True
     )
     config = se.load_config(str(project))
     assert config["enabled"] is True
     assert config["runs"] == {"hash_max_files": 3, "hash_max_bytes": 42}
-    assert config["lessons"] == {"max_lines": 1, "inject_max_chars": 4000}
-    assert config["ledger"] == {"excerpt_max_chars": 300, "lock_wait_seconds": 5}
+    assert config["ledger"] == {"excerpt_max_chars": 1, "lock_wait_seconds": 5}
     assert config["draft"] == {
         "model": "sonnet",
         "max_budget_usd": 1.0,
@@ -42,6 +41,29 @@ def test_ev25_config_defaults_and_local_deep_merge(project, write_config):
         "max_file_bytes": 16384,
         "max_attempts_per_candidate": 3,
     }
+
+
+def test_ev84_v1_keys_are_absent_and_legacy_local_config_loads(project, write_config):
+    distributed = REPO / "packages/skill-evolution/config/skill-evolution.yaml"
+    for defaults in (se.DEFAULTS, yaml.safe_load(distributed.read_text())):
+        assert not {"lessons", "pending", "offline", "trigger"} & defaults.keys()
+        assert "dir" not in defaults["storage"]
+
+    legacy = {
+        "storage": {"dir": ".claude/legacy"},
+        "lessons": {"max_lines": 1},
+        "pending": {"stale_after_seconds": 1},
+        "offline": {"max_iterations": 1},
+        "trigger": {"lessons_threshold": 1},
+    }
+    write_config(yaml.safe_dump(legacy), local=True)
+    config = se.load_config(str(project))
+    assert config == {
+        **se.DEFAULTS,
+        **legacy,
+        "storage": {**se.DEFAULTS["storage"], **legacy["storage"]},
+    }
+    assert se.logs_dir(str(project), config) == str(project / ".claude/logs/skill-evolution")
 
 
 def test_ev25_config_copies_and_ledger_match_defaults():

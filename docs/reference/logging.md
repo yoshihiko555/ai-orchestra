@@ -55,12 +55,13 @@ codd:
 | `skill-evolution`（v2 の hook） | `.claude/logs/skill-evolution/runs-YYYYMM.jsonl` | JSONL | ignore（`.claude/logs/`） | **実装済み** | スキルの実行範囲の出来事（開始・確認・ターンとサブエージェントの区切り）。追記だけ。古い月は人が `skill_candidates_admin.py prune-runs` で消す |
 | `skill-evolution`（`skill_candidates_admin.py`） | `.claude/logs/skill-evolution/candidates.jsonl` / `candidates-state.json` / `candidates.lock` / `ingest-state.json` | JSONL / JSON / lockfile | ignore（`.claude/logs/`） | **実装済み** | 改善候補の台帳（追記だけ）・その写像・更新の排他・取り込みの位置 |
 | `skill-evolution`（`skill_candidates_admin.py draft`） | `.claude/logs/skill-evolution/drafts/<cid>/<n>/` | YAML / JSON | ignore（`.claude/logs/`） | **実装済み** | シナリオの下書きと、LLM が出した元の写し |
-| `skill-evolution`（v1。非推奨） | `.claude/logs/skill-evolution/metrics/`・`pending/`・`locks/`、`.claude/skill-evolution/lessons/` | — | — | — | v2 は読みも書きもしない。残っていれば `skill_evolution.py purge-v1 --apply` で消す（既定は一覧だけ） |
+| `skill-evolution`（v1。廃止） | `.claude/logs/skill-evolution/metrics/`・`pending/`・`locks/`、`.claude/skill-evolution/lessons/`、それより前の `.claude/skill-evolution/metrics/`・`pending/` | — | — | — | v2 は読みも書きもせず、自動では消さない。不要なら人が消す（`.claude/logs/skill-evolution/` そのものは v2 の記録・台帳なので消さない） |
 | （予約領域・現状書き込み元なし） | `.claude/logs/orchestration/`（`scripts/lib/scaffold.py` が新規プロジェクトに `.gitkeep` 付きで作成） | — | ignore（`.claude/logs/`） | 対象外（未使用） | 将来のオーケストレーションログ用に予約されたディレクトリ。現時点で書き込む hook / スクリプトは存在しない |
 
 ### v1 の metrics の移行
 
-v1 の metrics の one-shot migration（ADR-20260728-046 決定3）は、v2 では行わない（v2 の hook は metrics を読まない）。残った v1 のデータは `skill_evolution.py purge-v1` で確かめて消す。
+v1 の metrics の one-shot migration（ADR-20260728-046 決定3）は、v2 では行わない（v2 の hook は metrics を読まない）。残った v1 のデータは、上の表のパスを確かめて人が消す
+（v0.3.8 にあった `skill_evolution.py purge-v1` は、非推奨期間を終えて外した）。
 
 ## 3. 主なイベント種別（audit sessions ログ）
 
@@ -100,7 +101,7 @@ v1 の metrics の one-shot migration（ADR-20260728-046 決定3）は、v2 で�
 
 - 実行範囲と改善候補は `packages/skill-evolution/scripts/skill_candidates.py` の `list` / `show` / `runs`（読み取り）で確認し、状態の変更は `/skill-candidates` から `skill_candidates_admin.py` で行います（`docs/design/skill-evolution.md` §10）。
 - 記録・台帳・下書きの設定（`runs.*`・`ledger.*`・`draft.*`）の正本は `packages/skill-evolution/config/skill-evolution.yaml` です。
-- `skill_evolution.py` の v1 のサブコマンドは非推奨の案内だけを返します。v1 のデータは `skill_evolution.py purge-v1` で一覧にし、`--apply` で消します。
+- v1 の CLI（`skill_evolution.py`）は廃止しました。残った v1 のデータは自動では消さないので、不要なら §2 の表のパスを人が消します（`.claude/logs/skill-evolution/` そのものは v2 の記録・台帳なので消しません）。
 
 ## 5. 補足
 

@@ -10,7 +10,7 @@ codd:
 # Skill Evolution（スキル改善候補の受け渡し）要件定義
 
 **作成日**: 2026-07-01
-**改訂日**: 2026-11-08（v2: 改善候補を集めて meta-harness に渡し、昇格後も追う役に絞る）
+**改訂日**: 2026-11-10（非推奨期間を終えた後の FT-22・NF-07 と受け入れ基準）。2026-11-08（v2: 改善候補を集めて meta-harness に渡し、昇格後も追う役に絞る）
 **ステータス**: draft
 **起点**: Issue #5（v1）、2026-11-04〜11-08 の対話（v2）
 **関連**: `design:skill-evolution`（`docs/design/skill-evolution.md`）、`req:meta-harness`、`req:fail-logs`
@@ -125,7 +125,7 @@ v2 では skill-evolution をこの前半と後の担当に絞り、改善その
 | FT-19 | facet スキルの候補を、観測したプロジェクトから ai-orchestra リポジトリでの受け渡しまで運べる                                                                                                                                                                                                              | should |
 | FT-20 | 外部の確認（成果物の検査か人の確認）がある実行は、outcome を `success` / `failure` にできる                                                                                                                                                                                                               | could  |
 | FT-21 | v1 の機能（自己申告と lessons の注入、lessons の追記、自己申告による成功判定、`check-trigger` の閾値、オフライン層の構想）を廃止する。旧データは読まない                                                                                                                                                  | must   |
-| FT-22 | 導入先の移行: hook のファイル名・manifest・CLI のサブコマンド・設定キーを非推奨期間中は残す。旧データは hook が自動で削除せず、移行の手順で削除する（このリポジトリの lessons は PR で削除する）                                                                                                          | must   |
+| FT-22 | 導入先の移行: hook のファイル名と manifest は v2 の役割で残す。CLI のサブコマンドと設定キーは非推奨期間（v0.3.8 の 1 リリース。ADR-20261108-065 の追記）の間だけ残し、その後に外す。旧データは hook が自動で削除せず、移行の手順で削除する（このリポジトリの lessons は PR で削除する）                   | must   |
 
 ### 5.1 依存する他パッケージの機能
 
@@ -164,7 +164,7 @@ v2 は次の meta-harness の機能に依存する。2026-11-08 時点のコー�
 | NF-04 | holdout のシナリオと採点基準は proposer から守る。学習用のシナリオのプロンプトと採点の説明は、meta-harness の設計どおり proposer に見えてよい                                                        | proposer の読み取り範囲に、シナリオのファイル・holdout の実行記録・holdout の採点基準の文面が含まれない                                                                              |
 | NF-05 | 台帳に入れる抜粋は fail-logs と同等以上の伏せ字を通し、原データを複製しない                                                                                                                          | 抜粋は伏せ字の処理を通った文字列だけで、1 件あたりの上限文字数を超えない                                                                                                             |
 | NF-06 | 帰属を誤るより `unknown` を選ぶ（安全側）                                                                                                                                                            | FT-05 の条件に当たらない証拠は、自動では帰属させない                                                                                                                                 |
-| NF-07 | 導入先の互換性: 設定キーと `*.local.yaml` の上書き、hook の登録、`orchex sync` / `orchex uninstall` を非推奨期間中に壊さない                                                                         | 非推奨期間中に v1 の設定を置いたままでも sync と uninstall が成功する（期間の長さは設計で決める）                                                                                    |
+| NF-07 | 導入先の互換性: 設定キーと `*.local.yaml` の上書き、hook の登録、`orchex sync` / `orchex uninstall` を、非推奨期間の後も壊さない                                                                     | v1 の設定を `.local.yaml` に置いたままでも、設定の読み込み・sync・uninstall が成功する（v1 のキーの値は使われない）                                                                  |
 | NF-08 | 台帳と受け渡しの記録は、worktree を消しても残る                                                                                                                                                      | root worktree に集約して保存し、worktree を削除しても失われない                                                                                                                      |
 | NF-09 | 証拠から作るシナリオ下書きと、その固定データにも伏せ字を通し、下書きには上限（本数・大きさ・費用）を持つ。承認したシナリオは公開リポジトリに入るので、実データの写しではなく再現用に作ったものにする | 人の承認に出す前の下書きが伏せ字の処理を通っており、上限を超える下書きは作られない。承認の確認項目に「公開してよい内容か」と「実行される行（準備のコマンド・検査のコマンド）」がある |
 
@@ -192,6 +192,6 @@ v2 は次の meta-harness の機能に依存する。2026-11-08 時点のコー�
 - 壊れた入力や書き込みできない保存先を与えても、hook は終了コード 0 で出力なしに終わる（NF-02）
 - meta-harness が proposer に渡す読み取り範囲に、シナリオのファイル・holdout の実行記録・holdout の採点基準の文面が含まれない（NF-04）
 - 台帳の抜粋とシナリオ下書きは伏せ字の処理を通り、上限を超えない（NF-05、NF-09）
-- v2 の hook は lessons を読みも書きもせず、`check-trigger` は lessons の件数でオフライン層の起動を勧めない（FT-21）
-- v1 の設定ファイルを置いたままの導入先で、`orchex sync` と `orchex uninstall skill-evolution` が成功し、hook は旧データを削除しない（FT-22、NF-07）
+- v2 の hook は lessons を読みも書きもせず、lessons の件数でオフライン層の起動を勧める仕組み（`check-trigger`）は無い（FT-21）
+- v1 の設定を `.local.yaml` に置いたままの導入先で、`orchex sync` と `orchex uninstall skill-evolution` が成功し、hook は旧データを削除しない（FT-22、NF-07）
 - worktree で作業して worktree を削除しても、候補と受け渡しの記録が残る（NF-08）

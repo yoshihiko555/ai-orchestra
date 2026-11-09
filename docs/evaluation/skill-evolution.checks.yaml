@@ -13,24 +13,6 @@
     - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev25_config_and_core_import_fallback"
   notes: "enabled と local.yaml の優先順位・再帰マージ、配布設定と同期台帳の整合性。"
 
-- ev_id: EV-28
-  phase: 1
-  priority: must
-  oracle: command_exit
-  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev28"
-  covered_by:
-    - "packages/skill-evolution/tests/test_skill_evolution_cli.py::test_ev28_v1_subcommands_are_deprecated_with_compatible_arguments"
-  notes: "v1 の引数を維持。データは読まず非推奨の JSON を返す。check-trigger は終了コード 1。"
-
-- ev_id: EV-29
-  phase: 1
-  priority: must
-  oracle: command_exit
-  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev29"
-  covered_by:
-    - "packages/skill-evolution/tests/test_skill_evolution_cli.py::test_ev29_bad_or_missing_arguments_keep_argparse_errors"
-  notes: "Phase 1 は argparse の未知・欠落引数を検証。非推奨 evaluate は履歴ファイル自体を読み込まない。"
-
 - ev_id: EV-38
   phase: 1
   priority: must
@@ -160,18 +142,10 @@
     - "packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_ev49_linked_worktree_events_are_written_to_root"
     - "packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_ev49_git_failure_falls_back_to_project"
     - "packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_ev49_traversal_and_symlink_escape_fall_back_to_default"
+    - "packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_ev49_non_mapping_storage_or_non_string_logs_dir_falls_back_to_default"
     - "packages/skill-evolution/tests/test_skill_evolution_root_resolution.py::test_ev49_default_directory_escape_fails_without_writing"
     - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev49_regular_checkout_resolves_root_without_git"
   notes: "Phase 1 の runs のみ。core の root 解決を使い、失敗時は project に戻る。台帳は後続フェーズ。"
-
-- ev_id: EV-81
-  phase: 1
-  priority: must
-  oracle: command_exit
-  command: "AI_ORCHESTRA_DIR=\"$PWD\" uv run --python 3.12 --with-editable \".[dev]\" python -m pytest -q packages/skill-evolution/tests -k ev81"
-  covered_by:
-    - "packages/skill-evolution/tests/test_skill_evolution_cli.py::test_ev81_check_trigger_never_recommends_starting_even_with_many_lessons"
-  notes: "教訓数に関係なく triggered false、suggested_command なし、非推奨案内。"
 
 - ev_id: EV-84
   phase: 1
@@ -181,7 +155,8 @@
   covered_by:
     - "packages/skill-evolution/tests/test_skill_evolution_manifest.py::test_ev84_manifest_preserves_existing_hooks_and_adds_scope_hooks"
     - "packages/skill-evolution/tests/test_skill_evolution_manifest.py::test_ev84_sync_and_uninstall_support_new_events_with_legacy_local_config"
-  notes: "旧 hook と新 3 イベントを保持し、一時 settings へ同期、実際の uninstall で除去。旧 local 設定を保持。"
+    - "packages/skill-evolution/tests/test_skill_evolution_common.py::test_ev84_v1_keys_are_absent_and_legacy_local_config_loads"
+  notes: "旧 hook と新 3 イベントを保持し、一時 settings へ同期、実際の uninstall で除去。配布設定と既定値に v1 のキーが無く、v1 のキーを残した local 設定も読み込める。"
 
 # Phase 2: 取り込み・帰属・候補台帳と読み取り / 管理 CLI。
 
@@ -664,44 +639,11 @@
     - "packages/skill-evolution/tests/test_candidates_phase4_fixes.py::test_ev86_over_limit_tree_never_reads_any_blob"
   notes: "実 git の blob と hook のハッシュ互換・上限・除外。"
 
-- ev_id: EV-82
-  phase: 5
-  priority: must
-  oracle: command_exit
-  command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev82'
-  covered_by:
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_dry_run_lists_absolute_paths_without_deleting"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_apply_deletes_only_v1_in_all_worktrees_and_preserves_v2"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_symlinked_targets_are_reported_and_preserved"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_unsafe_config_is_refused_per_worktree"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_symlinked_storage_parent_outside_is_refused"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_local_config_targets_custom_storage_without_removing_default_siblings"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_inner_symlinks_are_unlinked_without_following"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_file_targets_are_reported_and_preserved"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_missing_targets_succeed"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_git_failure_prevents_any_deletion"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_scan_failure_prevents_any_deletion"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_local_config_outside_claude_is_reported_and_preserved"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_deletion_failure_reports_all_results_and_continues"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_abbreviated_apply_is_rejected_without_deleting"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_top_level_option_abbreviations_are_rejected"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_prunable_worktree_is_reported_and_skipped"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_missing_worktree_without_prunable_marker_is_skipped"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_target_replaced_by_symlink_before_deletion_is_preserved"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_symlinked_parent_inside_worktree_obeys_claude_boundary"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_lexical_path_outside_claude_pointing_inside_is_refused"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_v2_storage_and_ancestors_are_refused"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_linked_worktree_v2_storage_is_protected_in_root"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_symlinked_v2_storage_is_protected_by_realpath"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_parent_redirected_to_v2_storage_before_deletion_is_preserved"
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev82_worktree_local_v2_storage_is_preserved_after_root_resolution_recovers"
-  notes: "全 worktree の明示的な旧データ削除、範囲外・symlink の拒否、v2 データの保持。"
-
 - ev_id: EV-83
   phase: 5
   priority: must
   oracle: command_exit
   command: 'AI_ORCHESTRA_DIR="$PWD" uv run --python 3.12 --with-editable ".[dev]" python -m pytest -q packages/skill-evolution/tests -k ev83'
   covered_by:
-    - "packages/skill-evolution/tests/test_purge_v1.py::test_ev83_hooks_and_other_cli_commands_preserve_every_v1_file"
-  notes: "全 v2 hook、非推奨 CLI、候補の読み取り CLI が v1 ファイルと内容を保持。"
+    - "packages/skill-evolution/tests/test_v1_data_preserved.py::test_ev83_hooks_and_cli_commands_preserve_every_v1_file"
+  notes: "全 v2 hook と候補の CLI（読み取り・prune-runs）が v1 ファイルと内容を保持。"

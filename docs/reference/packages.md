@@ -578,8 +578,7 @@ Phase 1b 以降の `evaluate` は Docker コンテナで OS レベル隔離さ�
 | skill  | `skill-candidates`           | 失敗の帰属と改善候補を人が確認し、シナリオの承認・meta-harness への受け渡し・再発の確認を進める                      |
 | script | `skill_candidates.py`        | 改善候補の一覧・詳細・実行範囲（読み取り。許可リストに入れてよい）                                                   |
 | script | `skill_candidates_admin.py`  | 取り込み・帰属・候補の操作・下書きと承認・導入・受け渡し・マージと再発の確認（人の承認が必要。許可リストに入れない） |
-| script | `skill_evolution.py`         | v1 互換 CLI（非推奨）と、v1 のデータを消す `purge-v1`（既定は一覧だけ。`--apply` で削除）                            |
-| config | `skill-evolution.yaml`       | 記録（`runs.*`）・台帳（`ledger.*`）・下書き（`draft.*`）の設定。v1 のキーは非推奨期間のあいだ残す                   |
+| config | `skill-evolution.yaml`       | 記録（`runs.*`）・台帳（`ledger.*`）・下書き（`draft.*`）の設定。v1 のキーは外した（残っても使われない）             |
 
 ---
 

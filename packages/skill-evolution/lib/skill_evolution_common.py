@@ -34,7 +34,6 @@ PROJECT_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 DEFAULTS: dict[str, Any] = {
     "enabled": True,
     "storage": {
-        "dir": ".claude/skill-evolution",  # 非推奨。v2 では使わない。
         "logs_dir": ".claude/logs/skill-evolution",
     },
     "runs": {"hash_max_files": 200, "hash_max_bytes": 1048576},
@@ -47,17 +46,6 @@ DEFAULTS: dict[str, Any] = {
         "max_file_bytes": 16384,
         "max_attempts_per_candidate": 3,
     },
-    # 非推奨の v1 設定。既存の local.yaml を読めるよう残すが、v2 では使わない。
-    "lessons": {"max_lines": 40, "inject_max_chars": 4000},
-    "pending": {"stale_after_seconds": 600},
-    "offline": {
-        "max_iterations": 10,
-        "max_cost_usd": 5.0,
-        "holdout_ratio": 0.3,
-        "stop": {"consecutive": 2, "accuracy_delta_pt": 3, "steps_pct": 10, "time_pct": 15},
-        "guards": {"divergence_rounds": 3, "overfit_drop_pt": 15},
-    },
-    "trigger": {"lessons_threshold": 20},
 }
 
 
@@ -179,7 +167,11 @@ def _resolve_logs_subdir(base: str, config: dict | None) -> str:
     では安全でない保存先へ黙って書かず、明示的なエラーとして表面化する。
     """
     cfg = config or {}
-    rel = (cfg.get("storage") or {}).get("logs_dir") or DEFAULTS["storage"]["logs_dir"]
+    storage = cfg.get("storage")
+    rel = storage.get("logs_dir") if isinstance(storage, dict) else None
+    if not isinstance(rel, str) or not rel:
+        # local.yaml の型違い（文字列の storage、文字列でない logs_dir）は既定値に戻す
+        rel = DEFAULTS["storage"]["logs_dir"]
     real_base = os.path.realpath(base)
     candidate = os.path.abspath(os.path.join(base, rel))
     if not _is_path_within_real_base(real_base, candidate):

@@ -3,7 +3,7 @@
 **パッケージ**: `packages/skill-evolution`
 **類型**: hook 型（主: スキルの実行範囲の記録）+ CLI ツール型（副: 改善候補の台帳・meta-harness への受け渡し）
 **作成日**: 2026-07-03
-**最終レビュー日**: 2026-11-09（EV-85・EV-86 を追加し、EV-82 を `.claude/` の下に限る形に改め、人間レビューで承認）。2026-11-08（v2（ADR-20261108-065）へ全面改訂し、人間レビューで承認。v1 の観点は欠番）。2026-07-28（v1）
+**最終レビュー日**: 2026-11-10（v1 の互換の CLI `skill_evolution.py` と設定のキーを外したため EV-28・EV-81・EV-82 を欠番にし、EV-83・EV-84 を改め、EV-49 に設定の型違いを足し、人間レビューで承認）。2026-11-09（EV-85・EV-86 を追加し、EV-82 を `.claude/` の下に限る形に改め、人間レビューで承認）。2026-11-08（v2（ADR-20261108-065）へ全面改訂し、人間レビューで承認。v1 の観点は欠番）。2026-07-28（v1）
 **情報源**: `docs/requirements/skill-evolution.md`（v2。FT-01〜FT-22、NF-01〜NF-09、受け入れ基準）、`docs/design/skill-evolution.md`（v2）、
 `docs/adr/ADR-20261108-065.md`、`docs/adr/ADR-20260728-046.md`（root への集約）。
 補助参照（構成要素の列挙のみ）: `packages/skill-evolution/manifest.json`。
@@ -36,7 +36,6 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
 | `capture-skill-stop.py`（Stop）                                                    | hook 入力 JSON                                      | なし                           | `turn.stopped` を追記                                                       |
 | `skill_candidates.py`（`list` / `show` / `runs`）                                  | サブコマンド引数                                    | 一覧・詳細（無害化した文字列） | なし（読むだけ）                                                            |
 | `skill_candidates_admin.py`（`ingest` / `attribute` / … / `prune-runs`）           | サブコマンド引数、meta-harness の `--json` の出力   | 結果と理由                     | 台帳（`candidates.jsonl`・写像）・下書き・`--dest` の worktree への書き込み |
-| `skill_evolution.py`（v1 のサブコマンド、`purge-v1`）                              | サブコマンド引数                                    | 非推奨の旨、削除対象の一覧     | `purge-v1 --apply` のときだけ v1 のデータを削除                             |
 | `/skill-candidates`（スキル。観点は `docs/evaluation/skills/skill-candidates.md`） | 利用者の操作                                        | 一覧と確認                     | admin CLI の実行（利用者の承認の後）                                        |
 
 ## 3. 評価観点
@@ -46,7 +45,8 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
      1 観点 = 1 振る舞い -->
 
 > **v1 の観点の欠番**: EV-01〜EV-22、EV-24、EV-26、EV-27、EV-30〜EV-37 は v1（ADR-20260701-028）の観点で、
-> v2 で機能ごと廃止したため欠番とする（再利用しない）。EV-23 は EV-45 に置き換えた。EV-25・EV-28・EV-29 は v2 でも同じ振る舞いとして残す。
+> v2 で機能ごと廃止したため欠番とする（再利用しない）。EV-23 は EV-45 に置き換えた。EV-25・EV-29 は v2 でも同じ振る舞いとして残す。
+> EV-28・EV-81・EV-82 は、非推奨期間を終えて v1 の互換の CLI（`skill_evolution.py` の v1 のサブコマンドと `purge-v1`）を外したため欠番とする（2026-11-10）。
 
 ### 3.1 実行範囲の記録
 
@@ -61,7 +61,7 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
 - [ ] EV-46（正常 / must）: v2 の hook はどれも追加コンテキストを返さず、lessons・metrics・pending を読みも書きもしない — 根拠: req NF-01、FT-21; design §12.1
 - [ ] EV-47（正常 / must）: `skill_hash` は同じ中身のスキルのディレクトリで同じ値になり、`.` で始まる名前と `__pycache__` を含めず、ディレクトリの中の symlink をたどらない — 根拠: req FT-01; design §4.3
 - [ ] EV-48（境界 / must）: `skill_hash` は、ファイル数か大きさの上限を超えるとき、スキルが見つからないとき、plugin のスキルのとき `null`（`src: unresolved`）になる — 根拠: design §4.3
-- [ ] EV-49（正常 / must）: 実行範囲の記録と台帳は root worktree の `storage.logs_dir` に書かれ、linked worktree で書いた記録も root に残る。`logs_dir` の `..` によるディレクトリの外への指定は拒否される — 根拠: req NF-08; ADR-20260728-046 の「決定」3; design §6.1
+- [ ] EV-49（正常 / must）: 実行範囲の記録と台帳は root worktree の `storage.logs_dir` に書かれ、linked worktree で書いた記録も root に残る。`logs_dir` の `..` によるディレクトリの外への指定は拒否される。`storage` が mapping でない・`logs_dir` が文字列でない設定は既定値に戻る — 根拠: req NF-08; ADR-20260728-046 の「決定」3; design §6.1
 - [ ] EV-25（正常 / must）: `config/skill-evolution.yaml` の `enabled: false` のとき、hook は何も記録しない。`skill-evolution.local.yaml` による上書きは `config-loading` ルールどおりベースより優先される — 根拠: design §11; `.claude/rules/config-loading.md`
 
 ### 3.2 実行範囲の組み立てと帰属
@@ -114,10 +114,8 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
 
 ### 3.7 v1 の廃止と移行
 
-- [ ] EV-81（正常 / must）: `check-trigger` は lessons の件数によらず起動を勧めず、`suggested_command` を返さず、非推奨の旨を返す — 根拠: req FT-21; design §12.1
-- [ ] EV-82（異常 / must）: `purge-v1` は `--apply` が無ければ削除せずに絶対パスの一覧だけを出し、`--apply` でも worktree の `.claude/` の下に収まらないパス（設定の値が `.` や `src` を指す場合を含む）、v2 の保存先とその祖先、symlink は削除しない — 根拠: req FT-22; design §12.3
-- [ ] EV-83（異常 / must）: hook と、`purge-v1` 以外の CLI の操作は、v1 のデータ（lessons・metrics・pending・locks）を削除しない — 根拠: req FT-22; design §12.3
-- [ ] EV-84（正常 / must）: manifest は v1 の hook のエントリ（PreToolUse:Skill・PostToolUse:Skill・SubagentStop・Stop）を同じファイル名で持ち、v1 の設定のキーを `.local.yaml` に残した導入先で `orchex sync` と `orchex uninstall skill-evolution` が成功する — 根拠: req FT-22、NF-07; design §12.2
+- [ ] EV-83（異常 / must）: hook と CLI（`skill_candidates.py`・`skill_candidates_admin.py`）の操作は、v1 のデータ（lessons・metrics・pending・locks）を削除しない — 根拠: req FT-22; design §12.3
+- [ ] EV-84（正常 / must）: manifest は v1 の hook のエントリ（PreToolUse:Skill・PostToolUse:Skill・SubagentStop・Stop）を同じファイル名で持つ。v1 の設定のキー（`storage.dir`・`lessons`・`pending`・`offline`・`trigger`）は配布する設定と既定値に無く、`.local.yaml` に残した導入先でも、設定の読み込み・`orchex sync`・`orchex uninstall skill-evolution` が成功する — 根拠: req FT-22、NF-07; design §11、§12.2
 
 ## 4. 類型別観点
 
@@ -132,9 +130,8 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
 
 ### CLI ツール型（副: 台帳・受け渡し）
 
-- [ ] EV-28（正常 / must）: `skill_evolution.py` の `status` / `check-trigger` / `evaluate` / `provenance` / `lock` サブコマンドは、引数・オプション・exit code の契約を維持し、既存呼び出しとの後方互換性を壊さない（v2 では非推奨の旨を出す） — 根拠: `AGENTS.md`（変更ガードレール）; design §12.2
 - [ ] EV-29（異常 / must）: CLI に不正な引数（未知の ID・壊れた JSONL・壊れた `--from-json` の入力等）を渡した場合、スタックトレースではなく分かりやすいエラーメッセージと non-zero exit code を返す — 根拠: 実装挙動
-- N/A（破壊的操作の安全策）: EV-82・EV-70 で代表する
+- N/A（破壊的操作の安全策）: EV-70 で代表する
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
@@ -142,4 +139,4 @@ skill-evolution は、スキルの実行範囲（Skill ツール経由と `/<ski
 - `suite_hash` の一致（EV-71）は、skill-evolution の計算を meta-harness の `compute_suite_hash` と同じ入力で比べる契約テストにする。計算方法をテストにコピーしただけのテストでは、meta-harness 側の変更を検出できない。
 - 下書きの形の検査（EV-66〜EV-68）は、通る例だけでなく、すり抜けを狙う入力（フラグを足す、`printf` の文字列に `$` や `\` を入れる、パスの途中に `..` を入れる、言い換えた抜粋）を含むか確認する。
 - hook のテスト（EV-38〜EV-46）は、標準出力が空であることを毎回確かめているか確認する（NF-01）。
-- `install`・`purge-v1`（EV-70、EV-82）は、symlink と範囲外のパスを実際に作った異常系テストを持つか確認する。
+- `install`（EV-70）は、symlink と範囲外のパスを実際に作った異常系テストを持つか確認する。

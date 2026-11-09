@@ -81,6 +81,20 @@ def test_ev49_traversal_and_symlink_escape_fall_back_to_default(
     assert list(outside.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    "storage",
+    ["x", ["logs"], 5, {"logs_dir": 5}, {"logs_dir": ["logs"]}, {"logs_dir": {"a": 1}}],
+)
+def test_ev49_non_mapping_storage_or_non_string_logs_dir_falls_back_to_default(
+    project, monkeypatch, storage
+):
+    # local.yaml の型違い（v1 の storage の書き損じなど）で CLI がスタックトレースにならない
+    monkeypatch.setattr(se, "_resolve_log_root_cached", lambda path: str(project))
+    config = {"storage": storage}
+    assert se.logs_dir(str(project), config) == str(project / ".claude/logs/skill-evolution")
+    assert se.append_run_event(str(project), se.build_scope_event("turn.started", {}), config)
+
+
 def test_ev49_default_directory_escape_fails_without_writing(project, tmp_path, monkeypatch):
     outside = tmp_path / "outside"
     outside.mkdir()
