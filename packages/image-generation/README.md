@@ -50,7 +50,7 @@ Codex の組み込み `image_gen` は ChatGPT 認証で動くため **`OPENAI_AP
 確定呼び出し（`$IMG_FEATURE` はフラグ名の実行時解決結果。次項参照）:
 
 ```bash
-codex exec --model gpt-6.1-sol \
+codex exec --model gpt-6.2-sol \
   --sandbox workspace-write \
   -c sandbox_workspace_write.network_access=true \
   --enable "$IMG_FEATURE" \
@@ -83,7 +83,7 @@ codex exec --model gpt-6.1-sol \
   Codex セッションの画像を誤って成功扱いしない鮮度ガード）。session id が取れない場合や
   対象なしの場合は失敗として報告し、手動でディレクトリを漁って最新ファイルを掴むのは
   **禁止**（虚偽成功の原因）。
-- `image_model`（既定 `gpt-6.1-sol`）は `image_gen` ツールを呼び出す Codex エージェントの
+- `image_model`（既定 `gpt-6.2-sol`）は `image_gen` ツールを呼び出す Codex エージェントの
   モデルで、画像を描画するモデルではない（描画は OpenAI の gpt-image で、選択できない）。
   `codex.model` とは分けて `config/image-generation.yaml` の `image_model` で指定する。
   `gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応。従来の既定 `gpt-5.5` は

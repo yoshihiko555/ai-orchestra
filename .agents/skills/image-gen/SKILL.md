@@ -160,7 +160,7 @@ Task(subagent_type="image-generator", prompt="""
 ## 注意事項
 
 - **API キー不要**: 組み込み `image_gen` は Codex の ChatGPT 認証で動く。`OPENAI_API_KEY` は使わない。
-- **モデル**: 既定 `gpt-6.1-sol`。これは `image_gen` を呼び出す Codex エージェントのモデルで、
+- **モデル**: 既定 `gpt-6.2-sol`。これは `image_gen` を呼び出す Codex エージェントのモデルで、
   描画モデル（OpenAI の gpt-image）ではない。`codex.model` とは分けて、`image-generation`
   パッケージ config（`config/image-generation.yaml` の `image_model`）で指定する。
   `gpt-5.3-codex` 等のコーディングモデルは image_gen 非対応。`gpt-5.5` は ChatGPT アカウントの Codex で使えなくなった。
