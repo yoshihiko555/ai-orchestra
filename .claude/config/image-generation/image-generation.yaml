@@ -10,7 +10,7 @@
 # アカウントの Codex で使えなくなった（codex 0.164.0 で model_not_found、
 # 2026-10-27。ADR-20260605-023 参照）。
 # 上書きは .claude/config/image-generation/image-generation.local.yaml で可能。
-image_model: gpt-6.1-sol
+image_model: gpt-6.2-sol
 
 # 画像内に描画する見出し・ラベル・注釈・キャプションの既定言語。
 # 技術用語・固有名詞は英語のままでもよい。ユーザープロンプトに画像内テキストの

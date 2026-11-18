@@ -81,7 +81,7 @@
       "config/core/task-memory.yaml": "c059d1d84cd186fcf7f20bb9ffcb7475b3355784a3a0c890f1a39312f4ffe9b1"
     },
     "agent-routing": {
-      "config/agent-routing/cli-tools.yaml": "e4faa061b5150a9e1594ee2fb6533d399fe97fcab927f9e48f672dc9e43c6f2f",
+      "config/agent-routing/cli-tools.yaml": "12bbace708ba8ff4f2cb776570e944db3cf41429e601640b83936ba93443ba2d",
       "agents/ai-architect.md": "74be0697afd3717dcb7b7ef28132ba3f8a4479fc6f8e30b7558a5fb66b977670",
       "agents/ai-dev.md": "e5b9b410466a7610a1f892cfa374f01b0e969871631eb6d7c53e0928263b9737",
       "agents/api-designer.md": "1889860c7110d4b28bb1a39859ba35064c784442eb6d20f10dd6b4f3cdc7039b",
@@ -122,8 +122,8 @@
       "config/git-workflow/sandbox-requirements.json": "4b2f9366201ed8f90d3f2f5e418502f75d977b4ca659f8dfc91b8369e5971e5e"
     },
     "image-generation": {
-      "config/image-generation/image-generation.yaml": "2344a6b3abcd1beecb6f2c67204b7f3d02aacba50237af2c2926c03dc8b8d65e",
-      "agents/image-generator.md": "d976b4dbcd21834c24f64ed05a65885e5e8b04c34c3884e8b177f40473c55a3d",
+      "config/image-generation/image-generation.yaml": "bae68649b0188981f19568d67bafcc05cca4d742f009712c95f55bf9cb724711",
+      "agents/image-generator.md": "837e81b7435ef6d71513d38f447099ab64d42c5c0dec965815cb4805963d591c",
       "config/image-generation/styles/isometric.md": "821224582cf75c6148d683b67407bd5de6d9d7b208742de27ba5df5650a10861",
       "config/image-generation/styles/blueprint.md": "70d4d9843bff8b04dd1cbc80753ccd10b897e31def54a45c0764adbe480be8a8",
       "config/image-generation/styles/line-illust.md": "763b37dd0247fc2aa60a523424663e8bb671e4a00cbb9b220982922ed36e2983",

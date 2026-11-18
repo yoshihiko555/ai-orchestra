@@ -19,7 +19,7 @@ Resolve these values:
 
 - `image_model` — the Codex model used for image generation.
   **The yaml value is the single source of truth.** Use it as-is when present.
-  Only if the key (or file) is entirely absent, fall back to `gpt-6.1-sol` AND state
+  Only if the key (or file) is entirely absent, fall back to `gpt-6.2-sol` AND state
   in your report that you fell back to a default because `image_model` was
   unconfigured. Never use a coding model such as `gpt-5.3-codex` — those do not
   support image_gen on ChatGPT accounts.
@@ -469,7 +469,7 @@ Notes:
 With the image-generation feature enabled (Step 3, via the runtime-resolved
 `--enable '<IMG_FEATURE>'`), `image_gen` saves to
 `~/.codex/generated_images/<session id>/`, NOT to `$RESOLVED`. The file name
-depends on the model (`exec-*.png` for sol-family models such as `gpt-6.1-sol`,
+depends on the model (`exec-*.png` for sol-family models such as `gpt-6.2-sol`,
 `call_*.png` for older models such as `gpt-5.5`, `ig_*.png` on older codex).
 Search **only this
 run's session directory** (the `session id:` that Step 3 captured), and take the
