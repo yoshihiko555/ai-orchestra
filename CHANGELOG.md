@@ -10,7 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Codex の既定モデルを `gpt-6.2-sol` に更新**: エージェントルーティング（`codex.model` / `codex.model_allowlist`）、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。従来のモデルを使い続ける場合は `cli-tools.local.yaml` で `codex.model: gpt-6.1-sol` を指定する。
 - **`image-generation`: `image_model` の既定値を `gpt-6.2-sol` に変更**: `image_model` 未設定時のフォールバック値も同じモデルに揃えた。従来のモデルを使い続ける場合は `image-generation.local.yaml` で `image_model: gpt-6.1-sol` を指定する。
-- **`agent-routing`: `antigravity.model_allowlist` に Gemini 4 Hydrogen を追加**: 現行の `agy models`（agy 1.4.8）に合わせ、`gemini-4-hydrogen-xhigh` / `-high` / `-medium` / `-low` を追加した。既定の `antigravity.model` は `gemini-4-argon-high` のまま。
+- **`agent-routing`: Antigravity の既定モデルを `gemini-4-neon-high` に変更し、Gemini 4 Argon を廃止**: `cli-tools.yaml` の `antigravity.model` の既定値を `gemini-4-argon-high` から `gemini-4-neon-high` に変え、`antigravity.model_allowlist` に `gemini-4-neon-xhigh` / `-high` / `-medium` / `-low` を追加した。廃止予定の `gemini-4-argon-*` は allowlist から外したため、`antigravity.model` に指定すると allowlist 外の警告（`[WARN]`）が出る（実行はできる）。
+  当面 Argon を使い続ける場合は、`cli-tools.local.yaml` の `antigravity.model_allowlist` に足す。list はベースに追加されず置き換わるので、使うモデルをすべて書く。
+- **`agent-routing`: `antigravity.model_allowlist` に Gemini 4 Hydrogen を追加**: 現行の `agy models`（agy 1.4.8）に合わせ、`gemini-4-hydrogen-xhigh` / `-high` / `-medium` / `-low` を追加した。
 
 ### Removed
 

@@ -207,7 +207,7 @@ WebSearch の `tool_input.query` / WebFetch の `tool_input.prompt` に比較・
 
 ```
 [Antigravity Suggestion] Consider using Antigravity CLI for research:
-`agy -p "..." --model gemini-4-argon-high 2>/dev/null`
+`agy -p "..." --model gemini-4-neon-high 2>/dev/null`
 ```
 
 **例外:**
