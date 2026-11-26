@@ -86,7 +86,7 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 | `audit-session-end.py`         | SessionEnd         | —              | セッション集計 + `session_end` 記録                    |
 | `audit-prompt.py`              | UserPromptSubmit   | —              | 期待ルートを予測し `prompt` を記録                     |
 | `audit-route.py`               | PostToolUse        | 全 PostToolUse | 実ルート照合 + `route_decision` 記録                   |
-| `audit-cli.py`                 | PostToolUse        | Bash           | Codex/Antigravity CLI 呼び出しを `cli_call` として記録 |
+| `audit-cli.py`                 | PostToolUse        | Bash           | Codex CLI 呼び出しを `cli_call` として記録 |
 | `audit-subagent-start.py`      | SubagentStart      | —              | サブエージェント開始を記録                             |
 | `audit-subagent-end.py`        | SubagentStop       | —              | サブエージェント終了を記録                             |
 | `audit-instructions-loaded.py` | InstructionsLoaded | —              | 読み込まれた指示書を記録                               |
@@ -97,12 +97,6 @@ Hook は Claude Code のライフサイクルイベントに応じて自動実�
 | ----------------------------- | ----------- | ---------- | ------------------------------------------------ |
 | `check-codex-before-write.py` | PreToolUse  | Edit/Write | `[Codex Suggestion]` を出力して Codex 相談を促す |
 | `check-codex-after-plan.py`   | PostToolUse | Agent/Task | プラン完了後に Codex レビューを提案              |
-
-### antigravity-suggestions
-
-| フック                            | イベント   | 対象               | 説明                                                             |
-| --------------------------------- | ---------- | ------------------ | ---------------------------------------------------------------- |
-| `suggest-antigravity-research.py` | PreToolUse | WebSearch/WebFetch | `[Antigravity Suggestion]` を出力して Antigravity リサーチを促す |
 
 ### codd
 
@@ -195,40 +189,19 @@ Edit は `old_string` / `new_string` の契約宣言が同じならコードシ�
 
 `check-codex-after-plan.py` は今回の絞り込み・通知抑制の対象外であり、既存の発火条件と非拘束的な advisory を維持する。
 
-### suggest-antigravity-research.py（antigravity-suggestions）
-
-WebSearch/WebFetch の前に Antigravity CLI でのリサーチを任意提案する。
-
-**発火条件:**
-
-WebSearch の `tool_input.query` / WebFetch の `tool_input.prompt` に比較・選定・移行等の調査意図がある場合に限定する。明確な選択比較（`vs` / `vs.` / `versus` / `違い` / `どっち` / `which is better`）も対象とする。文字列等の演算比較や単純な migration エラー検索は除外するが、明確な選択比較が同居すればそちらを優先する。URL や質問の長さ、`documentation` / `library` / `guide` / `example` / `best practice` 等の一般語だけでは発火しない。
-
-**出力例:**
-
-```
-[Antigravity Suggestion] Consider using Antigravity CLI for research:
-`agy -p "..." --model gemini-4-neon-high 2>/dev/null`
-```
-
-**例外:**
-
-- `antigravity.enabled: false` の場合（旧 `gemini.enabled: false` も後方互換で尊重）
-- 以下の共通条件でサブエージェント／インプロセス teammate 内、または同一 session / 正規化した同一質問の通知済みと判定した場合
-
 ### 編集前・Web 調査前の提案の共通契約
 
-対象は `check-codex-before-write.py` と `suggest-antigravity-research.py`。共通 helper で次を扱う:
+対象は `check-codex-before-write.py`。共通 helper で次を扱う:
 
 - **実行中エージェントの判定**: トップレベルの `agent_id` が非空の文字列（`str`）の場合だけ、サブエージェント／インプロセス teammate 内と判定して提案を抑制する。`agent_type` は `--agent` で起動したメインにも付くため、単独では抑制しない。`tool_input.subagent_type` は呼出先であり判定に使わない（出典: [Claude Code 公式仕様 — Common input fields](https://code.claude.com/docs/en/hooks#common-input-fields)）。
 - **project / worktree の解決**: 両 hook の config・対象範囲・marker は、環境変数 `CLAUDE_PROJECT_DIR` が非空ならそのルートを使い、未設定または空の場合だけ hook 入力の `cwd` を使う。同じルートに統一し、別 project / worktree の設定や通知状態を混同しない。
-- **通知の重複抑制**: `session_id` があれば、project / worktree 別に同一 session・同一ファイル（Codex）または正規化した同一質問（Antigravity）への通知を 1 度にする。
+- **通知の重複抑制**: `session_id` があれば、project / worktree 別に同一 session・同一ファイルへの通知を 1 度にする。
 - **最小限の状態**: 各 project / worktree の `.claude/state/suggestions/` に session / 対象を hash 化した空 marker のみを保存する。質問本文・URL・生の session ID や対象パスは保存しない。marker の自動削除は今回追加せず、終了後も session ディレクトリが残る。cleanup は将来課題とする。
 - **状態を使えない場合**: 状態書き込み失敗時は無出力・exit 0。`session_id` がなければ state を作らず、その呼び出しごとの助言とする。
 - **責務境界**: 通知済みは相談済みではない。意味的な相談済み判定はオーケストレーターが行い、hook は transcript を解析しない。
 
-`[Codex Suggestion]` / `[Antigravity Suggestion]` は操作の保留・追加相談を義務付けない。相談済み・軽微・適用外ならそのまま続行でき、採否を毎回説明する義務もない。ただし `[Resolved Routing]` / `agents.<name>.tool` の明示的な routing とスキル固有の委譲義務は維持する。相談時も既存の config 解決（base + `.local.yaml`、解決済み routing の尊重）と CLI ごとの sandbox 安全条件に従う（[ADR-060](../adr/ADR-20261028-060.md)）。
+`[Codex Suggestion]` は操作の保留・追加相談を義務付けない。相談済み・軽微・適用外ならそのまま続行でき、採否を毎回説明する義務もない。ただし `[Resolved Routing]` / `agents.<name>.tool` の明示的な routing とスキル固有の委譲義務は維持する。相談時も既存の config 解決（base + `.local.yaml`、解決済み routing の尊重）と CLI ごとの sandbox 安全条件に従う（[ADR-060](../adr/ADR-20261028-060.md)）。
 
-次回監査では researcher の指定 CLI 試行率と、メインの任意提案の採用率を分離する。サブエージェント内の通知は `agent_id` で抑制し、researcher の `agy` 実行は `researcher.md` の指示が担うため、hook 通知数を researcher の遵守率の代用にしない。
 
 ### lint-on-save.py（quality-gates）
 
@@ -320,7 +293,6 @@ if __name__ == "__main__":
 - `Agent/Task`: `check-plan-gate.py`, `inject-shared-context.py`（PreToolUse では表示のみ）
 - `Edit/Write`: `check-codex-before-write.py`
 - `Read/Grep/Bash`: `check-context-optimization.py`
-- `WebSearch/WebFetch`: `suggest-antigravity-research.py`
 - `Bash`: `codd-validate-precommit.py`（opt-in、`hooks.validate_on_commit` 既定 `warn`）
 
 ### PostToolUse
@@ -368,6 +340,4 @@ orchex enable codex-suggestions --project .
 # .claude/config/agent-routing/cli-tools.local.yaml
 codex:
   enabled: false # check-codex-before-write.py の [Codex Suggestion] が抑制される
-antigravity:
-  enabled: false # suggest-antigravity-research.py の [Antigravity Suggestion] が抑制される
 ```

@@ -10,7 +10,6 @@
 | ----------------------------------------- | ------------------------------------------------------------------- |
 | `agents.<target>.tool == "codex"`         | Codex CLI を使用（analysis / implementation を用途で選択）          |
 | `agents.<target>.tool == "claude-direct"` | Codex を強制しない                                                  |
-| `agents.<target>.tool == "antigravity"`   | Antigravity CLI（`agy`）を使用                                      |
 | `agents.<target>.tool == "auto"`          | タスク特性で選択（深い推論・デバッグ・比較・レビューは Codex 候補） |
 
 **重要**: 「Codex は設計専用」「Codex は実装専用」などの固定役割を前提にしない。
@@ -94,11 +93,11 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex
 | `read-only`       | 分析、レビュー、デバッグ助言 |
 | `workspace-write` | 実装、修正、リファクタリング |
 
-## Integration with Antigravity
+## Integration with Claude
 
 | Task                                | Use                            |
 | ----------------------------------- | ------------------------------ |
-| 外部調査が必要                      | Antigravity → (必要なら) Codex |
+| 外部調査が必要                      | Claude の直接調査 → (必要なら) Codex |
 | 実装タスクで route が codex         | Codex                          |
 | 実装タスクで route が claude-direct | Claude direct                  |
 | route が auto                       | タスク特性で選択               |

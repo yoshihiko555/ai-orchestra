@@ -17,7 +17,7 @@ core は全パッケージが依存する共通基盤であり、(1) `.claude/pl
 - エージェントルーティングの判断ロジック（`agent-routing` パッケージの責務）
 - lint/format の自動実行やテスト品質ゲート判定（`quality-gates` パッケージの責務）
 - 失敗イベントの記録・集計そのもの（`fail-logs` パッケージの責務。ただし検知ロジック `failure_detector.py` は物理的に `packages/core/hooks/` に配置されている — 責務境界は情報源に明記なし。仕様確定・文書化はパッケージ別ギャップ Issue で追跡）
-- Codex/Antigravity 呼び出し要否の提案（`codex-suggestions` / `antigravity-suggestions` パッケージの責務）
+- Codex 呼び出し要否の提案（`codex-suggestions` パッケージの責務）
 - 完了した plan ファイルの片付け（削除）。`/task-state close` の責務で、hook は行わない（ADR-20261027-059）
 
 ## 2. 期待する入出力・副作用

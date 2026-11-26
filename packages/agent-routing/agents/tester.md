@@ -27,7 +27,6 @@ Do NOT hardcode model names or CLI options.
 
 ### Sandbox Policy
 
-Antigravity CLI（`agy`）は sandbox 内で直接実行する。
 Codex CLI は sandbox 内で動作しないため、`codex exec` の Bash 呼び出しに限り sandbox を無効化
 （`dangerouslyDisableSandbox: true`）して実行する（詳細規則が配布されている場合は
 `codex-delegation.md` を優先する）。
@@ -58,7 +57,7 @@ sandbox 無効化の必須条件（fail-closed。1 つでも満たさない場�
 ### 書き込めないルーティングの場合（停止）
 
 ファイルの作成・変更を求められているのに、解決済みの `tool`（`[Resolved Routing]`、ブロックが無ければ手順 2 で
-解決した値）が `antigravity`、または `tool` が `codex` で `codex.sandbox` が `read-only` のときは、Edit / Write も
+解決した値）が `codex` で `codex.sandbox` が `read-only` のときは、Edit / Write も
 CLI への書き込み依頼もせずに終了し、「このルーティングでは書き込めない（tool: {値}。codex なら codex.sandbox: {値}）。
 `cli-tools.yaml` / `.local.yaml` の `agents.<agent-name>` を `codex` + `workspace-write` か `claude-direct` にする
 必要がある」と報告する。自分の Edit / Write に切り替えて回避しない（`.local.yaml` で決めた書き込み先を黙って変える
@@ -87,14 +86,6 @@ codex exec --model <codex.model> --sandbox <codex.sandbox> <codex.flags> "{task 
 
 外部CLIを呼ばず、自身の知識とツール（Read/Edit/Write等）で処理する。
 
-### tool = "antigravity" の場合
-
-調査・分析だけの依頼に使う。ファイルの作成・変更を伴う依頼は上の「書き込めないルーティングの場合」に従う。
-
-```bash
-# エラー時は claude-direct にフォールバック
-agy -p "{task}" --model <antigravity.model> 2>/dev/null
-```
 
 ### フォールバック
 

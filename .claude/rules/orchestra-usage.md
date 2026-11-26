@@ -1,14 +1,14 @@
 # CLI Language Policy
 
-**外部 CLI（Codex CLI / Antigravity CLI）と連携するスキルで守るべき共通ルール。**
+**外部 CLI（Codex CLI）と連携するスキルで守るべき共通ルール。**
 
 ## 言語プロトコル
 
-| 対象                           | 言語       |
-| ------------------------------ | ---------- |
-| Codex / Antigravity への質問   | **英語**   |
-| Codex / Antigravity からの回答 | **英語**   |
-| ユーザーへの報告               | **日本語** |
+| 対象             | 言語       |
+| ---------------- | ---------- |
+| Codex への質問   | **英語**   |
+| Codex からの回答 | **英語**   |
+| ユーザーへの報告 | **日本語** |
 
 ## Config-Driven ルーティング
 
@@ -23,16 +23,14 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 
 ### ルーティング規則
 
-| `agents.{name}.tool` | 動作                                                                              |
-| -------------------- | --------------------------------------------------------------------------------- |
-| `codex`              | Codex CLI を使用                                                                  |
-| `antigravity`        | Antigravity CLI（`agy`）を使用（旧値 `gemini` は読み替え）                        |
-| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                                   |
-| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Antigravity、単純作業 → Claude） |
+| `agents.{name}.tool` | 動作                                                                         |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `codex`              | Codex CLI を使用                                                             |
+| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                              |
+| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Claude、単純作業 → Claude） |
 
 ## サンドボックス実行
 
-Antigravity CLI（`agy`）は sandbox 内で直接実行する。
 Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マージ後の実効値で
 `codex.requires_sandbox_disable` が `true`（既定値）の場合に限り、呼び出し側で sandbox を
 無効化して実行する。`false` に上書きされた環境では sandbox 内で実行する
@@ -72,21 +70,6 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.implementation> <codex
 
 **使う場面:** 設計判断、デバッグ、比較検討、レビュー
 
-### Antigravity CLI（リサーチ）
-
-```bash
-# config の antigravity.model を --model フラグに展開して使う
-# agy -p モードは stdin を待たないため < /dev/null 不要
-
-# リサーチ
-agy -p "{質問}" --model <antigravity.model> 2>/dev/null
-
-# コードベース分析
-agy -p "{質問}" --model <antigravity.model> --add-dir . 2>/dev/null
-```
-
-**使う場面:** ライブラリ調査、ドキュメント検索、大規模分析
-
 ### レビュー実行
 
 ```
@@ -113,9 +96,9 @@ agy -p "{質問}" --model <antigravity.model> --add-dir . 2>/dev/null
 | 大きな出力が予想される | サブエージェント経由                     |
 | 複数の分析が必要       | 並列サブエージェント                     |
 | 詳細なレビュー         | `/review` スキル使用                     |
-| Codex/Antigravity 相談 | サブエージェント経由（出力が大きい場合） |
+| Codex 相談             | サブエージェント経由（出力が大きい場合） |
 
-### Codex/Antigravity 呼び出しパターン
+### Codex 呼び出しパターン
 
 ```
 # 大きな出力が予想される場合はサブエージェント経由
@@ -134,7 +117,7 @@ codex exec --model <codex.model> --sandbox <codex.sandbox.analysis> <codex.flags
 ## 利用可能なエージェント
 
 > **Note**: 各エージェントの実行ツールは `cli-tools.yaml` の `agents.<name>.tool` で決まる。
-> 下表はロール説明であり、Codex/Antigravity の固定利用を意味しない。
+> 下表はロール説明であり、Codex の固定利用を意味しない。
 
 ### Planning
 
@@ -207,15 +190,15 @@ OSS の agency-agents から取り込んだエージェント（`specialized-mcp
 
 ## `tool: auto` 時の使い分け目安
 
-| タスク               | 推奨             |
-| -------------------- | ---------------- |
-| 設計判断             | Codex 候補       |
-| デバッグ             | Codex 候補       |
-| コード実装相談       | Codex 候補       |
-| トレードオフ分析     | Codex 候補       |
-| ライブラリ調査       | Antigravity 候補 |
-| コードベース全体理解 | Antigravity 候補 |
-| 最新ドキュメント検索 | Antigravity 候補 |
+| タスク               | 推奨          |
+| -------------------- | ------------- |
+| 設計判断             | Codex 候補    |
+| デバッグ             | Codex 候補    |
+| コード実装相談       | Codex 候補    |
+| トレードオフ分析     | Codex 候補    |
+| ライブラリ調査       | Claude direct |
+| コードベース全体理解 | Claude direct |
+| 最新ドキュメント検索 | Claude direct |
 
 ---
 
@@ -266,7 +249,7 @@ OSS の agency-agents から取り込んだエージェント（`specialized-mcp
 - レビューは `/review` スキルで一括実行
 - 大きなタスクは `planner` で分解してから実行
 - 設計判断で迷ったら `agents.<target>.tool` を確認し、`tool: auto` の場合は Codex を候補にする
-- 調査が必要なら `agents.<target>.tool` を確認し、`tool: auto` の場合は Antigravity を候補にする
+- 調査が必要なら `agents.<target>.tool` を確認し、`tool: auto` の場合は Claude 自身で調査する
 - 大きな出力が予想される CLI 呼び出しはサブエージェント経由
 
 ---

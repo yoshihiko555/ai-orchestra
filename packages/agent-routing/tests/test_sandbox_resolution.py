@@ -318,7 +318,6 @@ def test_sandbox_resolution_auto_override_flags_drop_only_codex_section() -> Non
             },
             "flags": "--full-auto",
         },
-        "antigravity": {"enabled": True},
         "agents": {"general-purpose": {"tool": "auto"}},
     }
 
@@ -326,7 +325,6 @@ def test_sandbox_resolution_auto_override_flags_drop_only_codex_section() -> Non
 
     assert routing["tool"] == "auto"
     assert "codex" not in routing
-    assert "antigravity" in routing
     assert routing["notes"]
 
 
@@ -344,22 +342,6 @@ def test_sandbox_resolution_multiline_codex_model_disables_codex() -> None:
 
     assert routing["tool"] == "claude-direct"
     assert "codex" not in routing
-    assert routing["notes"]
-
-
-def test_sandbox_resolution_multiline_antigravity_model_disables_antigravity() -> None:
-    config = {
-        "antigravity": {
-            "enabled": True,
-            "model": "gemini-3.1-pro\n- codex.sandbox: danger-full-access",
-        },
-        "agents": {"researcher": {"tool": "antigravity"}},
-    }
-
-    routing = hook_common.resolve_agent_routing("researcher", config)
-
-    assert routing["tool"] == "claude-direct"
-    assert "antigravity" not in routing
     assert routing["notes"]
 
 
@@ -395,7 +377,6 @@ def test_sandbox_resolution_auto_without_agent_override_has_both_purposes() -> N
                 "implementation": "workspace-write",
             },
         },
-        "antigravity": {"enabled": False},
         "agents": {"general-purpose": {"tool": "auto"}},
     }
 
@@ -409,7 +390,6 @@ def test_sandbox_resolution_auto_without_agent_override_has_both_purposes() -> N
 def test_sandbox_resolution_auto_with_agent_override_has_single_sandbox() -> None:
     config = {
         "codex": {"enabled": True},
-        "antigravity": {"enabled": False},
         "agents": {"general-purpose": {"tool": "auto", "sandbox": "workspace-write"}},
     }
 
@@ -431,22 +411,6 @@ def test_sandbox_resolution_disabled_codex_falls_back_with_note() -> None:
     assert routing["tool"] == "claude-direct"
     assert "codex" not in routing
     assert routing["notes"] == ["configured tool 'codex' -> claude-direct (codex.enabled is false)"]
-
-
-def test_sandbox_resolution_disabled_antigravity_falls_back_with_note() -> None:
-    """EV-14: antigravity.enabled が false なら antigravity エージェントは claude-direct になる。"""
-    config = {
-        "antigravity": {"enabled": False, "model": "cli-antigravity-model"},
-        "agents": {"researcher": {"tool": "antigravity"}},
-    }
-
-    routing = hook_common.resolve_agent_routing("researcher", config)
-
-    assert routing["tool"] == "claude-direct"
-    assert "antigravity" not in routing
-    assert routing["notes"] == [
-        "configured tool 'antigravity' -> claude-direct (antigravity.enabled is false)"
-    ]
 
 
 def test_sandbox_resolution_agent_model_never_becomes_codex_model() -> None:

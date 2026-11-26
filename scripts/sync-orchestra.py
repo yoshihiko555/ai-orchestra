@@ -46,20 +46,14 @@ from lib.sync_engine import (  # noqa: E402
 )
 from lib.toml_merge import TomlMergeError  # noqa: E402
 
-# リネームされたパッケージの読み替え表（旧名 → 新名）
-# 横展開先の orchestra.json に旧名が残っていても自動移行する
-RENAMED_PACKAGES = {
-    "gemini-suggestions": "antigravity-suggestions",
-}
-
-# 配布を終了したパッケージ（cocoindex: ADR-20260924-054）
-# 横展開先の orchestra.json に残っていても installed_packages から自動除去する。
-# パッケージ実体が無いため `orchex uninstall` では外せず、ここで外さないと名前が残り続ける
-REMOVED_PACKAGES = frozenset({"cocoindex", "tmux-monitor"})
+# 配布終了パッケージは導入一覧と台帳から外す（ADR-20260924-054、ADR-20261127-066）。
+REMOVED_PACKAGES = frozenset(
+    {"cocoindex", "tmux-monitor", "antigravity-suggestions", "gemini-suggestions"}
+)
 
 
 def migrate_installed_packages(packages: list[str]) -> tuple[list[str], bool]:
-    """installed_packages の旧パッケージ名を新名に読み替え、配布終了パッケージを除去する。
+    """installed_packages から配布終了パッケージを除去する。
 
     Args:
         packages: orchestra.json の installed_packages。
@@ -73,11 +67,8 @@ def migrate_installed_packages(packages: list[str]) -> tuple[list[str], bool]:
         if name in REMOVED_PACKAGES:
             changed = True
             continue
-        new_name = RENAMED_PACKAGES.get(name, name)
-        if new_name != name:
-            changed = True
-        if new_name not in migrated:
-            migrated.append(new_name)
+        if name not in migrated:
+            migrated.append(name)
         else:
             changed = True
     return migrated, changed

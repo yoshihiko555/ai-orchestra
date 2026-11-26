@@ -33,11 +33,11 @@ def sample_events() -> list[dict]:
         },
         {
             "type": "route_decision",
-            "data": {"expected": "codex", "actual": "gemini", "matched": False},
+            "data": {"expected": "codex", "actual": "archived-one", "matched": False},
         },
         {
             "type": "route_decision",
-            "data": {"expected": "gemini", "actual": "gemini", "matched": True},
+            "data": {"expected": "archived-one", "actual": "archived-one", "matched": True},
         },
         {
             "type": "cli_call",
@@ -49,11 +49,11 @@ def sample_events() -> list[dict]:
         },
         {
             "type": "cli_call",
-            "data": {"tool": "gemini", "success": True},
+            "data": {"tool": "archived-one", "success": True},
         },
         {
             "type": "cli_call",
-            "data": {"tool": "antigravity", "success": True},
+            "data": {"tool": "archived-two", "success": True},
         },
         {
             "type": "subagent_start",
@@ -136,8 +136,8 @@ class TestCalcCliStats:
         result = calc_cli_stats(sample_events)
         assert result["total"] == 4
         assert result["codex"] == 2
-        assert result["gemini"] == 1
-        assert result["antigravity"] == 1
+        assert result["by_tool"]["archived-one"] == 1
+        assert result["by_tool"]["archived-two"] == 1
         assert result["success"] == 3
         assert "by_tool" in result
 

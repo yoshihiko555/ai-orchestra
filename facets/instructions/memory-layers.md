@@ -10,7 +10,7 @@
 | `.claude/plans/<slug>.md`（task-memory-usage）                                                        | 発注書、進行状態、タスク中の決定と気づき（Project ごとに 1 ファイル） | worktree ごと。worktree と一緒に、または `/task-state close` で消える  | ファイルを読む CLI すべて（`/handoff` で Codex へ渡す）                                                                    |
 | `docs/adr/`（ADR・DECISIONS.md）                                                                      | リポジトリ全体・複数タスクに効く恒久的な設計判断                      | リポジトリ（git 管理）                                                 | 全 CLI                                                                                                                     |
 | `AGENTS.md`                                                                                           | 全 CLI が守る規約・手順・落とし穴                                     | リポジトリ（git 管理）                                                 | 全 CLI（起動時に自動で読む）                                                                                               |
-| auto-memory（`~/.claude/projects/*/memory/`）                                                         | ユーザーの好み、作業の仕方へのフィードバック、長期の事実              | リポジトリ単位で、同じクローンの全 worktree が共有。マシンローカル     | Claude Code 本体とサブエージェント（Codex / Antigravity には注入されない）                                                 |
+| auto-memory（`~/.claude/projects/*/memory/`）                                                         | ユーザーの好み、作業の仕方へのフィードバック、長期の事実              | リポジトリ単位で、同じクローンの全 worktree が共有。マシンローカル     | Claude Code 本体とサブエージェント（Codex には注入されない）                                                 |
 | claude-mem（導入している場合）                                                                        | 何が起きたかの自動記録                                                | 全プロジェクト横断。マシンローカル                                     | Claude Code 本体（セッション開始時に注入）                                                                                 |
 | 教訓候補の台帳（fail-logs を導入している場合。`.claude/logs/fail-logs/lessons.jsonl` / `lessons.md`） | 失敗・人の訂正・レビュー指摘から作った、未承認の落とし穴と回避策      | root worktree に集約し、全 worktree が共有。git 管理外・マシンローカル | 人（`/lessons`）。基準を超えた候補はセッション開始時に提示される。Codex などへは `lessons.md` を渡す（自動では読ませない） |
 
@@ -30,7 +30,7 @@
 | 作業中に得た落とし穴と回避策（Claude Code 固有・全 CLI 共通の両方）  | fail-logs を導入していれば `lessons_cli.py add` で教訓候補にする（下の「教訓候補と昇格」）。導入していなければ auto-memory（feedback / project）に書き、棚卸しで昇格する        | fail-logs があれば書かない |
 | 次のタスクにも効く、Claude Code の作業の仕方・ユーザーの好み         | auto-memory（feedback / user）                                                                                                                                                  | 書く                       |
 | ブランチをまたいで、長期的に有効な事実・外部の制約・参照先           | auto-memory（project / reference）                                                                                                                                              | 書く                       |
-| Codex / Antigravity にも必要な規約・落とし穴                         | fail-logs を導入していれば教訓候補にし、`/lessons` で `AGENTS.md` の記述欄へ昇格する。導入していなければ、まず auto-memory。棚卸しで `AGENTS.md` の記述欄へ昇格                 | 昇格したら消す             |
+| Codex にも必要な規約・落とし穴                         | fail-logs を導入していれば教訓候補にし、`/lessons` で `AGENTS.md` の記述欄へ昇格する。導入していなければ、まず auto-memory。棚卸しで `AGENTS.md` の記述欄へ昇格                 | 昇格したら消す             |
 
 - plan ファイルの `## Decisions` は worktree と一緒に（または `/task-state close` で）消える。タスクが終わった後も参照する判断は ADR にも残す
 - plan ファイルを持たないエンジンで作業しているときに、記録のために plan ファイルを新しく作らない
@@ -71,17 +71,17 @@
 
 ## 昇格の棚卸し（手動）
 
-auto-memory は Claude Code 本体とサブエージェントに、claude-mem は Claude Code 本体に注入されるが、どちらも Codex / Antigravity には届かない。Codex / Antigravity にも必要な知見は、棚卸しで `AGENTS.md` の記述欄へ移す。
+auto-memory は Claude Code 本体とサブエージェントに、claude-mem は Claude Code 本体に注入されるが、どちらも Codex には届かない。Codex にも必要な知見は、棚卸しで `AGENTS.md` の記述欄へ移す。
 
 - 実施するのはユーザーが依頼したときだけ。自動化せず、`/release-readiness` にも組み込まない
 - 手順:
   1. auto-memory の各ファイルと `MEMORY.md` を読み、候補を一覧にする
      - `AGENTS.md` / rules / ADR にすでに書かれている → 削除候補
-     - Codex / Antigravity も守るべき規約・落とし穴 → 昇格候補
+     - Codex も守るべき規約・落とし穴 → 昇格候補
      - 進行状態が混ざっている → 削除か、長期の事実への書き直し候補
      - `MEMORY.md` の索引行が 1 行の要約を超えて本文を持っている → 縮約候補
   2. 一覧をユーザーに提示し、承認を得る
-  3. 承認分だけ実施する。昇格は、まず `AGENTS.md` の記述欄に書く。メモリの該当記述は、その変更が統合ブランチ（main 等）にマージされてから消す（二重に持たない）。マージ前に消すと、他の worktree からも Codex / Antigravity からも見えない期間ができる。PR が却下されたらメモリに残す
+  3. 承認分だけ実施する。昇格は、まず `AGENTS.md` の記述欄に書く。メモリの該当記述は、その変更が統合ブランチ（main 等）にマージされてから消す（二重に持たない）。マージ前に消すと、他の worktree からも Codex からも見えない期間ができる。PR が却下されたらメモリに残す
   4. メモリを消すときは参照も直す。`MEMORY.md` の索引行を消し、ほかのメモリ本文にある `[[リンク]]` は移した先（`AGENTS.md` の該当節など）への記述に置き換える。1 つのファイルに未承認の記述が残る場合は、昇格した部分だけを消してファイルと索引行は残す
 - この棚卸しでの昇格の書き込み先は `AGENTS.md` の記述欄（手書きの部分）だけ。管理ブロックは orchex が生成するので直接編集しない。長い手順は docs や rule に書き、記述欄から参照する。fail-logs の教訓候補の昇格先は、上の「教訓候補と昇格」に従う（プロジェクト独自の `.claude/rules` とガードの Issue も選べる）
 - orchex が同期する rule（`.claude/rules/` の配布分）は直接編集しない

@@ -95,6 +95,15 @@ class TestGenerateHtml:
 class TestJsDumps:
     """_js_dumps の XSS エスケープテスト。"""
 
+    def test_archived_cli_tool_name_is_escaped_in_chart_and_table(self) -> None:
+        tool = "</script><script>alert(1)</script>"
+        result = generate_html(
+            [{"type": "cli_call", "sid": "s1", "data": {"tool": tool, "success": True}}]
+        )
+        assert tool not in result
+        assert "<\\/script><script>alert(1)<\\/script>" in result
+        assert "&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in result
+
     def test_escapes_closing_script_tag(self) -> None:
         result = _js_dumps(["</script>"])
         assert "<\\/script>" in result

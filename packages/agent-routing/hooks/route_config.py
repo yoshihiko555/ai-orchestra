@@ -17,17 +17,17 @@ if _orchestra_dir:
         sys.path.insert(0, _core_hooks)
 
 from hook_common import (  # noqa: E402, F401
-    DEFAULT_ANTIGRAVITY_FLAGS,
-    DEFAULT_ANTIGRAVITY_MODEL,
     DEFAULT_CODEX_FLAGS,
     DEFAULT_CODEX_MODEL,
     DEFAULT_CODEX_SANDBOX_ANALYSIS,
     TASK_NOTIFICATION_TAG,
+    configured_agent_tool,
     get_agent_tool,
     has_project_config,
     is_cli_enabled,
     is_harness_prompt,
     is_task_notification,
+    legacy_routing_notes,
     load_cli_tools_config,
     load_package_config,
     resolve_agent_routing,
@@ -274,11 +274,7 @@ def _project_dir_from_data(data: dict) -> str:
 
 
 def load_config(data: dict) -> dict:
-    """cli-tools.yaml を読み込む（load_cli_tools_config に委譲）。
-
-    旧 gemini 系設定（.local.yaml 残存分）は base/local レイヤーごとに
-    antigravity へ正規化されてからマージされる（Issue #125）。
-    """
+    """cli-tools.yaml を local 上書き込みで読み込む。"""
     project_dir = _project_dir_from_data(data)
     return load_cli_tools_config(project_dir)
 
@@ -327,11 +323,9 @@ def detect_agent(
 def build_aliases(config: dict) -> dict[str, list[str]]:
     """cli-tools.yaml の agents セクションから動的 aliases を構築。"""
     codex_enabled = is_cli_enabled("codex", config)
-    antigravity_enabled = is_cli_enabled("antigravity", config)
 
     aliases: dict[str, list[str]] = {
         "codex": ["bash:codex"] if codex_enabled else [],
-        "antigravity": ["bash:agy"] if antigravity_enabled else [],
         "claude-direct": [],
         "auto": [],
     }
@@ -339,21 +333,9 @@ def build_aliases(config: dict) -> dict[str, list[str]]:
     # auto の bash エイリアスは有効な CLI のみ
     if codex_enabled:
         aliases["auto"].append("bash:codex")
-    if antigravity_enabled:
-        aliases["auto"].append("bash:agy")
 
-    for name, cfg in config.get("agents", {}).items():
-        tool = cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
-
-        # 旧ツール値の読み替え（正規化前の config を直接渡された場合の保険）
-        if tool == "gemini":
-            tool = "antigravity"
-
-        # CLI 無効時は claude-direct に振り替え
-        if tool == "codex" and not codex_enabled:
-            tool = "claude-direct"
-        elif tool == "antigravity" and not antigravity_enabled:
-            tool = "claude-direct"
+    for name in config.get("agents", {}):
+        tool = get_agent_tool(name, config)
 
         task_alias = f"task:{name}"
         if tool not in aliases:
@@ -376,28 +358,5 @@ def build_cli_suggestion(tool: str, agent: str, trigger: str, config: dict) -> s
         return (
             f"[Codex CLI] Agent '{agent}' ('{trigger}') uses Codex:\n"
             f'`codex exec --model {model} --sandbox {sandbox} {flags_part}"..." < /dev/null 2>/dev/null`'
-        )
-    if tool in ("antigravity", "gemini"):
-        if not is_cli_enabled("antigravity", config):
-            return None
-        a = config.get("antigravity", {})
-        model = a.get("model", DEFAULT_ANTIGRAVITY_MODEL)
-        flags = a.get("flags", DEFAULT_ANTIGRAVITY_FLAGS)
-        parts = ["agy", '-p "..."']
-        if model:
-            parts.append(f"--model {model}")
-        if flags:
-            parts.append(flags)
-        command = " ".join(parts)
-        warn = ""
-        allowlist = a.get("model_allowlist") or []
-        if model and allowlist and model not in allowlist:
-            warn = (
-                f"\n[WARN] model '{model}' is not in antigravity.model_allowlist. "
-                "agy silently falls back to its default model for unknown slugs."
-            )
-        return (
-            f"[Antigravity CLI] Agent '{agent}' ('{trigger}') uses Antigravity:\n"
-            f"`{command} 2>/dev/null`{warn}"
         )
     return None

@@ -15,15 +15,15 @@ metadata:
 
 # CLI Language Policy
 
-**外部 CLI（Codex CLI / Antigravity CLI）と連携するスキルで守るべき共通ルール。**
+**外部 CLI（Codex CLI）と連携するスキルで守るべき共通ルール。**
 
 ## 言語プロトコル
 
-| 対象                           | 言語       |
-| ------------------------------ | ---------- |
-| Codex / Antigravity への質問   | **英語**   |
-| Codex / Antigravity からの回答 | **英語**   |
-| ユーザーへの報告               | **日本語** |
+| 対象             | 言語       |
+| ---------------- | ---------- |
+| Codex への質問   | **英語**   |
+| Codex からの回答 | **英語**   |
+| ユーザーへの報告 | **日本語** |
 
 ## Config-Driven ルーティング
 
@@ -38,16 +38,14 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 
 ### ルーティング規則
 
-| `agents.{name}.tool` | 動作                                                                              |
-| -------------------- | --------------------------------------------------------------------------------- |
-| `codex`              | Codex CLI を使用                                                                  |
-| `antigravity`        | Antigravity CLI（`agy`）を使用（旧値 `gemini` は読み替え）                        |
-| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                                   |
-| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Antigravity、単純作業 → Claude） |
+| `agents.{name}.tool` | 動作                                                                         |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `codex`              | Codex CLI を使用                                                             |
+| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                              |
+| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Claude、単純作業 → Claude） |
 
 ## サンドボックス実行
 
-Antigravity CLI（`agy`）は sandbox 内で直接実行する。
 Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マージ後の実効値で
 `codex.requires_sandbox_disable` が `true`（既定値）の場合に限り、呼び出し側で sandbox を
 無効化して実行する。`false` に上書きされた環境では sandbox 内で実行する

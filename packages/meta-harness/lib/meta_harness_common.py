@@ -45,14 +45,12 @@ DEFAULT_TARGET = "claude-harness"
 CONFIG_PATCH_ALLOWLIST_CEILING = (
     "agent-routing/cli-tools.yaml#agents.*.tool",
     "agent-routing/cli-tools.yaml#codex.model",
-    "agent-routing/cli-tools.yaml#antigravity.model",
 )
 CONFIG_PATCH_ALLOWED_CREATED_BY: dict[str, frozenset[str]] = {
     "agent-routing/cli-tools.yaml#agents.*.tool": frozenset({"human", "proposer"}),
     "agent-routing/cli-tools.yaml#codex.model": frozenset({"human"}),
-    "agent-routing/cli-tools.yaml#antigravity.model": frozenset({"human", "proposer"}),
 }
-CONFIG_PATCH_TOOL_VALUES = frozenset({"codex", "antigravity", "claude-direct", "auto"})
+CONFIG_PATCH_TOOL_VALUES = frozenset({"codex", "claude-direct", "auto"})
 CONFIG_PATCH_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 CONFIG_PATCH_DANGEROUS_SEGMENTS = frozenset({"__proto__", "constructor"})
 
@@ -153,7 +151,7 @@ DEFAULTS: dict[str, Any] = {
     "frontier": {"cost_axis": "total_cost_usd"},
     "regression": {
         "enabled": True,
-        # claude-harness + skill:{handoff,issue-create,codex-system,antigravity-system,
+        # claude-harness + skill:{handoff,issue-create,codex-system,
         # issue-fix,task-state} (Issue #254 batch 1 + batch 2). Bump alongside
         # max_budget_usd whenever a new skill scenario suite is registered under
         # packages/meta-harness/scenarios/skill/.
@@ -1848,7 +1846,6 @@ def validate_config_patch(
 
     seen_targets: set[str] = set()
     codex_models: frozenset[str] | None = None
-    antigravity_models: frozenset[str] | None = None
     known_agent_names: frozenset[str] | None = None
     proposer_key_kinds: set[str] = set()
     for index, item in enumerate(config_patch):
@@ -1911,7 +1908,7 @@ def validate_config_patch(
                     + ", ".join(sorted(CONFIG_PATCH_TOOL_VALUES))
                 )
             continue
-        if key_segments in (("codex", "model"), ("antigravity", "model")):
+        if key_segments == ("codex", "model"):
             if not isinstance(value, str) or CONFIG_PATCH_MODEL_PATTERN.fullmatch(value) is None:
                 errors.append(f"{item_label}.value: model must be a non-empty injection-safe slug")
                 continue
@@ -1925,30 +1922,14 @@ def validate_config_patch(
                     f"(would not round-trip as an unquoted scalar): {value!r}"
                 )
                 continue
-            if key_segments == ("antigravity", "model"):
-                if antigravity_models is None:
-                    try:
-                        antigravity_models = _load_antigravity_model_allowlist(
-                            schema_dir, agent_routing_config
-                        )
-                    except ValueError as exc:
-                        errors.append(f"{item_label}.value: {exc}")
-                        continue
-                if not antigravity_models or value not in antigravity_models:
-                    errors.append(
-                        f"{item_label}.value: antigravity model is not in model_allowlist: {value}"
-                    )
-            elif key_segments == ("codex", "model"):
-                if codex_models is None:
-                    try:
-                        codex_models = _load_codex_model_allowlist(schema_dir, agent_routing_config)
-                    except ValueError as exc:
-                        errors.append(f"{item_label}.value: {exc}")
-                        continue
-                if not codex_models or value not in codex_models:
-                    errors.append(
-                        f"{item_label}.value: codex model is not in model_allowlist: {value}"
-                    )
+            if codex_models is None:
+                try:
+                    codex_models = _load_codex_model_allowlist(schema_dir, agent_routing_config)
+                except ValueError as exc:
+                    errors.append(f"{item_label}.value: {exc}")
+                    continue
+            if not codex_models or value not in codex_models:
+                errors.append(f"{item_label}.value: codex model is not in model_allowlist: {value}")
             continue
         errors.append(f"{item_label}: unsupported config patch key: {target_key}")
     if len(proposer_key_kinds) > 1:
@@ -2070,21 +2051,6 @@ def _load_codex_model_allowlist(
     values = codex.get("model_allowlist") or []
     if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
         raise ValueError("codex.model_allowlist must be an array of strings")
-    return frozenset(values)
-
-
-def _load_antigravity_model_allowlist(
-    schema_dir: Path, agent_routing_config: dict | None = None
-) -> frozenset[str]:
-    loaded = _resolve_agent_routing_config(schema_dir, agent_routing_config)
-    antigravity = loaded.get("antigravity")
-    if antigravity is None:
-        antigravity = {}
-    if not isinstance(antigravity, dict):
-        raise ValueError("agent-routing config antigravity section must be a mapping")
-    values = antigravity.get("model_allowlist") or []
-    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-        raise ValueError("antigravity.model_allowlist must be an array of strings")
     return frozenset(values)
 
 

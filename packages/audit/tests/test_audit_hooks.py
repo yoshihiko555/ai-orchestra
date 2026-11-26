@@ -47,48 +47,11 @@ class TestDetectRoute:
         assert "codex" in excerpt
         assert tool == "Bash"
 
-    def test_bash_gemini(self) -> None:
-        """Bash で gemini コマンドを検出した場合 bash:gemini を返すことを確認する。"""
-        data = {"tool_name": "Bash", "tool_input": {"command": "gemini -m model -p 'query'"}}
-        route, _, _ = audit_route.detect_route(data)
-        assert route == "bash:gemini"
-
-    def test_bash_agy(self) -> None:
-        """Bash で agy コマンドを検出した場合 bash:agy を返すことを確認する。"""
-        data = {"tool_name": "Bash", "tool_input": {"command": 'agy -p "query" --model x'}}
-        route, excerpt, tool = audit_route.detect_route(data)
-        assert route == "bash:agy"
-        assert "agy" in excerpt
-        assert tool == "Bash"
-
-    def test_bash_agy_after_pipe(self) -> None:
-        """パイプの後段に agy が来ても検出できることを確認する。"""
-        data = {"tool_name": "Bash", "tool_input": {"command": 'ls | agy -p "query"'}}
-        route, _, _ = audit_route.detect_route(data)
-        assert route == "bash:agy"
-
-    def test_bash_agy_substring_not_matched(self) -> None:
-        """`agy` を含む別の単語（誤マッチ候補）には反応しないことを確認する。"""
-        data = {"tool_name": "Bash", "tool_input": {"command": "echo legacyagyversion"}}
-        route, _, _ = audit_route.detect_route(data)
-        assert route is None
-
-    def test_bash_agy_with_codex_in_prompt_body(self) -> None:
-        """agy 呼び出しのプロンプト本文に 'codex' が含まれても bash:agy に分類されることを確認する。"""
+    def test_bash_codex_with_other_cli_in_prompt_body(self) -> None:
+        """codex 呼び出しのプロンプト本文に 'other-cli' が含まれても bash:codex に分類されることを確認する。"""
         data = {
             "tool_name": "Bash",
-            "tool_input": {
-                "command": "agy -p 'compare this with codex' --model gemini-3.1-pro-high"
-            },
-        }
-        route, _, _ = audit_route.detect_route(data)
-        assert route == "bash:agy"
-
-    def test_bash_codex_with_agy_in_prompt_body(self) -> None:
-        """codex 呼び出しのプロンプト本文に 'agy' が含まれても bash:codex に分類されることを確認する。"""
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "codex exec --model gpt-5.5 '...agy...' < /dev/null"},
+            "tool_input": {"command": "codex exec --model gpt-5.5 '...other-cli...' < /dev/null"},
         }
         route, _, _ = audit_route.detect_route(data)
         assert route == "bash:codex"
@@ -158,7 +121,7 @@ class TestIsMatch:
 
     def test_no_match(self) -> None:
         """該当ルートなしの場合マッチしないことを確認する。"""
-        assert not audit_route.is_match("codex", "gemini", {})
+        assert not audit_route.is_match("codex", "other-cli", {})
 
     def test_empty(self) -> None:
         """片方が空文字の場合マッチしないことを確認する。"""
@@ -645,44 +608,6 @@ class TestMaskHeredocBodies:
         assert "called" not in captured
 
 
-class TestExtractGeminiPrompt:
-    """`extract_gemini_prompt` のテスト。"""
-
-    def test_double_quotes(self) -> None:
-        """ダブルクォートで囲まれたプロンプトを抽出できることを確認する。"""
-        cmd = 'gemini -m gemini-pro -p "Research topic" 2>/dev/null'
-        assert audit_cli.extract_gemini_prompt(cmd) == "Research topic"
-
-    def test_no_match(self) -> None:
-        """-p フラグがない場合 None を返すことを確認する。"""
-        cmd = "gemini --version"
-        assert audit_cli.extract_gemini_prompt(cmd) is None
-
-
-class TestExtractAntigravityPrompt:
-    """`extract_antigravity_prompt` のテスト。"""
-
-    def test_double_quotes(self) -> None:
-        """ダブルクォートで囲まれたプロンプトを抽出できることを確認する。"""
-        cmd = 'agy -p "Research topic" --model gemini-3.1-pro-high 2>/dev/null'
-        assert audit_cli.extract_antigravity_prompt(cmd) == "Research topic"
-
-    def test_single_quotes(self) -> None:
-        """シングルクォートで囲まれたプロンプトを抽出できることを確認する。"""
-        cmd = "agy -p 'Compare libraries' 2>/dev/null"
-        assert audit_cli.extract_antigravity_prompt(cmd) == "Compare libraries"
-
-    def test_print_long_flag(self) -> None:
-        """--print 形式でも抽出できることを確認する。"""
-        cmd = 'agy --print "Long form" 2>/dev/null'
-        assert audit_cli.extract_antigravity_prompt(cmd) == "Long form"
-
-    def test_no_match(self) -> None:
-        """-p フラグがない場合 None を返すことを確認する。"""
-        cmd = "agy --version"
-        assert audit_cli.extract_antigravity_prompt(cmd) is None
-
-
 class TestExtractModel:
     """`extract_model` のテスト。"""
 
@@ -690,16 +615,6 @@ class TestExtractModel:
         """codex の --model フラグからモデル名を抽出できることを確認する。"""
         cmd = "codex exec --model gpt-5.3-codex --full-auto 'hello'"
         assert audit_cli.extract_model(cmd) == "gpt-5.3-codex"
-
-    def test_gemini_model(self) -> None:
-        """gemini の -m フラグからモデル名を抽出できることを確認する。"""
-        cmd = "gemini -m gemini-2.5-pro -p 'hello'"
-        assert audit_cli.extract_model(cmd, tool="gemini") == "gemini-2.5-pro"
-
-    def test_antigravity_model(self) -> None:
-        """agy の --model フラグからモデル名を抽出できることを確認する。"""
-        cmd = "agy -p 'hello' --model gemini-3.1-pro-high"
-        assert audit_cli.extract_model(cmd, tool="antigravity") == "gemini-3.1-pro-high"
 
 
 class TestClassifyError:

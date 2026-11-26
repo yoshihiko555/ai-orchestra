@@ -2,7 +2,7 @@
 
 **概要**: <YOUR_PROJECT_DESCRIPTION>
 
-<!-- この AGENTS.md は Claude Code / Codex CLI / Antigravity CLI が共通で読む指示書です。末尾の ai-orchestra ブロックより上がプロジェクト固有の記述欄です（orchex がここを書き換えるのは初回作成時と --force 実行時だけです）。CLAUDE.md を置くと Claude Code はこのファイルを読まなくなるため、指示はこのファイルに集約してください。 -->
+<!-- この AGENTS.md は Claude Code / Codex CLI が共通で読む指示書です。末尾の ai-orchestra ブロックより上がプロジェクト固有の記述欄です（orchex がここを書き換えるのは初回作成時と --force 実行時だけです）。CLAUDE.md を置くと Claude Code はこのファイルを読まなくなるため、指示はこのファイルに集約してください。 -->
 
 ---
 

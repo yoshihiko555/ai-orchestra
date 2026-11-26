@@ -79,41 +79,6 @@ codex:
 | `flags`                    | string | `""`              | Codex CLI に常時付与するフラグ（sandbox を上書きするフラグを含むと Codex は使われない） |
 | `requires_sandbox_disable` | bool   | `true`            | sandbox 外での実行が必要か                                                              |
 
-### antigravity セクション
-
-Antigravity CLI（agy）の全体設定。旧 `gemini:` キー（`.local.yaml` 残存分）は
-読み込み時に正規化される（`enabled: false` のみ反映。`model` / `flags` は引き継がない）。
-
-```yaml
-antigravity:
-  # Antigravity CLI の有効/無効
-  enabled: true
-
-  # agy -p "..." --model <この値> で使用されるモデル slug。空文字で CLI デフォルトを使用
-  # 注意: agy は無効な slug でも exit 0 でデフォルトモデルに黙ってフォールバックする
-  model: gemini-4-neon-high
-
-  # model の妥当性チェック用 allowlist（未掲載モデルはコマンド提案時に [WARN] 付与）
-  model_allowlist:
-    - gemini-4-neon-high
-    - gemini-3.8-flash-high
-    # ...（cli-tools.yaml 参照）
-
-  # agy コマンドに常に付与するフラグ
-  flags: ""
-
-  # sandbox 内で実行する（通信先の許可が必要: antigravity-delegation 参照）
-  requires_sandbox_disable: false
-```
-
-| キー                       | 型     | デフォルト           | 説明                                            |
-| -------------------------- | ------ | -------------------- | ----------------------------------------------- |
-| `enabled`                  | bool   | `true`               | `false` で Antigravity 呼び出しを全停止         |
-| `model`                    | string | `gemini-4-neon-high` | agy で使用するモデル slug                       |
-| `model_allowlist`          | list   | `agy models` の ID   | slug 妥当性チェック用（黙示フォールバック対策） |
-| `flags`                    | string | `""`                 | agy に常時付与するフラグ                        |
-| `requires_sandbox_disable` | bool   | `false`              | sandbox 外での実行が必要か                      |
-
 ### subagent セクション
 
 Claude Code サブエージェントの設定。
@@ -136,7 +101,7 @@ subagent:
 
 ```yaml
 language:
-  cli_query: english # Codex/Antigravity への質問言語
+  cli_query: english # Codex への質問言語
   user_output: japanese # ユーザーへの出力言語
 ```
 
@@ -173,7 +138,7 @@ review:
 ```yaml
 agents:
   { agent_name }:
-    tool: codex | antigravity | claude-direct | auto
+    tool: codex | claude-direct | auto
     sandbox: workspace-write # codex 使用時のサンドボックスモード（任意）
     model: null # エージェント固有のモデル上書き（任意）
 ```
@@ -181,7 +146,6 @@ agents:
 | `tool` 値       | 動作                                                     |
 | --------------- | -------------------------------------------------------- |
 | `codex`         | Codex CLI を使用                                         |
-| `antigravity`   | Antigravity CLI（agy）を使用（旧値 `gemini` は読み替え） |
 | `claude-direct` | 外部 CLI を呼ばず Claude で処理                          |
 | `auto`          | タスク種別に応じて自動選択                               |
 
@@ -191,7 +155,6 @@ agents:
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `claude-direct` | architect, api-designer, code-reviewer, finding-verifier, security-reviewer, performance-reviewer, adversarial-reviewer, ux-reviewer, spec-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker, engineering-privacy-engineer, engineering-identity-access-engineer, engineering-payments-billing-engineer, engineering-database-reliability-engineer, engineering-minimal-change-engineer |
 | `codex`         | ai-dev, backend-go-dev, backend-python-dev, debugger, frontend-dev, rag-engineer, spec-writer, tester                                                                                                                                                                                                                                               |
-| `antigravity`   | researcher                                                                                                                                                                                                                                                                                                                                          |
 | `auto`          | ai-architect, general-purpose                                                                                                                                                                                                                                                                                                                       |
 
 ---
@@ -407,8 +370,6 @@ markers:
 ```yaml
 # .claude/config/agent-routing/cli-tools.local.yaml
 codex:
-  enabled: false
-antigravity:
   enabled: false
 ```
 
