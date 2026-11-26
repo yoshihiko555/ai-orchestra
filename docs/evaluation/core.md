@@ -106,9 +106,15 @@ core は全パッケージが依存する共通基盤であり、(1) `.claude/pl
 - [ ] EV-27（正常 / must）: 有界移行プリミティブの claim/確定 契約 — `file_migration.migrate_bounded_file` は destination と source の実体が同一なら no-op、そうでなければ `<source>.migrating.<pid>-<monotonic_ns>` へ原子的 rename して排他 claim し、writer が正常完了した場合に限り同一 suffix の `<source>.migrated.<suffix>` へ確定 rename する。ファイルサイズが `max_bytes` を超える場合は行境界を壊さず末尾 `max_bytes` に収まるよう先頭側の途中行のみを読み捨てる（cut-1 バイト目が改行かどうかで判定） — 根拠: 実装挙動（packages/core/hooks/file_migration.py docstring）
 - [ ] EV-28（異常 / must）: stale claim の非破壊と writer 例外の伝播 — rename による claim 取得に失敗した場合（既に他プロセスが claim 済み、または stale な `.migrating.*` が残存する場合を含む）は何もせず return し、既存の `.migrating.*` ファイルには一切触れない。writer が例外を送出した場合はその例外を呼び出し元へ伝播し、claim は `.migrating.*` のまま残す（握りつぶさない。fail-open にするかどうかは呼び出し側ラッパーの責務） — 根拠: 実装挙動（packages/core/hooks/file_migration.py docstring）
 - [ ] EV-29（正常 / must）: 書き込み方式の注入分離 — 実際の書き込み方式（flock の要否・write の分割方針・fchmod の有無等）は `writer: Callable[[BinaryIO, str], None]` として呼び出し側が注入する。fail-logs（複数 write を許容する flock 排他下のストリームコピー）と skill-evolution（単発 write + short-write リカバリ、flock なし）は整合性前提が異なったまま `migrate_bounded_file` を共通の薄いラッパーとして利用し、共通化によって互いの整合性前提を壊さない — 根拠: 実装挙動（packages/core/hooks/file_migration.py, packages/fail-logs/hooks/log_migration.py, packages/skill-evolution/lib/skill_evolution_common.py）
-- N/A: 秘匿情報（マスキング） — core が扱う注入対象（ファイルパス・タスクサマリー・エントリー summary）に対する秘密情報マスキング処理は情報源に記載がなく、該当する取り扱い自体が定義されていないため対象外
+- N/A: ファイルパス・タスクサマリー・エントリー summary の秘密情報マスキング — これらの注入対象に対するマスキング処理は情報源に記載がなく対象外。API キーの保存・解決と routing への非表示は EV-58〜60 で扱う。
 - N/A: 性能 — 同期 hook（特に SessionStart の `load-task-state.py`）がセッション開始を遅延させないための定量的な性能要件が packages.md / architecture.md / task-memory-usage.md / context-sharing.md のいずれにも記載がないため、本評価セットでは具体化しない
 - N/A: `grasp-view`（skill 型サブコンポーネント、旧 explain-visually） — `verify_page.py` 自体は非対話の CLI であり、対話規約（AskUserQuestion）やルーティング尊重（cli-tools.yaml）はスキル指示書（grasp-view.md）側の責務であるため、hook 型チェックリストの対話系・ルーティング系項目は該当しない。EV-30〜EV-36 は同スクリプトの入出力契約を個別観点として扱う
+
+### API 共通基盤（人間レビュー待ち・本 PR）
+
+- [ ] EV-58（正常 / must）: API キーは環境変数 → credentials の順で解決し、空の環境変数は未設定と扱う。保存は ~/.config/orchex/credentials、ディレクトリ 0700 / ファイル 0600。他社のキーを保持し、書き込み失敗で以前の保存値を壊さない — 根拠: order.md 方針4、C-AUTH-SET / C-KEY-ORDER。
+- [ ] EV-59（正常・異常 / must）: API プロファイルは provider と model、検索・添付の許可、正の上限を検証し、model は profile → provider の順で選ぶ。利用不可の理由は無効 → キー不足 → SDK 不足の順で一つ選び、CLI と routing で共有する — 根拠: order.md 方針2・3、計画 C-ROUTE-FALLBACK。
+- [ ] EV-60（正常・異常 / must）: SubagentStart / PreToolUse の API routing は local の実効値を届け、キーを含めない。不正なモデル等で行を注入させず、理由付きで claude-direct に戻す。既存 Codex / auto の出力は維持する — 根拠: order.md 方針3、C-ROUTE-API / C-NO-SECRET / C-CODEX-KEEP。
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

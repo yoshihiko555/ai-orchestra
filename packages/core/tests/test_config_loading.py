@@ -51,7 +51,7 @@ def _read_cli_tools_yaml_raw() -> dict:
 
 
 # agents.<name>.tool が取りうる実行先の語彙（config-loading / codex-delegation ルール準拠）
-VALID_AGENT_TOOLS = frozenset({"codex", "claude-direct", "auto"})
+VALID_AGENT_TOOLS = frozenset({"codex", "claude-direct", "auto", "api"})
 
 
 # =========================================================================

@@ -106,7 +106,14 @@ class TestAgentTriggersCompleteness:
 # get_agent_tool: 実 config に対する動作
 # ---------------------------------------------------------------------------
 
-_VALID_TOOLS = {"codex", "claude-direct", "auto"}
+_VALID_TOOLS = {"codex", "claude-direct", "auto", "api"}
+
+
+@pytest.fixture(autouse=True)
+def isolated_api_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
 
 
 class TestGetAgentToolWithRealConfig:
@@ -162,7 +169,7 @@ _FALLBACK_TOOL_RE = re.compile(r"^-\s*Tool:\s*(.+)", re.MULTILINE)
 
 
 _TOOLS_LINE_RE = re.compile(r"^tools:\s*(.+)$", re.MULTILINE)
-_CLI_TOOLS = {"codex", "auto"}
+_CLI_TOOLS = {"codex", "auto", "api"}
 
 
 class TestCliRoutedAgentsHaveBash:
@@ -170,7 +177,7 @@ class TestCliRoutedAgentsHaveBash:
 
     @pytest.mark.parametrize("agent_name", sorted(_AGENTS_IN_CONFIG))
     def test_cli_routed_agent_can_run_bash(self, agent_name: str) -> None:
-        if route_config.get_agent_tool(agent_name, _REAL_CONFIG) not in _CLI_TOOLS:
+        if route_config.configured_agent_tool(agent_name, _REAL_CONFIG) not in _CLI_TOOLS:
             return
         content = _agent_md_path(agent_name).read_text(encoding="utf-8")
         frontmatter = content.split("---", 2)[1] if content.startswith("---") else ""
@@ -239,12 +246,13 @@ class TestAgentMdFallbackConsistency:
 class TestResearcherInstructionContract:
     """researcher に配布される実行先と利用可能な道具を検証する。"""
 
-    def test_shipped_researcher_resolves_to_direct(self) -> None:
+    def test_shipped_researcher_without_key_falls_back_to_direct(self) -> None:
         config = yaml.safe_load(
             (REPO_ROOT / "packages/agent-routing/config/cli-tools.yaml").read_text(encoding="utf-8")
         )
 
-        assert config["agents"]["researcher"]["tool"] == "claude-direct"
+        assert config["agents"]["researcher"]["tool"] == "api"
+        assert config["agents"]["researcher"]["api_profile"] == "research"
         assert hook_common.resolve_agent_routing("researcher", config)["tool"] == "claude-direct"
 
     def test_researcher_can_search_repository_and_web(self) -> None:
@@ -252,7 +260,7 @@ class TestResearcherInstructionContract:
         frontmatter = yaml.safe_load(content.split("---", 2)[1])
         tools = {tool.strip() for tool in frontmatter["tools"].split(",")}
 
-        assert tools == {"Read", "Grep", "Glob", "WebSearch", "WebFetch"}
+        assert tools == {"Read", "Grep", "Glob", "WebSearch", "WebFetch", "Bash"}
 
 
 # ---------------------------------------------------------------------------

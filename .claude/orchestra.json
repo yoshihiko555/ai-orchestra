@@ -80,7 +80,7 @@
       "config/core/task-memory.yaml": "c059d1d84cd186fcf7f20bb9ffcb7475b3355784a3a0c890f1a39312f4ffe9b1"
     },
     "agent-routing": {
-      "config/agent-routing/cli-tools.yaml": "3dc69ba02c977987d7bfaec94ecbec9eb050b74a7d82c0265f621ea268c176bd",
+      "config/agent-routing/cli-tools.yaml": "acdf367031b0c11f54cf99b1c0b3edf6c9164d5846718a6fcb65c10fa9910a83",
       "agents/ai-architect.md": "18b68a981f995bf63d8a5e5b6d611c4b9911554f46b5c215faee810dca4a77d0",
       "agents/ai-dev.md": "3eb5e70c7fc685616fa8de6cdd867273da02c108519b835d8a0ff7b8514b1cbd",
       "agents/api-designer.md": "60a42c33973e169e31e91a46982139cde56aafe899f6797a59dc365e5c0110c0",
@@ -100,7 +100,7 @@
       "agents/prompt-engineer.md": "ad9b55d225805b47a50160c9ea4095dc11ff02466c56a1f934b44b135bb27148",
       "agents/rag-engineer.md": "5068f89aa7c8389fe2c0a2a5c7c52c051864c6f62ff565d69c1aeb70c2606f8e",
       "agents/requirements.md": "4caaa703214dd3ddd0f68f76038a238860df61bf29131e71485794e4c03033db",
-      "agents/researcher.md": "c2b892ddbbf3ea7f4f00446daa644a7053236212457ab2dcf5d3286440ed293f",
+      "agents/researcher.md": "ca6bb67cac0fc02b2597a89330413b7acc167a395ef07b31ac94d73f585dacf9",
       "agents/security-reviewer.md": "ec3fd0f39894bcac78fd78c3d3264b18028d28ba88fdf3a8a37595665ede8d65",
       "agents/spec-reviewer.md": "06f1977b7fc0b558be9286041a028e137556614801da2f65bfab3c1eb3a94e33",
       "agents/spec-writer.md": "f7dbb6450f39afce14c915a241a00315529da1b88e1fd64bf0fb607049c992c5",

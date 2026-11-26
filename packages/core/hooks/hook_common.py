@@ -242,6 +242,9 @@ def get_agent_tool(agent_name: str, config: dict) -> str:
     tool = configured_agent_tool(agent_name, config)
     tool = normalize_agent_tool(tool)
 
+    if tool == "api":
+        return resolve_agent_routing(agent_name, config)["tool"]
+
     # CLI 無効時のフォールバック
     if tool == "codex" and not is_cli_enabled("codex", config):
         return "claude-direct"
@@ -407,6 +410,32 @@ def resolve_agent_routing(agent_name: str, config: dict) -> dict:
         "tool": resolved_tool,
         "notes": notes,
     }
+
+    if configured_tool == "api":
+        from dataclasses import asdict
+
+        from api_credentials import CredentialsError
+        from api_profiles import (
+            ProfileError,
+            availability_message,
+            check_availability,
+            resolve_profile,
+        )
+
+        try:
+            profile = resolve_profile(safe_config, agent_config.get("api_profile"))
+            availability = check_availability(profile)
+            if availability.reason is not None:
+                routing["tool"] = "claude-direct"
+                notes.append(availability_message(availability.reason, profile.provider))
+            else:
+                values = asdict(profile)
+                notes.extend(values.pop("warnings"))
+                values.pop("provider_enabled")
+                routing["api"] = values
+        except (ProfileError, CredentialsError) as exc:
+            routing["tool"] = "claude-direct"
+            notes.append(str(exc))
 
     if resolved_tool == "codex" or (configured_tool == "auto" and codex_enabled):
         codex_section, codex_notes = _resolve_codex_section(

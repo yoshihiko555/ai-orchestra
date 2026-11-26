@@ -138,7 +138,8 @@ review:
 ```yaml
 agents:
   { agent_name }:
-    tool: codex | claude-direct | auto
+    tool: codex | claude-direct | auto | api
+    api_profile: research # tool: api のときに使用するプロファイル
     sandbox: workspace-write # codex 使用時のサンドボックスモード（任意）
     model: null # エージェント固有のモデル上書き（任意）
 ```
@@ -148,6 +149,7 @@ agents:
 | `codex`         | Codex CLI を使用                                         |
 | `claude-direct` | 外部 CLI を呼ばず Claude で処理                          |
 | `auto`          | タスク種別に応じて自動選択                               |
+| `api`           | api_profile の API を使用。利用不可なら claude-direct     |
 
 #### デフォルトのルーティング
 
@@ -156,6 +158,64 @@ agents:
 | `claude-direct` | architect, api-designer, code-reviewer, finding-verifier, security-reviewer, performance-reviewer, adversarial-reviewer, ux-reviewer, spec-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker, engineering-privacy-engineer, engineering-identity-access-engineer, engineering-payments-billing-engineer, engineering-database-reliability-engineer, engineering-minimal-change-engineer |
 | `codex`         | ai-dev, backend-go-dev, backend-python-dev, debugger, frontend-dev, rag-engineer, spec-writer, tester                                                                                                                                                                                                                                               |
 | `auto`          | ai-architect, general-purpose                                                                                                                                                                                                                                                                                                                       |
+| `api`           | researcher（api_profile: research。探索は Claude 自身） |
+
+### api セクション
+
+API 機能は `orchex[llm]` で導入する。キーは環境変数または `orchex auth set <provider>` で登録し、YAML には保存しない。
+`api.providers` は anthropic / openai / gemini ごとの設定、`api.profiles` は用途に依存しない呼び出し設定を持つ。
+既定のプロファイルは research（gemini、Web 検索と添付を許可）だけ。各社の既定モデルは配布する `cli-tools.yaml` を参照する。
+
+```yaml
+# .claude/config/agent-routing/cli-tools.local.yaml
+api:
+  profiles:
+    review:
+      provider: anthropic
+      # model を省略すると api.providers.anthropic.model を使う
+      features:
+        web_search: false
+        attachments: true
+      limits:
+        timeout_sec: 60
+        max_output_tokens: 4096
+```
+
+`orchex llm ask --profile review "質問"` で呼び出せる。プロファイルの追加にコード変更は不要。
+local は既存の deep_merge 規則に従い、mapping はキーごとに上書きし、配列は置き換える。
+
+| 設定 | 意味 |
+|------|------|
+| `api.providers.<provider>.enabled` | 真偽値。省略時は true |
+| `api.providers.<provider>.model` | プロファイルで model を省略した場合のモデル |
+| `api.providers.<provider>.model_allowlist` | モデル候補の文字列配列。範囲外は警告して実行する |
+| `api.profiles.<name>.provider` | anthropic / openai / gemini のいずれか |
+| `api.profiles.<name>.model` | プロバイダの model より優先する任意の上書き |
+| `api.profiles.<name>.features.web_search` | 真偽値。省略時は false。許可時だけ各社の検索機能を付ける |
+| `api.profiles.<name>.features.attachments` | 真偽値。省略時は false。`--attach` を許可する |
+| `api.profiles.<name>.limits.timeout_sec` | 正の有限数の秒。省略時は120秒 |
+| `api.profiles.<name>.limits.max_output_tokens` | 正の整数。省略時は4096 |
+
+プロファイル名とモデルは英数字および `_ . : / @ + = -` の一行で指定する。
+添付は PNG/JPEG/WebP/GIF/PDF を扱い、Gemini の GIF は拒否する。
+API は一回呼び、SDK の自動再試行は行わない。エージェントループや function calling は提供しない。
+
+キーの解決順は `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` → `~/.config/orchex/credentials`。
+空の環境変数は未設定として扱う。`GOOGLE_API_KEY` は orchex のキー解決には使わない。
+`auth status` は設定有無だけを表示する。
+プロバイダ無効 → キー未設定 → SDK 未導入の順で最初の理由を選び、routing は claude-direct に戻して note に示す。
+プロファイルが不正・未定義の場合も direct に戻す。`[Resolved Routing]` にはキーを含めない。
+
+| llm ask の終了コード | 意味 |
+|---------------------|------|
+| 0 | 成功 |
+| 2 | 引数エラー |
+| 3 | キー未設定（auth set の案内付き） |
+| 4 | プロバイダ無効 |
+| 5 | SDK 未導入 |
+| 6 | タイムアウト |
+| 7 | API エラー |
+| 8 | 設定・添付・ファイル入出力のエラー |
 
 ---
 
