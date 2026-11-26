@@ -52,6 +52,8 @@
   },
   "files": [
     "hooks/hook_common.py",
+    "hooks/api_credentials.py",
+    "hooks/api_profiles.py",
     "hooks/suggestion_common.py",
     "hooks/log_common.py",
     "hooks/context_store.py",

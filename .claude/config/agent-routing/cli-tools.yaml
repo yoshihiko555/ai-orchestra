@@ -32,6 +32,35 @@ codex:
   # 現行 Claude Code では効かないため、呼び出し側で sandbox を無効化して実行する（Issue #85）
   requires_sandbox_disable: true
 
+# API キーは環境変数または ~/.config/orchex/credentials から解決する。
+# キーをこのファイルや local 設定へ書かないこと。
+api:
+  providers:
+    anthropic:
+      enabled: true
+      model: claude-sonnet-5-5
+      model_allowlist:
+        - claude-sonnet-5-5
+    openai:
+      enabled: true
+      model: gpt-6.2-sol
+      model_allowlist:
+        - gpt-6.2-sol
+    gemini:
+      enabled: true
+      model: gemini-4-neon
+      model_allowlist:
+        - gemini-4-neon
+  profiles:
+    research:
+      provider: gemini
+      features:
+        web_search: true
+        attachments: true
+      limits:
+        timeout_sec: 120
+        max_output_tokens: 8192
+
 # エージェント提案（agent-router.py）の判定エンジン（ADR-20261029-062）
 router:
   # keyword: 依頼の形をした文だけでトリガー語を照合する（既定。外部へは送らない）
@@ -80,10 +109,11 @@ review:
 
 # エージェントルーティング
 # 各エージェントが使用するツールを定義する。
-# tool: "codex" | "claude-direct" | "auto"
+# tool: "codex" | "claude-direct" | "auto" | "api"
 #   - codex: Codex CLI を使用
 #   - claude-direct: 外部CLIを呼ばず自身で処理
 #   - auto: タスクに応じて codex / claude-direct を使い分け
+#   - api: api_profile のプロファイルで API を呼ぶ（利用不可時は claude-direct）
 agents:
   # --- レビュー・設計分析系（Claude Code 直接）---
   adversarial-reviewer:
@@ -146,9 +176,10 @@ agents:
     tool: auto
     model: null
 
-  # --- リサーチ系（Claude 自身が探索）---
+  # --- リサーチ系（探索は Claude 自身、必要時のみ API）---
   researcher:
-    tool: claude-direct
+    tool: api
+    api_profile: research
     model: null
 
   # --- その他（Claude Code 直接）---

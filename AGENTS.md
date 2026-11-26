@@ -21,6 +21,13 @@
 - **Quality**: `pytest`, `ruff`
 - **Config**: YAML / JSON (`.claude/config/**`)
 
+### API 共通基盤
+
+- 認証・プロファイルの共有解決は `packages/core/hooks/api_credentials.py` と `api_profiles.py`。標準ライブラリだけで動かす。
+- SDK アダプタは `scripts/lib/llm/`、CLI は `scripts/lib/llm_cli.py`。SDK は `orchex[llm]` の optional 依存として遅延 import する。
+- キーは `orchex auth set <provider>` で登録する。認証情報を読んだり、引数・設定・ログ・報告へ書いたりしない。
+- `orchex llm ask --profile <name> "質問"` が一回の呼び出し入口。設定は base/local をマージして解決し、CLI と hook で利用可否の判定を共有する。
+
 ---
 
 ## 主要コマンド

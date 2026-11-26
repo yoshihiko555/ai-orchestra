@@ -78,3 +78,4 @@ AI Orchestra プロジェクトの意思決定記録。
 | ADR-20261103-063 | 失敗から教訓候補を自動で蓄積し、昇格候補の提示までを自動化する（ADR-057 の部分 supersede） | accepted | 2026-11-03 |
 | [ADR-20261104-064](./ADR-20261104-064.md) | サブエージェントへの routing と共有コンテキストを SubagentStart の additionalContext で届け、Agent の入力を書き換えない | accepted | 2026-11-04 |
 | [ADR-20261108-065](./ADR-20261108-065.md) | skill-evolution は改善候補を集めて meta-harness に渡し、昇格後の再発を確かめる役だけを担う | accepted | 2026-11-08 |
+| [ADR-20261127-067](./ADR-20261127-067.md) | API キーによる用途非依存の LLM 呼び出し基盤 | accepted | 2026-11-27 |

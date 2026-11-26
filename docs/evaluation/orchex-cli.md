@@ -94,6 +94,13 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-41（正常 / must）: 配布終了パッケージの自動除去 — `REMOVED_PACKAGES`（`cocoindex` / `tmux-monitor` と、今回配布終了した調査提案パッケージの新旧名）に含まれるパッケージ名が導入先の `installed_packages` に残っている場合、SessionStart 同期はその名前を `installed_packages` から、その台帳を `file_hashes` から除去して `orchestra.json` を保存する。登録済みの hook は、同じ同期の `sync_hooks` が未導入パッケージの hook として `settings.local.json` から外す。同期済みの config は配布時ハッシュと一致する場合だけ削除し、利用者が編集した・ハッシュ未記録の config は残して通知する（`orchex uninstall` の保護方針と同じ）。除去後に導入一覧が空になっても、この掃除と保存は行われる。パッケージ実体が無いため `orchex uninstall` では外せず、同期で除去しないと名前と hook が残り続ける。各 CLI の MCP 設定（`.mcp.json` 等）には触れない（EV-19 の uninstall と同じ方針） — 根拠: 実装挙動（`migrate_installed_packages`・`keep_changed_removed_package_files`・`drop_removed_package_hashes`・`sync_hooks`）、ADR-20260924-054
 - [ ] EV-42（正常 / must）: 配布物の同梱契約 — wheel は orchestra root から実行時に参照される `packages/`・`templates/`・`scripts/`・`facets/`・`presets.json` をすべて `ai_orchestra/` 配下に同梱し、sdist も同じルートを含む（sdist から wheel を再ビルドする環境でも欠けないため）。wheel からインストールした環境（`AI_ORCHESTRA_DIR` 未設定、リポジトリ外）で `facet build` が exit 0 で SKILL.md / ルール .md を生成する。開発環境ではリポジトリ直下が root になり欠落が顕在化しないため、実際にビルドした配布物で検証する — 根拠: Issue #399、実装挙動（`pyproject.toml` の `force-include` / sdist `include`、`get_orchestra_dir`）。本 PR で追加、人間レビュー保留
 
+### LLM API CLI（人間レビュー待ち・本 PR）
+
+- [ ] EV-45（正常・異常 / must）: auth set は getpass でキーを受け、引数では受け付けず、値を表示せずに保存する。auth status は各社の設定有無だけを表示する — 根拠: order.md 方針4、C-AUTH-SET / C-AUTH-STATUS。
+- [ ] EV-46（正常 / must）: llm ask は base/local の任意プロファイルを使い、3社それぞれを一回呼び、回答を stdout または指定ファイルへ返す。モデル・timeout・出力上限と、許可した検索・添付が SDK に届く — 根拠: order.md 方針1・2・4・6、C-ASK-PROVIDER / C-PROFILE-LOCAL / C-WEB-SEARCH / C-ATTACH。
+- [ ] EV-47（異常 / must）: キー不足・無効化・依存不足・timeout・API error は区別できる終了コードとメッセージを持つ。禁止・不正な添付は送信前に拒否し、SDK の例外もキーをログ・stderr に漏らさない — 根拠: order.md 方針4・制約、C-ERRORS / C-NO-SECRET。
+- [ ] EV-48（正常 / must）: SDK は llm optional extra のみへ追加し、基本依存は pyyaml のまま。extra 無しでも auth と既存 CLI は起動できる — 根拠: order.md 制約、C-EXTRA。
+
 ## 5. テストレビュー判断基準（パッケージ固有）
 
 - 配布ファイルの安全側スキップ（EV-08〜EV-11）を検証するテストは、「ハッシュ未記録」「ハッシュ不一致（ユーザー変更）」「ハッシュ一致（未変更）」の3状態を独立したケースとして区別しているか。1ケースに複数状態を混在させて期待値を曖昧にしていないか。

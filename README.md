@@ -457,7 +457,29 @@ UserPromptSubmit のエージェント提案は、プロジェクトに `.claude
 `cli-tools.local.yaml` で `router.engine: jev` にし、TypeSafe の API キーを置くと、TypeSafe の Jev で判定する（任意）。入力の先頭最大 1200 文字を、既知の秘密情報・URL 等を伏せたうえで外部（api.typesafe.ai）に送る。使えないときはキーワード判定に戻る。
 手順・送る内容・費用・遅れは [提案の判定（`router.engine`）](docs/reference/packages.md#提案の判定routerengine) を参照。
 
-`researcher` は既定で `tool: claude-direct` とし、Claude 自身が Read / Grep / Glob / WebSearch / WebFetch でリポジトリと Web を調査します。出典・確認した内容・未確認事項を報告します。
+`researcher` は既定で API の `research` プロファイル（Gemini）に結び付きます。探索は Claude 自身が Read / Grep / Glob / WebSearch / WebFetch で行い、検索のグラウンディング・マルチモーダル・長い文脈が必要な場面だけ API を呼びます。キーや SDK がない場合は `claude-direct` に戻り、Claude だけで調査を完結させます。
+
+### API キーで LLM を一回呼ぶ
+
+API 機能は optional extra です。基本インストールの依存は pyyaml のままです。
+
+```bash
+uv tool install --upgrade 'orchex[llm]'
+orchex auth set gemini
+orchex auth status
+orchex llm ask --profile research "最近の変更について一次資料を調べて"
+orchex llm ask --profile research --attach ./report.pdf --output ./answer.txt "資料を要約して"
+```
+
+キーは非表示のプロンプトで登録します。引数や YAML には書きません。
+保存先は `~/.config/orchex/credentials`（ディレクトリ0700、ファイル0600）です。
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` が設定されていれば保存値より優先し、空なら保存値を使います。
+`auth status` は設定の有無だけを表示します。
+
+Anthropic / OpenAI も呼べます。`cli-tools.local.yaml` の `api.profiles` にプロファイルを追加してください。
+既定では両社をエージェントへ結び付けません。モデル、検索・添付の許可、タイムアウト、出力上限と終了コードは
+[設定リファレンス](docs/reference/configuration.md#api-セクション)を参照してください。
+`--project` で設定を読むプロジェクトを指定できます。`--output` 指定時は回答をファイルに書きます。
 
 ### 外部 CLI への任意助言
 

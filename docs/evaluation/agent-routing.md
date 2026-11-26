@@ -96,6 +96,12 @@
 - N/A: 生成物の同期（テンプレート/facet 由来かの確認） — 指定情報源（packages.md / 4 ルールファイル）に `packages/agent-routing/{agents,rules,config}` が templates 由来の build 生成物か直接配布正本かの記載がなく判断不可（情報源に明記なし。仕様確定・文書化はパッケージ別ギャップ Issue で追跡）。現状実装では、`packages/agent-routing/agents/` と `config/` は packages 直下が直接配布正本であり `sync-orchestra.py` がそのままコピー同期する。一方 manifest.json の `rules`（`["orchestra-usage", "agent-routing-policy"]`）が指す実体は `facets/instructions/` が正本で facet build により `.claude/rules/` へ直接生成される（packages 配下に `rules/` ディレクトリは存在しない）という非対称な構成になっている（manifest.json / facets 構成で確認、仕様として未文書化）
 - [ ] EV-26（正常 / should）: ドキュメント整合 — `packages/agent-routing/manifest.json` の `agents` 配列（28 件）が `docs/reference/packages.md` のエージェント一覧表（Planning 3 + Design 5 + Implementation 3 + AI/ML 4 + Test/Debug 2 + Review 8 + Docs 1 + Utility 2 = 28。specialized-mcp-builder と support-executive-summary-generator は 2026-10-28 に agency-agents パッケージへ移した）と一致する — 根拠: docs/reference/packages.md, packages/agent-routing/manifest.json（ファイル名列挙による突合） — 自動テスト: `manifest.json` の `agents` 配列と `docs/reference/packages.md` 一覧表の突合テストが `tests/unit/test_agent_routing_consistency.py` に新設される（本 PR）。なお `.claude/rules/orchestra-usage.md` 側の一覧表（25 件）にも本 PR で 3 エージェント（specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker）が追記される
 
+### API ルーティング（人間レビュー待ち・本 PR）
+
+- [ ] EV-42（正常 / must）: tool: api と api_profile は任意名のプロファイルへ解決される。既定のプロファイルは research（gemini・検索と添付を許可）だけで、anthropic / openai へ結び付くエージェントはない — 根拠: order.md 方針2・3・6、C-DEFAULT-PROFILES。
+- [ ] EV-43（異常 / must）: API が無効・キー不足・SDK 不足、またはプロファイルが未定義・不正なら get_agent_tool と hook は claude-direct に戻り、note に理由を書く。キー不足には auth set の案内を含む — 根拠: order.md 方針3、計画 C-ROUTE-FALLBACK。
+- [ ] EV-44（正常 / must）: researcher は API research に結び付き、Bash と既存の探索ツールを使える。探索は Claude 自身が行い、グラウンディング・マルチモーダル・長い文脈が必要なときだけ API を使う。API 不可時は Claude で完結する。本文の意味は文書レビューで確認する — 根拠: order.md 方針5、C-RESEARCHER-DEF。
+
 ## 5. テストレビュー判断基準（パッケージ固有）
 
 - 後方互換観点（EV-18〜EV-20）は、`.local.yaml` に旧 `gemini` キーのみが残存するケース・新旧混在するケースの両方を独立したテストケースとして検証する（正常系の副産物にしない）。
