@@ -261,7 +261,7 @@ class FacetBuilder:
         if target == "claude":
             return project_dir / ".claude" / "skills" / name / "SKILL.md"
         # 非 claude ターゲットのスキルは .agents/skills/ に出力する。
-        # この配置は Codex CLI と Antigravity CLI(agy) の両方が自動検出する共有ディレクトリ。
+        # この配置は Codex CLIが自動検出する共有ディレクトリ。
         return project_dir / ".agents" / "skills" / name / "SKILL.md"
 
     def _find_composition(self, name: str) -> Path:
@@ -321,7 +321,7 @@ class FacetBuilder:
         composition = self.load_composition(composition_path)
 
         # 非 claude ターゲットにはルールを配布しない（ルール同期は廃止）。
-        # Claude のルールは振る舞い指示、Codex/agy のルールは別思想（execpolicy 等の
+        # Claude のルールは振る舞い指示、Codex のルールは別思想（execpolicy 等の
         # コマンドポリシー）のため、Markdown ルールの外部 CLI への同期は行わない。
         if target != "claude" and composition.get("type", "skill") == "rule":
             # targeted build でも旧 .codex/rules/<name>.md 生成物を掃除する。

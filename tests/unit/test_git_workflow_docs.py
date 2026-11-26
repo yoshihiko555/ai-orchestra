@@ -421,8 +421,6 @@ def test_issue_fix_plan_approval_gate_precedes_phase2() -> None:
 IMPLEMENTATION_TASK_OPENER = 'Task(subagent_type="{agent}", prompt="""'
 ROUTING_TOKENS = (
     "codex",
-    "antigravity",
-    "agy",
     "claude-direct",
     "sandbox",
     "workspace-write",

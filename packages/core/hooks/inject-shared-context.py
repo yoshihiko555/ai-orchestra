@@ -235,14 +235,6 @@ def build_routing_value_lines(routing: dict) -> list[str]:
         requires_sandbox_disable = "true" if codex["requires_sandbox_disable"] else "false"
         lines.append(f"- codex.requires_sandbox_disable: {requires_sandbox_disable}")
 
-    if "antigravity" in routing:
-        antigravity = routing["antigravity"]
-        lines.append(f"- antigravity.model: {antigravity['model'] or '(CLI default)'}")
-        lines.append(f"- antigravity.flags: {antigravity['flags'] or '(none)'}")
-        allowlist_warning = antigravity.get("allowlist_warning")
-        if isinstance(allowlist_warning, str) and allowlist_warning:
-            lines.append(f"- WARN: {allowlist_warning}")
-
     for note in routing.get("notes", []):
         if isinstance(note, str):
             lines.append(f"- note: {note}")

@@ -29,12 +29,6 @@ codex:
   model_allowlist:
     - gpt-6-sol
   sandbox: read-only
-antigravity:
-  model: gemini-3.8-flash-high
-  model_allowlist:
-    - gemini-3.1-pro-high
-    - gemini-3.8-flash-high
-    - gemini-3.1-flash
 subagent:
   # 選択肢: sonnet, opus, haiku
   default_model: sonnet
@@ -51,12 +45,6 @@ other:
         Path("docs/design/codex-cli-harness.md"): 'model = "gpt-6-sol"\n"model": "gpt-6-sol"\n',
         Path("docs/reference/configuration.md"): """### codex セクション
   model: gpt-5.3-codex
-### antigravity セクション
-  model: gemini-3.8-flash-high
-  model_allowlist:
-    - gemini-3.1-pro-high
-    - gemini-3.8-flash-high
-| `model` | string | `gemini-3.8-flash-high` | 説明 |
 ### subagent セクション
 subagent:
   # 選択肢: sonnet, opus, haiku
@@ -65,13 +53,9 @@ subagent:
 ### モデル変更のみ
   default_model: opus
 """,
-        Path(
-            "docs/reference/hooks.md"
-        ): '`agy -p "..." --model gemini-3.8-flash-high 2>/dev/null`\n',
+        Path("docs/reference/hooks.md"): "参考 hook\n",
         Path("docs/design/architecture.md"): """codex:
   model: gpt-5.3-codex
-antigravity:
-  model: gemini-3.1-pro-high
 subagent:
   default_model: sonnet
 """,
@@ -128,105 +112,6 @@ def test_codex_updates_all_targets_and_keeps_comments(model_tree: Path) -> None:
         assert '"gpt-6-sol"' not in content
 
 
-def test_antigravity_preserves_allowlist_and_updates_docs(model_tree: Path) -> None:
-    """Antigravity は既存 allowlist を保持し、新しいモデルを先頭に加える。"""
-    result = _run_cli(model_tree, "antigravity", "gemini-4-pro", "--add-to-allowlist")
-    assert result.returncode == 0, result.stderr
-    for relative in (SSOT, MIRROR):
-        data = yaml.safe_load((model_tree / relative).read_text(encoding="utf-8"))
-        assert data["antigravity"]["model"] == "gemini-4-pro"
-        assert data["antigravity"]["model_allowlist"] == [
-            "gemini-4-pro",
-            "gemini-3.1-pro-high",
-            "gemini-3.8-flash-high",
-            "gemini-3.1-flash",
-        ]
-    doc = (model_tree / "docs/reference/configuration.md").read_text(encoding="utf-8")
-    assert "  model: gemini-4-pro" in doc
-    assert "    - gemini-4-pro" in doc
-    assert "| `model` | string | `gemini-4-pro`" in doc
-    assert "  model: gpt-5.3-codex" in doc
-    hooks = (model_tree / "docs/reference/hooks.md").read_text(encoding="utf-8")
-    assert "--model gemini-4-pro" in hooks
-
-
-def test_antigravity_does_not_duplicate_existing_allowlist_item(model_tree: Path) -> None:
-    """新モデルが allowlist にあれば重複追加しない。"""
-    for relative in (SSOT, MIRROR):
-        path = model_tree / relative
-        content = path.read_text(encoding="utf-8")
-        path.write_text(
-            content.replace(
-                "    - gemini-3.1-flash\n", "    - gemini-3.1-flash\n    - gemini-4-pro\n"
-            ),
-            encoding="utf-8",
-        )
-    result = _run_cli(model_tree, "antigravity", "gemini-4-pro")
-    assert result.returncode == 0, result.stderr
-    for relative in (SSOT, MIRROR):
-        data = yaml.safe_load((model_tree / relative).read_text(encoding="utf-8"))
-        assert data["antigravity"]["model_allowlist"].count("gemini-4-pro") == 1
-
-
-def test_antigravity_unknown_model_requires_explicit_allowlist_addition(model_tree: Path) -> None:
-    """未確認モデルは許可指定がない限り更新前に拒否する。"""
-    before = _snapshot(model_tree)
-
-    result = _run_cli(model_tree, "antigravity", "gemini-4-pro")
-
-    assert result.returncode == 1
-    assert "agy models" in result.stderr
-    assert "--add-to-allowlist" in result.stderr
-    assert "ADD_ALLOWLIST=1" in result.stderr
-    assert _snapshot(model_tree) == before
-
-
-def test_antigravity_empty_model_keeps_allowlists(model_tree: Path) -> None:
-    """空文字は有効な YAML として保存し allowlist には触れない。"""
-    original = {
-        relative: (model_tree / relative).read_text(encoding="utf-8") for relative in (SSOT, MIRROR)
-    }
-    hooks = model_tree / "docs/reference/hooks.md"
-    original_hooks = hooks.read_bytes()
-
-    result = _run_cli(model_tree, "antigravity", "")
-
-    assert result.returncode == 0, result.stderr
-    for relative in (SSOT, MIRROR):
-        content = (model_tree / relative).read_text(encoding="utf-8")
-        data = yaml.safe_load(content)
-        assert '  model: ""\n' in content
-        assert data["antigravity"]["model"] == ""
-        assert content == original[relative].replace(
-            "  model: gemini-3.8-flash-high\n", '  model: ""\n', 1
-        )
-    assert hooks.read_bytes() == original_hooks
-
-
-def test_antigravity_empty_model_does_not_need_allowlist(model_tree: Path) -> None:
-    """allowlist が空でも空文字設定には追加許可を要求しない。"""
-    ssot = model_tree / SSOT
-    ssot.write_text(
-        ssot.read_text(encoding="utf-8").replace(
-            "    - gemini-3.1-pro-high\n    - gemini-3.8-flash-high\n    - gemini-3.1-flash\n",
-            "",
-            1,
-        ),
-        encoding="utf-8",
-    )
-    result = _run_cli(model_tree, "antigravity", "")
-    assert result.returncode == 0, result.stderr
-    assert yaml.safe_load(ssot.read_text(encoding="utf-8"))["antigravity"]["model"] == ""
-
-
-def test_hooks_doc_matches_backtick_prefixed_argument() -> None:
-    """--model の直前が空白でなくてもモデル値を更新する。"""
-    updated = set_model._patch_hooks_doc(
-        "`--model gemini-3.8-flash-high`\n", "gemini-3.8-flash-high", "gemini-4-pro"
-    )
-    assert updated == "`--model gemini-4-pro`\n"
-
-
 @pytest.mark.parametrize("new_model", ["opus", "claude-sonnet-5"])
 def test_claude_accepts_alias_and_full_id(model_tree: Path, new_model: str) -> None:
     """Claude の別名とフル ID を受け付ける。"""
@@ -259,9 +144,6 @@ def test_claude_accepts_alias_and_full_id(model_tree: Path, new_model: str) -> N
         ("codex", "true"),
         ("codex", "yes"),
         ("codex", ".inf"),
-        ("antigravity", 'gemini"4'),
-        ("antigravity", "123"),
-        ("antigravity", "~"),
     ],
 )
 def test_invalid_model_writes_nothing(model_tree: Path, tool: str, model: str) -> None:
@@ -459,7 +341,6 @@ def test_show_reports_local_override(model_tree: Path, capsys: pytest.CaptureFix
     assert set_model.main(["show", "--root", str(model_tree)]) == 0
     output = capsys.readouterr().out
     assert "codex.model: gpt-6-sol" in output
-    assert "antigravity.model: gemini-3.8-flash-high" in output
     assert "subagent.default_model: sonnet" in output
     assert "codex.model (cli-tools.local.yaml override): o3-pro" in output
 
@@ -469,7 +350,6 @@ def test_show_cli_reads_temporary_root(model_tree: Path) -> None:
     result = _run_cli(model_tree, "show")
     assert result.returncode == 0, result.stderr
     assert "codex.model: gpt-6-sol" in result.stdout
-    assert "antigravity.model: gemini-3.8-flash-high" in result.stdout
     assert "subagent.default_model: sonnet" in result.stdout
 
 

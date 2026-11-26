@@ -46,16 +46,7 @@ def calc_route_stats(events: list[dict]) -> dict:
 
 
 def calc_cli_stats(events: list[dict]) -> dict:
-    """cli_call イベントの集計を計算する。
-
-    Args:
-        events: 集計対象のイベントリスト。
-
-    Returns:
-        total / codex / gemini / antigravity / by_tool / success_rate /
-        errors_by_type を含む辞書。`by_tool` は全ツールの内訳（Counter 化）で、
-        `codex` / `gemini` / `antigravity` は後方互換のため個別キーとしても残す。
-    """
+    """CLI の件数・成功率・エラーを集計する。過去の tool 値は by_tool で扱う。"""
     calls = [e for e in events if e.get("type") == "cli_call"]
     total = len(calls)
     by_tool = Counter(
@@ -72,8 +63,6 @@ def calc_cli_stats(events: list[dict]) -> dict:
     return {
         "total": total,
         "codex": by_tool.get("codex", 0),
-        "gemini": by_tool.get("gemini", 0),
-        "antigravity": by_tool.get("antigravity", 0),
         "by_tool": dict(by_tool),
         "success": success,
         "success_rate": round((success / total) * 100, 1) if total > 0 else 0.0,

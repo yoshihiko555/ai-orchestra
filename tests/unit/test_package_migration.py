@@ -1,4 +1,4 @@
-"""sync-orchestra.py の installed_packages 移行（リネーム読み替え・配布終了パッケージ除去）のテスト。"""
+"""sync-orchestra.py の配布終了パッケージ除去と既存プロジェクトの互換テスト。"""
 
 from __future__ import annotations
 
@@ -17,31 +17,31 @@ migrate_installed_packages = sync_orchestra.migrate_installed_packages
 class TestMigrateInstalledPackages:
     """migrate_installed_packages のテスト。"""
 
-    def test_renames_gemini_suggestions(self) -> None:
-        """旧 gemini-suggestions は antigravity-suggestions に読み替えられる。"""
+    def test_removes_legacy_suggestions(self) -> None:
+        """旧名のパッケージも、配布終了後は導入一覧から外れる。"""
         migrated, changed = migrate_installed_packages(["core", "gemini-suggestions"])
-        assert migrated == ["core", "antigravity-suggestions"]
+        assert migrated == ["core"]
         assert changed is True
 
     def test_no_change_for_current_names(self) -> None:
-        """新名のみの場合は変更なし。"""
-        packages = ["core", "antigravity-suggestions", "audit"]
+        """現在も配布しているパッケージのみなら変更なし。"""
+        packages = ["core", "agent-routing", "audit"]
         migrated, changed = migrate_installed_packages(packages)
         assert migrated == packages
         assert changed is False
 
-    def test_dedupes_when_both_names_present(self) -> None:
-        """旧名と新名が両方ある場合は重複を除去する。"""
+    def test_removes_both_discontinued_suggestion_names(self) -> None:
+        """配布終了パッケージの新旧名が共存していても両方外れる。"""
         migrated, changed = migrate_installed_packages(
             ["gemini-suggestions", "antigravity-suggestions"]
         )
-        assert migrated == ["antigravity-suggestions"]
+        assert migrated == []
         assert changed is True
 
     def test_preserves_order(self) -> None:
         """元の順序を保つ。"""
         migrated, _ = migrate_installed_packages(["audit", "gemini-suggestions", "core"])
-        assert migrated == ["audit", "antigravity-suggestions", "core"]
+        assert migrated == ["audit", "core"]
 
     def test_empty_list(self) -> None:
         """空リストはそのまま。"""
@@ -49,7 +49,10 @@ class TestMigrateInstalledPackages:
         assert migrated == []
         assert changed is False
 
-    @pytest.mark.parametrize("discontinued", ["cocoindex", "tmux-monitor"])
+    @pytest.mark.parametrize(
+        "discontinued",
+        ["cocoindex", "tmux-monitor", "antigravity-suggestions", "gemini-suggestions"],
+    )
     def test_removes_discontinued_package(self, discontinued: str) -> None:
         """配布を終了したパッケージは installed_packages から除去される。"""
         migrated, changed = migrate_installed_packages(["core", discontinued, "audit"])
@@ -292,3 +295,122 @@ class TestMainWithDiscontinuedHookPackage:
             for hook in entry["hooks"]
         ]
         assert registered == [hook_utils.SYNC_HOOK_COMMAND]
+
+
+@pytest.mark.parametrize("discontinued", ["antigravity-suggestions", "gemini-suggestions"])
+@pytest.mark.parametrize("keep_core", [True, False], ids=["with-core", "only-removed"])
+def test_sync_removes_discontinued_suggestions_and_preserves_project_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, discontinued: str, keep_core: bool
+) -> None:
+    orchestra_dir = tmp_path / "orchestra"
+    core_dir = orchestra_dir / "packages" / "core"
+    (core_dir / "config").mkdir(parents=True)
+    (core_dir / "config" / "retained.yaml").write_text("enabled: true\n", encoding="utf-8")
+    (core_dir / "manifest.json").write_text(
+        json.dumps({"name": "core", "config": ["config/retained.yaml"]}), encoding="utf-8"
+    )
+    project_dir = tmp_path / "project"
+    claude_dir = project_dir / ".claude"
+    config_dir = claude_dir / "config" / "agent-routing"
+    config_dir.mkdir(parents=True)
+    local_path = config_dir / "cli-tools.local.yaml"
+    local_content = "agents:\n  researcher:\n    tool: antigravity\n"
+    local_path.write_text(local_content, encoding="utf-8")
+    installed = ["core", discontinued] if keep_core else [discontinued]
+    orch_path = claude_dir / "orchestra.json"
+    orch_path.write_text(
+        json.dumps({"installed_packages": installed, "file_hashes": {discontinued: {}}}),
+        encoding="utf-8",
+    )
+    removed_command = hook_utils.get_hook_command(discontinued, "suggest-antigravity-research.py")
+    legacy_command = removed_command.replace(
+        hook_utils.HOOK_INTERPRETER, hook_utils.LEGACY_HOOK_INTERPRETER
+    )
+    user_command = "python3 ./user-hook.py"
+    settings_path = claude_dir / "settings.local.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": hook_utils.SYNC_HOOK_COMMAND}]}
+                    ],
+                    "PreToolUse": [
+                        {
+                            "matcher": "WebSearch|WebFetch",
+                            "hooks": [
+                                {"type": "command", "command": command}
+                                for command in (removed_command, legacy_command, user_command)
+                            ],
+                        }
+                    ],
+                },
+                "permissions": {"allow": ["Read"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(sync_orchestra, "read_hook_input", lambda: {"cwd": str(project_dir)})
+
+    sync_orchestra.main()
+
+    saved = json.loads(orch_path.read_text(encoding="utf-8"))
+    assert saved["installed_packages"] == (["core"] if keep_core else [])
+    assert discontinued not in saved["file_hashes"]
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    registered = [
+        hook["command"]
+        for entries in settings["hooks"].values()
+        for entry in entries
+        for hook in entry["hooks"]
+    ]
+    assert set(registered) == {hook_utils.SYNC_HOOK_COMMAND, user_command}
+    assert settings["permissions"] == {"allow": ["Read"]}
+    assert local_path.read_text(encoding="utf-8") == local_content
+    if keep_core:
+        assert (claude_dir / "config" / "core" / "retained.yaml").read_text(
+            encoding="utf-8"
+        ) == "enabled: true\n"
+
+
+@pytest.mark.parametrize("discontinued", ["antigravity-suggestions", "gemini-suggestions"])
+def test_install_other_package_with_discontinued_suggestions_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, discontinued: str
+) -> None:
+    manager_mod = load_module("manager_package_migration", "scripts/orchestra-manager.py")
+    orchestra_dir = tmp_path / "orchestra"
+    package_dir = orchestra_dir / "packages" / "active"
+    (package_dir / "config").mkdir(parents=True)
+    (package_dir / "config" / "active.yaml").write_text("enabled: true\n", encoding="utf-8")
+    (package_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "active",
+                "version": "1.0.0",
+                "description": "test package",
+                "config": ["config/active.yaml"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    project_dir = tmp_path / "project"
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir(parents=True)
+    (claude_dir / "orchestra.json").write_text(
+        json.dumps({"installed_packages": [discontinued]}), encoding="utf-8"
+    )
+    monkeypatch.setenv("AI_ORCHESTRA_DIR", str(orchestra_dir))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project_dir))
+    manager = manager_mod.OrchestraManager(orchestra_dir)
+
+    manager.install("active", str(project_dir))
+
+    saved = manager.load_orchestra_json(project_dir)
+    assert "active" in saved["installed_packages"]
+    assert (claude_dir / "config" / "active" / "active.yaml").read_text(
+        encoding="utf-8"
+    ) == "enabled: true\n"
+    assert "config/active/active.yaml" in saved["file_hashes"]["active"]

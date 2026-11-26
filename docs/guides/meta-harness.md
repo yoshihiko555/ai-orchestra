@@ -269,7 +269,7 @@ flowchart TD
 </details>
 
 `routing-config` を対象にする場合、proposer が patch できるキーは per-key の `created_by`
-allowlist で制限される（`agents.*.tool` / `antigravity.model` は proposer 可、`codex.model` は
+allowlist で制限される（`agents.*.tool` は proposer 可、`codex.model` は
 human 限定。ADR-041 → 042、`design:meta-harness-proposer-routing-unlock` 参照）。
 
 > **注記（2026-08-14、ADR-20260814-049）**: `loop` の対象は skill 系 / claude-harness target

@@ -26,7 +26,6 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | [quality-gates](#quality-gates)                     | 実装後レビュー・テスト分析・自動 lint                                                            | 品質         |
 | [audit](#audit)                                     | 統一イベントログによる監査・CLI 記録                                                             | 監査         |
 | [codex-suggestions](#codex-suggestions)             | ファイル編集時の Codex 相談提案                                                                  | 提案         |
-| [antigravity-suggestions](#antigravity-suggestions) | Web 検索時の Antigravity リサーチ提案                                                            | 提案         |
 | [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                                                 | ワークフロー |
 | [loop-harness](#loop-harness)                       | Issue 起点の Maker/Checker 反復と PR レビュー対応を安全駆動                                      | ハーネス     |
 | [codd](#codd)                                       | ドキュメント依存グラフの scan/validate/ack/impact（整合性レイヤー）                              | 整合性       |
@@ -255,7 +254,7 @@ Taskfile からも実行できる: `task agency:fetch`（clone を最新にす�
 | hook   | `audit-session-end.py`         | SessionEnd: セッション集計 + `session_end` 記録                           |
 | hook   | `audit-prompt.py`              | UserPromptSubmit: 期待ルート予測 + `prompt` 記録                          |
 | hook   | `audit-route.py`               | PostToolUse: 実ルート照合 + `route_decision` 記録                         |
-| hook   | `audit-cli.py`                 | PostToolUse(Bash): Codex/Antigravity CLI 呼び出しを `cli_call` として記録 |
+| hook   | `audit-cli.py`                 | PostToolUse(Bash): Codex CLI 呼び出しを `cli_call` として記録 |
 | hook   | `audit-subagent-start.py`      | SubagentStart: サブエージェント開始を記録                                 |
 | hook   | `audit-subagent-end.py`        | SubagentStop: サブエージェント終了を記録                                  |
 | hook   | `audit-instructions-loaded.py` | InstructionsLoaded: 読み込まれた指示書を記録                              |
@@ -309,34 +308,6 @@ Edit の `old_string` / `new_string` で契約宣言が同じならコードシ�
 `core` / `config` / `model`・通常の `class`・文字数・`src/` だけでは発火しない。`codex.enabled` の明示 opt-in とプロジェクト外の除外は維持する。
 
 サブエージェント／インプロセス teammate 内の抑制と session / file 単位の通知抑制は、[提案の共通契約（Hook リファレンス）](hooks.md)に従う。`check-codex-after-plan.py` の発火条件は今回変更しない。
-
----
-
-## antigravity-suggestions
-
-WebSearch/WebFetch の前に、比較・選定・移行等の調査意図がある場合に Antigravity CLI でのリサーチを任意提案する。
-
-- **バージョン**: 0.1.0
-- **依存**: core
-
-### コンポーネント
-
-| 種別  | 名前                                | 説明                                                              |
-| ----- | ----------------------------------- | ----------------------------------------------------------------- |
-| hook  | `suggest-antigravity-research.py`   | PreToolUse(WebSearch/WebFetch): `[Antigravity Suggestion]` を出力 |
-| skill | `antigravity-system`                | Antigravity CLI 利用ガイド                                        |
-| rule  | `antigravity-delegation`            | Antigravity CLI 委譲ルール                                        |
-| rule  | `antigravity-suggestion-compliance` | 任意助言と必須 routing・委譲の境界                                |
-
-### 発火条件と通知抑制
-
-WebSearch の `query` / WebFetch の `prompt` に比較・選定・移行等の調査意図がある場合に限定する。明確な選択比較（`vs` / `vs.` / `versus` / `違い` / `どっち` / `which is better`）も対象とする。文字列等の演算比較や単純な migration エラー検索は除外するが、明確な選択比較が同居すればそちらを優先する。URL・長さ・`documentation` / `library` / `guide` / `example` / `best practice` 等の一般語だけでは発火しない。
-
-両パッケージの編集前・Web 調査前 hook は、トップレベルの `agent_id` が非空の文字列（`str`）の場合だけ、サブエージェント／インプロセス teammate 内として提案を抑制する。`agent_type` は `--agent` で起動したメインにも付くため、単独では抑制しない。呼出先を示す `tool_input.subagent_type` も判定に使わない。`session_id` があれば project / worktree 別に同一 session・同一ファイル（Codex）または正規化した同一質問（Antigravity）への通知を 1 度に抑える。
-
-両 hook の config・対象範囲・marker に使う project / worktree は、環境変数 `CLAUDE_PROJECT_DIR` が非空ならそのルートを使い、未設定または空の場合だけ hook 入力の `cwd` で解決する。状態は `.claude/state/suggestions/` の hash 化した session / 対象の空 marker のみ。質問本文等は保存せず、状態書き込み失敗時は無出力・exit 0 とする。`session_id` がなければ state を作らず、呼び出しごとに助言する。marker の自動削除は今回追加せず、終了後も session ディレクトリが残る。cleanup は将来課題とする。通知済みは相談済みではなく、意味的な相談済み判定はオーケストレーターが担う（transcript 解析はしない）。詳細は [Hook リファレンス](hooks.md)を参照。
-
-`[Codex Suggestion]` / `[Antigravity Suggestion]` は操作の保留や追加相談を義務付けない。相談済み・軽微・適用外なら続行でき、採否を毎回説明する必要もない。ただし `[Resolved Routing]` / `agents.<name>.tool` とスキル固有の委譲義務、相談時の既存 config 解決・sandbox 安全条件は維持する。
 
 ---
 
@@ -525,7 +496,7 @@ meta-harness と loop-harness が共有する Docker CLI、hardened security pro
 | ---------------- | --------------------------------------------------------------------------------------------------- |
 | `claude-harness` | 既定値。meta-harness 自身（own）向けオーバーレイ候補                                                |
 | `skill:<name>`   | 個別スキル向け候補（skill-evolution 連携）                                                          |
-| `routing-config` | `cli-tools.yaml` の `agents.*.tool` / `codex.model` / `antigravity.model` へのパッチ候補（Phase A） |
+| `routing-config` | `cli-tools.yaml` の `agents.*.tool` / `codex.model` へのパッチ候補（Phase A） |
 
 ### 隔離実行
 

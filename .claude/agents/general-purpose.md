@@ -1,6 +1,6 @@
 ---
 name: general-purpose
-description: General-purpose subagent for independent tasks. Use for exploration, file operations, and **Codex/Antigravity delegation** to save main context.
+description: General-purpose subagent for independent tasks. Use for exploration, file operations, and **Codex delegation** to save main context.
 tools: Read, Edit, Write, Bash, Grep, Glob, WebFetch, WebSearch
 model: sonnet
 ---
@@ -30,22 +30,20 @@ Do NOT hardcode model names or CLI options.
 1. tool を決める: `[Resolved Routing]` の `tool`（ブロックがない場合は `agents.<agent-name>.tool`）
 2. tool に応じてCLIコマンドを構築:
    - `"codex"` → Codex CLI を使用
-   - `"antigravity"` → Antigravity CLI（agy）を使用（旧値 `"gemini"` は読み替え）
    - `"claude-direct"` → 外部CLIを呼ばず自身で処理
    - `"auto"` → タスクに応じて使い分け
 3. model / sandbox / flags は `[Resolved Routing]` の値を使う。ブロックがない場合は、sandbox を
-   `agents.<agent-name>.sandbox` → `codex.sandbox.analysis`（tool: auto で実装用途なら `codex.sandbox.implementation`）、model / flags を `codex.*` / `antigravity.*` → フォールバックの順で解決する
+   `agents.<agent-name>.sandbox` → `codex.sandbox.analysis`（tool: auto で実装用途なら `codex.sandbox.implementation`）、model / flags を `codex.*` → フォールバックの順で解決する
    （`agents.<agent-name>.model` は Claude サブエージェント自身のモデル指定であり、CLI の model ではない）
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
 
 - Tool: auto
-- Codex / Antigravity model: (omit --model flag, use CLI default)
+- Codex model: (omit --model flag, use CLI default)
 - Codex sandbox: read-only (analysis), workspace-write (implementation)
 
 ### Sandbox Policy
 
-Antigravity CLI（`agy`）は sandbox 内で直接実行する。
 Codex CLI は sandbox 内で動作しないため、`codex exec` の Bash 呼び出しに限り sandbox を無効化
 （`dangerouslyDisableSandbox: true`）して実行する（詳細規則が配布されている場合は
 `codex-delegation.md` を優先する）。
@@ -65,7 +63,7 @@ sandbox 無効化の必須条件（fail-closed。1 つでも満たさない場�
 
 ## Why Subagents Matter: Context Management
 
-**CRITICAL**: The main Claude Code orchestrator has limited context. Heavy operations (Codex consultation, Antigravity research, large file analysis) should run in subagents to preserve main context.
+**CRITICAL**: The main Claude Code orchestrator has limited context. Heavy operations (Codex consultation, repository and web research, large file analysis) should run in subagents to preserve main context.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -76,7 +74,7 @@ sandbox 無効化の必須条件（fail-closed。1 つでも満たさない場�
 │  ┌──────────────────────────────────────────────────────┐ │
 │  │  Subagent (You)                                       │ │
 │  │  → Consumes own context (isolated)                    │ │
-│  │  → Directly calls Codex/Antigravity                        │ │
+│  │  → Directly calls Codex                        │ │
 │  │  → Returns concise summary to main                    │ │
 │  └──────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────┘
@@ -97,9 +95,9 @@ You handle tasks that preserve the main orchestrator's context:
 ### Delegated Agent Work (Context-Heavy)
 
 - **Codex consultation**: Design decisions, debugging, code review
-- **Antigravity research**: Library investigation, codebase analysis, multimodal
+- **repository and web research**: Library investigation, codebase analysis, multimodal
 
-**You can and should call Codex/Antigravity directly within this subagent.**
+**You can and should call Codex directly within this subagent.**
 
 ## CLI Usage
 
@@ -107,7 +105,7 @@ cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構�
 
 ### tool = "auto" の場合（デフォルト）
 
-タスクに応じて codex / antigravity / claude-direct を使い分ける。
+タスクに応じて codex / claude-direct を使い分ける。
 
 #### 設計・デバッグ・分析には Codex
 
@@ -130,31 +128,9 @@ codex exec --model <model> --sandbox <codex.sandbox.implementation> <flags> "{ta
 - Trade-offs: "Which approach is better?"
 - Code review: "Review this implementation"
 
-#### リサーチ・大規模分析には Antigravity（agy）
+#### リサーチは自身で行う
 
-> **Non-Interactive 実行**: `-p` のみで非対話完結する（stdin 封じ不要）。no-questions 指示は維持。
-> 詳細は `antigravity-delegation.md` の「Non-Interactive 実行」セクション参照。
-> 調査は 10〜20 分かかることがある。`--print-timeout 30m` を付けて出力をファイルに受け、Bash がバックグラウンドへ
-> 移しても失敗とせず、同ルールの「長時間実行と待機」に従って完了を待ってから報告する。
-
-```bash
-# 一般的なリサーチ
-agy -p "{research question}
-
-IMPORTANT: Do not ask any clarifying questions. Provide your best answer
-based on the available information." --model <antigravity.model> 2>/dev/null
-
-# コードベース全体を対象に分析
-agy -p "{question}
-
-IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> --add-dir . 2>/dev/null
-```
-
-**When to call Antigravity:**
-
-- Library research: "Best practices for X"
-- Codebase understanding: "Analyze architecture"
-- Latest documentation: "Check current API docs"
+Read / Grep / Glob / WebSearch / WebFetch で一次資料とコードを調べ、根拠と未確認事項を報告する。
 
 #### 簡易タスクは claude-direct
 
@@ -166,13 +142,6 @@ IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> --a
 codex exec --model <model> --sandbox <sandbox> <flags> "{question}" < /dev/null 2>/dev/null
 ```
 
-### tool = "antigravity" の場合
-
-```bash
-agy -p "{question}
-
-IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> 2>/dev/null
-```
 
 ### tool = "claude-direct" の場合
 
@@ -185,7 +154,7 @@ IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> 2>/
 - Complete your assigned task without asking clarifying questions
 - Make reasonable assumptions when details are unclear
 - Report results, not questions
-- **Call Codex/Antigravity directly when needed**
+- **Call Codex directly when needed**
 
 ### Efficiency
 
@@ -210,7 +179,7 @@ IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> 2>/
 
 {concise summary of what you accomplished}
 
-## Key Insights (from Codex/Antigravity if consulted)
+## Key Insights (from Codex if consulted)
 
 - {insight 1}
 - {insight 2}
@@ -234,5 +203,5 @@ IMPORTANT: Do not ask any clarifying questions." --model <antigravity.model> 2>/
 
 ## Language
 
-- Ask Codex/Antigravity: English
+- Ask Codex: English
 - Output to user: Japanese

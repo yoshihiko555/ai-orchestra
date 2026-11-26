@@ -13,9 +13,9 @@ description: Load project context from AGENTS and .claude directories
 
 ## Actions
 
-1. Read `AGENTS.md` for project instructions (shared by Claude Code, Codex, and Antigravity)
+1. Read `AGENTS.md` for project instructions (shared by Claude Code and Codex)
 2. Read `.claude/docs/DESIGN.md` for architecture decisions
-3. Check `.claude/docs/research/` for Gemini's findings
+3. Check `.claude/docs/research/` for research findings
 4. Review `.claude/docs/libraries/` for library constraints
 5. Read `.claude/config/agent-routing/cli-tools.yaml` for runtime tool settings
 6. Check `.codex/rules/*.rules` for project execution-policy constraints (optional)

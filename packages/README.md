@@ -17,7 +17,6 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 | [audit](#audit)                                     | 統一イベントログによるオーケストレーション監査基盤                                               | 監査         |
 | [codex-suggestions](#codex-suggestions)             | ファイル編集・プラン完了時の Codex 相談提案                                                      | 提案         |
 | [codex-harness](#codex-harness)                     | Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run・review）                   | ハーネス     |
-| [antigravity-suggestions](#antigravity-suggestions) | Web 検索・fetch 時の Antigravity リサーチ提案                                                    | 提案         |
 | [git-workflow](#git-workflow)                       | Git/GitHub ワークフロー（Issue・PR・開発フロー）                                                 | ワークフロー |
 
 ---
@@ -39,7 +38,7 @@ AI Orchestra のパッケージ一覧と詳細。`packages/*/agents` と `packag
 - rules (facet build): `config-loading`, `coding-principles`, `task-memory-usage`, `context-sharing`, `memory-layers`
 - config: `task-memory.yaml`
 - context files (所有):
-  - `AGENTS.md` — init/install/sync 時に配布（Claude Code / Codex CLI / Antigravity CLI 共通の指示書。以降は末尾の `ai-orchestra` 管理ブロックだけを最新化）
+  - `AGENTS.md` — init/install/sync 時に配布（Claude Code / Codex CLI 共通の指示書。以降は末尾の `ai-orchestra` 管理ブロックだけを最新化）
 
 ---
 
@@ -135,7 +134,7 @@ meta-harness と loop-harness が共有する Docker CLI、hardened security pro
   - Phase 2: `propose` / `promote`
   - Phase 3: `loop`（自動探索）
 - config: `meta-harness.yaml`（store・シナリオ・`config_patch.allowlist` 等）
-- target 種別: `claude-harness`（既定、own）／ `skill:<name>`（skill-evolution 連携）／ `routing-config`（`cli-tools.yaml` の `agents.*.tool` / `codex.model` / `antigravity.model` へのパッチ候補、Phase A）
+- target 種別: `claude-harness`（既定、own）／ `skill:<name>`（skill-evolution 連携）／ `routing-config`（`cli-tools.yaml` の `agents.*.tool` / `codex.model` へのパッチ候補、Phase A）
 
 ---
 
@@ -171,7 +170,7 @@ meta-harness と loop-harness が共有する Docker CLI、hardened security pro
   - `audit-session-end.py` — SessionEnd 時にセッションサマリー記録
   - `audit-prompt.py` — UserPromptSubmit で期待ルート予測 + prompt イベント
   - `audit-route.py` — PostToolUse でルーティング監査 + quality_gate 検出
-  - `audit-cli.py` — PostToolUse:Bash で Codex/Antigravity CLI 呼び出しを記録
+  - `audit-cli.py` — PostToolUse:Bash で Codex CLI 呼び出しを記録
   - `audit-subagent-start.py` / `audit-subagent-end.py` — サブエージェントのライフサイクル記録
 - ライブラリ: `event_logger.py`（統一スキーマ v1 + セッションローテーション）
 - scripts:
@@ -232,22 +231,6 @@ hook はその interpreter へ re-exec し PATH 非依存で動作する。
 - 対話 TUI や直接の `codex exec` 呼び出しはこの自動注入を経由しないため、利用者が自分で
   `export AI_ORCHESTRA_PYTHON=/path/to/venv/bin/python` する必要がある
 - 未設定時は従来どおり PATH 上の `python3` が使われる（no-op、既存動作を変えない）
-
----
-
-### antigravity-suggestions
-
-WebSearch/WebFetch の前に Antigravity CLI でのリサーチを提案し、最新情報へのアクセスを最適化する。
-
-- **バージョン**: 0.1.0
-- **依存**: core
-
-**提供するもの:**
-
-- hooks: `suggest-antigravity-research.py`（WebSearch/WebFetch 前に `[Antigravity Suggestion]` を出力）
-- skills (facet build): `antigravity-system`
-- rules (facet build): `antigravity-delegation`, `antigravity-suggestion-compliance`
-- context files: なし（指示書は core が配布する共通の `AGENTS.md`。旧 `.gemini/GEMINI.md` の生成物は context sync 時に自動削除される）
 
 ---
 

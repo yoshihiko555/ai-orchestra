@@ -162,7 +162,7 @@ class TestFacetBuilder:
         codex_path = builder.build_one("simplify", "codex", project_dir)
 
         assert claude_path == project_dir / ".claude" / "skills" / "simplify" / "SKILL.md"
-        # 非 claude ターゲットのスキルは .agents/skills/ に出力される（Codex/agy 共有）
+        # Codex 向けのスキルは .agents/skills/ に出力される。
         assert codex_path == project_dir / ".agents" / "skills" / "simplify" / "SKILL.md"
 
     def test_frontmatter_is_correctly_formatted(self, tmp_path: Path) -> None:

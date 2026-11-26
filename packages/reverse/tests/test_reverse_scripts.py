@@ -7,7 +7,7 @@ docs/evaluation/reverse.md の評価観点のうち、自動テスト化可能�
 - EV-06: generate-mermaid.py — JSON → Mermaid 変換
 - EV-09: collect-todos.py — CLI 引数 → stdout JSON、exit code 0/1/2
 
-EV-13（antigravity.model 解決・allowlist 判定）は reverse-coordinator.md の自然言語指示に
+EV-13（直接調査）は reverse-coordinator.md の自然言語指示に
 埋め込まれており、スクリプトに独立関数化されていないためテスト対象外。
 """
 

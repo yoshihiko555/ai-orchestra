@@ -148,12 +148,12 @@ echo '{"scope": "all", "severity": "normal"}' | python3 "$LESSONS_ADMIN" revise 
 
 AskUserQuestion で選ばせる:
 
-| 昇格先             | 書く場所                                                                                                                                      | 届く CLI                        |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| AGENTS.md の記述欄 | 作業中の worktree の `AGENTS.md` の、`ai-orchestra` 管理ブロック（`<!-- BEGIN ai-orchestra: ... -->` 〜 `<!-- END ai-orchestra -->`）の**外** | Claude Code・Codex・Antigravity |
-| `.claude/rules`    | プロジェクト独自の rule ファイル（`.claude/orchestra.json` が管理する配布 rule **以外**）                                                     | Claude Code だけ                |
-| ガード             | GitHub Issue（テスト・hook・lint を足す提案。コードは書かない）                                                                               | —                               |
-| 却下・保留         | 書かない（Step 9）                                                                                                                            | —                               |
+| 昇格先             | 書く場所                                                                                                                                      | 届く CLI           |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| AGENTS.md の記述欄 | 作業中の worktree の `AGENTS.md` の、`ai-orchestra` 管理ブロック（`<!-- BEGIN ai-orchestra: ... -->` 〜 `<!-- END ai-orchestra -->`）の**外** | Claude Code・Codex |
+| `.claude/rules`    | プロジェクト独自の rule ファイル（`.claude/orchestra.json` が管理する配布 rule **以外**）                                                     | Claude Code だけ   |
+| ガード             | GitHub Issue（テスト・hook・lint を足す提案。コードは書かない）                                                                               | —                  |
+| 却下・保留         | 書かない（Step 9）                                                                                                                            | —                  |
 
 - 対象範囲が `claude` なのに AGENTS.md を、`all` なのに `.claude/rules` を選んだときは、届く CLI が変わる旨を示して確認する
 

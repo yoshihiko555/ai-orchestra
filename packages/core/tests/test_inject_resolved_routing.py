@@ -37,10 +37,6 @@ def _write_base_config(project_dir: Path, monkeypatch: pytest.MonkeyPatch) -> No
     implementation: workspace-write
   flags: ""
   requires_sandbox_disable: true
-antigravity:
-  enabled: true
-  model: base-antigravity-model
-  flags: ""
 agents:
   debugger:
     tool: claude-direct
@@ -50,7 +46,7 @@ agents:
     tool: codex
     sandbox: workspace-write
   researcher:
-    tool: antigravity
+    tool: claude-direct
   general-purpose:
     tool: auto
 """,
@@ -157,7 +153,6 @@ def test_subagent_start_without_local_override_uses_base_claude_direct(
 
     assert "- tool: claude-direct" in context
     assert "- codex." not in context
-    assert "- antigravity." not in context
     # local が無いときは見出しで local をマージ元として名乗らない
     assert "Resolved by hook from cli-tools.yaml. " in context
     assert "cli-tools.local.yaml" not in context
@@ -389,18 +384,8 @@ def test_subagent_start_ignores_prompt_like_field_in_input(
     assert _header_count(context, ROUTING_HEADER) == 1
     assert "- tool: claude-direct" in context.splitlines()
     assert "danger-full-access" not in context
-    assert "diagnose" not in context
 
-
-def test_subagent_start_researcher_includes_antigravity_model(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_base_config(tmp_path, monkeypatch)
-
-    context = _subagent_context(_run_main(_subagent_start(tmp_path, "researcher")))
-
-    assert "- tool: antigravity" in context
-    assert "- antigravity.model: base-antigravity-model" in context
+    assert "- tool: claude-direct" in context
 
 
 @pytest.mark.parametrize("tool", ["codex", "claude-direct"])
@@ -414,29 +399,10 @@ def test_subagent_start_researcher_local_tool_override(
 
     assert "- agent: researcher" in context.splitlines()
     assert f"- tool: {tool}" in context.splitlines()
-    assert "- antigravity." not in context
     if tool == "codex":
         assert "- codex.model: base-codex-model" in context
     else:
         assert "- codex." not in context
-
-
-def test_subagent_start_researcher_local_antigravity_disable_falls_back_with_note(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_base_config(tmp_path, monkeypatch)
-    _write_local_config(tmp_path, "antigravity:\n  enabled: false\n")
-
-    context = _subagent_context(_run_main(_subagent_start(tmp_path, "researcher")))
-
-    assert "- agent: researcher" in context.splitlines()
-    assert "- tool: claude-direct" in context.splitlines()
-    assert "- antigravity." not in context
-    assert "- codex." not in context
-    assert (
-        "- note: configured tool 'antigravity' -> claude-direct (antigravity.enabled is false)"
-        in context
-    )
 
 
 def test_subagent_start_still_injects_when_context_store_is_unavailable(

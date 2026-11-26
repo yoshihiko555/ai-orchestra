@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **BREAKING** **Antigravity CLI（`agy`）の連携を廃止（ADR-20261127-066）**: 専用パッケージ・ルーティング・提案・監査検出を削除した。researcher と reverse は Claude 自身で調査する。旧 `antigravity` / `gemini` 設定は値を使用せず警告し、旧 tool は `claude-direct` に解決する。配布終了パッケージは次回 sync 時に導入一覧と hook 登録から外す。Codex の委譲手順は維持する。API 共通基盤は後続タスクで扱う。
+
 - **BREAKING** **`skill-evolution`: v1 の互換の CLI・設定のキー・gitignore のエントリを外した（ADR-20261108-065）**: `skill_evolution.py`（`status` / `check-trigger` / `evaluate` / `provenance` / `lock` と `purge-v1`）、設定の `storage.dir`・`lessons`・`pending`・`offline`・`trigger`、`.gitignore` の管理ブロックの `.claude/skill-evolution/metrics/`・`pending/` を削除した。`.local.yaml` に v1 のキーが残っていても動作に影響はない（値は使われない）。
   v1 のデータは自動では消さないので、不要なら手で消す（場所は `docs/reference/logging.md` §2）。更新の前なら v0.3.8 の `skill_evolution.py purge-v1 --apply` でも消せる。
 - **旧 `.claude/Plans.md` の移行期間の扱いを外した（ADR-20261027-059）**: SessionStart の移行の警告と、`.gitignore` 管理ブロックの `.claude/Plans.md` / `.claude/Plans.archive.md` を外した。

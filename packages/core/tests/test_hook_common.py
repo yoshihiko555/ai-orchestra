@@ -13,6 +13,20 @@ from tests.module_loader import load_module
 hook_common = load_module("hook_common", "packages/core/hooks/hook_common.py")
 
 
+@pytest.mark.parametrize("tool", ["codex", "antigravity", "auto"])
+def test_configured_agent_tool_preserves_raw_tool(tool: str) -> None:
+    config = {"agents": {"researcher": {"tool": tool}}, "codex": {"enabled": False}}
+    assert hook_common.configured_agent_tool("researcher", config) == tool
+
+
+@pytest.mark.parametrize(
+    "config",
+    [None, {}, {"agents": None}, {"agents": "invalid"}, {"agents": {"researcher": "invalid"}}],
+)
+def test_configured_agent_tool_defaults_to_direct(config: object) -> None:
+    assert hook_common.configured_agent_tool("researcher", config) == "claude-direct"
+
+
 def test_read_hook_input_valid_json(monkeypatch) -> None:
     monkeypatch.setattr(sys, "stdin", io.StringIO('{"tool_name":"Edit"}'))
     assert hook_common.read_hook_input() == {"tool_name": "Edit"}
@@ -275,7 +289,7 @@ class TestHasProjectConfig:
 # is_cli_enabled
 #
 # 元々 agent-routing パッケージ所有だったが、codex-suggestions /
-# antigravity-suggestions が agent-routing に依存せず利用できるよう core に
+# image-generation が agent-routing に依存せず利用できるよう core に
 # 引き上げた（route_config.is_cli_enabled はここからの re-export）。
 # =========================================================================
 
@@ -318,52 +332,6 @@ class TestIsCliEnabled:
     def test_explicit_enabled_false_overrides_default_true(self) -> None:
         """enabled: false が明示されていれば default（省略時 True）に関わらず False になる。"""
         assert hook_common.is_cli_enabled("codex", {"codex": {"enabled": False}}) is False
-
-
-class TestNormalizeCliToolsConfig:
-    """normalize_cli_tools_config の旧 gemini → antigravity 後方互換（agent-routing EV-18）。
-
-    ここでの EV-18 は `docs/evaluation/agent-routing.md` の EV-18（旧 gemini 設定の
-    後方互換）を指す。`docs/evaluation/core.md` の EV-18（欠番）とは別物。
-
-    トップレベル `gemini.enabled: false` は、単一レイヤー内で
-    `antigravity.enabled` が明示されていない場合に限り
-    `antigravity.enabled: false` へフォールバックとして反映される
-    （無効化の意図の引き継ぎ。model/flags は Gemini CLI 固有値のため引き継がない）。
-    """
-
-    def test_legacy_gemini_disabled_maps_to_antigravity_disabled(self) -> None:
-        """agent-routing EV-18: 旧 gemini.enabled: false → antigravity.enabled: false 相当。"""
-        result = hook_common.normalize_cli_tools_config({"gemini": {"enabled": False}})
-        assert result["antigravity"]["enabled"] is False
-
-    def test_explicit_antigravity_enabled_wins_over_legacy_gemini_disabled(self) -> None:
-        """同一レイヤーで antigravity.enabled が明示されていればそちらを優先する。
-
-        競合時は antigravity.enabled を優先する（2026-07-04 人間レビュー裁定・Issue #125）。
-        """
-        result = hook_common.normalize_cli_tools_config(
-            {"gemini": {"enabled": False}, "antigravity": {"enabled": True}}
-        )
-        assert result["antigravity"]["enabled"] is True
-
-    def test_legacy_gemini_model_flags_not_carried_over(self) -> None:
-        """gemini.model / flags は Gemini CLI 固有値のため antigravity へ引き継がない。"""
-        result = hook_common.normalize_cli_tools_config(
-            {"gemini": {"enabled": False, "model": "gemini-legacy", "flags": "--legacy"}}
-        )
-        assert result["antigravity"] == {"enabled": False}
-
-    def test_legacy_gemini_enabled_true_does_not_disable_antigravity(self) -> None:
-        """gemini.enabled: true（無効化以外）はフォールバックの対象外。"""
-        result = hook_common.normalize_cli_tools_config({"gemini": {"enabled": True}})
-        assert "antigravity" not in result
-
-    def test_does_not_mutate_input(self) -> None:
-        """入力 dict は変更しない（新しい dict を返す）。"""
-        original = {"gemini": {"enabled": False}}
-        hook_common.normalize_cli_tools_config(original)
-        assert original == {"gemini": {"enabled": False}}
 
 
 # =========================================================================

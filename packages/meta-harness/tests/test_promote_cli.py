@@ -1281,7 +1281,7 @@ def _prepare_routing_config_worktree(tmp_path: Path) -> tuple[Path, bytes]:
 def _routing_config_value(original: bytes, key_path: str) -> str:
     """実 config の現在値を `original` から動的に導出する。
 
-    promote allowlist（agents.*.tool / antigravity.model、Phase B で codex.model）内の
+    promote allowlist（agents.*.tool、Phase B で codex.model）内の
     キーの現在値をテストへハードコードすると、allowlist で許可された昇格 PR が
     原理的に CI を通らない（Issue #341 と同型。実例: PR #367 の debugger 昇格）。
     """

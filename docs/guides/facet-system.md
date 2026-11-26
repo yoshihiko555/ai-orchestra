@@ -77,7 +77,7 @@ facets/
 | カテゴリ          | Instruction                                                                                                                                            |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | ルーティング      | `agent-routing-policy`, `orchestra-usage`, `config-loading`                                                                                            |
-| Codex/Antigravity | `codex-delegation`, `codex-suggestion-compliance`, `codex-system`, `antigravity-delegation`, `antigravity-suggestion-compliance`, `antigravity-system` |
+| Codex | `codex-delegation`, `codex-suggestion-compliance`, `codex-system` |
 | 品質              | `review`, `skill-review-policy`, `tdd`, `release-readiness`                                                                                            |
 | 開発フロー        | `order`, `development-workflow`, `issue-create`, `issue-fix`, `handoff`                                                                                |
 | 状態管理          | `task-memory-usage`, `task-state`, `context-sharing`, `memory-layers`                                                                                  |
@@ -182,7 +182,7 @@ scripts: # facets/scripts/ から参照 → scripts/ に配布
    f. [スキルの場合] knowledge/ → references/ にコピー
    g. [スキルの場合] scripts/ → scripts/ にコピー
 3. 出力先:
-   - スキル → .claude/skills/{name}/SKILL.md + .agents/skills/{name}/SKILL.md（Codex/agy 共用）
+   - スキル → .claude/skills/{name}/SKILL.md + .agents/skills/{name}/SKILL.md（Codex 共用）
    - ルール → .claude/rules/{name}.md（Claude のみ。外部 CLI へのルール同期は廃止）
    - リソース → .claude/skills/{name}/references/*.md, scripts/*
 ```
@@ -314,9 +314,6 @@ orchex facet build --name my-skill --project .
 | `design`                            | skill | core                            | —                                        | —             |
 | `design-tracker`                    | skill | quality-gates                   | —                                        | —             |
 | `development-workflow`              | rule  | git-workflow                    | —                                        | —             |
-| `antigravity-delegation`            | rule  | antigravity-suggestions         | cli-language                             | —             |
-| `antigravity-suggestion-compliance` | rule  | antigravity-suggestions         | —                                        | —             |
-| `antigravity-system`                | skill | antigravity-suggestions         | cli-language                             | —             |
 | `code-comments`                     | skill | quality-gates                   | —                                        | —             |
 | `code-naming`                       | skill | quality-gates                   | —                                        | —             |
 | `grasp-view`                        | skill | core                            | factual-writing                          | —             |

@@ -23,7 +23,6 @@ LEDGER = Path(".claude/orchestra.json")
 LEDGER_HASH_LINE = re.compile(r'("config/agent-routing/cli-tools\.yaml": ")[0-9a-f]{64}(")')
 MODEL_KEYS = {
     "codex": ("codex", "model"),
-    "antigravity": ("antigravity", "model"),
     "claude": ("subagent", "default_model"),
 }
 MODEL_ID = re.compile(r"[A-Za-z0-9._:\-]+\Z")
@@ -102,11 +101,9 @@ def _replace_field(lines: list[str], section: str, field: str, new: str) -> bool
     return False
 
 
-def _allowlist(
-    lines: list[str], section: str
-) -> tuple[int, list[tuple[int, re.Match[str]]]] | None:
-    """指定セクション内の allowlist と連続した項目を見つける。"""
-    section_lines = _section_range(lines, section)
+def _allowlist(lines: list[str]) -> tuple[int, list[tuple[int, re.Match[str]]]] | None:
+    """Codex セクション内の allowlist と連続した項目を見つける。"""
+    section_lines = _section_range(lines, "codex")
     if section_lines is None:
         return None
     for index in section_lines:
@@ -122,25 +119,17 @@ def _allowlist(
     return None
 
 
-def _patch_allowlist(lines: list[str], section: str, new: str) -> bool:
-    """Codex は単一項目、Antigravity は既存項目を残して先頭に追加する。"""
-    block = _allowlist(lines, section)
+def _patch_allowlist(lines: list[str], new: str) -> bool:
+    """Codex の allowlist を指定された単一モデルへ更新する。"""
+    block = _allowlist(lines)
     if block is None:
         return False
-    heading, items = block
-    if section == "codex":
-        if not items:
-            return False
-        first, match = items[0]
-        _, ending = _line_parts(lines[first])
-        lines[first : items[-1][0] + 1] = [f"{match.group(1)}- {new}{ending}"]
-        return True
-    if any(match.group(2).strip() == new for _, match in items):
-        return True
-    heading_body, heading_ending = _line_parts(lines[heading])
-    indent = items[0][1].group(1) if items else re.match(r"^\s*", heading_body).group() + "  "
-    ending = _line_parts(lines[items[0][0]])[1] if items else heading_ending or "\n"
-    lines.insert(heading + 1, f"{indent}- {new}{ending}")
+    _, items = block
+    if not items:
+        return False
+    first, match = items[0]
+    _, ending = _line_parts(lines[first])
+    lines[first : items[-1][0] + 1] = [f"{match.group(1)}- {new}{ending}"]
     return True
 
 
@@ -160,16 +149,15 @@ def _patch_comment(lines: list[str]) -> bool:
     return False
 
 
-def _patch_yaml(text: str, tool: str, old: str, new: str, required: bool) -> tuple[str, list[str]]:
+def _patch_yaml(text: str, tool: str, new: str, required: bool) -> tuple[str, list[str]]:
     """YAML の対象セクションだけを編集し、欠けた任意項目を返す。"""
     lines = text.splitlines(keepends=True)
     section, field = MODEL_KEYS[tool]
     missing: list[str] = []
-    value = '""' if tool == "antigravity" and new == "" else new
-    if not _replace_field(lines, section, field, value):
+    if not _replace_field(lines, section, field, new):
         missing.append(f"{section}.{field}")
-    if tool == "codex" or (tool == "antigravity" and new != ""):
-        if not _patch_allowlist(lines, section, new):
+    if tool == "codex":
+        if not _patch_allowlist(lines, new):
             missing.append(f"{section}.model_allowlist")
     elif tool == "claude" and not _patch_comment(lines):
         missing.append("subagent comment")
@@ -189,35 +177,6 @@ def _patch_literal_line(text: str, pattern: re.Pattern[str], new: str) -> str | 
             lines[index] = f"{match.group(1)}{new}{ending}"
             found = True
     return "".join(lines) if found else None
-
-
-def _patch_antigravity_doc(text: str, old: str, new: str) -> str | None:
-    """Antigravity の説明節だけでモデル名を置換する。"""
-    lines = text.splitlines(keepends=True)
-    start = next(
-        (i for i, line in enumerate(lines) if re.match(r"^###\s+antigravity\b", line)), None
-    )
-    if start is None:
-        return None
-    end = next(
-        (i for i in range(start + 1, len(lines)) if re.match(r"^###\s+", lines[i])), len(lines)
-    )
-    token = re.compile(rf"(?<![A-Za-z0-9._:\-]){re.escape(old)}(?![A-Za-z0-9._:\-])")
-    bullet = re.compile(rf"^\s*-\s+{re.escape(old)}\s*$")
-    found = False
-    for index in range(start, end):
-        body, ending = _line_parts(lines[index])
-        if token.search(body) and ("model" in body or bullet.fullmatch(body)):
-            lines[index] = token.sub(new, body) + ending
-            found = True
-    return "".join(lines) if found else None
-
-
-def _patch_hooks_doc(text: str, old: str, new: str) -> str | None:
-    """agy の --model 引数だけを置換する。"""
-    pattern = re.compile(rf"--model {re.escape(old)}(?![A-Za-z0-9._:\-])")
-    updated, count = pattern.subn(f"--model {new}", text)
-    return updated if count else None
 
 
 def _patch_claude_doc(text: str, old: str, new: str) -> str | None:
@@ -300,8 +259,6 @@ def _load_yaml(path: Path) -> object:
 
 def _validate_model(tool: str, model: str) -> None:
     """シェルや設定に埋め込めないモデル名を拒否する。"""
-    if tool == "antigravity" and model == "":
-        return
     if not MODEL_ID.fullmatch(model):
         raise ValueError(f"invalid model id: {model!r}")
     if tool == "claude" and model not in CLAUDE_ALIASES and not CLAUDE_ID.fullmatch(model):
@@ -330,9 +287,7 @@ def _show(root: Path) -> None:
             print(f"{section}.{field} (cli-tools.local.yaml override): {values[field]}")
 
 
-def _update(
-    root: Path, tool: str, model: str, dry_run: bool, add_to_allowlist: bool = False
-) -> None:
+def _update(root: Path, tool: str, model: str, dry_run: bool) -> None:
     """変更案をすべて計算してから出力または書き込みを行う。"""
     _validate_model(tool, model)
     if (root / SSOT).is_symlink():
@@ -341,30 +296,20 @@ def _update(
     section, field = MODEL_KEYS[tool]
     data = yaml.safe_load(before)
     old = _model_value(data, section, field)
-    if tool == "antigravity" and model != "" and not add_to_allowlist:
-        allowlist = data.get("antigravity", {}).get("model_allowlist")
-        if not isinstance(allowlist, list) or model not in allowlist:
-            raise ValueError(
-                f"{model!r} is not in antigravity.model_allowlist; verify with agy models "
-                "and rerun with --add-to-allowlist (task: ADD_ALLOWLIST=1)"
-            )
-
     changes: dict[Path, tuple[str, str]] = {}
     skips: list[str] = []
-    after, _ = _patch_yaml(before, tool, old, model, required=True)
+    after, _ = _patch_yaml(before, tool, model, required=True)
     if after != before:
         changes[SSOT] = before, after
     _optional_patch(
         root,
         MIRROR,
-        lambda text: _patch_optional_yaml(text, tool, old, model, skips),
+        lambda text: _patch_optional_yaml(text, tool, model, skips),
         changes,
         skips,
     )
     if tool == "codex":
         _add_codex_patches(root, old, model, changes, skips)
-    elif tool == "antigravity":
-        _add_antigravity_patches(root, old, model, changes, skips)
     else:
         _add_claude_patches(root, old, model, changes, skips)
     _add_ledger_patch(root, changes, skips)
@@ -401,8 +346,6 @@ def _update(
         print(
             f'確認: codex exec --model {model} --sandbox read-only "Reply with OK only" < /dev/null （Claude Code の sandbox 外で実行すること）'
         )
-    elif tool == "antigravity":
-        print("確認: agy models")
     print("CHANGELOG.md の Unreleased セクションを更新してください")
 
 
@@ -428,14 +371,10 @@ def _patch_ledger(text: str, new_hash: str) -> str | None:
     return updated
 
 
-def _patch_optional_yaml(text: str, tool: str, old: str, new: str, skips: list[str]) -> str | None:
+def _patch_optional_yaml(text: str, tool: str, new: str, skips: list[str]) -> str | None:
     """ミラーの必須項目が欠けたら変更案を破棄する。"""
-    updated, missing = _patch_yaml(text, tool, old, new, required=False)
-    required_missing = [
-        item
-        for item in missing
-        if item != "subagent comment" and (tool == "codex" or not item.endswith("model_allowlist"))
-    ]
+    updated, missing = _patch_yaml(text, tool, new, required=False)
+    required_missing = [item for item in missing if item != "subagent comment"]
     if required_missing:
         skips.append(
             f"skip: {MIRROR} (whole mirror skipped; missing {', '.join(required_missing)})"
@@ -477,28 +416,6 @@ def _add_codex_patches(
     )
 
 
-def _add_antigravity_patches(
-    root: Path, old: str, new: str, changes: dict[Path, tuple[str, str]], skips: list[str]
-) -> None:
-    """Antigravity の文書を変更案に追加する。"""
-    if new == "":
-        return
-    _optional_patch(
-        root,
-        Path("docs/reference/configuration.md"),
-        lambda text: _patch_antigravity_doc(text, old, new),
-        changes,
-        skips,
-    )
-    _optional_patch(
-        root,
-        Path("docs/reference/hooks.md"),
-        lambda text: _patch_hooks_doc(text, old, new),
-        changes,
-        skips,
-    )
-
-
 def _add_claude_patches(
     root: Path, old: str, new: str, changes: dict[Path, tuple[str, str]], skips: list[str]
 ) -> None:
@@ -522,8 +439,6 @@ def main(argv: list[str] | None = None) -> int:
         if name != "show":
             command.add_argument("model")
             command.add_argument("--dry-run", action="store_true")
-            if name == "antigravity":
-                command.add_argument("--add-to-allowlist", action="store_true")
         command.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args(argv)
     try:
@@ -535,7 +450,6 @@ def main(argv: list[str] | None = None) -> int:
                 args.command,
                 args.model,
                 args.dry_run,
-                getattr(args, "add_to_allowlist", False),
             )
     except (OSError, ValueError, yaml.YAMLError) as error:
         print(f"error: {error}", file=sys.stderr)

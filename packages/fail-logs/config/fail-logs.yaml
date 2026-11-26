@@ -10,7 +10,7 @@ targets:
   tool_error: true # ツール実行エラー（Bash 非ゼロ終了・他ツールの明示エラー）
   test_failure: true # pytest / npm test 等の失敗
   lint_failure: true # ruff / mypy 等の失敗
-  cli_failure: true # codex / agy 等の外部 CLI 失敗
+  cli_failure: true # codex 等の外部 CLI 失敗
   permission_denied: true # auto mode の分類器が拒否したツール呼び出し（PermissionDenied）
 
 # エラー要約（error_excerpt）の最大文字数

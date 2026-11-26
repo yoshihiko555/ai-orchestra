@@ -192,7 +192,6 @@ class TestSkillImpactResolution:
         )
 
         assert "skill:handoff" not in impact.impacted_targets
-        assert "skill:antigravity-system" in impact.impacted_targets
         assert "skill:pr-create" in impact.impacted_targets
         assert len(impact.input_hash) == 64
 

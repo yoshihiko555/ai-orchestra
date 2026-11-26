@@ -20,7 +20,7 @@ codd:
 
 ## 1. プロジェクト概要
 
-AI Orchestra は Claude Code + Codex CLI + Antigravity CLI の協調実行を管理する Python 製オーケストレーション基盤。
+AI Orchestra は Claude Code + Codex CLI の協調実行を管理する Python 製オーケストレーション基盤。
 `orchex` CLI でパッケージ・テンプレート・スクリプトを配布・同期し、複数プロジェクトへの横展開を可能にする。
 
 - **PyPI パッケージ名**: `orchex`
@@ -60,7 +60,6 @@ ai-orchestra/
 │   ├── quality-gates/         # 自動lint・テストゲート
 │   ├── audit/                 # 統一イベントログ監査・CLI 記録
 │   ├── codex-suggestions/     # Codex 相談提案
-│   ├── antigravity-suggestions/    # Antigravity リサーチ提案
 │   └── git-workflow/        # GitHub Issue 開発フロー
 │
 ├── facets/                    # Facet 合成システム
@@ -185,7 +184,6 @@ core (v0.4.0)                   ← 依存なし（共通基盤）
 │   └── audit (v1.0.0)          ← core, agent-routing
 ├── quality-gates (v0.1.0)      ← core, audit
 ├── codex-suggestions (v0.1.0)  ← core
-└── antigravity-suggestions (v0.1.0) ← core
 
 git-workflow (v0.1.0)         ← 依存なし（独立）
 ```
@@ -226,9 +224,8 @@ git-workflow (v0.1.0)         ← 依存なし（独立）
 ```
 agents.{name}.tool の値:
   codex         → Codex CLI 使用
-  antigravity   → Antigravity CLI（agy）使用（旧値 gemini は読み替え）
   claude-direct → Claude Code で直接処理
-  auto          → ヒューリスティクス（設計→Codex、調査→Antigravity、単純→Claude）
+  auto          → ヒューリスティクス（設計→Codex、調査→Claude、単純→Claude）
 ```
 
 ---
@@ -260,7 +257,6 @@ SubagentStart:
   - audit-subagent-start.py (audit)      サブエージェント開始を記録
 
 PreToolUse(WebSearch|WebFetch):
-  - suggest-antigravity-research.py (antigravity)  リサーチ向きクエリで [Antigravity Suggestion] 出力
 
 PostToolUse(Edit|Write):
   - post-implementation-review.py        一定量の変更後にレビューを提案
@@ -354,7 +350,7 @@ templates/project/AGENTS.md     (生成物・直接編集禁止)
 | -------------------------------------------- | ----------------------------- | ------------------ |
 | `context/agents.md` + `context/orchestra.md` | `templates/project/AGENTS.md` | `AGENTS.md`        |
 
-指示書は `AGENTS.md` の 1 本で、Claude Code（2.1.277 以降。`CLAUDE.md` が無いときに `AGENTS.md` を読む）・Codex CLI・Antigravity CLI が共通で読む。`CLAUDE.md` は配布しない。
+指示書は `AGENTS.md` の 1 本で、Claude Code（2.1.277 以降。`CLAUDE.md` が無いときに `AGENTS.md` を読む）・Codex CLI が共通で読む。`CLAUDE.md` は配布しない。
 
 ---
 
@@ -372,7 +368,7 @@ templates/project/AGENTS.md     (生成物・直接編集禁止)
 
 | ファイル                 | パッケージ    | 内容                                                                                                                     |
 | ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `cli-tools.yaml`         | agent-routing | Codex/Antigravity モデル名、sandbox 設定、30 エージェントの tool 割り当て                                                |
+| `cli-tools.yaml`         | agent-routing | Codex モデル名、sandbox 設定、30 エージェントの tool 割り当て                                                |
 | `task-memory.yaml`       | core          | タスクマーカー定義・表示上限（plan ファイルは `.claude/plans/` 固定）                                                    |
 | `audit-flags.json`       | audit         | 機能フラグ（route_audit, kpi_scorecard）                                                                                 |
 | `quality-gates.json`     | quality-gates | 機能フラグ（quality_gate, context_optimization, evaluation_set_check）・状態ディレクトリ（Issue #153 で audit から分離） |
@@ -389,17 +385,13 @@ codex:
     implementation: workspace-write
   flags: ""
 
-antigravity:
-  enabled: true
-  model: gemini-3.1-pro-high
-
 subagent:
   default_model: sonnet
 
 agents:
   architect: { tool: claude-direct }
   frontend-dev: { tool: codex, sandbox: workspace-write }
-  researcher: { tool: antigravity }
+  researcher: { tool: claude-direct }
   general-purpose: { tool: auto }
   # ... 21 more agents
 ```
@@ -464,7 +456,7 @@ agents:
 | 設定管理   | base + local override の読み込み優先順位、YAML/JSON パース |
 | 一貫性     | manifest ↔ 実ファイル、config ↔ 生成物の整合性検証         |
 | Hook       | コンテキスト注入・キャプチャ・クリーンアップ               |
-| CLI 検出   | `codex exec` / `agy -p` の正規表現マッチング               |
+| CLI 検出   | `codex exec` の正規表現マッチング               |
 | Facet      | composition 解決、policy 注入、エラーハンドリング          |
 | 同期       | agents/config の差分同期、agent model パッチ               |
 | タスク状態 | plan ファイルのパース、マーカー更新                        |

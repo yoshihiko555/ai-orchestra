@@ -1,6 +1,6 @@
 ---
 name: ai-architect
-description: AI/ML architecture agent using Codex and Antigravity for model selection, cost/quality/performance evaluation, and AI system design.
+description: AI/ML architecture agent using Codex and Claude for model selection, cost/quality/performance evaluation, and AI system design.
 tools: Read, Glob, Grep, Bash, WebSearch
 model: sonnet
 ---
@@ -30,22 +30,21 @@ Do NOT hardcode model names or CLI options.
 1. tool を決める: `[Resolved Routing]` の `tool`（ブロックがない場合は `agents.<agent-name>.tool`）
 2. tool に応じてCLIコマンドを構築:
    - `"codex"` → Codex CLI を使用
-   - `"antigravity"` → Antigravity CLI（agy）を使用（旧値 `"gemini"` は読み替え）
    - `"claude-direct"` → 外部CLIを呼ばず自身で処理
    - `"auto"` → タスクに応じて使い分け
 3. model / sandbox / flags は `[Resolved Routing]` の値を使う。ブロックがない場合は、sandbox を
-   `agents.<agent-name>.sandbox` → `codex.sandbox.analysis`（tool: auto で実装用途なら `codex.sandbox.implementation`）、model / flags を `codex.*` / `antigravity.*` → フォールバックの順で解決する
+   `agents.<agent-name>.sandbox` → `codex.sandbox.analysis`（tool: auto で実装用途なら `codex.sandbox.implementation`）、model / flags を `codex.*` → フォールバックの順で解決する
    （`agents.<agent-name>.model` は Claude サブエージェント自身のモデル指定であり、CLI の model ではない）
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
 
 - Tool: auto
-- Codex / Antigravity model: (omit --model flag, use CLI default)
+- Codex model: (omit --model flag, use CLI default)
 - Codex sandbox: read-only
 
 ## Role
 
-You design AI systems using Codex and Antigravity:
+You design AI systems using Codex and Claude:
 
 - LLM model selection and comparison
 - Cost/quality/performance trade-offs
@@ -55,7 +54,6 @@ You design AI systems using Codex and Antigravity:
 
 ## Sandbox Policy
 
-Antigravity CLI（`agy`）は sandbox 内で直接実行する。
 Codex CLI は sandbox 内で動作しないため、`codex exec` の Bash 呼び出しに限り sandbox を無効化
 （`dangerouslyDisableSandbox: true`）して実行する（詳細規則が配布されている場合は
 `codex-delegation.md` を優先する）。
@@ -79,9 +77,9 @@ cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構�
 
 ### tool = "auto" の場合（デフォルト）
 
-タスクに応じて codex / antigravity / claude-direct を使い分ける。
+タスクに応じて codex / claude-direct を使い分ける。
 
-`[Resolved Routing]` がある場合は、行が示されている CLI だけを使う（codex / antigravity の行がない CLI は、
+`[Resolved Routing]` がある場合は、行が示されている CLI だけを使う（codex の行がない CLI は、
 無効化または fail-closed で除外されているので呼ばない）。sandbox は `codex.sandbox.analysis` を使う
 （`codex.sandbox` が 1 つだけ示されている場合はその値）。
 
@@ -91,11 +89,9 @@ cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構�
 codex exec --model <model> --sandbox <sandbox> <flags> "{AI architecture question}" < /dev/null 2>/dev/null
 ```
 
-#### リサーチには Antigravity（agy）
+#### リサーチは自身で行う
 
-```bash
-agy -p "{AI research question}" --model <antigravity.model> 2>/dev/null
-```
+Read / Grep / Glob / WebSearch で一次資料とコードを調べ、根拠と未確認事項を報告する。
 
 #### 簡易タスクは claude-direct
 
@@ -107,11 +103,6 @@ agy -p "{AI research question}" --model <antigravity.model> 2>/dev/null
 codex exec --model <model> --sandbox <sandbox> <flags> "{AI architecture question}" < /dev/null 2>/dev/null
 ```
 
-### tool = "antigravity" の場合
-
-```bash
-agy -p "{AI architecture question}" --model <antigravity.model> 2>/dev/null
-```
 
 ### tool = "claude-direct" の場合
 
@@ -176,5 +167,5 @@ agy -p "{AI architecture question}" --model <antigravity.model> 2>/dev/null
 
 ## Language
 
-- Ask Codex/Antigravity: English
+- Ask Codex: English
 - Output to user: Japanese

@@ -12,7 +12,7 @@ stdin に JSON を流し込み、stdout の hookSpecificOutput を検証する�
   assert しない。meta-harness が ``cli-tools.local.yaml`` を materialize して
   tool を差し替える合法 patch でも pass し続けることを狙う。
 
-期待値マーカー（CODEX_MARKERS / ANTIGRAVITY_MARKERS / WARN_MARKER）は
+期待値マーカー（CODEX_MARKERS / WARN_MARKER）は
 ``build_cli_suggestion`` の出力を呼び出さず、このファイル冒頭で手書き定義する
 （呼び出すと tautology になるため）。
 """
@@ -42,7 +42,6 @@ route_config = load_module("route_config", "packages/agent-routing/hooks/route_c
 # ---------------------------------------------------------------------------
 
 CODEX_MARKERS: tuple[str, str] = ("Codex CLI", "codex exec")
-ANTIGRAVITY_MARKERS: tuple[str, str] = ("Antigravity CLI", "agy -p")
 WARN_MARKER = "[WARN]"
 
 
@@ -93,7 +92,7 @@ def _assert_marker_count(ctx: str, marker: str, expected_count: int) -> None:
 
 
 def _assert_no_cli_markers(ctx: str) -> None:
-    for marker in (*CODEX_MARKERS, *ANTIGRAVITY_MARKERS):
+    for marker in CODEX_MARKERS:
         _assert_marker_count(ctx, marker, 0)
 
 
@@ -262,19 +261,6 @@ class TestFixtureCliSuggestionByTool:
         assert "debugger" in ctx
         for marker in CODEX_MARKERS:
             _assert_marker_count(ctx, marker, 1)
-        for marker in ANTIGRAVITY_MARKERS:
-            _assert_marker_count(ctx, marker, 0)
-
-    def test_tool_antigravity_shows_antigravity_markers_exactly_once(self, tmp_path: Path) -> None:
-        _write_cli_tools_yaml(tmp_path, {"agents": {"researcher": {"tool": "antigravity"}}})
-        ctx = _additional_context(
-            _run_hook("最新のライブラリについてリサーチして", cwd=str(tmp_path))
-        )
-        assert "researcher" in ctx
-        for marker in ANTIGRAVITY_MARKERS:
-            _assert_marker_count(ctx, marker, 1)
-        for marker in CODEX_MARKERS:
-            _assert_marker_count(ctx, marker, 0)
 
     def test_tool_claude_direct_shows_no_cli_markers(self, tmp_path: Path) -> None:
         _write_cli_tools_yaml(tmp_path, {"agents": {"architect": {"tool": "claude-direct"}}})
@@ -292,7 +278,7 @@ class TestFixtureCliSuggestionByTool:
 
 
 class TestFixtureCliDisabledFallback:
-    """codex.enabled / antigravity.enabled が false のときの claude-direct フォールバック。"""
+    """codex.enabled が false のときの claude-direct フォールバック。"""
 
     def test_codex_disabled_falls_back_to_claude_direct(self, tmp_path: Path) -> None:
         _write_cli_tools_yaml(
@@ -302,38 +288,6 @@ class TestFixtureCliDisabledFallback:
         ctx = _additional_context(_run_hook("デバッグしてほしい", cwd=str(tmp_path)))
         assert "tool: claude-direct" in ctx
         _assert_no_cli_markers(ctx)
-
-    def test_antigravity_disabled_falls_back_to_claude_direct(self, tmp_path: Path) -> None:
-        _write_cli_tools_yaml(
-            tmp_path,
-            {
-                "antigravity": {"enabled": False},
-                "agents": {"researcher": {"tool": "antigravity"}},
-            },
-        )
-        ctx = _additional_context(
-            _run_hook("最新のライブラリについてリサーチして", cwd=str(tmp_path))
-        )
-        assert "tool: claude-direct" in ctx
-        _assert_no_cli_markers(ctx)
-
-
-class TestFixtureAntigravityModelAllowlist:
-    def test_model_outside_allowlist_shows_warn(self, tmp_path: Path) -> None:
-        _write_cli_tools_yaml(
-            tmp_path,
-            {
-                "antigravity": {
-                    "model": "unknown-model-x",
-                    "model_allowlist": ["gemini-3.1-pro-high"],
-                },
-                "agents": {"researcher": {"tool": "antigravity"}},
-            },
-        )
-        ctx = _additional_context(
-            _run_hook("最新のライブラリについてリサーチして", cwd=str(tmp_path))
-        )
-        assert WARN_MARKER in ctx
 
 
 class TestFixtureLocalYamlOverride:
@@ -359,19 +313,6 @@ class TestFixtureLocalYamlOverride:
         assert "tool: codex" in tester_ctx
         for marker in CODEX_MARKERS:
             _assert_marker_count(tester_ctx, marker, 1)
-
-
-class TestFixtureLegacyToolValue:
-    def test_legacy_tool_gemini_reads_as_antigravity(self, tmp_path: Path) -> None:
-        """旧 tool: gemini は normalize_cli_tools_config により antigravity へ
-        読み替えられる（Issue #125）。"""
-        _write_cli_tools_yaml(tmp_path, {"agents": {"researcher": {"tool": "gemini"}}})
-        ctx = _additional_context(
-            _run_hook("最新のライブラリについてリサーチして", cwd=str(tmp_path))
-        )
-        assert "tool: antigravity" in ctx
-        for marker in ANTIGRAVITY_MARKERS:
-            _assert_marker_count(ctx, marker, 1)
 
 
 class TestFixtureUndefinedOrUnknownTool:
@@ -431,14 +372,6 @@ def _assert_markers_for_resolved_tool(ctx: str, tool: str) -> None:
     if tool == "codex":
         for marker in CODEX_MARKERS:
             _assert_marker_count(ctx, marker, 1)
-        for marker in ANTIGRAVITY_MARKERS:
-            _assert_marker_count(ctx, marker, 0)
-        return
-    if tool == "antigravity":
-        for marker in ANTIGRAVITY_MARKERS:
-            _assert_marker_count(ctx, marker, 1)
-        for marker in CODEX_MARKERS:
-            _assert_marker_count(ctx, marker, 0)
         return
     # claude-direct / auto / その他未知の値は CLI 提案なし
     _assert_no_cli_markers(ctx)

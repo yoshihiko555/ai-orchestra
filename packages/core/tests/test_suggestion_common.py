@@ -179,7 +179,7 @@ def test_claim_keys_are_independent(tmp_path, changed_key) -> None:
 
     next_project = other_project if changed_key == "project" else project_dir
     next_payload = {"session_id": "session-two"} if changed_key == "session" else payload
-    next_namespace = "antigravity" if changed_key == "namespace" else "codex"
+    next_namespace = "other-namespace" if changed_key == "namespace" else "codex"
     next_target = "ARCHITECTURE.md" if changed_key == "target" else "DESIGN.md"
     assert (
         suggestion_common.claim_suggestion(
@@ -208,7 +208,7 @@ def test_namespace_and_target_are_separated_before_hashing(tmp_path) -> None:
 
 def test_state_contains_only_hashed_names_and_an_empty_marker(tmp_path) -> None:
     session_id = "private-session/../../do-not-persist"
-    namespace = "antigravity-private-namespace"
+    namespace = "other-namespace-private-namespace"
     target = "compare secret-question alternatives"
     payload = {
         "session_id": session_id,
