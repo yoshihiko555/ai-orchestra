@@ -409,29 +409,6 @@ def _routing_config_prompt_menu(
             ]
         )
 
-    antigravity_kind = "agent-routing/cli-tools.yaml#antigravity.model"
-    if antigravity_kind in enabled_kinds:
-        antigravity = routing_config.get("antigravity") or {}
-        if not isinstance(antigravity, dict):
-            raise ValueError("agent-routing config antigravity section must be a mapping")
-        model_allowlist = antigravity.get("model_allowlist") or []
-        if not isinstance(model_allowlist, list) or not all(
-            isinstance(value, str) for value in model_allowlist
-        ):
-            raise ValueError("antigravity.model_allowlist must be an array of strings")
-        current_model = antigravity.get("model")
-        if not isinstance(current_model, str):
-            raise ValueError("antigravity.model must be a string")
-        allowed_models = " | ".join(model_allowlist) if model_allowlist else "(none)"
-        lines.extend(
-            [
-                "- antigravity.model",
-                "  - file: agent-routing/cli-tools.yaml",
-                "  - key_path: antigravity.model",
-                f"  - allowed values from model_allowlist: {allowed_models}",
-                f"  - current value: {current_model}",
-            ]
-        )
     return "\n".join(lines) if lines else "- routing-config changes: (none allowed)"
 
 

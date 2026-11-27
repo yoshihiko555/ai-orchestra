@@ -823,13 +823,13 @@ def test_default_budget_covers_all_registered_routing_config_regression_suites()
                     )
                 )
 
-    assert suite_counts == [7, 7]
+    assert suite_counts == [6, 6]
     assert unverified_by_phase[0] == unverified_by_phase[1]
     assert unverified_by_phase[0]
     # ADR-20260817-052 added 2 non-holdout + 2 holdout scenarios to claude-harness (each
     # max_budget_usd=3.0): +2*3.0*repeat_default(1) train + 2*3.0*repeat_frontier(3) holdout =
     # +6.0 + 18.0 = +24.0 over the prior 186.0 baseline.
-    assert required_budget == pytest.approx(210.0)
+    assert required_budget == pytest.approx(198.0)
     assert mh.DEFAULTS["regression"]["max_affected_suites"] >= max(suite_counts)
     # PR #381 review: `mh.DEFAULTS["regression"]["max_budget_usd"]`
     # (packages/meta-harness/lib/meta_harness_common.py) is a config-load-failure fallback that

@@ -1,8 +1,0 @@
-# antigravity-suggestion-compliance ルールのファセット構成定義
-name: antigravity-suggestion-compliance
-description: Antigravity の任意助言と必須 routing・委譲の境界
-type: rule
-
-policies: []
-
-instruction: antigravity-suggestion-compliance

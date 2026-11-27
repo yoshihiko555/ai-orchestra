@@ -46,7 +46,7 @@ from route_config import build_aliases, load_config
 _COMMAND_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|]")
 # セグメント先頭の環境変数代入（`FOO=bar` 形式）を読み飛ばすための判定。
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_KNOWN_CLI_EXECUTABLES = ("codex", "agy", "gemini")
+_KNOWN_CLI_EXECUTABLES = ("codex",)
 
 
 def _detect_cli_executable(command: str) -> str | None:
@@ -54,14 +54,14 @@ def _detect_cli_executable(command: str) -> str | None:
 
     パイプ/`;`/`&&`/`||` で区切った各セグメントについて、環境変数代入
     （`FOO=bar`）を読み飛ばした先頭トークンを実行ファイル名とみなす。
-    プロンプト引数などコマンド本文に含まれる文字列（例: `agy -p 'compare with codex'`
+    プロンプト引数などコマンド本文に含まれる文字列（例: `echo 'codex exec'`
     の `codex`）は分類根拠にしない。
 
     Args:
         command: Bash コマンド文字列。
 
     Returns:
-        検出した実行ファイル名（"codex" / "agy" / "gemini"）。該当なしは None。
+        検出した実行ファイル名（"codex"）。該当なしは None。
     """
     for segment in _COMMAND_SEGMENT_SPLIT_RE.split(command):
         tokens = segment.split()
@@ -79,8 +79,8 @@ def _detect_cli_executable(command: str) -> str | None:
 def detect_route(data: dict) -> tuple[str | None, str, str]:
     """ツール呼び出しから実際のルートを検出する。
 
-    Bash コマンドが Codex/Antigravity/Gemini CLI を含む場合は
-    `bash:codex` / `bash:agy` / `bash:gemini`、
+    Bash コマンドが Codex CLI を含む場合は
+    `bash:codex`、
     Task/Agent ツールは `task:<agent_type>`、Skill ツールは `skill:<name>` を返す。
 
     Args:
@@ -102,7 +102,6 @@ def detect_route(data: dict) -> tuple[str | None, str, str]:
             command = find_first_text(data, {"command", "cmd"})
 
         # プロンプト引数の文字列ではなく、実行ファイル（コマンド先頭トークン）で分類する。
-        # 例: `agy -p 'compare with codex'` はプロンプト本文に "codex" を含むが bash:agy とする。
         detected = _detect_cli_executable(command)
         if detected:
             return f"bash:{detected}", command[:200], tool_name

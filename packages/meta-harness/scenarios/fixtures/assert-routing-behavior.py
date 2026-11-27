@@ -24,15 +24,12 @@ def _get(config: dict[str, Any], key_path: str) -> Any:
 def _train_behavior(value: str, *, auto_aliases: tuple[str, ...] = ()) -> dict[str, Any]:
     behaviors: dict[str, tuple[str, dict[str, Any]]] = {
         "codex": ("delegate-debug-analysis", {"first_duplicate": 1}),
-        "antigravity": ("research-sequence-pattern", {"unique_count": 4}),
         "claude-direct": ("solve-sequence-directly", {"sorted": [1, 1, 3, 4, 5]}),
     }
     if value == "auto":
         selected_tool = "claude-direct"
-        for alias, tool in (("bash:codex", "codex"), ("bash:agy", "antigravity")):
-            if alias in auto_aliases:
-                selected_tool = tool
-                break
+        if "bash:codex" in auto_aliases:
+            selected_tool = "codex"
         return {"action": "select-debug-route", "result": {"selected_tool": selected_tool}}
     assert value in behaviors, f"unsupported agents.debugger.tool value: {value!r}"
     action, result = behaviors[value]
@@ -55,33 +52,20 @@ def _resolve_train_behavior(
 
 
 def _holdout_behavior(value: str) -> dict[str, Any]:
-    if value.startswith("gemini-") and "flash" in value:
+    if value == "codex":
         return {
-            "action": "prioritize-latency",
-            "result": {"steps": ["scan", "summarize", "verify"]},
+            "action": "delegate-review",
+            "result": {"steps": ["inspect", "cross-check", "review"]},
         }
-    if value.startswith("gemini-") and "pro" in value:
-        return {
-            "action": "prioritize-depth",
-            "result": {"steps": ["inspect", "cross-check", "synthesize"]},
-        }
-    if value.startswith("claude-"):
-        return {
-            "action": "prioritize-deliberation",
-            "result": {"steps": ["frame", "reason", "review"]},
-        }
-    if value.startswith("gpt-oss-"):
-        return {
-            "action": "prioritize-openness",
-            "result": {"steps": ["inspect", "test", "document"]},
-        }
-    raise AssertionError(f"unsupported antigravity.model value: {value!r}")
+    if value in ("claude-direct", "auto", "api"):
+        return {"action": "review-directly", "result": {"steps": ["read", "verify", "report"]}}
+    raise AssertionError(f"unsupported agents.architect.tool value: {value!r}")
 
 
 def assert_behavior(project_root: Path, scenario_id: str, artifact: Path) -> None:
     definitions = {
         "train": ("agents.debugger.tool", _train_behavior),
-        "holdout": ("antigravity.model", _holdout_behavior),
+        "holdout": ("agents.architect.tool", _holdout_behavior),
     }
     assert scenario_id in definitions, f"unknown routing behavior scenario: {scenario_id!r}"
     key_path, behavior_for = definitions[scenario_id]

@@ -37,7 +37,7 @@ IMPLEMENTATION_AGENTS: set[str] = {
     "spec-writer",
 }
 
-# ブロックはしないが警告を出すエージェント（Codex/Gemini 委譲にも使われるため）
+# ブロックはしないが警告を出すエージェント（Codex 委譲にも使われるため）
 WARN_AGENTS: set[str] = {"general-purpose"}
 
 
@@ -79,7 +79,7 @@ def main() -> None:
 
     plan_agent = gate.get("agent", "planner")
 
-    # general-purpose は警告のみ（Codex/Gemini 委譲を壊さないため）
+    # general-purpose は警告のみ（Codex 委譲を壊さないため）
     if is_warn:
         output = {
             "hookSpecificOutput": {

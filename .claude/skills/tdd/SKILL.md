@@ -11,15 +11,15 @@ disable-model-invocation: true
 
 # CLI Language Policy
 
-**外部 CLI（Codex CLI / Antigravity CLI）と連携するスキルで守るべき共通ルール。**
+**外部 CLI（Codex CLI）と連携するスキルで守るべき共通ルール。**
 
 ## 言語プロトコル
 
-| 対象                           | 言語       |
-| ------------------------------ | ---------- |
-| Codex / Antigravity への質問   | **英語**   |
-| Codex / Antigravity からの回答 | **英語**   |
-| ユーザーへの報告               | **日本語** |
+| 対象             | 言語       |
+| ---------------- | ---------- |
+| Codex への質問   | **英語**   |
+| Codex からの回答 | **英語**   |
+| ユーザーへの報告 | **日本語** |
 
 ## Config-Driven ルーティング
 
@@ -34,16 +34,14 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 
 ### ルーティング規則
 
-| `agents.{name}.tool` | 動作                                                                              |
-| -------------------- | --------------------------------------------------------------------------------- |
-| `codex`              | Codex CLI を使用                                                                  |
-| `antigravity`        | Antigravity CLI（`agy`）を使用（旧値 `gemini` は読み替え）                        |
-| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                                   |
-| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Antigravity、単純作業 → Claude） |
+| `agents.{name}.tool` | 動作                                                                         |
+| -------------------- | ---------------------------------------------------------------------------- |
+| `codex`              | Codex CLI を使用                                                             |
+| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                              |
+| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Claude、単純作業 → Claude） |
 
 ## サンドボックス実行
 
-Antigravity CLI（`agy`）は sandbox 内で直接実行する。
 Codex CLI は sandbox 内で動作しないため、base + `.local.yaml` マージ後の実効値で
 `codex.requires_sandbox_disable` が `true`（既定値）の場合に限り、呼び出し側で sandbox を
 無効化して実行する。`false` に上書きされた環境では sandbox 内で実行する
@@ -96,7 +94,7 @@ Select the implementation agent based on `$LANG`:
 - Go → `backend-go-dev`
 - Other → `general-purpose`
 
-**Routing enforcement rule**: Delegate each phase with `Task(subagent_type="{agent}", prompt="...")` regardless of the `agents.<name>.tool` value. Do NOT write CLI names, sandbox modes, or model names in the prompt: the SubagentStart hook injects `[Resolved Routing]` (tool / sandbox / model, merged from `cli-tools.yaml` and `.local.yaml`) into the subagent as hook context outside the prompt, and the agent definition follows it. The orchestrator must not write test or implementation code itself in a delegated phase. The agents with a fixed tool (`tester`, `backend-python-dev`, `frontend-dev`, `backend-go-dev`) stop without editing and report when their resolved routing cannot edit files (tool `antigravity`, or `codex` with sandbox `read-only`; the stop rule lives in each agent definition because the agent is the one that receives and follows `[Resolved Routing]`). `general-purpose` (Other languages) has no such stop rule; it uses `tool: auto` and chooses how to write by itself. When a writing phase (Red / Green / Refactor) comes back with that report, stop and report the misconfiguration to the user (implementation agents need `codex` + `workspace-write` or `claude-direct` in `cli-tools.yaml` / `.local.yaml`); do not work around it by editing in the orchestrator.
+**Routing enforcement rule**: Delegate each phase with `Task(subagent_type="{agent}", prompt="...")` regardless of the `agents.<name>.tool` value. Do NOT write CLI names, sandbox modes, or model names in the prompt: the SubagentStart hook injects `[Resolved Routing]` (tool / sandbox / model, merged from `cli-tools.yaml` and `.local.yaml`) into the subagent as hook context outside the prompt, and the agent definition follows it. The orchestrator must not write test or implementation code itself in a delegated phase. The agents with a fixed tool (`tester`, `backend-python-dev`, `frontend-dev`, `backend-go-dev`) stop without editing and report when their resolved routing cannot edit files (tool `codex` with sandbox `read-only`; the stop rule lives in each agent definition because the agent is the one that receives and follows `[Resolved Routing]`). `general-purpose` (Other languages) has no such stop rule; it uses `tool: auto` and chooses how to write by itself. When a writing phase (Red / Green / Refactor) comes back with that report, stop and report the misconfiguration to the user (implementation agents need `codex` + `workspace-write` or `claude-direct` in `cli-tools.yaml` / `.local.yaml`); do not work around it by editing in the orchestrator.
 
 ---
 

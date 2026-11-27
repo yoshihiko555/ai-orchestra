@@ -1236,14 +1236,13 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
 
 - `file` は `.claude/config/` 配下の相対パス（例: `agent-routing/cli-tools.yaml`）。
 - `key_path` はドット区切りのキーパス（例: `agents.backend-python-dev.tool`）。
-- allowlist の正規表現は `"<file>#<key_path>"` とし、初期値は次の 3 エントリだけとする。
+- allowlist の正規表現は `"<file>#<key_path>"` とし、初期値は次の 2 エントリだけとする。
 
   ```yaml
   config_patch:
     allowlist:
       - "agent-routing/cli-tools.yaml#agents.*.tool"
       - "agent-routing/cli-tools.yaml#codex.model"
-      - "agent-routing/cli-tools.yaml#antigravity.model"
   ```
 
 - allowlist entry は `#` を厳密に 1 個だけ含まなければならない。`file` 部分では wildcard を禁止する。
@@ -1261,9 +1260,8 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
   暗黙フォールバックは、壊れた config が意図しない config patch を許可してしまう抜け道になるため
   （PR #252 R3-4 レビュー指摘）。
 - patch item は allowlist entry に 1 件ずつ照合し、同一 `file#key_path` の重複を拒否する。値型は
-  `agents.*.tool` が文字列 enum `codex | antigravity | claude-direct | auto`、`codex.model` と
-  `antigravity.model` が `^[A-Za-z0-9][A-Za-z0-9._-]*$` に一致する空でない文字列に限定する。数値・bool は
-  3 種すべてで拒否する。`codex.model` / `antigravity.model` は参照
+  `agents.*.tool` が文字列 enum `codex | claude-direct | auto | api`、`codex.model` が `^[A-Za-z0-9][A-Za-z0-9._-]*$` に一致する空でない文字列に限定する。数値・bool は
+  両方で拒否する。`codex.model` は参照
   `agent-routing/cli-tools.yaml` の同名 section にある `model_allowlist` の要素でなければならない。
   allowlist が未定義または空の場合も fail-closed とし、対応する model patch を全て拒否する
   （この項目 SSOT の設定ミスで任意の slug が通過することを防ぐ）。`codex.model_allowlist` の初期値は
@@ -1279,12 +1277,11 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
   | ceiling entry（key kind） | 許可する `created_by` |
   | --- | --- |
   | `agent-routing/cli-tools.yaml#agents.*.tool` | `human`, `proposer` |
-  | `agent-routing/cli-tools.yaml#antigravity.model` | `human`, `proposer` |
   | `agent-routing/cli-tools.yaml#codex.model` | `human` |
 
   各 patch item を一致した ceiling entry の集合で検証し、未知の `created_by`、map に無い ceiling entry、
   不一致 key kind は fail-closed に拒否する。Phase A で proposer に解放するのは
-  `agents.*.tool` と `antigravity.model` だけであり、`codex.model` は allowlist 導入後も Phase B まで
+  `agents.*.tool` だけであり、`codex.model` は allowlist 導入後も Phase B まで
   human-only とする。
 - `created_by == "proposer"` の 1 候補は 1 key kind に限定する。key kind は上表の ceiling entry とし、
   同じ kind の複数 item（複数 agent の `tool` 変更など）は許可するが、異なる kind の混在は hard reject
@@ -1352,7 +1349,7 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
           "key_path": { "type": "string" },
           "value": {
             "type": "string",
-            "description": "Issue #261 PR8: codex structured output (response_format 'codex_output_schema') requires every schema node to declare a 'type', which an empty {} schema omits. Phase A's only proposer-writable config_patch ceiling entries (agents.*.tool, antigravity.model; see CONFIG_PATCH_ALLOWED_CREATED_BY in meta_harness_common.py) are always strings -- validate_config_patch() already enforces isinstance(value, str) for both -- so this does not narrow what a valid proposal can express."
+            "description": "Issue #261 PR8: codex structured output (response_format 'codex_output_schema') requires every schema node to declare a 'type', which an empty {} schema omits. Phase A's only proposer-writable config_patch ceiling entries (agents.*.tool; see CONFIG_PATCH_ALLOWED_CREATED_BY in meta_harness_common.py) are always strings -- validate_config_patch() already enforces isinstance(value, str) -- so this does not narrow what a valid proposal can express."
           }
         }
       }
@@ -2291,7 +2288,7 @@ Max subscription の利用制限応答ではない。運用上は broker metrics
 - candidate / run / ledger / status / frontier は既存の per-target 機構を再利用し、cache は
   `frontier-routing-config.json` とする。他 target の frontier、parent 既定選定、status、promote 前提へ
   routing-config の候補を混入させない。
-- Phase A では human `register` に加え、proposer が `agents.*.tool` / `antigravity.model` の config patch を
+- Phase A では human `register` に加え、proposer が `agents.*.tool` の config patch を
   提案できる。`codex.model` と ceiling 外 key は引き続き fail-closed に拒否する。propose / loop の rejection は、
   §1-8・§3-5・§4-1・§11・§13 の guard と behavioral suite が実装・テスト済みになった最後に解除する。
 - routing-config 候補の effective impact は、config-patch-only で `facets/**` overlay path を持たない場合も
@@ -2303,9 +2300,9 @@ Max subscription の利用制限応答ではない。運用上は broker metrics
   task / artifact / deterministic oracle を定義する。critical は `command_exit` / `artifact_exists` 等で判定し、
   `rubric_judge` は禁止する（§3-3）。
 - scenario container は internal-network-only で、broker 経由の Anthropic API 以外へ egress できない。
-  codex/agy CLI は独自 OAuth endpoint を使うため container 内で起動してはならない。behavioral とは
+  codex CLI は独自 OAuth endpoint を使うため container 内で起動してはならない。behavioral とは
   external CLI の実行ではなく、Claude-driven task が materialized routing config を読み、その解決結果に応じて
-  異なる決定論的成果物を作ることを指す。意味のある品質信号に実 codex/agy 実行が不可欠と判明した場合は、
+  異なる決定論的成果物を作ることを指す。意味のある品質信号に実 codex 実行が不可欠と判明した場合は、
   network/backend 設計変更が必要なため実装を停止する。
 - **行動ベース品質分解能シナリオの設計原則（ADR-20260814-048、Issue #364）**: train / holdout の
   行動ベースシナリオを追加する際は以下を満たすこと。
@@ -2469,7 +2466,6 @@ config_patch:
   allowlist:
     - "agent-routing/cli-tools.yaml#agents.*.tool"
     - "agent-routing/cli-tools.yaml#codex.model"
-    - "agent-routing/cli-tools.yaml#antigravity.model"
   proposer_cooldown_rounds: 3 # reject / overfit retire 後の routing-config 再提案待機 round
 proposer:
   tool: codex # codex | claude-bare（§11-3-5）。利用不能時は fail-closed（暗黙フォールバック禁止）
@@ -2680,7 +2676,7 @@ Phase 1 全体を、実装順序とリスクに応じて 1a/1b の 2 段階に�
 - `propose` / `promote` の実装（`proposal.schema.json`（§1-9）は Phase 2 での実装対象。
   Phase 1a の schemas 全 8 種には含まない）
 - config patch allowlist は `routing-config` の **human 登録候補（`register` CLI）のみ**に解放する。
-  対象は `agent-routing/cli-tools.yaml` の `agents.*.tool` / `codex.model` / `antigravity.model` に固定する。
+  対象は `agent-routing/cli-tools.yaml` の `agents.*.tool` / `codex.model` に固定する。
   proposer 生成候補は引き続き `facets/**` に限定し、reward hacking 対策の設計完了まで解放しない
   （§1-8、§4-3、§11-4 参照）。
 
@@ -3162,9 +3158,8 @@ view 内には以下のパスがあります:
 
 [制約]
 - facet target は `facets/**` の `changes[]`、routing-config target は `config_patch` のどちらか一方だけを出力する
-- routing-config で提案可能なのは `agents.*.tool` と `antigravity.model` のみ。`codex.model` は提案しない
-- `agents.*.tool` の値は `codex | antigravity | claude-direct | auto`、`antigravity.model` は prompt に
-  列挙された `model_allowlist` から選ぶ。現在値は比較用 context として提示する
+- routing-config で提案可能なのは `agents.*.tool` のみ。`codex.model` は提案しない
+- `agents.*.tool` の値は `codex | claude-direct | auto | api`。現在値は比較用 context として提示する
 - routing-config は 1 候補 1 key kind。同じ kind の複数 item は許可するが kind を混在させない
 - 1 仮説・最小差分に限定する
 - based_on_runs には valid based_on_runs candidates に表示された run_id のみを列挙する

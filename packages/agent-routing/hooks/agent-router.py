@@ -19,10 +19,12 @@ from route_config import (
     _project_dir_from_data,
     _routing_request_clauses,
     build_cli_suggestion,
+    configured_agent_tool,
     detect_agent,
     get_agent_tool,
     has_project_config,
     is_harness_prompt,
+    legacy_routing_notes,
     load_config,
     load_package_config,
 )
@@ -61,7 +63,8 @@ def _keyword_suggestion(prompt: str, allowed_agents: set[str] | None) -> tuple[s
 
 def _suggestion_messages(agent: str, trigger: str, config: dict) -> list[str]:
     tool = get_agent_tool(agent, config)
-    messages = []
+    configured_tool = configured_agent_tool(agent, config)
+    messages = legacy_routing_notes(agent, configured_tool, config)
     cli_msg = build_cli_suggestion(tool, agent, trigger, config)
     if cli_msg:
         messages.append(cli_msg)

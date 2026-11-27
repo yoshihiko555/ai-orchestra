@@ -1445,7 +1445,48 @@ def build_meta_parser(subparsers: Any) -> argparse.ArgumentParser:
     return parser
 
 
+def _auth_action(value: str) -> str:
+    if value not in {"set", "status"}:
+        raise argparse.ArgumentTypeError("set または status を指定してください。")
+    return value
+
+
+def build_auth_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "auth")
+    parser.add_argument("auth_command", type=_auth_action, metavar="{set,status}")
+    parser.add_argument("provider", nargs="?", help="set の対象: anthropic / openai / gemini")
+    return parser
+
+
+def build_llm_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser = _add_command_parser(subparsers, "llm")
+    commands = parser.add_subparsers(dest="llm_command", required=True)
+    ask = commands.add_parser("ask", help="プロファイルで一回質問する")
+    ask.add_argument("--profile", required=True, help="api.profiles のプロファイル名")
+    ask.add_argument("--project", type=Path, help="設定を読むプロジェクト")
+    ask.add_argument(
+        "--attach", type=Path, action="append", default=[], help="添付ファイル（繰り返し指定可）"
+    )
+    ask.add_argument("--output", type=Path, help="回答を書き出すファイル")
+    ask.add_argument("prompt", help="質問本文")
+    return parser
+
+
 COMMAND_REGISTRY: dict[str, CommandEntry] = {
+    "auth": {
+        "name": "auth",
+        "group": "run_delegate",
+        "summary": "API キーの登録・設定有無を表示",
+        "examples": ("orchex auth set gemini", "orchex auth status"),
+        "build_parser": build_auth_parser,
+    },
+    "llm": {
+        "name": "llm",
+        "group": "run_delegate",
+        "summary": "API プロファイルで一回質問",
+        "examples": ('orchex llm ask --profile research "調査したいこと"',),
+        "build_parser": build_llm_parser,
+    },
     "init": {
         "name": "init",
         "group": "getting_started",
@@ -1650,7 +1691,11 @@ def main() -> None:
 
     argv, script_args = _split_run_passthrough(sys.argv[1:])
 
-    args = parser.parse_args(argv)
+    args, extra_args = parser.parse_known_args(argv)
+    if extra_args:
+        if args.command == "auth":
+            parser.error("auth の引数が不正です。キーはプロンプトから入力してください。")
+        parser.error(f"unrecognized arguments: {' '.join(extra_args)}")
 
     if args.orchestra_dir:
         orchestra_dir = args.orchestra_dir.resolve()
@@ -1659,7 +1704,21 @@ def main() -> None:
 
     manager = OrchestraManager(orchestra_dir)
 
-    if args.command == "init":
+    if args.command in {"auth", "llm"}:
+        core_hooks = str(orchestra_dir / "packages/core/hooks")
+        if core_hooks not in sys.path:
+            sys.path.insert(0, core_hooks)
+        os.environ.setdefault("AI_ORCHESTRA_DIR", str(orchestra_dir))
+        from lib.llm_cli import run_auth_set, run_auth_status, run_llm_ask
+
+        if args.command == "llm":
+            sys.exit(run_llm_ask(args, manager.get_project_dir(args.project)))
+        if args.auth_command == "set":
+            sys.exit(run_auth_set(args.provider))
+        if args.provider is not None:
+            parser.error("auth status は追加の引数を受け付けません。")
+        sys.exit(run_auth_status())
+    elif args.command == "init":
         manager.init(args.project, args.dry_run)
     elif args.command == "list":
         manager.list_packages()

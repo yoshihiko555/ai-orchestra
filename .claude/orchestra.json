@@ -2,7 +2,6 @@
   "installed_packages": [
     "agency-agents",
     "agent-routing",
-    "antigravity-suggestions",
     "audit",
     "codd",
     "codex-harness",
@@ -81,35 +80,35 @@
       "config/core/task-memory.yaml": "c059d1d84cd186fcf7f20bb9ffcb7475b3355784a3a0c890f1a39312f4ffe9b1"
     },
     "agent-routing": {
-      "config/agent-routing/cli-tools.yaml": "616a2eb1b2417dcf2e4761b55639c8884422ee927f19eca0d6c8745046931264",
-      "agents/ai-architect.md": "74be0697afd3717dcb7b7ef28132ba3f8a4479fc6f8e30b7558a5fb66b977670",
-      "agents/ai-dev.md": "e5b9b410466a7610a1f892cfa374f01b0e969871631eb6d7c53e0928263b9737",
-      "agents/api-designer.md": "1889860c7110d4b28bb1a39859ba35064c784442eb6d20f10dd6b4f3cdc7039b",
-      "agents/architect.md": "c6a1be3442f07446b66f8359eccaf1426949a9cae1f6ace2cb09f00c6de6e7b6",
-      "agents/architecture-reviewer.md": "e9a8ca6095361ddd68840d5b9f94e980c10f7a0e0dcb09dde6a705fe167594e7",
-      "agents/auth-designer.md": "e657e775ca3325e22c41fcd8c97b572c56fecdfc8b990b83c27fbb737a588c30",
-      "agents/backend-go-dev.md": "d007f89aac99af4b14ee9939ae0c80274f42258b0b090ed28d79715148dd64ec",
-      "agents/backend-python-dev.md": "eada21a936ebfbd3dead90157f89558234b9f0a100a805c180711f2212f6fcc5",
-      "agents/code-reviewer.md": "705e9e6e1c4a40475588cc3a45e4d045fb7b92ac3cdc096e694ffce1ce57f5e8",
-      "agents/data-modeler.md": "b4d548d00f260e87568eb198e04616c270037ad2971e544a444b12583afd895e",
-      "agents/debugger.md": "ec1b03f2af151d6ab6d9bdf7bea98acbb273a6e643a744a0761979cacd4cc497",
+      "config/agent-routing/cli-tools.yaml": "acdf367031b0c11f54cf99b1c0b3edf6c9164d5846718a6fcb65c10fa9910a83",
+      "agents/ai-architect.md": "18b68a981f995bf63d8a5e5b6d611c4b9911554f46b5c215faee810dca4a77d0",
+      "agents/ai-dev.md": "3eb5e70c7fc685616fa8de6cdd867273da02c108519b835d8a0ff7b8514b1cbd",
+      "agents/api-designer.md": "60a42c33973e169e31e91a46982139cde56aafe899f6797a59dc365e5c0110c0",
+      "agents/architect.md": "445d99afeafb81e75b69395657388a71e8b4dad52c676385cad43c45a43adf0e",
+      "agents/architecture-reviewer.md": "a7d958e51f258cbd121d1c54a2fae554ed7a73c149b3de407cd3da5d365a9d8d",
+      "agents/auth-designer.md": "6e7291a42a84fa90b6ecdc3a0fb4ad4de5509a58c55396d034b2ccf756a60aff",
+      "agents/backend-go-dev.md": "5f0cf121b02d64f8ab501c916c4f6a6b333d398429e887e450869388057be181",
+      "agents/backend-python-dev.md": "da4b30a7c7e277e43f3190bc290b74fdbf15a6a5fcbcd545126052fb0d8130e2",
+      "agents/code-reviewer.md": "63c518f75f2704414aac6a88c9366cdca84e5b484988b1b510fd80172f2225ba",
+      "agents/data-modeler.md": "6bd59133cfc0950fa47b193f3e9ef73d97ff2bd79b5d63c67e4e3377d3256361",
+      "agents/debugger.md": "294e89ee9a337f68e8f10d71f8f7406c047cb9c563c77553f72cdfbabbb4ace2",
       "agents/docs-writer.md": "387b272ccefd506197562f9da9b10de3f360355e2ae8dd07754e5dca8f2d0d95",
-      "agents/frontend-dev.md": "fd95f6a5f1af5d6c128e1850dba86af7785365915a5b53b598a42eaed7081164",
-      "agents/general-purpose.md": "0167cdfe59d4b8103e6957d388c345cad5b9904b553fea4230ae2e263129acf0",
-      "agents/performance-reviewer.md": "3145b5eca31ee7ec934a9db771e1a957ec18ea53f0e1d232a3c347605aacac66",
+      "agents/frontend-dev.md": "12a47dff0e7659dee72d99812c4867abf243a39f6ff14305fbe515ab81bd5660",
+      "agents/general-purpose.md": "228adbfddc7a82901f4af3a0c75d870493b52183c09575be3e3bfe2de077f646",
+      "agents/performance-reviewer.md": "65f7ebe89dd6e0c945ea05c9373c658c31710f80057633f62e735bbe856181a0",
       "agents/planner.md": "e820cc5b6e9e42b106edad324ab927edc9b53b13dc1dde62c456620736ac4079",
       "agents/prompt-engineer.md": "ad9b55d225805b47a50160c9ea4095dc11ff02466c56a1f934b44b135bb27148",
-      "agents/rag-engineer.md": "7d1ee0a3c0a7841350fea4509db0d5c8eba531190dae41e230a75bc48287332a",
+      "agents/rag-engineer.md": "5068f89aa7c8389fe2c0a2a5c7c52c051864c6f62ff565d69c1aeb70c2606f8e",
       "agents/requirements.md": "4caaa703214dd3ddd0f68f76038a238860df61bf29131e71485794e4c03033db",
-      "agents/researcher.md": "1b588381eefb38e3dc2362cba7fd9040a674b7df564ab628c372a29daf93e0f0",
-      "agents/security-reviewer.md": "3e9c37c2b0a51555df4a5edbe3e1b83af1fa246e2808c775151fe3518742714e",
-      "agents/spec-reviewer.md": "c55c612b497c4b7c981317c27a40658b154ffed00480d3d9e9242019efa0d5d0",
-      "agents/spec-writer.md": "4eb872344c9de9b2c755008a5247836ddb927ee4117aad9774967f30b6c7a458",
-      "agents/tester.md": "84795c63e20dea3f23eda0d3c960789b05d6302b2e8e29f00c77e170442fa56f",
+      "agents/researcher.md": "ca6bb67cac0fc02b2597a89330413b7acc167a395ef07b31ac94d73f585dacf9",
+      "agents/security-reviewer.md": "ec3fd0f39894bcac78fd78c3d3264b18028d28ba88fdf3a8a37595665ede8d65",
+      "agents/spec-reviewer.md": "06f1977b7fc0b558be9286041a028e137556614801da2f65bfab3c1eb3a94e33",
+      "agents/spec-writer.md": "f7dbb6450f39afce14c915a241a00315529da1b88e1fd64bf0fb607049c992c5",
+      "agents/tester.md": "52cb656b87db708af31f51921e54076f1e15cf598966b87190369a8f52eccb3c",
       "agents/testing-reality-checker.md": "999f8925e2f27680e4d36a6818fe644c0f473c44bcc29b693b0557ac5217eb27",
-      "agents/ux-reviewer.md": "09f4265e39433549bc9e0d9c2498cdc0fa2f740b34e9697f99ea246390d5903a",
-      "agents/adversarial-reviewer.md": "396f3d2419f5f22794fe980696e84a1f251f7df8690f7fd119b896069466d1c0",
-      "agents/finding-verifier.md": "8000d0ca8e67c662c49285302e988ade491a5579e83c3607865bd6cd03c1dbc6"
+      "agents/ux-reviewer.md": "f9da6762756deff3a8cea05e6bee08a689afb514bbcf7a9d1cf4089633b1dd90",
+      "agents/adversarial-reviewer.md": "a3dbba1a0b267edd7cff9b0c4e41df9bfaadf6bb4d6c791cb62c423dc62a4034",
+      "agents/finding-verifier.md": "8e8c510e821867900c774bf15494ec760d5d58af2f84a6c1183ec38c05fd594d"
     },
     "audit": {
       "config/audit/delegation-policy.json": "b092b5385d3ec51252c5781cdbafa2d2e55d075d9cb74d25e89b71e95279d231",
@@ -134,16 +133,16 @@
       "config/loop-harness/loops/issue-loop.yaml": "f0355b7d55a1dc603fbf65ec5721056511e7891a794d523934f02062832f5257"
     },
     "fail-logs": {
-      "config/fail-logs/fail-logs.yaml": "e05d0bb19d86ce9a517fea9308e50c9e9bb63249a4c1804d426274b59181eeda"
+      "config/fail-logs/fail-logs.yaml": "67f5a7a152264d11e203dfcb7b8d07a927a6f280ef032521e88e6357e023254e"
     },
     "skill-evolution": {
       "config/skill-evolution/skill-evolution.yaml": "f265050f94eacd1d25bff0d75e5e051c5ac237c0a04931344c6726f80f8e7e25"
     },
     "reverse": {
-      "agents/reverse-coordinator.md": "7a321d65227f729111ca19a4283fb864aa03eeaf6f0813b5c1c0d37707d196c3"
+      "agents/reverse-coordinator.md": "3273ca334f8679158950e051b092a7014f317e1092cf7eda8fdeb1bdd35b9e33"
     },
     "meta-harness": {
-      "config/meta-harness/meta-harness.yaml": "a2f621840a8e186f79d0f5ee196f5cac054045cb4989dc7ec45a342c11511833"
+      "config/meta-harness/meta-harness.yaml": "1a7a274ab2515ebf44cb364bb69e51c3f4e46e84313e89d9796a967c0bec2c1b"
     },
     "quality-gates": {
       "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95",

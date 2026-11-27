@@ -9,8 +9,8 @@ AI Orchestra は AI コーディングの実行基盤を 3 つの層で組み立
 | 層                    | 役割                     | AI Orchestra での実体                                                                                                                            |
 | --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Prompt**            | 何を指示するか           | facets（policies / instructions / output-contracts）から合成する Skill・Rule                                                                     |
-| **Context**           | 何を踏まえるか           | `AGENTS.md` テンプレート（Claude Code / Codex / Antigravity 共通）、config の階層上書き、`.claude/context/` のセッション間共有                   |
-| **Harness**           | どう実行するか           | hooks、agent-routing（30 エージェント）、packages 配布、外部 CLI（Codex / Antigravity）協調                                                      |
+| **Context**           | 何を踏まえるか           | `AGENTS.md` テンプレート（Claude Code / Codex 共通）、config の階層上書き、`.claude/context/` のセッション間共有                   |
+| **Harness**           | どう実行するか           | hooks、agent-routing（30 エージェント）、packages 配布、外部 CLI（Codex）協調                                                      |
 | **Coherence（CoDD）** | 変更が入っても整合を保つ | `packages/codd`：各ドキュメントの `codd:` フロントマターで依存を宣言し、`scan` で依存グラフ構築・`validate` で不整合検出・`ack` で追従確認の記録 |
 
 最初の 3 層が「一度うまく動かす」ための基盤であるのに対し、**CoDD（Coherence-Driven Development / 整合性駆動開発）** は「要件や設計が変わったとき、波及先の成果物まで整合を保つ」ことを扱うレイヤー。AI Orchestra ではこれを独立パッケージ `packages/codd`（essential プリセット）として配布レールに載せ、導入先プロジェクトが生成するドキュメントまで整合性管理の対象にする。
@@ -69,14 +69,12 @@ GitHub App token を使う場合は `comment-author: "<app-slug>[bot]"` を指�
 Claude Code (Orchestrator)
     │
     ├── Codex CLI            # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
-    ├── Antigravity CLI (agy) # `cli-tools.yaml` の設定に応じて利用（役割は config-driven）
     │
     ├── $AI_ORCHESTRA_DIR/packages/
     │   ├── core/                     # 共通ユーティリティ
     │   ├── audit/                    # 監査ログ・KPI・ダッシュボード
     │   ├── codex-suggestions/        # Codex 相談提案
     │   ├── codex-harness/            # Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run/review）
-    │   ├── antigravity-suggestions/  # Antigravity リサーチ提案
     │   ├── quality-gates/      # 品質ゲート
     │   ├── codd/              # ドキュメント整合性レイヤー（scan/validate/ack/impact/verdict）
     │   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
@@ -259,7 +257,7 @@ orchex setup essential --project /path/to/project --dry-run
 - **essential** — core, agent-routing, audit, quality-gates, codd, git-workflow
 - **all** — 全パッケージ
 
-> **指示書（AGENTS.md）について**: 指示書は `AGENTS.md` の 1 本で、Claude Code・Codex CLI・Antigravity CLI が共通で読みます（`CLAUDE.md` は配布しません）。Claude Code は **2.1.277 以降**が必要です（`CLAUDE.md` が無いときに `AGENTS.md` を読みます。`/config` の Project instructions を `claude-md` にしている場合や、プロジェクトまたは親ディレクトリに `CLAUDE.md` / `.claude/CLAUDE.md` / `CLAUDE.local.md` がある場合は読まれません）。
+> **指示書（AGENTS.md）について**: 指示書は `AGENTS.md` の 1 本で、Claude Code・Codex CLI が共通で読みます（`CLAUDE.md` は配布しません）。Claude Code は **2.1.277 以降**が必要です（`CLAUDE.md` が無いときに `AGENTS.md` を読みます。`/config` の Project instructions を `claude-md` にしている場合や、プロジェクトまたは親ディレクトリに `CLAUDE.md` / `.claude/CLAUDE.md` / `CLAUDE.local.md` がある場合は読まれません）。
 > `AGENTS.md` は、プロジェクト固有の記述欄（`<YOUR_PROJECT_NAME>` などの `<YOUR_...>` プレースホルダー。セットアップ後に書き換えてください）と、末尾の `ai-orchestra` 管理ブロック（AI Orchestra の使い方。`orchex context sync` のたびに最新化されるので手編集しない）で構成されます。
 > Claude Code の `InstructionsLoaded` hook は直接読み込まれた `AGENTS.md` では発火しないため、audit パッケージの指示書読み込みログには `AGENTS.md` が記録されません。
 
@@ -334,7 +332,7 @@ orchex context sync --project /path/to/project --force   # 記述欄も含めて
 # 注意: context sync は既存 AGENTS.md の ai-orchestra 管理ブロックだけを最新化し、ブロック外は保持します
 #       （管理ブロックが無ければ末尾に追記）。重要度の定義は facets/output-contracts/tiered-review.md から生成されます
 # 注意: 旧生成物の CLAUDE.md / .gemini/GEMINI.md は context sync 時に自動削除され、旧生成物の AGENTS.md
-#       （Codex / Antigravity 向け）は新しいテンプレートで置き換えられます。手書きの CLAUDE.md は残して警告します
+#       （Codex 向け）は新しいテンプレートで置き換えられます。手書きの CLAUDE.md は残して警告します
 
 # パッケージ内スクリプトの実行（-- 以降はスクリプトにパススルー）
 orchex run audit dashboard
@@ -372,7 +370,7 @@ orchex facet build --project .
 # 単一 composition をビルド
 orchex facet build --name review --project .
 
-# 外部 CLI 向けに生成（.agents/skills/ に出力。Codex CLI / Antigravity CLI(agy) 共用）
+# 外部 CLI 向けに生成（.agents/skills/ に出力。Codex CLI 用）
 orchex facet build --target codex --project .
 
 # 生成済みファイルから instruction をソースに書き戻す（チューニング反映）
@@ -398,7 +396,7 @@ facets/compositions/**/*.yaml ← 組み立て定義（skills/ と rules/ に分
 .claude/skills/{name}/references/    ← 知識ファイル（knowledge から配布）
 .claude/skills/{name}/scripts/       ← スクリプト（scripts から配布）
 .claude/rules/{name}.md              ← 生成物（Claude Code 用）
-.agents/skills/{name}/SKILL.md       ← 生成物（Codex CLI / Antigravity CLI 共用）
+.agents/skills/{name}/SKILL.md       ← 生成物（Codex CLI 用）
 ```
 
 **チューニング後の反映:**
@@ -459,30 +457,48 @@ UserPromptSubmit のエージェント提案は、プロジェクトに `.claude
 `cli-tools.local.yaml` で `router.engine: jev` にし、TypeSafe の API キーを置くと、TypeSafe の Jev で判定する（任意）。入力の先頭最大 1200 文字を、既知の秘密情報・URL 等を伏せたうえで外部（api.typesafe.ai）に送る。使えないときはキーワード判定に戻る。
 手順・送る内容・費用・遅れは [提案の判定（`router.engine`）](docs/reference/packages.md#提案の判定routerengine) を参照。
 
-`researcher` は解決済みのルーティングに従い、`tool: antigravity` なら `agy`、`tool: codex` なら
-`codex exec` を先に実行します。WebSearch / WebFetch 等だけで指定 CLI を省略しません。
-CLI の実行失敗時（Antigravity は規定のリトライ後、未導入・権限拒否などは確認後）または
-`claude-direct` 指定・CLI 無効化時は直接調査でき、報告に実効 tool・試行結果・フォールバック理由を含めます。
-`.local.yaml` による上書きと、CLI 成功後の出典確認・補足は引き続き利用できます。
+`researcher` は既定で API の `research` プロファイル（Gemini）に結び付きます。探索は Claude 自身が Read / Grep / Glob / WebSearch / WebFetch で行い、検索のグラウンディング・マルチモーダル・長い文脈が必要な場面だけ API を呼びます。キーや SDK がない場合は `claude-direct` に戻り、Claude だけで調査を完結させます。
+
+meta-harness の `routing-config` 候補でも `agents.*.tool: api` を指定できます。`api_profile` は既存の設定を引き継ぎ、プロファイルを解決できない場合は `claude-direct` に戻ります。
+
+### API キーで LLM を一回呼ぶ
+
+API 機能は optional extra です。基本インストールの依存は pyyaml のままです。
+
+```bash
+uv tool install --upgrade 'orchex[llm]'
+orchex auth set gemini
+orchex auth status
+orchex llm ask --profile research "最近の変更について一次資料を調べて"
+orchex llm ask --profile research --attach ./report.pdf --output ./answer.txt "資料を要約して"
+```
+
+キーは非表示のプロンプトで登録します。引数や YAML には書きません。
+保存先は `~/.config/orchex/credentials`（ディレクトリ0700、ファイル0600）です。
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` が設定されていれば保存値より優先し、空なら保存値を使います。
+`auth status` は設定の有無だけを表示します。
+
+Anthropic / OpenAI も呼べます。`cli-tools.local.yaml` の `api.profiles` にプロファイルを追加してください。
+既定では両社をエージェントへ結び付けません。モデル、検索・添付の許可、タイムアウト、出力上限と終了コードは
+[設定リファレンス](docs/reference/configuration.md#api-セクション)を参照してください。
+`--project` で設定を読むプロジェクトを指定できます。`--output` 指定時は回答をファイルに書きます。
 
 ### 外部 CLI への任意助言
 
-`[Codex Suggestion]` / `[Antigravity Suggestion]` は、操作の保留や追加相談を求める必須指示ではありません。
+`[Codex Suggestion]` は、操作の保留や追加相談を求める必須指示ではありません。
 相談済み・軽微・適用外ならそのまま続行でき、採否を毎回説明する必要もありません。
 一方、`[Resolved Routing]` / `agents.<name>.tool` の指定とスキル固有の委譲義務は引き続き必須です。
 相談する場合も、既存の config 解決・sandbox 安全条件に従います。
 
 - **Codex（編集前）**: `DESIGN.md` / `ARCHITECTURE.md` の basename、明確な設計パス（`design/`・`architecture/`・`schema/`・`schemas/`・`interfaces/`・`contracts/` 等）、契約宣言の変更に限定します。TS/JS の `interface` は通常パスではコードシグナルとせず、設計パス内の変更としてのみ対象にします。`Props` という名前だけでは除外しません。`core` / `config` / `model`・通常の class・文字数・`src/` だけでは提案しません。
 - **宣言の差分**: Edit は old/new、設計パス以外のソース（`.py` / `.pyi` / `.ts` / `.tsx` / `.js` / `.jsx` / `.java`）への Write はディスク上の旧本文と新本文の宣言を比較し、同じならコードシグナルを抑制します。新規ファイルの旧本文は空とします。旧本文が読取不能・大き過ぎ・非通常ファイル・非 UTF-8 の場合は任意通知を抑制し、exit 0 にします。設計パスは旧本文比較と独立に判定します。
-- **Antigravity**: WebSearch の `query` / WebFetch の `prompt` に比較・選定・移行等の調査意図がある場合に提案します。明確な選択比較（`vs` / `vs.` / `versus` / `違い` / `どっち` / `which is better`）も対象です。文字列等の演算比較や単純な migration エラー検索は除外しますが、明確な選択比較が同居すればそちらを優先します。URL・長さ・一般語（documentation / library / guide / example / best practice）だけでは提案しません。
-- **通知の抑制**: トップレベルの `agent_id` が非空の文字列（`str`）の場合だけ、サブエージェント／インプロセス teammate 内として提案を抑制します。`agent_type` は `--agent` で起動したメインにも付くため、単独では抑制しません。`tool_input.subagent_type` は呼出先なので判定に使いません。`session_id` があれば project / worktree 別に、同一 session・同一ファイル（Codex）または正規化した同一質問（Antigravity）への通知を 1 度に抑えます。
+- **通知の抑制**: トップレベルの `agent_id` が非空の文字列（`str`）の場合だけ、サブエージェント／インプロセス teammate 内として提案を抑制します。`agent_type` は `--agent` で起動したメインにも付くため、単独では抑制しません。`tool_input.subagent_type` は呼出先なので判定に使いません。`session_id` があれば project / worktree 別に、同一 session・同一ファイルへの通知を 1 度に抑えます。
 
 両 hook の config・対象範囲・marker に使う project / worktree は、環境変数 `CLAUDE_PROJECT_DIR` が非空ならそのルートを使い、未設定または空の場合だけ hook 入力の `cwd` で解決します。
 状態は `.claude/state/suggestions/` の hash 化した session / 対象の空 marker だけで、質問本文等は保存しません。
 状態書き込み失敗時は無出力・exit 0、`session_id` がなければ state を作らず呼び出しごとの助言になります。
 marker の自動削除は今回追加しないため、終了後も session ディレクトリが残ります。cleanup は将来課題です。
 **通知済みは相談済みではありません**。意味的な相談済み判定はオーケストレーターが担い、hook は transcript を解析しません。
-次回監査では researcher の指定 CLI 試行率とメインの任意提案の採用率を分離します。researcher の `agy` 実行は `researcher.md` の指示が担い、サブエージェント内の通知は `agent_id` で抑制するため、hook 通知数を researcher の遵守率の代用にしません。
 after-plan hook の発火条件と既存の advisory は変更しません。詳細は [Hook リファレンス](docs/reference/hooks.md) と [ADR-060](docs/adr/ADR-20261028-060.md) を参照してください。
 
 ### スキル一覧
@@ -493,7 +509,6 @@ after-plan hook の発火条件と既存の advisory は変更しません。詳
 | `/issue-create`       | GitHub Issue の作成と計画策定                                 |
 | `/issue-fix`          | Issue ベースの計画→実装→テスト→レビューフロー                 |
 | `/codex-system`       | `cli-tools.yaml` に基づく Codex 利用ガイド（config-driven）   |
-| `/antigravity-system` | Antigravity CLI（agy）でのリサーチ・マルチモーダル処理        |
 | `/order`              | 対話の結論を発注書（plan ファイル / Issue）に書き出す         |
 | `/design`             | 設計テンプレート                                              |
 | `/design-tracker`     | 設計記録                                                      |
@@ -540,7 +555,6 @@ ai-orchestra/
 │   ├── audit/             # 監査ログ・KPI・ダッシュボード
 │   ├── codex-suggestions/ # Codex 相談提案 hooks
 │   ├── codex-harness/     # Codex CLI 向け repo-local ハーネス（hooks/rules/schemas + 非対話 run/review スクリプト）
-│   ├── antigravity-suggestions/ # Antigravity リサーチ提案 hooks
 │   ├── quality-gates/     # 品質ゲート hooks
 │   ├── docker-runtime/    # ハーネス共通 Docker/broker ライフサイクル
 │   ├── skill-evolution/  # スキル実行範囲の記録（v2、v1 CLI は非推奨）

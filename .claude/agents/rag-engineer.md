@@ -27,7 +27,6 @@ Do NOT hardcode model names or CLI options.
 
 ### Sandbox Policy
 
-Antigravity CLI（`agy`）は sandbox 内で直接実行する。
 Codex CLI は sandbox 内で動作しないため、`codex exec` の Bash 呼び出しに限り sandbox を無効化
 （`dangerouslyDisableSandbox: true`）して実行する（詳細規則が配布されている場合は
 `codex-delegation.md` を優先する）。
@@ -74,12 +73,6 @@ codex exec --model <codex.model> --sandbox <codex.sandbox> <codex.flags> "{task 
 
 外部CLIを呼ばず、自身の知識とツール（Read/Edit/Write等）で処理する。
 
-### tool = "antigravity" の場合
-
-```bash
-# エラー時は claude-direct にフォールバック
-agy -p "{task}" --model <antigravity.model> 2>/dev/null
-```
 
 ### フォールバック
 

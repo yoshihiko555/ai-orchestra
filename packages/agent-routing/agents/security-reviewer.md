@@ -30,10 +30,9 @@ Do NOT hardcode model names or CLI options.
 1. tool を決める: `[Resolved Routing]` の `tool`（ブロックがない場合は `agents.<agent-name>.tool`）
 2. tool に応じてCLIコマンドを構築:
    - `"codex"` → Codex CLI を使用
-   - `"antigravity"` → Antigravity CLI（agy）を使用（旧値 `"gemini"` は読み替え）
    - `"claude-direct"` → 外部CLIを呼ばず自身で処理
 3. model / sandbox / flags は `[Resolved Routing]` の値を使う。ブロックがない場合は、sandbox を
-   `agents.<agent-name>.sandbox` → `codex.sandbox.analysis`、model / flags を `codex.*` / `antigravity.*` → フォールバックの順で解決する
+   `agents.<agent-name>.sandbox` → `codex.sandbox.analysis`、model / flags を `codex.*` → フォールバックの順で解決する
    （`agents.<agent-name>.model` は Claude サブエージェント自身のモデル指定であり、CLI の model ではない）
 
 ### フォールバックデフォルト（設定ファイルが見つからない場合）
@@ -64,11 +63,6 @@ cli-tools.yaml の `agents.<agent-name>.tool` に基づいてコマンドを構�
 codex exec --model <model> --sandbox <sandbox> <flags> "{security review question}" < /dev/null 2>/dev/null
 ```
 
-### tool = "antigravity" の場合
-
-```bash
-agy -p "{security review question}" --model <antigravity.model> 2>/dev/null
-```
 
 ## Security Checklist
 

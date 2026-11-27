@@ -71,8 +71,6 @@ LINT_COMMAND_PATTERNS = [
 # 外部 CLI（深い推論・リサーチ委譲）
 CLI_COMMAND_PATTERNS = [
     re.compile(r"\bcodex\s+exec\b"),
-    re.compile(r"(?:^|[\s;|&])agy\s", re.IGNORECASE),
-    re.compile(r"(?:^|[\s;|&])gemini\s", re.IGNORECASE),
 ]
 
 # ---------------------------------------------------------------------------

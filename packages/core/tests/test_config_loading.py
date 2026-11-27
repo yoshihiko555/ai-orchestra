@@ -29,7 +29,7 @@ def _read_cli_tools_yaml_raw() -> dict:
     """ローダとは独立に、解決済み cli-tools.yaml を直接 PyYAML で読む。
 
     期待値を yaml 由来で導出することで、テストを literal（モデル名・ルーティング先）に
-    依存させない。cli-tools.yaml の codex.model / antigravity.model / agents.*.tool を
+    依存させない。cli-tools.yaml の codex.model / agents.*.tool を
     変更してもテストが壊れない。
 
     cli-tools.local.yaml が実在する環境では base に deep_merge して返す。
@@ -51,7 +51,7 @@ def _read_cli_tools_yaml_raw() -> dict:
 
 
 # agents.<name>.tool が取りうる実行先の語彙（config-loading / codex-delegation ルール準拠）
-VALID_AGENT_TOOLS = frozenset({"codex", "antigravity", "claude-direct", "auto"})
+VALID_AGENT_TOOLS = frozenset({"codex", "claude-direct", "auto", "api"})
 
 
 # =========================================================================
@@ -82,7 +82,6 @@ class TestRouteConfigLoadConfig:
         config = route_config.load_config({"cwd": str(REPO_ROOT)})
         expected = _read_cli_tools_yaml_raw()
         assert config.get("codex", {}).get("model") == expected["codex"]["model"]
-        assert config.get("antigravity", {}).get("model") == expected["antigravity"]["model"]
 
     def test_loads_agents_section(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """agents セクションが tool 値まで含めて読み込まれることを検証する。
@@ -158,12 +157,9 @@ class TestRealConfigFiles:
         config = hook_common.load_package_config("agent-routing", "cli-tools.yaml", str(REPO_ROOT))
         expected = _read_cli_tools_yaml_raw()
         assert "codex" in config
-        assert "antigravity" in config
         assert "agents" in config
         # モデル値・sandbox 値は yaml 由来で導出（literal 比較を廃止し、モデル変更で壊れない）
         assert config["codex"]["model"] == expected["codex"]["model"]
         assert config["codex"]["sandbox"]["analysis"] == expected["codex"]["sandbox"]["analysis"]
-        assert config["antigravity"]["model"] == expected["antigravity"]["model"]
         # 構造契約: model は非空かつ allowlist に含まれる（ファイル健全性の保証）
         assert isinstance(config["codex"]["model"], str) and config["codex"]["model"]
-        assert config["antigravity"]["model"] in config["antigravity"]["model_allowlist"]

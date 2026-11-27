@@ -781,7 +781,7 @@
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_unknown_creator_is_rejected
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_created_by_policy_is_exactly_the_frozen_phase_a_map
     - packages/meta-harness/tests/test_register.py::TestRegisterConfigPatchValidation::test_human_routing_config_patch_registers_with_integrity_hashes
-  notes: the frozen per-key creator map permits proposer agents.*.tool and antigravity.model patches, keeps codex.model human-only, and rejects unknown creators.
+  notes: the frozen per-key creator map permits proposer agents.*.tool patches, keeps codex.model human-only, and rejects unknown creators.
 
 - ev_id: EV-65
   phase: 3
@@ -808,20 +808,16 @@
     AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_all_released_agent_tool_values_are_accepted
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_invalid_patch_values_are_rejected
-    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_antigravity_model_is_accepted
-    packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_empty_antigravity_model_allowlist_rejects_any_model
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_codex_model_is_accepted
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_non_allowlisted_codex_model_is_rejected
     packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_missing_or_empty_codex_model_allowlist_rejects_any_model
   covered_by:
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_all_released_agent_tool_values_are_accepted
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_invalid_patch_values_are_rejected
-    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_antigravity_model_is_accepted
-    - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_empty_antigravity_model_allowlist_rejects_any_model
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_allowlisted_codex_model_is_accepted
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_non_allowlisted_codex_model_is_rejected
     - packages/meta-harness/tests/test_overlay_validation.py::TestValidateConfigPatch::test_missing_or_empty_codex_model_allowlist_rejects_any_model
-  notes: tool enum, scalar typing, model slug/YAML safety, and both codex and antigravity model membership fail closed on missing or empty allowlists.
+  notes: human / proposer の tool は codex / claude-direct / auto / api を受理する。scalar 型、model slug / YAML の安全性と model membership を検証し、model allowlist の未定義・空配列は拒否する。
 
 - ev_id: EV-67
   phase: 3
@@ -1194,10 +1190,14 @@
     AI_ORCHESTRA_DIR="$PWD" OCHE_ROOT="$PWD" python3 -m pytest -q
     packages/meta-harness/tests/test_skill_scenarios.py::test_routing_config_suite_uses_deterministic_critical_oracles
     packages/meta-harness/tests/test_skill_scenarios.py::test_routing_behavior_oracle_outcome_varies_with_materialized_value
+    packages/meta-harness/tests/test_skill_scenarios.py::test_routing_behavior_holdout_oracle_accepts_api_review
+    packages/meta-harness/tests/test_skill_scenarios.py::test_routing_behavior_train_oracle_uses_api_fallback_without_profile
   covered_by:
     - packages/meta-harness/tests/test_skill_scenarios.py::test_routing_config_suite_uses_deterministic_critical_oracles
     - packages/meta-harness/tests/test_skill_scenarios.py::test_routing_behavior_oracle_outcome_varies_with_materialized_value
-  notes: mechanical scenarios remain, train/holdout behavioral scenarios use Read/Write only, and changing the materialized routing value deterministically flips the oracle.
+    - packages/meta-harness/tests/test_skill_scenarios.py::test_routing_behavior_holdout_oracle_accepts_api_review
+    - packages/meta-harness/tests/test_skill_scenarios.py::test_routing_behavior_train_oracle_uses_api_fallback_without_profile
+  notes: mechanical scenario を維持し、train / holdout の振る舞い評価は Read / Write のみを使う。実体化した routing 値の変更で oracle の結果が変わる。holdout は api の直接レビューを受理し、train は api_profile 未指定時に claude-direct へ戻る。
 
 - ev_id: EV-91
   phase: 3

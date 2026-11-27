@@ -49,9 +49,7 @@ CODEX_BYPASS_FLAGS = ("--dangerously-bypass-approvals-and-sandbox", "--yolo", "-
 # 「Bash サンドボックス制約」条件 2）。
 _CODEX_FLAGS_SAFE_PATTERN = re.compile(r"[A-Za-z0-9_.,:/@+=\- ]*")
 _CODEX_MODEL_SAFE_PATTERN = re.compile(r"[A-Za-z0-9_.,:/@+=\-]+")
-# 空文字 = --model フラグを省略し、Antigravity CLI のデフォルトモデルに委ねる意図。
-DEFAULT_ANTIGRAVITY_MODEL = ""
-DEFAULT_ANTIGRAVITY_FLAGS = ""
+LEGACY_CLI_TOOLS = ("antigravity", "gemini")
 
 
 def deep_merge(base: dict, override: dict) -> dict:
@@ -178,101 +176,25 @@ def has_project_config(package_name: str, filename: str, project_dir: str) -> bo
     return os.path.isfile(local_path)
 
 
-def normalize_cli_tools_config(config: dict) -> dict:
-    """cli-tools.yaml の旧 gemini 系設定を antigravity に正規化する。
-
-    横展開先プロジェクトの .local.yaml に残る旧キーへの後方互換:
-
-    1. トップレベル ``gemini:`` キーの ``enabled: false`` は
-       ``antigravity.enabled`` が明示設定されていない場合に限り
-       ``antigravity.enabled`` へフォールバックとして反映する（無効化の意図を
-       引き継ぐ。``model`` / ``flags`` は Gemini CLI 固有値のため引き継がない）。
-       両キーが競合する場合（``antigravity.enabled`` が既に明示設定されている
-       場合）は ``antigravity.enabled`` を優先する
-       （2026-07-04 人間レビュー裁定・EV-13、Issue #125）。
-    2. ``agents.<name>.tool: "gemini"`` は ``"antigravity"`` に読み替える
-
-    重要: この関数は「渡された 1 つの dict の中で両キーが競合しているか」だけを
-    判定する。base config と local override をあらかじめ deep_merge した dict を
-    渡すと、base 側の既定値（例: ``antigravity.enabled: true``）が「ユーザーが
-    明示した値」と区別できず、local だけに残る旧 ``gemini.enabled: false`` の
-    フォールバックが機能しなくなる（migrated-project regression。Issue #125 PR
-    レビュー指摘）。cli-tools.yaml を読み込む場合は、base/local を merge する前に
-    レイヤーごとに本関数へ通す ``load_cli_tools_config`` を使うこと。
-
-    Args:
-        config: cli-tools.yaml 相当の dict（base 単体 / local 単体 / 呼び出し元が
-            意図的に単一レイヤーとして扱いたい dict）。
-
-    Returns:
-        正規化済みの新しい dict（入力は変更しない）。
-    """
-    if not isinstance(config, dict):
-        return config
-
-    normalized = dict(config)
-
-    legacy = normalized.get("gemini")
-    if isinstance(legacy, dict) and legacy.get("enabled") is False:
-        antigravity = dict(normalized.get("antigravity") or {})
-        if "enabled" not in antigravity:
-            antigravity["enabled"] = False
-            normalized["antigravity"] = antigravity
-
-    agents = normalized.get("agents")
-    if isinstance(agents, dict):
-        new_agents: dict = {}
-        for name, cfg in agents.items():
-            if isinstance(cfg, dict) and cfg.get("tool") == "gemini":
-                cfg = {**cfg, "tool": "antigravity"}
-            new_agents[name] = cfg
-        normalized["agents"] = new_agents
-
-    return normalized
-
-
 def load_cli_tools_config(project_dir: str) -> dict:
-    """cli-tools.yaml を base/local レイヤーごとに正規化してから読み込む。
+    """base と local の上書きをマージし、旧キーは警告のため resolver へ渡す。"""
+    return load_package_config("agent-routing", "cli-tools.yaml", project_dir)
 
-    ``load_package_config`` は base と local を deep_merge してから返すため、
-    その結果を ``normalize_cli_tools_config`` に渡すと base の既定値
-    （現行 base は ``antigravity.enabled: true`` を明示）が「ユーザーによる
-    明示設定」と誤認され、local だけに残る旧 ``gemini.enabled: false`` の
-    後方互換フォールバックが機能しない（migrated-project regression。
-    Issue #125 PR レビュー指摘）。
 
-    本関数は base dict と local dict を merge 前に個別に正規化し、その後で
-    deep_merge することでこれを解消する:
+def normalize_agent_tool(tool: str) -> str:
+    """配布終了 CLI の tool 値を直接実行へ読み替える。"""
+    return "claude-direct" if tool in LEGACY_CLI_TOOLS else tool
 
-    - base に ``antigravity.enabled`` の明示設定があり、local が旧
-      ``gemini.enabled: false`` のみを持つ場合 → local 単体の正規化で
-      ``antigravity.enabled: false`` が生成され、merge 後もそれが優先される
-      （EV-04: フォールバックが正しく効く）。
-    - 同一レイヤー（例: local）内で ``antigravity.enabled`` と旧
-      ``gemini.enabled: false`` が両方明示されている場合 → そのレイヤーの
-      正規化時点で ``antigravity.enabled`` が既に存在するためフォールバックは
-      適用されず、``antigravity.enabled`` が優先される
-      （EV-13, 2026-07-04 人間レビュー裁定）。
 
-    Args:
-        project_dir: プロジェクトディレクトリ。
-
-    Returns:
-        正規化・マージ済みの cli-tools.yaml 相当の dict。
-    """
-    package_name, filename = "agent-routing", "cli-tools.yaml"
-
-    base_path = find_package_config(package_name, filename, project_dir)
-    if not base_path:
-        return {}
-
-    base = normalize_cli_tools_config(_read_config_file(base_path))
-    local_path = _find_local_config_path(package_name, filename, project_dir, base_path)
-    local = _read_config_file(local_path)
-
-    if not local:
-        return base
-    return deep_merge(base, normalize_cli_tools_config(local))
+def legacy_routing_notes(agent_name: str, configured_tool: str, config: dict) -> list[str]:
+    """旧キーの値を表示せず、local 設定の移行を案内する。"""
+    keys = [f"{key}:" for key in LEGACY_CLI_TOOLS if key in config]
+    if configured_tool in LEGACY_CLI_TOOLS:
+        keys.append(f"agents.{agent_name}.tool ({configured_tool})")
+    return [
+        f"Antigravity CLI was removed; remove {key} from cli-tools.local.yaml; use claude-direct."
+        for key in keys
+    ]
 
 
 def is_cli_enabled(cli_name: str, config: dict, default: bool = True) -> bool:
@@ -283,13 +205,13 @@ def is_cli_enabled(cli_name: str, config: dict, default: bool = True) -> bool:
     呼び出し側が ``default`` を指定しなければ True（既存呼び出し元との後方互換）。
 
     元々 agent-routing パッケージが所有していたが、codex-suggestions /
-    antigravity-suggestions など agent-routing に依存しないパッケージからも
+    image-generation など agent-routing に依存しないパッケージからも
     利用するため core に引き上げた。route_config.is_cli_enabled はここからの
     re-export として後方互換を維持する。
 
     codex-suggestions は 2026-07-03 人間レビュー裁定（Issue #129, EV-15）により
     ``codex`` セクション未定義時はデフォルト無効（``default=False``）として
-    呼び出す。他パッケージ（agent-routing / antigravity-suggestions /
+    呼び出す。他パッケージ（agent-routing /
     image-generation 等）の呼び出しには影響しない（それらは default 省略で
     従来どおり True）。
     """
@@ -299,20 +221,32 @@ def is_cli_enabled(cli_name: str, config: dict, default: bool = True) -> bool:
     return bool(section.get("enabled", default))
 
 
+def _agent_config(agent_name: str, config: dict) -> dict:
+    """指定エージェントの設定を取得し、mapping でない場合は空の設定を返す。"""
+    if not isinstance(config, dict):
+        return {}
+    agents = config.get("agents", {})
+    if not isinstance(agents, dict):
+        return {}
+    agent_config = agents.get(agent_name, {})
+    return agent_config if isinstance(agent_config, dict) else {}
+
+
+def configured_agent_tool(agent_name: str, config: dict) -> str:
+    """読み替えや CLI 無効時の解決前の、設定された tool を返す。"""
+    return _agent_config(agent_name, config).get("tool", "claude-direct")
+
+
 def get_agent_tool(agent_name: str, config: dict) -> str:
     """config から指定エージェントの tool を取得。CLI 無効時は claude-direct にフォールバック。"""
-    agents = config.get("agents", {})
-    cfg = agents.get(agent_name, {})
-    tool = cfg.get("tool", "claude-direct") if isinstance(cfg, dict) else "claude-direct"
+    tool = configured_agent_tool(agent_name, config)
+    tool = normalize_agent_tool(tool)
 
-    # 旧ツール値の読み替え（正規化前の config を直接渡された場合の保険）
-    if tool == "gemini":
-        tool = "antigravity"
+    if tool == "api":
+        return resolve_agent_routing(agent_name, config)["tool"]
 
     # CLI 無効時のフォールバック
     if tool == "codex" and not is_cli_enabled("codex", config):
-        return "claude-direct"
-    if tool == "antigravity" and not is_cli_enabled("antigravity", config):
         return "claude-direct"
 
     return tool
@@ -372,11 +306,6 @@ def find_codex_sandbox_override(flags: str) -> str | None:
         if token == "-s" or (token.startswith("-s") and not token.startswith("--")):
             return token
     return None
-
-
-def _is_single_line_str(value: object) -> bool:
-    """Return True if value is a str with no newline/carriage-return characters."""
-    return isinstance(value, str) and "\n" not in value and "\r" not in value
 
 
 def _resolve_codex_section(
@@ -463,87 +392,50 @@ def _resolve_codex_section(
     return codex_routing, notes
 
 
-def _resolve_antigravity_section(config: dict) -> tuple[dict | None, list[str]]:
-    """Build the `antigravity` sub-dict for resolve_agent_routing, or (None, notes) if invalid."""
-    antigravity_config = config.get("antigravity", {})
-    antigravity_config = antigravity_config if isinstance(antigravity_config, dict) else {}
-    notes: list[str] = []
-    is_valid = True
-
-    raw_model = antigravity_config.get("model")
-    if raw_model is None:
-        model = DEFAULT_ANTIGRAVITY_MODEL
-    elif isinstance(raw_model, str):
-        model = raw_model
-    else:
-        model = raw_model
-        notes.append("antigravity.model must be a string -> antigravity disabled")
-        is_valid = False
-
-    raw_flags = antigravity_config.get("flags")
-    if raw_flags is None:
-        flags = DEFAULT_ANTIGRAVITY_FLAGS
-    elif isinstance(raw_flags, str):
-        flags = raw_flags
-    else:
-        flags = raw_flags
-        notes.append("antigravity.flags must be a string -> antigravity disabled")
-        is_valid = False
-
-    if isinstance(model, str) and not _is_single_line_str(model):
-        notes.append("antigravity.model must be a single-line string -> antigravity disabled")
-        is_valid = False
-    if isinstance(flags, str) and not _is_single_line_str(flags):
-        notes.append("antigravity.flags must be a single-line string -> antigravity disabled")
-        is_valid = False
-
-    if not is_valid:
-        return None, notes
-
-    allowlist = antigravity_config.get("model_allowlist")
-    allowlist_warning = ""
-    if model and isinstance(allowlist, list) and allowlist and model not in allowlist:
-        allowlist_warning = f"model {model!r} is not in antigravity.model_allowlist"
-
-    return {
-        "model": model,
-        "flags": flags,
-        "allowlist_warning": allowlist_warning,
-    }, notes
-
-
 def resolve_agent_routing(agent_name: str, config: dict) -> dict:
     """サブエージェント 1 件の実効ルーティングを解決する。"""
     safe_config = config if isinstance(config, dict) else {}
-    agents = safe_config.get("agents", {})
-    agent_config = agents.get(agent_name, {}) if isinstance(agents, dict) else {}
-    configured_tool = (
-        agent_config.get("tool", "claude-direct")
-        if isinstance(agent_config, dict)
-        else "claude-direct"
-    )
-    if configured_tool == "gemini":
-        configured_tool = "antigravity"
-
+    agent_config = _agent_config(agent_name, safe_config)
+    configured_tool = configured_agent_tool(agent_name, safe_config)
     codex_enabled = is_cli_enabled("codex", safe_config)
-    antigravity_enabled = is_cli_enabled("antigravity", safe_config)
-    resolved_tool = configured_tool
-    notes: list[str] = []
+    resolved_tool = normalize_agent_tool(configured_tool)
+    notes = legacy_routing_notes(agent_name, configured_tool, safe_config)
 
     if configured_tool == "codex" and not codex_enabled:
         resolved_tool = "claude-direct"
         notes.append("configured tool 'codex' -> claude-direct (codex.enabled is false)")
-    elif configured_tool == "antigravity" and not antigravity_enabled:
-        resolved_tool = "claude-direct"
-        notes.append(
-            "configured tool 'antigravity' -> claude-direct (antigravity.enabled is false)"
-        )
 
     routing: dict = {
         "agent": agent_name,
         "tool": resolved_tool,
         "notes": notes,
     }
+
+    if configured_tool == "api":
+        from dataclasses import asdict
+
+        from api_credentials import CredentialsError
+        from api_profiles import (
+            ProfileError,
+            availability_message,
+            check_availability,
+            resolve_profile,
+        )
+
+        try:
+            profile = resolve_profile(safe_config, agent_config.get("api_profile"))
+            availability = check_availability(profile)
+            if availability.reason is not None:
+                routing["tool"] = "claude-direct"
+                notes.append(availability_message(availability.reason, profile.provider))
+            else:
+                values = asdict(profile)
+                notes.extend(values.pop("warnings"))
+                values.pop("provider_enabled")
+                routing["api"] = values
+        except (ProfileError, CredentialsError) as exc:
+            routing["tool"] = "claude-direct"
+            notes.append(str(exc))
 
     if resolved_tool == "codex" or (configured_tool == "auto" and codex_enabled):
         codex_section, codex_notes = _resolve_codex_section(
@@ -555,15 +447,6 @@ def resolve_agent_routing(agent_name: str, config: dict) -> dict:
                 routing["tool"] = "claude-direct"
         else:
             routing["codex"] = codex_section
-
-    if resolved_tool == "antigravity" or (configured_tool == "auto" and antigravity_enabled):
-        antigravity_section, antigravity_notes = _resolve_antigravity_section(safe_config)
-        notes.extend(antigravity_notes)
-        if antigravity_section is None:
-            if resolved_tool == "antigravity":
-                routing["tool"] = "claude-direct"
-        else:
-            routing["antigravity"] = antigravity_section
 
     return routing
 

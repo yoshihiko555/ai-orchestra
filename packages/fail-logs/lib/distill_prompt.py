@@ -92,7 +92,7 @@ If the lesson is the same as an existing lesson in the data, use action "merge" 
 otherwise use action "new" with merge_into null.
 severity is "critical" only for data loss, irreversible operations, or leaking secrets; otherwise "normal".
 scope is "claude" if the lesson only concerns Claude Code features (hooks, skills, sandbox, permissions, tools),
-"all" if any coding agent (Codex, Antigravity) should follow it.
+"all" if any coding agent (Codex) should follow it.
 Write title, event, cause and avoidance in {lang}. Return at most the allowed number of lessons, and an empty list
 when there is nothing worth keeping. Output only JSON that matches the schema."""
 

@@ -24,7 +24,6 @@ def test_classify_command_lint() -> None:
 
 def test_classify_command_cli() -> None:
     assert fd.classify_command('codex exec --model x "q" < /dev/null') == fd.KIND_CLI
-    assert fd.classify_command("agy -p 'research'") == fd.KIND_CLI
 
 
 def test_classify_command_cli_takes_priority_over_test() -> None:

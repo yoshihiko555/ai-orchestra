@@ -8,7 +8,7 @@ frontmatter:
     Reverse-engineer an existing codebase through 5 phases:
     scan, dependency graph, feature extraction, design documentation, debt/security report.
     Defaults to repository-wide scope; accepts `/reverse <path>` to narrow.
-    Antigravity-driven (with claude-direct fallback) for large-scale comprehension.
+    Claude performs repository analysis directly with Read, Grep, and Glob.
     Trigger: /reverse
   argument-hint: "[path]"
   metadata:

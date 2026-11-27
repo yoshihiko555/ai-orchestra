@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PostToolUse:Bash hook: Codex/Gemini CLI 呼び出しを検出し cli_call を記録する。"""
+"""PostToolUse:Bash hook: Codex CLI 呼び出しを検出し cli_call を記録する。"""
 
 from __future__ import annotations
 
@@ -93,23 +93,6 @@ CODEX_PROMPT_FILE_MAX_BYTES = 1024 * 1024
 # テレメトリ用の prompt 上限文字数（暴走・巨大 heredoc 本文からの防御。KPI/調査用途では
 # 全文である必要はなく、上限超過分は切り詰める）
 MAX_PROMPT_CHARS = 20000
-
-GEMINI_EXEC_RE = re.compile(
-    r"(?:^|&&|\|\||;|\|)\s*"
-    r"(?:timeout\s+\d+\s+)?"
-    r"(?:\w+=\S+\s+)*gemini(?=\s|$)"
-    r"(?:(?!&&|\|\||;|\|).)*\s+-p\b",
-    re.IGNORECASE,
-)
-
-ANTIGRAVITY_EXEC_RE = re.compile(
-    r"(?:^|&&|\|\||;|\|)\s*"
-    r"(?:timeout\s+\d+\s+)?"
-    r"(?:\w+=\S+\s+)*agy(?=\s|$)"
-    r"(?:(?!&&|\|\||;|\|).)*\s+(?:-p|--print|--prompt)(?=\s|$)",
-    re.IGNORECASE,
-)
-
 
 # ---------------------------------------------------------------------------
 # heredoc scanning（行単位の単一パス scanner）
@@ -404,10 +387,10 @@ def _heredoc_producer_is_cat(opener_line: str, assignment_match: re.Match[str]) 
     return producer == "cat"
 
 
-def _exec_command_segment(command: str, exec_re: re.Pattern[str]) -> str | None:
+def _exec_command_segment(command: str) -> str | None:
     """検出済み CLI 呼び出しのコマンド区間を返す。
 
-    `exec_re`（例: `CODEX_EXEC_RE`）でマッチした呼び出しの開始位置から、
+    `CODEX_EXEC_RE`でマッチした呼び出しの開始位置から、
     引用符外にある最初のコマンド区切り（改行 / `;` / `|` / `&`）までを区間
     として切り出す。区切りが見つからなければコマンド末尾までを区間とする。
 
@@ -420,13 +403,12 @@ def _exec_command_segment(command: str, exec_re: re.Pattern[str]) -> str | None:
 
     Args:
         command: 元の Bash コマンド文字列。
-        exec_re: 検出用正規表現。
 
     Returns:
         コマンド区間の文字列。呼び出しが検出できなければ None。
     """
     detection_command = _detection_command(command)
-    match = exec_re.search(detection_command)
+    match = CODEX_EXEC_RE.search(detection_command)
     if match is None:
         return None
     segment_end = _find_segment_end(command, match.end())
@@ -598,7 +580,7 @@ def extract_codex_prompt(command: str) -> str | None:
         呼び出し側で `_mask_secrets` 適用後に `_truncate_prompt` で切り詰めること
         （マスク前の切り詰めはシークレットパターンの境界またぎ検知漏れを起こすため）。
     """
-    segment = _exec_command_segment(command, CODEX_EXEC_RE)
+    segment = _exec_command_segment(command)
     if segment is None:
         return None
 
@@ -631,73 +613,9 @@ def extract_codex_prompt(command: str) -> str | None:
     return None
 
 
-def extract_gemini_prompt(command: str) -> str | None:
-    """gemini コマンドからプロンプトを抽出する。
-
-    Args:
-        command: Bash コマンド文字列。
-
-    Returns:
-        プロンプト文字列。検出できなければ None。
-    """
-    patterns = [
-        r'gemini(?=\s|$)(?:(?!&&|\|\||;|\|).)*?\s+-p\s+"([^"]+)"',
-        r"gemini(?=\s|$)(?:(?!&&|\|\||;|\|).)*?\s+-p\s+'([^']+)'",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, command, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-    return None
-
-
-def extract_antigravity_prompt(command: str) -> str | None:
-    """agy コマンドからプロンプトを抽出する。
-
-    Args:
-        command: Bash コマンド文字列。
-
-    Returns:
-        プロンプト文字列。検出できなければ None。
-    """
-    patterns = [
-        r'agy(?=\s|$)(?:(?!&&|\|\||;|\|).)*?\s+(?:-p|--print|--prompt)\s+"([^"]+)"',
-        r"agy(?=\s|$)(?:(?!&&|\|\||;|\|).)*?\s+(?:-p|--print|--prompt)\s+'([^']+)'",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, command, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-    return None
-
-
-def extract_model(command: str, tool: str = "codex") -> str | None:
-    """コマンドからモデル名を抽出する。
-
-    codex / antigravity では、検出済み CLI 呼び出しのコマンド区間
-    （`_exec_command_segment`）に限定して `--model` フラグを検索する。区間を
-    限定しない場合、無関係な heredoc 本文（ドキュメント生成の例文等）や、
-    同一 Bash 呼び出し内の別コマンドに含まれる `--model` フラグを実際の
-    モデルとして誤抽出してしまう。
-
-    gemini では、heredoc 本文・引用符内改行をマスクした文字列
-    （`_detection_command`）に対して検索する（gemini の抽出パターンは
-    `.` が改行を跨がないため、同一行に限定される）。
-
-    Args:
-        command: 元の Bash コマンド文字列。
-        tool: ツール種別（"codex" / "antigravity" / "gemini"）。
-
-    Returns:
-        モデル名。検出できなければ None。
-    """
-    if tool == "gemini":
-        detection_command = _detection_command(command)
-        match = re.search(r"(?:^|[\s;|&])gemini\s+.*?-m\s+(\S+)", detection_command)
-        return match.group(1) if match else None
-
-    exec_re = ANTIGRAVITY_EXEC_RE if tool == "antigravity" else CODEX_EXEC_RE
-    segment = _exec_command_segment(command, exec_re)
+def extract_model(command: str) -> str | None:
+    """検出済み Codex 呼び出しの区間からモデル名を抽出する。"""
+    segment = _exec_command_segment(command)
     if segment is None:
         return None
     match = re.search(r"--model\s+(\S+)", segment)
@@ -738,7 +656,7 @@ def _classify_error(exit_code: int, output: str) -> str | None:
 def main() -> None:
     """PostToolUse:Bash hook のエントリポイント。
 
-    Bash コマンドから Codex/Gemini CLI 呼び出しを検出し、
+    Bash コマンドから Codex CLI 呼び出しを検出し、
     cli_call イベントを統一ログに書き出す。
     """
     data = read_hook_input()
@@ -756,28 +674,12 @@ def main() -> None:
     # 文字列を実行呼び出しと誤検知しないため）。
     detection_command = _detection_command(command)
 
-    is_codex = bool(CODEX_EXEC_RE.search(detection_command))
-    is_antigravity = bool(ANTIGRAVITY_EXEC_RE.search(detection_command)) and not is_codex
-    # gemini は移行期間中のレガシー検知（古いコマンド例・手動実行向け）
-    is_gemini = bool(GEMINI_EXEC_RE.search(detection_command)) and not (is_codex or is_antigravity)
-
-    if not (is_codex or is_antigravity or is_gemini):
+    if not CODEX_EXEC_RE.search(detection_command):
         return
 
-    # prompt/model 抽出は元の command を渡す（各関数が内部で検出済み呼び出しの
-    # コマンド区間に限定して抽出するため。詳細は各関数の docstring 参照）。
-    if is_codex:
-        tool = "codex"
-        prompt = extract_codex_prompt(command)
-        model = extract_model(command) or ""
-    elif is_antigravity:
-        tool = "antigravity"
-        prompt = extract_antigravity_prompt(command)
-        model = extract_model(command, tool="antigravity") or ""
-    else:
-        tool = "gemini"
-        prompt = extract_gemini_prompt(command)
-        model = extract_model(command, tool="gemini") or ""
+    tool = "codex"
+    prompt = extract_codex_prompt(command)
+    model = extract_model(command) or ""
 
     if not prompt:
         return

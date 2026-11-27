@@ -1,5 +1,7 @@
 # fail-logs 評価セット
 
+**改訂**: 2026-11-27（旧 CLI の廃止に対応。人間レビュー待ち（本 PR））
+
 **パッケージ**: `packages/fail-logs`
 **類型**: hook 型（副類型: CLI ツール型。`scripts/lessons_cli.py` / `scripts/lessons_admin.py`）
 **作成日**: 2026-07-03
@@ -42,7 +44,7 @@ fail-logs は AI エージェント（Claude Code 等）のツール実行失敗
 - [ ] EV-02（正常 / must）: `exit_code` が 0 または欠落していても、test/lint 系コマンドの出力に失敗マーカーが含まれる場合は `test_failure`/`lint_failure` として検知する（2 段判定により `pytest ... | tail` のようなパイプでの終了コードマスクを回避する） — 根拠: packages/fail-logs/README.md
 - [ ] EV-03（正常 / must）: 失敗イベントのみを記録し、成功したツール実行は記録しない（成功を含む実行統計は `audit` の `quality_gate` が別途担う） — 根拠: packages/fail-logs/README.md
 - [ ] EV-04（正常 / must）: 記録するレコードは audit v1 互換スキーマ（`v`, `ts`, `sid`, `eid`, `type=failure`, `data{failure_type, error_type, detected_by, command_kind, tool, command, error_excerpt, exit_code, cwd}`）に従う。**2026-11-03 追加**: `PostToolUseFailure` / `PermissionDenied` から作る行は、これに加えて `data.tool_use_id` を持つ（項目の追加のみ。既存の項目の名前・型・意味は変えない） — 根拠: packages/fail-logs/README.md / docs/design/fail-logs.md §3(f)
-- [ ] EV-05（正常 / should）: codex / agy 等の外部 CLI 呼び出し失敗を `cli_failure` として検知する — 根拠: packages/fail-logs/README.md
+- [ ] EV-05（正常 / should）: codex 等の外部 CLI 呼び出し失敗を `cli_failure` として検知する — 根拠: packages/fail-logs/README.md
 - [ ] EV-06（異常 / must）: エラー抜粋・コマンド文字列に含まれる機密情報（API キー・トークン等の既知パターン）は記録前に `[REDACTED]` へマスクする — 根拠: packages/fail-logs/README.md
 - [ ] EV-07（境界 / must）: `config/fail-logs.yaml`（または `fail-logs.local.yaml`）の `enabled: false` で記録機能全体を無効化できる — 根拠: packages/fail-logs/README.md
 - [ ] EV-08（境界 / should）: `targets.<failure_type>: false` で失敗種別ごとに記録可否を個別に無効化できる — 根拠: packages/fail-logs/README.md

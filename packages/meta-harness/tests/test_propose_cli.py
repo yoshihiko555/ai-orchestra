@@ -466,13 +466,13 @@ def _valid_routing_proposal() -> dict:
     }
 
 
-def _routing_model_proposal(model: str) -> dict:
+def _routing_agent_proposal(agent: str) -> dict:
     proposal = _valid_routing_proposal()
     proposal["config_patch"] = [
         {
             "file": "agent-routing/cli-tools.yaml",
-            "key_path": "antigravity.model",
-            "value": model,
+            "key_path": f"agents.{agent}.tool",
+            "value": "codex",
         }
     ]
     return proposal
@@ -481,33 +481,17 @@ def _routing_model_proposal(model: str) -> dict:
 def _prepare_stale_routing_config(git_project: Path, git_run, monkeypatch) -> str:
     routing_config = git_project / _ROUTING_CONFIG_RELATIVE
     routing_config.write_text(
-        "agents:\n"
-        "  debugger:\n"
-        "    tool: codex\n"
-        "antigravity:\n"
-        "  model: source-model\n"
-        "  model_allowlist:\n"
-        "    - source-model\n",
+        "agents:\n  debugger:\n    tool: codex\n  source-model:\n    tool: codex\n",
         encoding="utf-8",
     )
     git_run("add", _ROUTING_CONFIG_RELATIVE.as_posix(), cwd=git_project)
     git_run("commit", "-m", "source routing allowlist", cwd=git_project)
     source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
     current_routing_config = {
-        "agents": {"debugger": {"tool": "codex"}},
-        "antigravity": {
-            "model": "current-model",
-            "model_allowlist": ["current-model"],
-        },
+        "agents": {"debugger": {"tool": "codex"}, "current-model": {"tool": "codex"}},
     }
     routing_config.write_text(
-        "agents:\n"
-        "  debugger:\n"
-        "    tool: codex\n"
-        "antigravity:\n"
-        "  model: current-model\n"
-        "  model_allowlist:\n"
-        "    - current-model\n",
+        "agents:\n  debugger:\n    tool: codex\n  current-model:\n    tool: codex\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -619,7 +603,7 @@ def test_propose_path_rejects_model_valid_only_in_current_checkout(
 ) -> None:
     _prepare_routing_store(git_project, git_run)
     source_commit = _prepare_stale_routing_config(git_project, git_run, monkeypatch)
-    proposal = _routing_model_proposal("current-model")
+    proposal = _routing_agent_proposal("current-model")
 
     assert (
         propose_cli.mh.validate_config_patch(
@@ -634,7 +618,7 @@ def test_propose_path_rejects_model_valid_only_in_current_checkout(
 
     with pytest.raises(
         propose_cli.prop.ProposerError,
-        match="antigravity model is not in model_allowlist: current-model",
+        match="unknown agent name: current-model",
     ):
         propose_cli._register_proposed_candidate(
             main_root=git_project,
@@ -653,7 +637,7 @@ def test_source_model_passes_propose_path_then_current_checkout_gate_rejects(
 ) -> None:
     _prepare_routing_store(git_project, git_run)
     source_commit = _prepare_stale_routing_config(git_project, git_run, monkeypatch)
-    proposal = _routing_model_proposal("source-model")
+    proposal = _routing_agent_proposal("source-model")
     source_routing_config = propose_cli.prop._load_source_agent_routing_config(
         git_project, source_commit
     )
@@ -718,11 +702,7 @@ def test_loop_continues_when_current_checkout_rejects_source_valid_proposal(
     _prepare_routing_store(git_project, git_run)
     source_commit = _prepare_stale_routing_config(git_project, git_run, monkeypatch)
     current_routing_config = {
-        "agents": {"debugger": {"tool": "codex"}},
-        "antigravity": {
-            "model": "current-model",
-            "model_allowlist": ["current-model"],
-        },
+        "agents": {"debugger": {"tool": "codex"}, "current-model": {"tool": "codex"}},
     }
     monkeypatch.setattr(
         loop_cli.propose_cli.mh,
@@ -735,7 +715,7 @@ def test_loop_continues_when_current_checkout_rejects_source_valid_proposal(
     parent_manifest = json.loads(parent_manifest_path.read_text(encoding="utf-8"))
     parent_manifest["source_commit"] = source_commit
     parent_manifest_path.write_text(json.dumps(parent_manifest), encoding="utf-8")
-    _set_env(monkeypatch, _prepare_stubbed_codex(tmp_path, _routing_model_proposal("source-model")))
+    _set_env(monkeypatch, _prepare_stubbed_codex(tmp_path, _routing_agent_proposal("source-model")))
 
     config = copy.deepcopy(loop_cli.mh.DEFAULTS)
     config["proposer"]["divergence_rounds"] = 10
@@ -847,8 +827,8 @@ def test_propose_rejects_routing_config_mixed_key_kinds(
     proposal["config_patch"].append(
         {
             "file": "agent-routing/cli-tools.yaml",
-            "key_path": "antigravity.model",
-            "value": "gemini-3.1-pro-high",
+            "key_path": "codex.model",
+            "value": "gpt-5.3-codex",
         }
     )
 

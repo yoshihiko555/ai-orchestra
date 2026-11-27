@@ -24,7 +24,7 @@ AI（Claude Code 等）の**失敗を貯め、そこから教訓を昇格させ�
 | `tool_error`        | Bash の非ゼロ終了（`Exit code N`）、Bash 以外のツールのエラー      |
 | `test_failure`      | pytest / npm test 等の失敗（非ゼロ終了、または出力の失敗マーカー） |
 | `lint_failure`      | ruff / mypy 等の失敗                                               |
-| `cli_failure`       | codex / agy 等の外部 CLI 失敗                                      |
+| `cli_failure`       | codex 等の外部 CLI 失敗                                      |
 | `permission_denied` | auto mode の分類器が拒否したツール呼び出し                         |
 
 - **失敗のみを記録する**（ノイズ抑制）。成功を含む実行統計は audit の `quality_gate` が担う。中断（Esc）は記録しない
@@ -73,7 +73,7 @@ distill:
 
 | 昇格先                                   | 届く CLI                                          |
 | ---------------------------------------- | ------------------------------------------------- |
-| `AGENTS.md` の記述欄（管理ブロックの外） | Claude Code・Codex・Antigravity                   |
+| `AGENTS.md` の記述欄（管理ブロックの外） | Claude Code・Codex                   |
 | プロジェクト独自の `.claude/rules`       | Claude Code                                       |
 | ガード（テスト・hook・lint）             | GitHub Issue を作るところまで（コードは書かない） |
 

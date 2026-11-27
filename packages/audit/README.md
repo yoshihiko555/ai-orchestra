@@ -115,7 +115,7 @@ orchex run audit kpi-report -- --output report.txt
 
 ### analyze-cli-usage — CLI 利用パターン分析
 
-Codex CLI・Gemini CLI の呼び出し頻度・パターンを分析します。
+Codex CLI の呼び出し頻度・パターンを分析します。
 
 ```bash
 # 全期間（デフォルト）
@@ -139,7 +139,7 @@ orchex run audit analyze-cli-usage -- --days 30
 | `audit-session-end.py`         | SessionEnd          | セッション終了・サマリー統計                        |
 | `audit-prompt.py`              | UserPromptSubmit    | ユーザープロンプトの受信イベント                    |
 | `audit-route.py`               | PostToolUse         | 実ルートの照合結果（`route_decision`）              |
-| `audit-cli.py`                 | PostToolUse（Bash） | CLI ツール（Codex/Gemini）の呼び出し記録            |
+| `audit-cli.py`                 | PostToolUse（Bash） | CLI ツール（Codex）の呼び出し記録            |
 | `audit-subagent-start.py`      | SubagentStart       | サブエージェントの起動                              |
 | `audit-subagent-end.py`        | SubagentStop        | サブエージェントの終了・結果                        |
 | `audit-instructions-loaded.py` | InstructionsLoaded  | 指示書の読み込み完了                                |

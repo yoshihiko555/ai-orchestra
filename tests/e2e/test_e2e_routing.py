@@ -65,7 +65,6 @@ class TestAgentRouting:
         _setup_with_routing(e2e_project)
         output = _run_router("アーキテクチャを設計して", e2e_project)
         assert "codex exec" not in output
-        assert "agy -p" not in output
 
     def test_codex_disabled_suppresses_codex(self, e2e_project: Path) -> None:
         """#67: codex.enabled: false 時に Codex 提案が抑制"""

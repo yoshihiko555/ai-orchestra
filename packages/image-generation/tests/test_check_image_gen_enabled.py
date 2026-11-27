@@ -115,7 +115,7 @@ def test_missing_codex_section_falls_back_to_enabled(
     monkeypatch.setenv("AI_ORCHESTRA_DIR", str(REPO_ROOT))
     config_dir = tmp_path / ".claude" / "config" / "agent-routing"
     config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "cli-tools.yaml").write_text("antigravity:\n  enabled: true\n", encoding="utf-8")
+    (config_dir / "cli-tools.yaml").write_text("unrelated:\n  enabled: true\n", encoding="utf-8")
 
     exit_code = check_image_gen_enabled.main(["--project", str(tmp_path)])
 

@@ -105,9 +105,8 @@ class TestProposalSchema:
         assert value_schema.get("type") == "string"
 
     def test_config_patch_value_rejects_non_string(self) -> None:
-        """Phase A's only proposer-writable ceiling entries (agents.*.tool,
-        antigravity.model) are always strings (`validate_config_patch` in
-        meta_harness_common.py enforces `isinstance(value, str)` for both), so the schema-level
+        """Phase A's only proposer-writable ceiling entries (agents.*.tool) are always strings (`validate_config_patch` in
+        meta_harness_common.py enforces `isinstance(value, str)` for this key kind), so the schema-level
         `type: string` restriction does not narrow what a valid proposal can legitimately
         express."""
         non_string_proposal = {
@@ -289,7 +288,7 @@ class TestProposerPrompt:
     def test_routing_config_prompt_lists_only_phase_a_menu(self, tmp_path: Path) -> None:
         source_commit = proposer.mh.git_head(REPO_ROOT)
         assert source_commit is not None
-        # 実 config の現在値（agents.debugger.tool / antigravity.model）は promote
+        # 実 config の現在値（agents.debugger.tool / agents.*.tool）は promote
         # allowlist 内の可変値であり、ハードコードすると正当な昇格 PR が CI で落ちる
         # （Issue #341 と同型。実例: PR #367）。renderer と同じ source_commit の
         # バイト列から動的に導出する。
@@ -306,8 +305,6 @@ class TestProposerPrompt:
         ).stdout
         config_at_commit = yaml.safe_load(config_bytes.decode("utf-8"))
         debugger_tool = config_at_commit["agents"]["debugger"]["tool"]
-        antigravity_model = config_at_commit["antigravity"]["model"]
-        model_allowlist = " | ".join(config_at_commit["antigravity"]["model_allowlist"])
         prompt = proposer.render_proposer_prompt(
             view_dir=tmp_path / "view",
             frontier_doc=None,
@@ -321,10 +318,7 @@ class TestProposerPrompt:
 
         assert "agents.*.tool" in prompt
         assert f"agents.debugger.tool = {debugger_tool}" in prompt
-        assert "allowed values: antigravity | auto | claude-direct | codex" in prompt
-        assert "antigravity.model" in prompt
-        assert f"allowed values from model_allowlist: {model_allowlist}" in prompt
-        assert f"current value: {antigravity_model}" in prompt
+        assert "allowed values: api | auto | claude-direct | codex" in prompt
         assert "codex.model" not in prompt
         assert "config_patch のみ" in prompt
         assert "proposal schema（schema_version, hypothesis, theme, config_patch" in prompt
@@ -338,26 +332,14 @@ class TestProposerPrompt:
         config_path = git_project / "packages/agent-routing/config/cli-tools.yaml"
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
-            "agents:\n"
-            "  source-agent:\n"
-            "    tool: codex\n"
-            "antigravity:\n"
-            "  model: source-model\n"
-            "  model_allowlist:\n"
-            "    - source-model\n",
+            "agents:\n  source-agent:\n    tool: codex\n",
             encoding="utf-8",
         )
         git_run("add", config_path.relative_to(git_project).as_posix(), cwd=git_project)
         git_run("commit", "-m", "source routing config", cwd=git_project)
         source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
         config_path.write_text(
-            "agents:\n"
-            "  working-agent:\n"
-            "    tool: claude-direct\n"
-            "antigravity:\n"
-            "  model: working-model\n"
-            "  model_allowlist:\n"
-            "    - working-model\n",
+            "agents:\n  working-agent:\n    tool: claude-direct\n",
             encoding="utf-8",
         )
 
@@ -372,9 +354,7 @@ class TestProposerPrompt:
         )
 
         assert "agents.source-agent.tool = codex" in prompt
-        assert "source-model" in prompt
         assert "working-agent" not in prompt
-        assert "working-model" not in prompt
 
     def test_routing_config_prompt_fails_closed_when_source_config_is_unreadable(
         self, git_project: Path, tmp_path: Path
@@ -404,20 +384,14 @@ class TestProposerPrompt:
         config_path = git_project / "packages/agent-routing/config/cli-tools.yaml"
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
-            "agents:\n"
-            "  debugger:\n"
-            "    tool: codex\n"
-            "antigravity:\n"
-            "  model: source-model\n"
-            "  model_allowlist:\n"
-            "    - source-model\n",
+            "agents:\n  debugger:\n    tool: codex\n",
             encoding="utf-8",
         )
         git_run("add", config_path.relative_to(git_project).as_posix(), cwd=git_project)
         git_run("commit", "-m", "source routing config", cwd=git_project)
         source_commit = git_run("rev-parse", "HEAD", cwd=git_project).stdout.strip()
         effective_config = {
-            "config_patch": {"allowlist": ["agent-routing/cli-tools.yaml#antigravity.model"]}
+            "config_patch": {"allowlist": ["agent-routing/cli-tools.yaml#agents.*.tool"]}
         }
 
         prompt = proposer.render_proposer_prompt(
@@ -430,10 +404,8 @@ class TestProposerPrompt:
             source_commit=source_commit,
         )
 
-        assert "antigravity.model" in prompt
-        assert "source-model" in prompt
-        assert "agents.*.tool" not in prompt
-        assert "agents.debugger.tool" not in prompt
+        assert "agents.*.tool" in prompt
+        assert "agents.debugger.tool" in prompt
         assert "codex.model" not in prompt
 
     def test_routing_config_prompt_applies_parent_config_patch_lineage(
@@ -445,13 +417,7 @@ class TestProposerPrompt:
         config_path = git_project / "packages/agent-routing/config/cli-tools.yaml"
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
-            "agents:\n"
-            "  debugger:\n"
-            "    tool: codex\n"
-            "antigravity:\n"
-            "  model: source-model\n"
-            "  model_allowlist:\n"
-            "    - source-model\n",
+            "agents:\n  debugger:\n    tool: codex\n",
             encoding="utf-8",
         )
         git_run("add", config_path.relative_to(git_project).as_posix(), cwd=git_project)
@@ -463,7 +429,7 @@ class TestProposerPrompt:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "agents.debugger.tool",
-                "value": "antigravity",
+                "value": "claude-direct",
             }
         ]
         overlay_dir = tmp_path / "parent-overlay"
@@ -509,7 +475,7 @@ class TestProposerPrompt:
             source_commit=source_commit,
         )
 
-        assert "agents.debugger.tool = antigravity" in prompt
+        assert "agents.debugger.tool = claude-direct" in prompt
         assert "agents.debugger.tool = codex" not in prompt
 
     def test_routing_config_prompt_rejects_manifest_provenance_drift(
@@ -532,7 +498,7 @@ class TestProposerPrompt:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "agents.debugger.tool",
-                "value": "antigravity",
+                "value": "claude-direct",
             }
         ]
         parent_id = "cand-20260718-120001-routing-provenance-abcd"
@@ -589,7 +555,7 @@ class TestProposerPrompt:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "agents.debugger.tool",
-                "value": "antigravity",
+                "value": "claude-direct",
             }
         ]
         parent_id = "cand-20260718-120003-routing-target-drift-abcd"
@@ -635,13 +601,7 @@ class TestProposerPrompt:
         config_path = git_project / "packages/agent-routing/config/cli-tools.yaml"
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
-            "agents:\n"
-            "  source-agent:\n"
-            "    tool: codex\n"
-            "antigravity:\n"
-            "  model: source-model\n"
-            "  model_allowlist:\n"
-            "    - source-model\n",
+            "agents:\n  source-agent:\n    tool: codex\n",
             encoding="utf-8",
         )
         git_run("add", config_path.relative_to(git_project).as_posix(), cwd=git_project)
@@ -653,7 +613,7 @@ class TestProposerPrompt:
             {
                 "file": "agent-routing/cli-tools.yaml",
                 "key_path": "agents.debugger.tool",
-                "value": "antigravity",
+                "value": "claude-direct",
             }
         ]
         parent_id = "cand-20260718-120001-routing-parent-abcd"

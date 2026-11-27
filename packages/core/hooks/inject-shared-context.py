@@ -235,13 +235,22 @@ def build_routing_value_lines(routing: dict) -> list[str]:
         requires_sandbox_disable = "true" if codex["requires_sandbox_disable"] else "false"
         lines.append(f"- codex.requires_sandbox_disable: {requires_sandbox_disable}")
 
-    if "antigravity" in routing:
-        antigravity = routing["antigravity"]
-        lines.append(f"- antigravity.model: {antigravity['model'] or '(CLI default)'}")
-        lines.append(f"- antigravity.flags: {antigravity['flags'] or '(none)'}")
-        allowlist_warning = antigravity.get("allowlist_warning")
-        if isinstance(allowlist_warning, str) and allowlist_warning:
-            lines.append(f"- WARN: {allowlist_warning}")
+    if "api" in routing:
+        api = routing["api"]
+        for field in (
+            "profile",
+            "provider",
+            "model",
+            "web_search",
+            "attachments",
+            "timeout_sec",
+            "max_output_tokens",
+        ):
+            value = api[field]
+            rendered = str(value).lower() if isinstance(value, bool) else str(value)
+            lines.append(f"- api.{field}: {rendered}")
+        profile_option = "--profile=" if api["profile"].startswith("-") else "--profile "
+        lines.append(f"- api.command: orchex llm ask {profile_option}{api['profile']}")
 
     for note in routing.get("notes", []):
         if isinstance(note, str):

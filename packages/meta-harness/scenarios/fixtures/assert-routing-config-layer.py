@@ -42,7 +42,7 @@ def _get(value: dict[str, Any], path: tuple[str, ...]) -> Any:
 
 
 def _is_allowlisted(path: tuple[str, ...]) -> bool:
-    return path in (("codex", "model"), ("antigravity", "model")) or (
+    return path == ("codex", "model") or (
         len(path) == 3 and path[0] == "agents" and path[2] == "tool"
     )
 

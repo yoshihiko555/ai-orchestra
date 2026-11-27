@@ -72,7 +72,7 @@ v1 の metrics の one-shot migration（ADR-20260728-046 決定3）は、v2 で�
 | `route_decision` | `audit-route.py` | expected / actual route の照合 |
 | `routing_suggestion` | `packages/agent-routing/hooks/agent-router.py` | エージェント提案の判定（engine・status・Jev の確率・キーワード判定の結果。入力の本文は含まない） |
 | `quality_gate` | `packages/quality-gates/hooks/post-test-analysis.py` | テストコマンド実行結果の記録 |
-| `cli_call` | `audit-cli.py` | Codex / Antigravity CLI 呼び出しの記録 |
+| `cli_call` | `audit-cli.py` | Codex CLI 呼び出しの記録 |
 | `subagent_start` / `subagent_end` | `audit-subagent-start.py`, `audit-subagent-end.py` | サブエージェントのライフサイクル |
 | `instructions_loaded` | `audit-instructions-loaded.py` | 読み込まれた指示書の監査 |
 

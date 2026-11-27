@@ -1,5 +1,7 @@
 # codex-suggestions 評価セット
 
+**改訂**: 2026-11-27（旧 CLI の廃止に対応。人間レビュー待ち（本 PR））
+
 **パッケージ**: `packages/codex-suggestions`
 **類型**: hook 型
 **作成日**: 2026-07-03
@@ -15,7 +17,6 @@
 
 - Codex CLI を実際に実行すること（`codex exec` の呼び出し自体はオーケストレーター/ユーザーの判断に委ねる）
 - 提案によって編集の保留・追加相談・採否の毎回の説明を強制すること（助言は任意。ただし明示 routing とスキル固有の委譲義務は別であり維持する）
-- Antigravity CLI に関する提案（`antigravity-suggestions` パッケージの責務）
 - typo 修正等の意味的な軽微性や相談済みを hook 自身が判定すること（後述 EV-11・「5. テストレビュー判断基準」参照）。通知済みは相談済みを意味せず、transcript は解析しない
 
 ## 2. 期待する入出力・副作用
@@ -70,7 +71,7 @@ before-write の config・対象範囲・marker に使う project / worktree は
 - [ ] EV-13（正常 / must）: exit code 規約 — 両 hook とも常に exit code 0 で終了し、ブロック（非ゼロ exit）は行わない — 根拠: 実装挙動 + .claude/rules/codex-suggestion-compliance.md（提案は advisory のみでツール実行を妨げない）
 - [ ] EV-14（異常 / must）: fail-safe 方針 — hook 内部で例外が発生しても exit code 0 で終了し、Claude Code のツール実行・エージェント実行を妨げない（fail-open）。一般の内部エラーは従来どおり stderr に出力するが、before-write の状態書き込み失敗や旧本文を安全に読めない場合は無出力とする（EV-22 / EV-26）— 根拠: 実装挙動、ADR-060
 - 冪等性: before-write の通知抑制は EV-21 / EV-22 で確認する。after-plan は従来どおり状態を持たない
-- [x] EV-15（境界 / must）: config 駆動 — `codex.enabled` は `.claude/config/agent-routing/cli-tools.yaml` をベースに `cli-tools.local.yaml` の上書きを適用する。`codex` セクション自体が未定義の場合は**デフォルト無効（false）**として扱い、明示的に有効化されない限り提案を発火しない — 根拠: 2026-07-03 人間レビュー裁定（Issue #129 で実装追従済み。`hook_common.is_cli_enabled` に呼び出し元限定の `default` 引数を追加し、codex-suggestions の 2 hook のみ `is_cli_enabled("codex", config, default=False)` として呼び出す形で解消。共有デフォルト自体は変更せず、agent-routing / antigravity-suggestions / image-generation など他パッケージの呼び出し（`default` 省略、従来どおり True）には影響しない）。**「明示的に有効化」は project 自身が導入した config に限る**（PR #247 レビュー指摘の追加是正）: agent-routing を導入していない project（`.claude/config/agent-routing/cli-tools.yaml` も `.local.yaml` も project 側に存在しない）では、`load_package_config` が `$AI_ORCHESTRA_DIR/packages/agent-routing/config/cli-tools.yaml`（パッケージ同梱フォールバック）にフォールバックする。このフォールバック内の `codex.enabled: true` は project の明示 opt-in ではないため、`hook_common.has_project_config("agent-routing", "cli-tools.yaml", project_dir)` が False の間は `load_package_config` を呼ぶ前に no-op（無出力・exit 0）とする。project-local な config が実在する通常環境（agent-routing 導入済み）では従来どおり `codex.enabled` の値に従う
+- [x] EV-15（境界 / must）: config 駆動 — `codex.enabled` は `.claude/config/agent-routing/cli-tools.yaml` をベースに `cli-tools.local.yaml` の上書きを適用する。`codex` セクション自体が未定義の場合は**デフォルト無効（false）**として扱い、明示的に有効化されない限り提案を発火しない — 根拠: 2026-07-03 人間レビュー裁定（Issue #129 で実装追従済み。`hook_common.is_cli_enabled` に呼び出し元限定の `default` 引数を追加し、codex-suggestions の 2 hook のみ `is_cli_enabled("codex", config, default=False)` として呼び出す形で解消。共有デフォルト自体は変更せず、agent-routing / image-generation など他パッケージの呼び出し（`default` 省略、従来どおり True）には影響しない）。**「明示的に有効化」は project 自身が導入した config に限る**（PR #247 レビュー指摘の追加是正）: agent-routing を導入していない project（`.claude/config/agent-routing/cli-tools.yaml` も `.local.yaml` も project 側に存在しない）では、`load_package_config` が `$AI_ORCHESTRA_DIR/packages/agent-routing/config/cli-tools.yaml`（パッケージ同梱フォールバック）にフォールバックする。このフォールバック内の `codex.enabled: true` は project の明示 opt-in ではないため、`hook_common.has_project_config("agent-routing", "cli-tools.yaml", project_dir)` が False の間は `load_package_config` を呼ぶ前に no-op（無出力・exit 0）とする。project-local な config が実在する通常環境（agent-routing 導入済み）では従来どおり `codex.enabled` の値に従う
 - [ ] EV-24（境界 / must）: 秘匿情報 — before-write が作る状態は各 project / worktree の `.claude/state/suggestions/` 配下の session / 対象を hash 化した空 marker のみ。質問本文・生の session ID・対象パスを状態に保存しない。提案はユーザー入力コンテンツの本文を含めず、外部送信もしない。marker の自動削除は今回追加せず、終了後も session ディレクトリが残る。cleanup は将来課題とする — 根拠: ADR-060、docs/reference/hooks.md
 - [ ] EV-16（境界 / should）: 性能 — 判定と通知 marker の処理はローカルで完結し、ネットワーク I/O や外部プロセス起動を行わず、Edit/Write・Agent/Task 実行を著しく遅延させない — 根拠: docs/reference/hooks.md
 
@@ -81,4 +82,3 @@ before-write の config・対象範囲・marker に使う project / worktree は
 - `SIMPLE_EDIT_PATTERNS`（EV-04）の具体的な文字列リストは従来どおり実装が根拠。EV-01 / EV-05 / EV-23 は定数リストの厳密比較ではなく、設計パス・契約宣言の変更と通常編集の入出力で確認する。旧サイズ閾値や一般キーワードだけの発火を固定化しない
 - EV-20〜EV-24 は before-write と共通 helper のテストで確認する。非空文字列の `agent_id` によるサブエージェント／インプロセス teammate の識別、`agent_id` の欠落・空文字列・非文字列や `agent_type` 単独・呼出先の `subagent_type` では抑制しないこと、session / 対象 / project / worktree の分離、空 marker のみの保存、状態書き込み失敗・session 欠落を含める。after-plan に新しい通知抑制条件を適用しない
 - EV-26 は既存ファイルの宣言不変・変更、新規ファイル、旧本文の読取不能・大き過ぎ・非通常ファイル・非 UTF-8、設計パスの独立判定を確認する。config・対象範囲・marker が同じルートを使うことと、非空の `CLAUDE_PROJECT_DIR` を優先し、未設定または空の場合だけ hook 入力の `cwd` にフォールバックすることも確認する
-- 次回監査では researcher の指定 CLI 試行率とメインの任意提案の採用率を分離する。サブエージェント内の通知は `agent_id` で抑制し、researcher の `agy` 実行は `researcher.md` の指示が担うため、hook 通知数を researcher の遵守率の代用にしない

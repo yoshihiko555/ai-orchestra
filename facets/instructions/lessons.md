@@ -93,7 +93,7 @@ AskUserQuestion で選ばせる:
 
 | 昇格先             | 書く場所                                                                                                                                      | 届く CLI                        |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| AGENTS.md の記述欄 | 作業中の worktree の `AGENTS.md` の、`ai-orchestra` 管理ブロック（`<!-- BEGIN ai-orchestra: ... -->` 〜 `<!-- END ai-orchestra -->`）の**外** | Claude Code・Codex・Antigravity |
+| AGENTS.md の記述欄 | 作業中の worktree の `AGENTS.md` の、`ai-orchestra` 管理ブロック（`<!-- BEGIN ai-orchestra: ... -->` 〜 `<!-- END ai-orchestra -->`）の**外** | Claude Code・Codex |
 | `.claude/rules`    | プロジェクト独自の rule ファイル（`.claude/orchestra.json` が管理する配布 rule **以外**）                                                     | Claude Code だけ                |
 | ガード             | GitHub Issue（テスト・hook・lint を足す提案。コードは書かない）                                                                               | —                               |
 | 却下・保留         | 書かない（Step 9）                                                                                                                            | —                               |

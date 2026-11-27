@@ -107,7 +107,7 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 
 | 類型         | 主な構成物                                     | 該当パッケージ例                                                                  |
 | ------------ | ---------------------------------------------- | --------------------------------------------------------------------------------- |
-| hook 型      | SessionStart / PreToolUse 等の hook スクリプト | core, quality-gates, audit, codex-suggestions, antigravity-suggestions, fail-logs |
+| hook 型      | SessionStart / PreToolUse 等の hook スクリプト | core, quality-gates, audit, codex-suggestions, fail-logs |
 | CLI ツール型 | lib + scripts で提供されるコマンド             | codd, skill-evolution, audit（scripts）                                           |
 | スキル型     | スキル指示書 + エージェント定義                | image-generation, reverse, git-workflow                                           |
 
@@ -138,7 +138,7 @@ must 観点を将来 CI で実行可能な check へ写像する任意の sideca
 
 - 対話規約: 対話フェーズが AskUserQuestion を使い、Dialog Rules Policy に沿っているか
 - 非対話完結性: 外部 CLI 呼び出しが stdin 封じ・タイムアウト・exit code 判定を守り、ハングしないか
-- フォールバック: 外部 CLI（Codex / Antigravity）不能時に claude-direct へフォールバックするか
+- フォールバック: 外部 CLI（Codex）不能時に claude-direct へフォールバックするか
 - ルーティング尊重: `cli-tools.yaml`（+ `.local.yaml`）の enabled / tool 設定に従うか
 - 成果物規約: 生成物の置き場所・命名がスキル定義通りか
 

@@ -19,7 +19,6 @@ _CONFIGURED_CODEX_MODEL = mh._load_agent_routing_config(SCHEMA_DIR)["codex"]["mo
 
 _DEFAULT_OVERLAY_CONFIG = mh.DEFAULTS
 # 実 config の allowlist から取る。値を固定すると allowlist の更新でテストが壊れる
-_ALLOWLISTED_ANTIGRAVITY_MODEL = sorted(mh._load_antigravity_model_allowlist(SCHEMA_DIR))[0]
 
 
 class TestValidateOverlayAccepts:
@@ -200,7 +199,6 @@ class TestValidateConfigPatch:
         ("key_path", "value"),
         [
             ("agents.debugger.tool", "auto"),
-            ("antigravity.model", _ALLOWLISTED_ANTIGRAVITY_MODEL),
         ],
     )
     def test_proposer_allowed_key_kinds_are_accepted(self, key_path: str, value: str) -> None:
@@ -248,29 +246,6 @@ class TestValidateConfigPatch:
         assert errors == []
 
     # EV-87
-    def test_proposer_mixed_key_kinds_are_rejected(self) -> None:
-        patch = [
-            {
-                "file": "agent-routing/cli-tools.yaml",
-                "key_path": "agents.debugger.tool",
-                "value": "codex",
-            },
-            {
-                "file": "agent-routing/cli-tools.yaml",
-                "key_path": "antigravity.model",
-                "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
-            },
-        ]
-
-        errors = mh.validate_config_patch(
-            patch,
-            _DEFAULT_OVERLAY_CONFIG,
-            SCHEMA_DIR,
-            target="routing-config",
-            created_by="proposer",
-        )
-
-        assert any("mixed kinds" in error for error in errors)
 
     # EV-87
     def test_human_may_mix_key_kinds(self) -> None:
@@ -282,8 +257,8 @@ class TestValidateConfigPatch:
             },
             {
                 "file": "agent-routing/cli-tools.yaml",
-                "key_path": "antigravity.model",
-                "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
+                "key_path": "codex.model",
+                "value": _CONFIGURED_CODEX_MODEL,
             },
         ]
 
@@ -296,6 +271,30 @@ class TestValidateConfigPatch:
         )
 
         assert errors == []
+
+    def test_proposer_mixed_key_kinds_are_rejected(self) -> None:
+        patch = [
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "agents.debugger.tool",
+                "value": "codex",
+            },
+            {
+                "file": "agent-routing/cli-tools.yaml",
+                "key_path": "codex.model",
+                "value": _CONFIGURED_CODEX_MODEL,
+            },
+        ]
+
+        errors = mh.validate_config_patch(
+            patch,
+            _DEFAULT_OVERLAY_CONFIG,
+            SCHEMA_DIR,
+            target="routing-config",
+            created_by="proposer",
+        )
+
+        assert any("mixed kinds" in error for error in errors)
 
     # EV-80
     def test_proposer_codex_model_patch_is_rejected(self) -> None:
@@ -321,7 +320,6 @@ class TestValidateConfigPatch:
         assert mh.CONFIG_PATCH_ALLOWLIST_CEILING == (
             "agent-routing/cli-tools.yaml#agents.*.tool",
             "agent-routing/cli-tools.yaml#codex.model",
-            "agent-routing/cli-tools.yaml#antigravity.model",
         )
 
     # EV-80
@@ -329,7 +327,6 @@ class TestValidateConfigPatch:
         assert mh.CONFIG_PATCH_ALLOWED_CREATED_BY == {
             "agent-routing/cli-tools.yaml#agents.*.tool": frozenset({"human", "proposer"}),
             "agent-routing/cli-tools.yaml#codex.model": frozenset({"human"}),
-            "agent-routing/cli-tools.yaml#antigravity.model": frozenset({"human", "proposer"}),
         }
 
     # EV-80
@@ -368,15 +365,15 @@ class TestValidateConfigPatch:
             {
                 key: value
                 for key, value in mh.CONFIG_PATCH_ALLOWED_CREATED_BY.items()
-                if not key.endswith("#antigravity.model")
+                if not key.endswith("#codex.model")
             },
         )
         errors = mh.validate_config_patch(
             [
                 {
                     "file": "agent-routing/cli-tools.yaml",
-                    "key_path": "antigravity.model",
-                    "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
+                    "key_path": "codex.model",
+                    "value": _CONFIGURED_CODEX_MODEL,
                 }
             ],
             _DEFAULT_OVERLAY_CONFIG,
@@ -511,8 +508,9 @@ class TestValidateConfigPatch:
 
         assert any("duplicate config patch target" in error for error in errors)
 
-    @pytest.mark.parametrize("tool", ["codex", "antigravity", "claude-direct", "auto"])
-    def test_all_released_agent_tool_values_are_accepted(self, tool: str) -> None:
+    @pytest.mark.parametrize("created_by", ["human", "proposer"])
+    @pytest.mark.parametrize("tool", ["codex", "claude-direct", "auto", "api"])
+    def test_all_released_agent_tool_values_are_accepted(self, tool: str, created_by: str) -> None:
         patch = [
             {
                 "file": "agent-routing/cli-tools.yaml",
@@ -527,7 +525,7 @@ class TestValidateConfigPatch:
                 _DEFAULT_OVERLAY_CONFIG,
                 SCHEMA_DIR,
                 target="routing-config",
-                created_by="human",
+                created_by=created_by,
             )
             == []
         )
@@ -537,11 +535,14 @@ class TestValidateConfigPatch:
         [
             ("agents.debugger.tool", "bogus", "must be one of"),
             ("agents.debugger.tool", True, "must be one of"),
+            ("agents.debugger.tool", 123, "must be one of"),
+            ("agents.debugger.tool", "", "must be one of"),
+            ("agents.debugger.tool", " ", "must be one of"),
+            ("agents.debugger.tool", "API", "must be one of"),
             ("codex.model", 123, "injection-safe slug"),
             ("codex.model", False, "injection-safe slug"),
             ("codex.model", "", "injection-safe slug"),
             ("codex.model", "bad:model", "injection-safe slug"),
-            ("antigravity.model", "not-in-the-model-allowlist", "not in model_allowlist"),
         ],
     )
     def test_invalid_patch_values_are_rejected(
@@ -562,23 +563,6 @@ class TestValidateConfigPatch:
         )
 
         assert any(expected in error for error in errors)
-
-    def test_allowlisted_antigravity_model_is_accepted(self) -> None:
-        errors = mh.validate_config_patch(
-            [
-                {
-                    "file": "agent-routing/cli-tools.yaml",
-                    "key_path": "antigravity.model",
-                    "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
-                }
-            ],
-            _DEFAULT_OVERLAY_CONFIG,
-            SCHEMA_DIR,
-            target="routing-config",
-            created_by="human",
-        )
-
-        assert errors == []
 
     # EV-81
     def test_configured_codex_model_is_the_only_initial_allowlisted_value(self) -> None:
@@ -649,37 +633,6 @@ class TestValidateConfigPatch:
             ValueError, match="agent-routing config codex section must be a mapping"
         ):
             mh._load_codex_model_allowlist(SCHEMA_DIR, {"codex": "invalid"})
-
-    def test_empty_antigravity_model_allowlist_rejects_any_model(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            mh,
-            "_load_antigravity_model_allowlist",
-            lambda _schema_dir, _agent_routing_config: frozenset(),
-        )
-
-        errors = mh.validate_config_patch(
-            [
-                {
-                    "file": "agent-routing/cli-tools.yaml",
-                    "key_path": "antigravity.model",
-                    "value": _ALLOWLISTED_ANTIGRAVITY_MODEL,
-                }
-            ],
-            _DEFAULT_OVERLAY_CONFIG,
-            SCHEMA_DIR,
-            target="routing-config",
-            created_by="human",
-        )
-
-        assert any("not in model_allowlist" in error for error in errors)
-
-    def test_non_mapping_antigravity_config_fails_closed(self) -> None:
-        with pytest.raises(
-            ValueError, match="agent-routing config antigravity section must be a mapping"
-        ):
-            mh._load_antigravity_model_allowlist(SCHEMA_DIR, {"antigravity": []})
 
     @pytest.mark.parametrize("value", ["off", "123", "null"])
     def test_yaml_ambiguous_model_values_are_rejected(self, value: str) -> None:

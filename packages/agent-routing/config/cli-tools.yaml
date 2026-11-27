@@ -32,47 +32,34 @@ codex:
   # 現行 Claude Code では効かないため、呼び出し側で sandbox を無効化して実行する（Issue #85）
   requires_sandbox_disable: true
 
-# Google Antigravity CLI (https://antigravity.google) — Gemini CLI の後継
-# リサーチ・ドキュメント分析・コードベース理解・マルチモーダル処理で使用
-antigravity:
-  # false にすると全 antigravity エージェントが claude-direct にフォールバック
-  # .local.yaml で antigravity.enabled: false にすれば CLI 未インストール環境でも利用可能
-  enabled: true
-  # agy -p "..." --model <この値> で指定される
-  # 未指定（空文字）の場合は --model フラグを省略し CLI デフォルトモデルを使用
-  # 注意: agy は無効な slug でも exit 0 でデフォルトモデルに黙ってフォールバックする
-  model: gemini-4-neon-high
-  # model の妥当性チェック用 allowlist（コマンド構築時に警告判定へ使用）
-  # `agy models` の出力に合わせる（2026-11-19 / agy 1.4.8 で確認）。
-  # ただし Gemini 4 Argon（gemini-4-argon-*）は廃止予定のため、agy models に出ていても載せない。
-  # アカウントで使えるモデルが異なる場合は .local.yaml で上書き拡張する
-  model_allowlist:
-    - gemini-4-neon-xhigh
-    - gemini-4-neon-high
-    - gemini-4-neon-medium
-    - gemini-4-neon-low
-    - gemini-4-hydrogen-xhigh
-    - gemini-4-hydrogen-high
-    - gemini-4-hydrogen-medium
-    - gemini-4-hydrogen-low
-    - gemini-3.8-flash-high
-    - gemini-3.8-flash-medium
-    - gemini-3.8-flash-low
-    - claude-opus-5-5-high
-    - claude-opus-5-5-medium
-    - claude-opus-5-5-low
-    - claude-sonnet-5-5-high
-    - claude-sonnet-5-5-medium
-    - claude-sonnet-5-5-low
-    - gpt-oss-120b-medium
-  # agy コマンドに常に付与するフラグ（不要なら空文字）
-  flags: ""
-  # sandbox 内で実行する（excludedCommands の除外は効かない。通信先の許可が必要: antigravity-delegation 参照）
-  requires_sandbox_disable: false
-
-# (移行メモ) 旧 gemini: キーは廃止。.local.yaml に残る gemini: 上書きは
-# 読み込み時に antigravity へ正規化される（enabled のみ反映、model/flags は
-# Gemini CLI 固有値のため無視）。agents.*.tool: gemini も antigravity に読み替える。
+# API キーは環境変数または ~/.config/orchex/credentials から解決する。
+# キーをこのファイルや local 設定へ書かないこと。
+api:
+  providers:
+    anthropic:
+      enabled: true
+      model: claude-sonnet-5-5
+      model_allowlist:
+        - claude-sonnet-5-5
+    openai:
+      enabled: true
+      model: gpt-6.2-sol
+      model_allowlist:
+        - gpt-6.2-sol
+    gemini:
+      enabled: true
+      model: gemini-4-neon
+      model_allowlist:
+        - gemini-4-neon
+  profiles:
+    research:
+      provider: gemini
+      features:
+        web_search: true
+        attachments: true
+      limits:
+        timeout_sec: 120
+        max_output_tokens: 8192
 
 # エージェント提案（agent-router.py）の判定エンジン（ADR-20261029-062）
 router:
@@ -100,7 +87,7 @@ subagent:
 
 # 言語プロトコル
 language:
-  # Codex/Gemini への質問に使う言語（英語の方が精度が高い傾向）
+  # Codex への質問に使う言語（英語の方が精度が高い傾向）
   cli_query: english
   # ユーザーへの出力に使う言語
   user_output: japanese
@@ -122,11 +109,11 @@ review:
 
 # エージェントルーティング
 # 各エージェントが使用するツールを定義する。
-# tool: "codex" | "antigravity" | "claude-direct" | "auto"
+# tool: "codex" | "claude-direct" | "auto" | "api"
 #   - codex: Codex CLI を使用
-#   - antigravity: Antigravity CLI（agy）を使用（旧値 "gemini" は読み替え）
 #   - claude-direct: 外部CLIを呼ばず自身で処理
-#   - auto: タスクに応じて codex / antigravity / claude-direct を使い分け
+#   - auto: タスクに応じて codex / claude-direct を使い分け
+#   - api: api_profile のプロファイルで API を呼ぶ（利用不可時は claude-direct）
 agents:
   # --- レビュー・設計分析系（Claude Code 直接）---
   adversarial-reviewer:
@@ -189,9 +176,10 @@ agents:
     tool: auto
     model: null
 
-  # --- リサーチ系（Antigravity CLI）---
+  # --- リサーチ系（探索は Claude 自身、必要時のみ API）---
   researcher:
-    tool: antigravity
+    tool: api
+    api_profile: research
     model: null
 
   # --- その他（Claude Code 直接）---

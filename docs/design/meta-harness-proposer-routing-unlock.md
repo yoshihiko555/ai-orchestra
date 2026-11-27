@@ -23,8 +23,8 @@ codd:
 
 ## 1. スコープ
 
-**対象**: proposer 生成候補に `target: routing-config` の config patch（ceiling 3 key:
-`agents.*.tool` / `codex.model` / `antigravity.model`）を許可するための reward hacking 対策。
+**対象**: proposer 生成候補に `target: routing-config` の config patch（ceiling 2 key:
+`agents.*.tool` / `codex.model`）を許可するための reward hacking 対策。
 
 **非対象**: human merge ゲート（promotion PR の手動マージ）の撤廃、ceiling の拡張、
 `routing-config` 以外の target への config patch 拡張。
@@ -35,8 +35,8 @@ codd:
 | --- | --- | --- |
 | F1 | `scenarios/routing-config/` の critical checks は全て機械的（materialization 存在 + `assert-routing-config-layer.py` + `packages/agent-routing/tests`）で `rubric_judge` ゼロ。合法 patch は quality がほぼ定数 | frontier で変動する軸は **コストのみ**。「最安 backend へ全切替」patch が構造的に frontier を支配する |
 | F2 | `resolve_skill_impacts()`（`skill_targets.py:136`）は `facets/` prefix しか見ないため、routing-config 候補は `impacted_targets=()` となりクロススキル回帰が一切走らない | patch はグローバル影響なのに blast radius が未計測。**human 登録候補にも現に効いている live gap** |
-| F3 | `extract_cost()`（`evaluator.py:1423-1445`）はオーケストレーター Claude の `usage` のみ計上。codex/agy サブプロセスのトークンは不可視 | CLI 委譲するほど見かけ上安くなる「トークンロンダリング」が成立 |
-| F4 | `codex.model` には allowlist が存在しない（charset regex + YAML round-trip のみ）。`antigravity.model` は `model_allowlist` 空 ⇒ 全拒否の fail-closed 実装済み | ceiling 3 key の防御は非対称。`codex.model` は実質フリーテキスト |
+| F3 | `extract_cost()`（`evaluator.py:1423-1445`）はオーケストレーター Claude の `usage` のみ計上。codex サブプロセスのトークンは不可視 | CLI 委譲するほど見かけ上安くなる「トークンロンダリング」が成立 |
+| F4 | `codex.model` は `model_allowlist` で検証し、空・欠落を全拒否する | モデルメニューは人が管理する |
 | F5 | judge 隔離（`--bare`、cwd はワークツリー外、`judge.*` は `meta-harness.yaml` の別ファイル）は「コードの形」で成立しているが、これを保証するテストが無い | 将来のリファクタで自己採点が無警告で復活しうる |
 
 > **2026-08-14**: F1（品質軸がほぼ定数）は ADR-20260814-048 で対処決定（行動ベースシナリオ +
@@ -85,13 +85,13 @@ A8 排他チェック（patch XOR overlay）の第 5 入口（proposer 経路）
 
 | ID | 対策 | 塞ぐ攻撃 | アンカー | コスト |
 | --- | --- | --- | --- | --- |
-| C-1 | `codex.model_allowlist` 新設（antigravity と対称。空/欠落 ⇒ 全拒否） | A3/F4 | `cli-tools.yaml` + `validate_config_patch`（`meta_harness_common.py:~1800`） | S |
+| C-1 | `codex.model_allowlist` 新設（空/欠落 ⇒ 全拒否） | A3/F4 | `cli-tools.yaml` + `validate_config_patch`（`meta_harness_common.py:~1800`） | S |
 | C-2 | **quality 厳密優越ルール**: `target == routing-config` は `quality_mean` の厳密増加がなければ frontier 支配なし（コスト単独勝ち禁止）。C-9 導入後に緩和可 | A1/A2/F1 | `_dominates`（`meta_harness_common.py:~1415`）の target 分岐 | S |
 | C-3 | `frontier.cost_axis` を `total_cost_usd` へ**全 target グローバル切替**（凍結決定 2） | A1 の会計非互換部分 | `config/meta-harness.yaml:66-67`（既存 `KNOWN_COST_FIELDS` 利用） | S |
 | C-4 | judge 不変性の回帰テスト: (a) ceiling 全エントリが `agent-routing/cli-tools.yaml` のみを指す (b) routing-config suite に `rubric_judge` オラクルが無い、を CI で強制 | A9/F5 | 新規 `test_judge_invariance.py` 相当 | S |
 | C-5 | **グローバル blast-radius ゲート**: routing-config 候補の impact を構造的に「全 `skill:*` target + `claude-harness`」とみなしクロススキル回帰を必ず実行（凍結決定 3）。suite を持つ target の解決失敗は昇格ブロッカー、suite 不在 skill は PR 本文へ unverified 警告（§6 決定 3 の 2026-07-17 修正参照）。**human 登録候補にも即適用**（F2 の live gap 修正） | A4/F2 | `candidate_impact_context`（`evaluator.py:~2754`）の target 特例 + `promoter.py` precondition | M |
 | C-6 | レート制限: proposer 候補は **1 候補 = 1 key kind**（hard reject。human 候補は対象外 — 凍結決定 4）+ loop 1 回あたり routing-config 提案は 1 件 + overfit 却下後のクールダウン | A7 の物量ヒルクライム | register/propose 時の検証層 + `loop_cli.py` | S |
-| C-7 | `created_by` ゲートの **per-key `allowed_created_by` マップ化**: 現行の all-or-nothing（`created_by != "human"` ⇒ 全拒否）を「key kind ごとに許可 originator を定義」へ変更。Phase A では `agents.*.tool` / `antigravity.model` のみ `proposer` を許可 | A6 | `validate_config_patch`（`meta_harness_common.py:1740-1745`） | S |
+| C-7 | `created_by` ゲートの **per-key `allowed_created_by` マップ化**: 現行の all-or-nothing（`created_by != "human"` ⇒ 全拒否）を「key kind ごとに許可 originator を定義」へ変更。Phase A では `agents.*.tool` のみ `proposer` を許可 | A6 | `validate_config_patch`（`meta_harness_common.py:1740-1745`） | S |
 | C-8 | **行動ベーススイート拡充**（凍結決定 1、Phase A 着手前提）: ルーティング先 agent で実タスクを実行して測る `command_exit` シナリオを train/holdout に最低 1-2 本ずつ追加し、品質軸に patch 依存の実変動を作る | A2/A4/F1 | `scenarios/routing-config/` | M |
 
 **実装規律（対策と同格の必須事項)**:
@@ -136,14 +136,14 @@ A8 排他チェック（patch XOR overlay）の第 5 入口（proposer 経路）
    カバレッジ拡大に伴い保護は自動的に広がる。残り 20 スキルのスイート整備は別 Issue で追跡する。
 4. **1 候補 = 1 key kind 制限は proposer 候補のみ hard reject**（C-6）。human 候補は PR レビューで
    説明責任が担保されるため対象外。
-5. **Phase A で proposer に解放するのは `agents.*.tool` と `antigravity.model` のみ。`codex.model` は
+5. **Phase A で proposer に解放するのは `agents.*.tool` のみ。`codex.model` は
    C-1 の allowlist 整備後も Phase B まで human 限定**（防御の対称性が確認されるまで）。
 
 ## 7. 段階的解放計画
 
 ### Phase A — 最小解放
 
-- **解放対象**: `agents.*.tool`, `antigravity.model`（`created_by: proposer`）。
+- **解放対象**: `agents.*.tool`（`created_by: proposer`）。
 - **前提（全て先行マージ）**: C-1〜C-8 + per-key created_by マップ（C-7）+ 実装規律 2 点。
 - **entry criteria**: 前提全件が `docs/evaluation/meta-harness.md` + `.checks.yaml` で突合済み。
   敵対的ドライラン（「全 agent を最安 tool へ切替」する手作り patch）が C-2 により frontier に
@@ -191,7 +191,7 @@ shadow mode と provenance 強化（不採用 2 件）を前提から再設計�
 ## 8. 恒久的に human-only の領域（non-goals）
 
 - `CONFIG_PATCH_ALLOWLIST_CEILING`（コード定数）の変更
-- `antigravity.model_allowlist` / 新設 `codex.model_allowlist` の編集（メニュー自体は信頼境界）
+- `codex.model_allowlist` の編集（メニュー自体は信頼境界）
 - `judge.*` 設定（backend/model/effort）— いかなる候補からも patch 不可
 - promotion PR のマージ
 - 新しい allowlist key kind の追加（追加ごとに個別の脅威モデリングを要する。例: `codex.flags` は
@@ -199,11 +199,11 @@ shadow mode と provenance 強化（不採用 2 件）を前提から再設計�
 
 ## 9. 実装前 spike 結果（2026-07-17）
 
-1. **Spike A — `total_cost_usd` の捕捉範囲**: codex/agy サブプロセスの支出は**捕捉しない**。
+1. **Spike A — `total_cost_usd` の捕捉範囲**: codex サブプロセスの支出は**捕捉しない**。
    `extract_cost()` が読むのは scenario を駆動する Claude Code の result event（`usage` /
    `total_cost_usd`）だけである。broker の `estimated_cost_usd` は同じ run の broker を経由して
    `api.anthropic.com` へ送られた scenario と `claude-bare` judge の usage を積算し、evaluator は
-   CLI 申告値との大きい方を保存する。一方、codex/agy は各 CLI の独自 OAuth と endpoint を使い、
+   CLI 申告値との大きい方を保存する。一方、codex は各 CLI の独自 OAuth と endpoint を使い、
    Anthropic broker を通らないため broker metrics に現れない。したがって C-3 は Anthropic 経路の
    会計を改善するが F3 を完全には解消せず、Phase A のコスト単独勝ちを防ぐ実質的な防壁は C-2 とする。
 2. **Spike B — agent 名 SSOT の TOCTOU**: `_load_known_agent_names()` の SSOT は、渡された

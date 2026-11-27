@@ -471,6 +471,10 @@ def test_get_agent_tool_returns_claude_direct_for_non_dict_config() -> None:
     assert route_config.get_agent_tool("broken", config) == "claude-direct"
 
 
+def test_get_agent_tool_returns_claude_direct_for_null_agents() -> None:
+    assert route_config.get_agent_tool("architect", {"agents": None}) == "claude-direct"
+
+
 def test_get_agent_tool_empty_config() -> None:
     assert route_config.get_agent_tool("architect", {}) == "claude-direct"
 
@@ -485,22 +489,15 @@ def test_build_aliases_from_config() -> None:
         "agents": {
             "architect": {"tool": "claude-direct"},
             "debugger": {"tool": "codex"},
-            "researcher": {"tool": "antigravity"},
+            "researcher": {"tool": "claude-direct"},
             "general-purpose": {"tool": "auto"},
         }
     }
     aliases = route_config.build_aliases(config)
     assert "task:architect" in aliases["claude-direct"]
     assert "task:debugger" in aliases["codex"]
-    assert "task:researcher" in aliases["antigravity"]
+    assert "task:researcher" in aliases["claude-direct"]
     assert "task:general-purpose" in aliases["auto"]
-
-
-def test_build_aliases_legacy_gemini_tool_value() -> None:
-    """旧 tool 値 gemini は antigravity に読み替えられる。"""
-    config = {"agents": {"researcher": {"tool": "gemini"}}}
-    aliases = route_config.build_aliases(config)
-    assert "task:researcher" in aliases["antigravity"]
 
 
 def test_build_aliases_follows_config_change() -> None:
@@ -516,9 +513,7 @@ def test_build_aliases_base_aliases_present() -> None:
     """基本 aliases（bash:codex 等）は常に存在。"""
     aliases = route_config.build_aliases({})
     assert "bash:codex" in aliases["codex"]
-    assert "bash:agy" in aliases["antigravity"]
     assert "bash:codex" in aliases["auto"]
-    assert "bash:agy" in aliases["auto"]
 
 
 # ---------------------------------------------------------------------------
@@ -542,38 +537,10 @@ def test_build_cli_suggestion_codex() -> None:
     assert "--full-auto" in result
 
 
-def test_build_cli_suggestion_antigravity() -> None:
-    config = {"antigravity": {"model": "gemini-3.1-pro-high"}}
-    result = route_config.build_cli_suggestion("antigravity", "researcher", "調べて", config)
-    assert result is not None
-    assert "Antigravity CLI" in result
-    assert "gemini-3.1-pro-high" in result
-    assert "agy -p" in result
-
-
-def test_build_cli_suggestion_antigravity_no_model() -> None:
-    config = {"antigravity": {"model": ""}}
-    result = route_config.build_cli_suggestion("antigravity", "researcher", "調べて", config)
-    assert result is not None
-    assert "--model" not in result
-
-
 def test_build_cli_suggestion_claude_direct_returns_none() -> None:
     config = {}
     result = route_config.build_cli_suggestion("claude-direct", "planner", "計画", config)
     assert result is None
-
-
-def test_build_cli_suggestion_antigravity_no_stdin_redirect() -> None:
-    """EV-11: agy -p は非対話完結のため stdin リダイレクト不要。
-
-    `< /dev/null` は含まれないこと（`2>/dev/null` は許容されるため
-    "/dev/null" 全体ではなく "< /dev/null" を厳密に検証する）。
-    """
-    config = {"antigravity": {"model": "gemini-3.1-pro-high"}}
-    result = route_config.build_cli_suggestion("antigravity", "researcher", "調べて", config)
-    assert result is not None
-    assert "< /dev/null" not in result
 
 
 def test_build_cli_suggestion_codex_includes_stdin_redirect() -> None:
@@ -581,7 +548,7 @@ def test_build_cli_suggestion_codex_includes_stdin_redirect() -> None:
 
     codex-delegation.md「Non-Interactive 実行」の規則（stdin を開いたままだと
     codex exec が入力待ちで無限ハングする）に従い、提案文字列に `< /dev/null` が
-    含まれることを正で確認する。antigravity 側の否定（EV-11）と対になる観点。
+    含まれることを正で確認する。Codex の非対話実行を保証する。
     """
     config = {
         "codex": {

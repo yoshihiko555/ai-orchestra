@@ -231,8 +231,8 @@ def test_register_rejects_mixed_kind_and_codex_model_proposer_patches(tmp_path: 
                 *_all_agent_tool_patch(force_tool="claude-direct"),
                 {
                     "file": "agent-routing/cli-tools.yaml",
-                    "key_path": "antigravity.model",
-                    "value": _agent_routing_config()["antigravity"]["model"],
+                    "key_path": "codex.model",
+                    "value": _agent_routing_config()["codex"]["model"],
                 },
             ],
             "mixed kinds",

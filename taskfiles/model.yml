@@ -18,16 +18,6 @@ tasks:
     cmds:
       - uv run --no-project --with-editable "$SET_MODEL_ROOT" python "$SET_MODEL_ROOT/scripts/set-model.py" codex "$SET_MODEL_VALUE" --root "$SET_MODEL_ROOT"{{if eq .DRY_RUN "1"}} --dry-run{{end}}
 
-  model:antigravity:
-    desc: Antigravity の既定モデルを変更（MODEL 必須）
-    requires:
-      vars: [MODEL]
-    env:
-      SET_MODEL_VALUE: '{{.MODEL}}'
-      SET_MODEL_ROOT: '{{.ROOT_DIR}}'
-    cmds:
-      - uv run --no-project --with-editable "$SET_MODEL_ROOT" python "$SET_MODEL_ROOT/scripts/set-model.py" antigravity "$SET_MODEL_VALUE" --root "$SET_MODEL_ROOT"{{if eq .DRY_RUN "1"}} --dry-run{{end}}{{if eq .ADD_ALLOWLIST "1"}} --add-to-allowlist{{end}}
-
   model:claude:
     desc: Claude の既定モデルを変更（MODEL 必須）
     requires:
