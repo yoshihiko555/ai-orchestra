@@ -98,8 +98,10 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 
 - [ ] EV-45（正常・異常 / must）: auth set は getpass でキーを受け、引数では受け付けず、値を表示せずに保存する。auth status は各社の設定有無だけを表示する — 根拠: order.md 方針4、C-AUTH-SET / C-AUTH-STATUS。
 - [ ] EV-46（正常 / must）: llm ask は base/local の任意プロファイルを使い、3社それぞれを一回呼び、回答を stdout または指定ファイルへ返す。モデル・timeout・出力上限と、許可した検索・添付が SDK に届く — 根拠: order.md 方針1・2・4・6、C-ASK-PROVIDER / C-PROFILE-LOCAL / C-WEB-SEARCH / C-ATTACH。
-- [ ] EV-47（異常 / must）: キー不足・無効化・依存不足・timeout・API error は区別できる終了コードとメッセージを持つ。禁止・不正な添付は送信前に拒否し、SDK の例外もキーをログ・stderr に漏らさない — 根拠: order.md 方針4・制約、C-ERRORS / C-NO-SECRET。
+- [ ] EV-47（異常 / must、人間レビュー待ち）: キー不足・無効化・依存不足・timeout・API error の既存終了コードを維持し、quota_exhausted / rate_limited / auth_error は9 / 10 / 11と種類別のメッセージを返す。分類はHTTPステータスと機械向けコードだけを使う。禁止・不正な添付は送信前に拒否し、SDK例外・応答本文・ヘッダ・キーをログ・stderrへ出さない — 根拠: 第2段階のorder.md 作業4・制約、C-ERR-CATEGORY / C-ERR-OPENAI / C-ERR-GEMINI / C-ERR-ANTHROPIC / C-EXIT / C-NO-SECRET。
 - [ ] EV-48（正常 / must）: SDK は llm optional extra のみへ追加し、基本依存は pyyaml のまま。extra 無しでも auth と既存 CLI は起動できる — 根拠: order.md 制約、C-EXTRA。
+- [ ] EV-53（正常・異常 / must、人間レビュー待ち）: 再試行部品は指定された回数と増加する待ち時間でrate_limitedだけを再試行する。成功値を返し、回数切れでは最後のエラーを返す。quota_exhausted / auth_errorは再試行しない。askの429後の成功と再試行後の失敗を区別できる — 根拠: 第2段階のorder.md 作業4、C-RETRY / C-EXIT。
+- [ ] EV-54（正常・異常 / must、人間レビュー待ち）: 用途に依存しない共通型と1往復のAPIから、3社の道具定義・呼び出し・結果を受け渡せる。複数呼び出しのIDと引数、Geminiのthought_signatureを次の往復へ保持する。道具を自動実行せず、SDKの自動再試行も使わない — 根拠: 第2段階のorder.md 作業3、C-TOOL-TYPES / C-TOOL-TURN / C-NO-LOOP。
 
 ### LLM 読み取りの道具（人間レビュー待ち・本 PR）
 

@@ -1,4 +1,4 @@
-"""SDK の診断ログから、その呼び出しで使う認証値を取り除く。"""
+"""SDK の診断ログを、本文やヘッダを評価せず固定文字列へ置換する。"""
 
 from __future__ import annotations
 
@@ -7,40 +7,43 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 
-class _CredentialFilter(logging.Filter):
-    def __init__(self, api_key: str):
-        super().__init__()
-        self.api_key = api_key
-
+class _SDKLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = record.getMessage().replace(self.api_key, "[REDACTED]")
+        # getMessage / formatException は本文やヘッダ、SDK例外を文字列化してしまう。
+        record.msg = "[REDACTED]"
         record.args = ()
-        if record.exc_info:
-            # raw exception を残すと、後続 handler が再び秘密値を描画してしまう。
-            record.exc_text = logging.Formatter().formatException(record.exc_info)
-            record.exc_info = None
-        if record.exc_text:
-            record.exc_text = record.exc_text.replace(self.api_key, "[REDACTED]")
-        if record.stack_info:
-            record.stack_info = record.stack_info.replace(self.api_key, "[REDACTED]")
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
         return True
 
 
 @contextmanager
-def redact_sdk_logs(api_key: str) -> Iterator[None]:
-    # SDK を import した後で取り付ける。root の filter は子 logger に伝播しない。
-    prefixes = ("anthropic", "openai", "google_genai", "httpx", "httpx2", "httpcore", "httpcore2")
-    loggers = [
-        logger
-        for name, logger in list(logging.Logger.manager.loggerDict.items())
-        if isinstance(logger, logging.Logger)
-        and any(name == prefix or name.startswith(prefix + ".") for prefix in prefixes)
-    ]
-    credential_filter = _CredentialFilter(api_key)
-    for logger in loggers:
-        logger.addFilter(credential_filter)
+def redact_sdk_logs() -> Iterator[None]:
+    # レコード生成時に保護し、呼び出し中に作られる logger も同じ仕組みで覆う。
+    prefixes = (
+        "anthropic",
+        "openai",
+        "google_genai",
+        "any_llm",
+        "httpx",
+        "httpx2",
+        "httpcore",
+        "httpcore2",
+    )
+    credential_filter = _SDKLogFilter()
+    original_factory = logging.getLogRecordFactory()
+
+    def record_factory(*args, **kwargs):
+        record = original_factory(*args, **kwargs)
+        if any(
+            record.name == prefix or record.name.startswith(prefix + ".") for prefix in prefixes
+        ):
+            credential_filter.filter(record)
+        return record
+
+    logging.setLogRecordFactory(record_factory)
     try:
         yield
     finally:
-        for logger in loggers:
-            logger.removeFilter(credential_filter)
+        logging.setLogRecordFactory(original_factory)

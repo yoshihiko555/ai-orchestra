@@ -14,10 +14,20 @@ from hook_common import load_cli_tools_config
 
 from .llm.attachments import read_attachment
 from .llm.providers import call_provider
+from .llm.retry import call_with_rate_limit_retry
 from .llm.types import LLMError, LLMRequest
 
 _AVAILABILITY_CODES = {"key_missing": 3, "provider_disabled": 4, "dependency_missing": 5}
-_ERROR_CODES = {"timeout": 6, "api_error": 7, "unsupported_attachment": 8}
+_ERROR_CODES = {
+    "timeout": 6,
+    "api_error": 7,
+    "unsupported_attachment": 8,
+    "quota_exhausted": 9,
+    "rate_limited": 10,
+    "auth_error": 11,
+}
+_RATE_LIMIT_ATTEMPTS = 3
+_RATE_LIMIT_INITIAL_DELAY_SEC = 2.0
 
 
 def run_auth_set(provider: str | None) -> int:
@@ -80,7 +90,11 @@ def run_llm_ask(args: argparse.Namespace, project_dir: Path) -> int:
             timeout_sec=profile.timeout_sec,
             max_output_tokens=profile.max_output_tokens,
         )
-        response = call_provider(profile.provider, request, key)
+        response = call_with_rate_limit_retry(
+            lambda: call_provider(profile.provider, request, key),
+            max_attempts=_RATE_LIMIT_ATTEMPTS,
+            initial_delay_sec=_RATE_LIMIT_INITIAL_DELAY_SEC,
+        )
         text = response.text.replace(key, "[REDACTED]")
         if args.output:
             args.output.write_text(text + ("" if text.endswith("\n") else "\n"), encoding="utf-8")

@@ -4,37 +4,67 @@ from __future__ import annotations
 
 import json
 import logging
-import socket
-from types import SimpleNamespace
 
 import pytest
 from lib.llm import anthropic_provider, gemini_provider, openai_provider
 from lib.llm.types import Attachment, LLMError, LLMRequest
 
 
-@pytest.fixture
-def sdk_environment(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    for name in (
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
-        "GOOGLE_GENAI_USE_VERTEXAI",
-        "GOOGLE_GENAI_USE_ENTERPRISE",
-    ):
-        monkeypatch.delenv(name, raising=False)
+@pytest.mark.parametrize(
+    ("provider", "status", "error", "category"),
+    [
+        *[
+            (
+                "anthropic",
+                429,
+                {"type": "rate_limit_error", "details": {"error_code": code}},
+                "quota_exhausted",
+            )
+            for code in (
+                "enforced_spend_limit_reached",
+                "contract_spend_limit_reached",
+                "linked_organization_spend_limit_reached",
+            )
+        ],
+        ("anthropic", 400, {"type": "billing_error"}, "quota_exhausted"),
+        ("gemini", 401, {"code": 401, "status": "UNAUTHENTICATED"}, "auth_error"),
+        ("gemini", 403, {"code": 403, "status": "PERMISSION_DENIED"}, "auth_error"),
+        ("gemini", 429, {"code": 429, "status": "RESOURCE_EXHAUSTED"}, "rate_limited"),
+        ("openai", 403, {"code": "permission_denied"}, "auth_error"),
+    ],
+)
+def test_sdk_structured_error_codes_reach_shared_classifiers(
+    sdk_environment, sdk_client_factory, provider, status, error, category, caplog
+):
+    from tests.unit.llm_sdk_support import assert_no_error_details
 
-    def reject_network(*args, **kwargs):
-        raise AssertionError("SDK テストで実ネットワークに接続してはいけません。")
+    caplog.set_level(logging.DEBUG)
+    requests = []
 
-    monkeypatch.setattr(socket.socket, "connect", reject_network)
-    return SimpleNamespace(
-        http=pytest.importorskip("httpx2", reason="実 SDK の確認には llm extra が必要"),
-        anthropic=pytest.importorskip("anthropic", reason="実 SDK の確認には llm extra が必要"),
-        openai=pytest.importorskip("openai", reason="実 SDK の確認には llm extra が必要"),
-        genai=pytest.importorskip("google.genai", reason="実 SDK の確認には llm extra が必要"),
-    )
+    def handle(request):
+        requests.append(request)
+        return sdk_environment.http.Response(
+            status,
+            json={"error": {**error, "message": "body-private-responsemarker"}},
+            headers={"x-private": "header-private-headermarker"},
+        )
+
+    adapter = {
+        "anthropic": anthropic_provider,
+        "openai": openai_provider,
+        "gemini": gemini_provider,
+    }[provider]
+    request = LLMRequest("test-model", "質問", (), False, 3, 123)
+    with pytest.raises(LLMError) as caught:
+        adapter.call(
+            request,
+            "dummy-private-credentialmarker",
+            client_factory=sdk_client_factory(provider, handle),
+        )
+
+    assert caught.value.category == category
+    assert len(requests) == 1
+    assert_no_error_details(str(caught.value), caplog.text)
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai", "gemini"])

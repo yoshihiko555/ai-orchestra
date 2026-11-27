@@ -483,6 +483,11 @@ Anthropic / OpenAI も呼べます。`cli-tools.local.yaml` の `api.profiles` �
 [設定リファレンス](docs/reference/configuration.md#api-セクション)を参照してください。
 `--project` で設定を読むプロジェクトを指定できます。`--output` 指定時は回答をファイルに書きます。
 
+利用枠・残高不足、一時的なレート制限、認証エラーは終了コード9・10・11で区別します。
+レート制限だけは2秒、4秒と待って合計3回まで試行します。本文・ヘッダ・キーはエラー出力へ含めません。
+開発向けには、3社の道具付きメッセージを1往復する共通APIも用意しています。
+道具の実行とループ本体は後続タスクの範囲です。利用方法は上記の設定リファレンスを参照してください。
+
 読み取り道具のライブラリは `scripts/lib/llm/tools/repo_read.py` にあります。
 `RepoReadTools(root, extra_deny_patterns=(), limits=ReadLimits(), ledger=None)` は、
 `read_file` / `list_dir` / `glob` / `grep` と `execute(name, arguments)` を提供します。

@@ -477,3 +477,106 @@ def test_llm_dependencies_are_optional():
     extras = config["project"]["optional-dependencies"]["llm"]
     names = {re.split(r"[<>=!~;\[ ]", dependency, maxsplit=1)[0].lower() for dependency in extras}
     assert {"anthropic", "openai", "google-genai"} <= names
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    for dependency in extras:
+        name = re.split(r"[<>=!~;\[ ]", dependency, maxsplit=1)[0].lower()
+        if name not in {"any-llm-sdk", "litellm"}:
+            continue
+        match = re.fullmatch(r"[\w-]+(?:\[[^]]+\])?==([\d]+\.[\d]+\.[\d]+)", dependency)
+        assert match is not None, "採用したライブラリは厳密なバージョン固定が必要です。"
+        package = next(package for package in lock["package"] if package["name"] == name)
+        assert package["version"] == match.group(1)
+        distributions = package.get("wheels", []) + (
+            [package["sdist"]] if "sdist" in package else []
+        )
+        assert distributions
+        assert all(re.fullmatch(r"sha256:[a-f0-9]{64}", item["hash"]) for item in distributions)
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "gemini"])
+@pytest.mark.parametrize(
+    ("category", "exit_code", "message_pattern"),
+    [
+        ("quota_exhausted", 9, r"quota|枠|残高"),
+        ("rate_limited", 10, r"rate|レート"),
+        ("auth_error", 11, r"auth|認証|キー|権限"),
+    ],
+)
+def test_ask_real_sdk_errors_have_distinct_exit_codes_and_no_private_details(
+    sdk_environment,
+    sdk_client_factory,
+    project,
+    monkeypatch,
+    capsys,
+    caplog,
+    provider,
+    category,
+    exit_code,
+    message_pattern,
+):
+    import logging
+
+    from lib import llm_cli
+
+    from tests.unit.llm_sdk_support import assert_no_error_details, error_response
+
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv(f"{provider.upper()}_API_KEY", "dummy-private-credentialmarker")
+    monkeypatch.setattr(llm_cli, "_RATE_LIMIT_ATTEMPTS", 3, raising=False)
+    monkeypatch.setattr(llm_cli, "_RATE_LIMIT_INITIAL_DELAY_SEC", 0, raising=False)
+    requests = []
+    status, payload = error_response(provider, category)
+
+    def handle(request):
+        requests.append(request)
+        return sdk_environment.http.Response(
+            status, json=payload, headers={"x-private": "header-private-headermarker"}
+        )
+
+    adapter = importlib.import_module(f"lib.llm.{provider}_provider")
+    factory = sdk_client_factory(provider, handle)
+    monkeypatch.setattr(adapter, "_client_factory", lambda: factory)
+
+    code = _ask(monkeypatch, project, provider)
+
+    captured = capsys.readouterr()
+    assert_no_error_details(captured.out, captured.err, caplog.text)
+    assert code == exit_code
+    assert not captured.out
+    assert re.search(message_pattern, captured.err, re.I)
+    assert len(requests) == (3 if category == "rate_limited" else 1)
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_ask_recovers_after_one_real_sdk_rate_limit(
+    sdk_environment, sdk_client_factory, project, monkeypatch, capsys, provider
+):
+    from lib import llm_cli
+
+    from tests.unit.llm_sdk_support import error_response, tool_response
+
+    monkeypatch.setenv(f"{provider.upper()}_API_KEY", "dummy-key")
+    monkeypatch.setattr(llm_cli, "_RATE_LIMIT_ATTEMPTS", 3, raising=False)
+    monkeypatch.setattr(llm_cli, "_RATE_LIMIT_INITIAL_DELAY_SEC", 0, raising=False)
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        assert len(requests) <= 2
+        if len(requests) == 1:
+            status, payload = error_response(provider, "rate_limited")
+            return sdk_environment.http.Response(status, json=payload)
+        return sdk_environment.http.Response(
+            200, json=tool_response(provider, request.url.path, final=True)
+        )
+
+    adapter = importlib.import_module(f"lib.llm.{provider}_provider")
+    factory = sdk_client_factory(provider, handle)
+    monkeypatch.setattr(adapter, "_client_factory", lambda: factory)
+
+    assert _ask(monkeypatch, project, provider) == 0
+
+    assert len(requests) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "確認完了\n"
+    assert not captured.err

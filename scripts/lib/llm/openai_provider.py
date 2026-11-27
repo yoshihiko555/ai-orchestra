@@ -6,8 +6,9 @@ import base64
 from collections.abc import Callable
 from typing import Any
 
+from .errors import classify_openai
 from .sdk_logging import redact_sdk_logs
-from .types import LLMError, LLMRequest, LLMResponse
+from .types import LLMRequest, LLMResponse
 
 
 def _client_factory() -> Callable[..., Any]:
@@ -31,7 +32,7 @@ def call(
     try:
         factory = client_factory if client_factory is not None else _client_factory()
         with (
-            redact_sdk_logs(api_key),
+            redact_sdk_logs(),
             factory(api_key=api_key, timeout=request.timeout_sec, max_retries=0) as client,
         ):
             response = client.responses.create(
@@ -43,4 +44,4 @@ def call(
             )
             return LLMResponse(response.output_text)
     except Exception as exc:
-        raise LLMError.from_exception(exc) from None
+        raise classify_openai(exc) from None
