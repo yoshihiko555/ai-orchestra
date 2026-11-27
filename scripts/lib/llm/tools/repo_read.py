@@ -161,6 +161,12 @@ class RepoReadTools:
             )
         except UnicodeError:
             return ToolResult(False, "binary: UTF-8 テキスト以外の内容は返せません。")
+        except FileNotFoundError:
+            return ToolResult(False, "not_found: 読む前に対象が見つからなくなりました。")
+        except PermissionError:
+            return ToolResult(False, "permission_denied: 対象を読み取る権限がありません。")
+        except (IsADirectoryError, NotADirectoryError):
+            return ToolResult(False, "not_regular_file: 対象のファイル種別が変わりました。")
         except (OSError, RuntimeError, ValueError):
             return ToolResult(False, "unreadable: 対象を安全に読み取れません。")
 

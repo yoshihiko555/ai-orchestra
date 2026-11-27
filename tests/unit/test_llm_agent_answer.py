@@ -24,10 +24,30 @@ def test_parses_plain_json_answer_and_citations():
     assert citations == [citation]
 
 
-def test_parses_json_fence_enclosing_entire_answer():
+@pytest.mark.parametrize(
+    "text",
+    [
+        '```json\n{"answer":"x","citations":[]}\n```',
+        ' \n```json {"answer":"x","citations":[]} ```\t',
+        '```json\n{"answer":"x","citations":[]}```',
+        '```\n  {"answer":"x","citations":[]}  ```',
+        ' \n``` {"answer":"x","citations":[]} ```\n',
+    ],
+)
+def test_parses_json_fence_enclosing_entire_answer(text):
     parser = importlib.import_module("lib.llm.agent_answer")
 
-    assert parser.parse_final_answer('```json\n{"answer":"x","citations":[]}\n```') == ("x", [])
+    assert parser.parse_final_answer(text) == ("x", [])
+
+
+def test_parses_fenced_answer_containing_literal_newline():
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = '```json\n{"answer":"first\nsecond","citations":[]}\n```'
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer.splitlines() == ["first", "second"]
+    assert citations == []
 
 
 @pytest.mark.parametrize(
@@ -37,6 +57,7 @@ def test_parses_json_fence_enclosing_entire_answer():
         '~~~\n{"answer":"x","citations":[]}\n~~~',
         '前置き\n{"answer":"x","citations":[]}',
         '```json\n{"answer":"x","citations":[]}',
+        '前置き\n```json\n{"answer":"x","citations":[]}\n```',
     ],
 )
 def test_does_not_extract_citations_from_prose_or_partial_fences(text):
@@ -45,6 +66,7 @@ def test_does_not_extract_citations_from_prose_or_partial_fences(text):
     assert result.answer == text
     assert result.citations == []
     assert result.unverified_count == 0
+    assert result.to_dict()["citations_parse_failed"] is False
 
 
 def test_malformed_citation_field_is_retained_as_null_and_unverified():
@@ -57,3 +79,4 @@ def test_malformed_citation_field_is_retained_as_null_and_unverified():
 
     assert result.citations == [{**citation, "start_line": None, "verified": False}]
     assert result.unverified_count == 1
+    assert result.to_dict()["citations_parse_failed"] is False

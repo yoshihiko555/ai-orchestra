@@ -8,9 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`llm agent`: コードブロックで囲まれた回答から本文と根拠を取り出せるように修正**。json の言語指定がない場合や、前後に空白・改行がある場合も読み取る。
+
 - **`meta-harness`: `tool: api` を含むルーティング候補の登録・検証と振る舞い評価を修正**。
 
 ### Added
+
+- **`repo-reader` プロファイルを既定で配布**: Gemini の読み取り道具を local 設定なしで使える。どのエージェントにも自動では結び付かない。
 
 - **API 委譲の共通 rule `api-delegation` を追加**: API を使う全サブエージェントに、ask / agent の使い分け、長時間実行の待機、partial の冒頭報告、根拠の裏取りと終了コード別の対応を共通化する。
 
@@ -21,6 +25,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **API キーで Anthropic / OpenAI / Gemini を呼ぶ共通基盤を追加**: `orchex auth set/status` と `orchex llm ask --profile` で認証情報の管理、検索・添付付きの一回の質問ができる。依存は `orchex[llm]` で導入し、researcher は既定の Gemini research プロファイルを必要な場面だけ使う。利用できない場合は Claude だけで調査を続ける。
 
 ### Changed
+
+- **`llm agent` の結果に `citations_parse_failed` を追加**: 道具ありで根拠を読み取れなかった場合は true、`unverified_count` は null を返す。status と終了コードの意味は変わらない。
 
 - **`llm ask` のAPIエラーを種類ごとに区別**: 利用枠・残高不足は9、一時的なレート制限は10、認証エラーは11で終了する。レート制限だけを合計3回まで再試行し、SDKの本文・ヘッダを診断ログへ出さない。
 

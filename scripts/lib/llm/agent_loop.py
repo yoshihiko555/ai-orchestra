@@ -51,9 +51,12 @@ class AgentResult:
     answer: str
     citations: list[dict[str, object]]
     files_read: tuple[str, ...]
+    citations_parse_failed: bool
 
     @property
-    def unverified_count(self) -> int:
+    def unverified_count(self) -> int | None:
+        if self.citations_parse_failed:
+            return None
         return sum(citation["verified"] is False for citation in self.citations)
 
     def to_dict(self) -> dict[str, object]:
@@ -66,6 +69,7 @@ class AgentResult:
             "citations": [dict(citation) for citation in self.citations],
             "files_read": list(self.files_read),
             "unverified_count": self.unverified_count,
+            "citations_parse_failed": self.citations_parse_failed,
         }
 
 
@@ -163,7 +167,10 @@ def run_agent_loop(
             results.append(result)
         messages.append(ToolResultsMessage(tuple(results)))
     answer, raw_citations = parse_final_answer(last_answer)
-    citations = verify_citations(raw_citations, tools.check_citation if tools is not None else None)
+    citations = verify_citations(
+        raw_citations if raw_citations is not None else [],
+        tools.check_citation if tools is not None else None,
+    )
     return AgentResult(
         "complete" if stop_reason is None else "partial",
         stop_reason,
@@ -172,4 +179,5 @@ def run_agent_loop(
         answer,
         citations,
         tools.ledger.files() if tools is not None else (),
+        tools is not None and raw_citations is None,
     )

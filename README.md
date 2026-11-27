@@ -488,9 +488,12 @@ Anthropic / OpenAI も呼べます。`cli-tools.local.yaml` の `api.profiles` �
 開発向けには、3社の道具付きメッセージを1往復する共通APIも用意しています。
 `orchex llm agent --profile repo-reader "実装を調べて"` では、プロファイルで許可した
 読み取り道具を使って探索し、根拠の検証結果を含むJSONを返します。設定例は上記の設定リファレンスを参照してください。
+repo-reader は Gemini の読み取り用プロファイルとして既定で配布され、local 設定なしで使えます。どのエージェントにも自動では結び付きません。
 `--output ./out` を付けると、空の出力先へ `progress.json`・`result.json`・`exit` を書きます。
 往復・トークン・時間の上限では一度まとめて partial を返し、利用枠不足・認証エラーでは即時停止します。
 既定のresearcher設定はそのままで、agent用プロファイルは自動では結び付きません。
+回答がコードフェンスに囲まれていても本文と根拠を取り出します。道具ありで構造化できない場合は
+`citations_parse_failed: true`・`unverified_count: null` を返すため、回答を未確認として裏取りしてください。
 
 読み取り道具のライブラリは `scripts/lib/llm/tools/repo_read.py` にあります。
 `RepoReadTools(root, extra_deny_patterns=(), limits=ReadLimits(), ledger=None)` は、

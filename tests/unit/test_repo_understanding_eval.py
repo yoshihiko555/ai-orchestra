@@ -624,6 +624,16 @@ def test_baseline_default_read_range_is_clamped_to_file(evaluator, project):
     assert [item["verified"] for item in result["citations"]] == [True, True]
 
 
+def test_baseline_unstructured_answer_preserves_text_without_citations(evaluator, project):
+    events = [json.loads(line) for line in _baseline_stream(project).splitlines()]
+    events[-1]["result"] = "構造化されていない基準回答"
+
+    result = evaluator._baseline_result("\n".join(map(json.dumps, events)), project)
+
+    assert result["answer"] == "構造化されていない基準回答"
+    assert result["citations"] == []
+
+
 def test_baseline_read_outside_root_does_not_create_evidence(evaluator, project, tmp_path):
     outside = tmp_path / "outside.py"
     outside.write_text("公開データ\n", encoding="utf-8")

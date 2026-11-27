@@ -9,21 +9,21 @@ from collections.abc import Callable
 from .tools.read_ledger import CitationCheck
 
 
-def parse_final_answer(text: str) -> tuple[str, list[object]]:
+def parse_final_answer(text: str) -> tuple[str, list[object] | None]:
     candidate = text.strip()
-    fenced = re.fullmatch(r"```json[ \t]*\r?\n([\s\S]*)\r?\n```", candidate)
+    fenced = re.fullmatch(r"```(?:json)?\s*([\s\S]*?)\s*```", candidate)
     if fenced:
-        candidate = fenced[1]
+        candidate = fenced[1].strip()
     try:
-        parsed = json.loads(candidate)
+        parsed = json.loads(candidate, strict=False)
     except (ValueError, RecursionError):
-        return text, []
+        return text, None
     if (
         not isinstance(parsed, dict)
         or not isinstance(parsed.get("answer"), str)
         or not isinstance(parsed.get("citations"), list)
     ):
-        return text, []
+        return text, None
     return parsed["answer"], parsed["citations"]
 
 
