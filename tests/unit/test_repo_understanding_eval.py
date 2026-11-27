@@ -202,7 +202,7 @@ class EvaluationRunner:
             assert argv[argv.index("agent") - 1] == "llm"
             assert argv[argv.index("--profile") + 1] == "read-profile"
             assert Path(argv[argv.index("--project") + 1]) == self.project
-            output = Path(argv[argv.index("--output") + 1])
+            output = Path(cwd) / Path(argv[argv.index("--output") + 1])
             assert not output.exists() or not any(output.iterdir())
             output.mkdir(parents=True, exist_ok=True)
             self.agent_outputs.append(output)
@@ -352,14 +352,61 @@ def test_run_uses_same_questions_and_fresh_agent_output_directories(evaluator, t
         assert len(exploration) == 2
 
 
-def test_run_rejects_used_output_without_calls_or_overwriting(evaluator, tmp_path, project):
+def test_run_reads_relative_output_from_launch_directory_with_different_project(
+    evaluator, tmp_path, project, monkeypatch
+):
+    path = _write_questions(tmp_path, [_question()])
+    launch_dir = tmp_path / "launch"
+    launch_dir.mkdir()
+    monkeypatch.chdir(launch_dir)
+    runner = EvaluationRunner(project)
+
+    assert _main(evaluator, _run_args(path, project, Path("run")), runner=runner) == 0
+
+    output = launch_dir / "run"
+    results = json.loads((output / "results.json").read_text(encoding="utf-8"))
+    agent = next(record for record in results["records"] if record["method"] == "agent")
+    assert agent["error"] is None
+    assert agent["answer"] == "対象方式の回答"
+    command = next(argv for argv in runner.calls if "agent" in argv)
+    assert Path(command[command.index("--output") + 1]) == output / "agent/L-01"
+    assert runner.agent_outputs == [output / "agent/L-01"]
+    assert not (project / "run").exists()
+
+
+def test_run_rejects_relative_symlink_output_before_runner_call(
+    evaluator, tmp_path, project, monkeypatch
+):
+    path = _write_questions(tmp_path, [_question()])
+    launch_dir = tmp_path / "launch"
+    launch_dir.mkdir()
+    target = tmp_path / "empty"
+    target.mkdir()
+    link = launch_dir / "link"
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.chdir(launch_dir)
+    runner = Mock(side_effect=AssertionError("symlink の出力先では実行禁止です。"))
+
+    assert _main(evaluator, _run_args(path, project, Path("link")), runner=runner) != 0
+
+    runner.assert_not_called()
+    assert link.is_symlink()
+    assert list(target.iterdir()) == []
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_run_rejects_used_output_without_calls_or_overwriting(
+    evaluator, tmp_path, project, monkeypatch, relative
+):
     path = _write_questions(tmp_path, [_question()])
     output = tmp_path / "run"
     output.mkdir()
     previous = output / "results.json"
     previous.write_bytes(b"previous results\n")
+    monkeypatch.chdir(tmp_path)
+    output_arg = Path("run") if relative else output
     runner = Mock(side_effect=AssertionError("使用済み出力先では実行禁止です。"))
-    assert _main(evaluator, _run_args(path, project, output), runner=runner) != 0
+    assert _main(evaluator, _run_args(path, project, output_arg), runner=runner) != 0
     runner.assert_not_called()
     assert previous.read_bytes() == b"previous results\n"
     assert list(output.iterdir()) == [previous]

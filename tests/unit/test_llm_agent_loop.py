@@ -245,11 +245,9 @@ def test_retry_wait_stops_at_duration_budget_before_another_exploration_request(
     assert turn.call_args_list[1].args[0].tools == ()
 
 
-@pytest.mark.parametrize(
-    "category,reason",
-    [("auth_error", "auth_error"), ("timeout", "api_timeout"), ("api_error", "api_error")],
-)
-def test_api_errors_stop_without_retry_or_summary(category, reason):
+@pytest.mark.parametrize("category", ["auth_error", "timeout", "api_error"])
+def test_api_errors_stop_without_retry_or_summary(category):
+    reason = "api_timeout" if category == "timeout" else category
     turn = Mock(side_effect=LLMError(category, "安全なエラー"))
     sleep = Mock()
 
