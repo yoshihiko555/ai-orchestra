@@ -27,6 +27,11 @@ class ToolResult:
 
 
 @dataclass(frozen=True)
+class SystemMessage:
+    text: str
+
+
+@dataclass(frozen=True)
 class UserMessage:
     text: str
 
@@ -47,12 +52,26 @@ class ToolResultsMessage:
 @dataclass(frozen=True)
 class ToolTurnRequest:
     model: str
-    messages: tuple[UserMessage | AssistantMessage | ToolResultsMessage, ...]
+    messages: tuple[SystemMessage | UserMessage | AssistantMessage | ToolResultsMessage, ...]
     tools: tuple[ToolSpec, ...]
     timeout_sec: float
     max_output_tokens: int
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    input_tokens: int
+    output_tokens: int
+
+    @property
+    def total(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def to_dict(self) -> dict[str, int]:
+        return {"input": self.input_tokens, "output": self.output_tokens, "total": self.total}
+
+
+@dataclass(frozen=True)
 class ToolTurnResponse:
     message: AssistantMessage
+    usage: TokenUsage

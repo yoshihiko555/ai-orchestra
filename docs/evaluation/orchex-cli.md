@@ -110,6 +110,13 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-51（正常 / must）: 読んだ範囲の記録 — 道具が実際に返したファイルと行の範囲だけを、セッション単位で記録する。根拠 `path:開始行-終了行` について、実在する・行の範囲が収まる・読んだ範囲に入る、を判定できる — 根拠: 同 order 作業3、C-LEDGER。
 - [ ] EV-52（正常 / must）: 道具の定義と依存 — 道具は上の 4 つだけで、書き込み・コマンドの実行・ネットワークへのアクセスを行う道具を持たない。名前・説明・引数の JSON Schema をプロバイダに依存しない形で持ち、標準ライブラリと git だけを使う — 根拠: 同 order 作業1・4・制約、C-TOOLS / C-DEFS / C-NO-DEPS。
 
+### LLM エージェントループ（人間レビュー待ち・本 PR）
+
+- [ ] EV-55（正常・異常 / must）: 汎用ループは道具の結果を呼び出しID付きで次の往復へ渡す。往復・入出力トークン累計・実行時間の上限で道具なしのまとめを1回だけ行い、partial と停止理由を返す。ToolTurnResponse の生成には usage の明示を必須とし、省略時は TypeError にする。SDK 応答の usage 欠落時に 0 とする扱いは維持する — 根拠: 今回の order.md 作業1、C-LOOP-TOOLS / C-LIMIT-TURNS / C-LIMIT-TOKENS / C-LIMIT-TIME、レビュー裁定 RES-1。
+- [ ] EV-56（正常・異常 / must）: rate_limited だけを指定回数・待ち時間で再試行する。quota_exhausted と auth_error は即時停止し、最後の回答・読取一覧・使用量を保持する — 根拠: 同作業1、C-RETRY-RECOVER / C-RETRY-EXHAUST / C-QUOTA / C-AUTH。
+- [ ] EV-57（正常・異常 / must）: 回答の根拠を構造化して抽出し、実在・行範囲・実際の読取記録で verified を決める。出力 JSON は公開フィールドだけを持ち、キーと SDK の生データを含めない — 根拠: 同作業2・3、C-OUTPUT-SHAPE / C-CITE-PARSE / C-CITE-VERIFY / C-NO-SECRET。
+- [ ] EV-58（正常・異常 / must）: llm agent は stdout または --output の result.json へ結果を返す。途中経過は progress.json、終了コードは最後に exit へ書く。空でない出力先では実行せず既存内容を保持する。ProfileError / CredentialsError は str(exc) を stderr へ届ける。deny の内容不正と入出力・文字コードの失敗は原因に合った文言を出し、終了コード 8 と --output 指定時の exit 書込を維持する — 根拠: 同作業4、C-CLI-AGENT / C-OUT-FILES / C-OUT-USED / C-EXIT-CODES、レビュー裁定 RES-2 / RES-3。
+
 ## 5. テストレビュー判断基準（パッケージ固有）
 
 - 配布ファイルの安全側スキップ（EV-08〜EV-11）を検証するテストは、「ハッシュ未記録」「ハッシュ不一致（ユーザー変更）」「ハッシュ一致（未変更）」の3状態を独立したケースとして区別しているか。1ケースに複数状態を混在させて期待値を曖昧にしていないか。

@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **読み取り道具を使う汎用エージェントループを追加**: `orchex llm agent --profile` が上限付きで探索し、根拠を読取記録と照合したJSONを返す。`--output` では途中経過・結果・終了コードをファイルで受け渡せる。
+
 - **LLM の道具付きメッセージを1往復する共通APIを追加**: any-llm で3社の道具定義・呼び出し・結果を変換し、呼び出しIDとGeminiの署名を次の要求へ引き継ぐ。
 
 - **API キーで Anthropic / OpenAI / Gemini を呼ぶ共通基盤を追加**: `orchex auth set/status` と `orchex llm ask --profile` で認証情報の管理、検索・添付付きの一回の質問ができる。依存は `orchex[llm]` で導入し、researcher は既定の Gemini research プロファイルを必要な場面だけ使う。利用できない場合は Claude だけで調査を続ける。

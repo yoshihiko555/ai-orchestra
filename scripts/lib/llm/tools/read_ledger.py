@@ -49,6 +49,9 @@ class ReadLedger:
     def __init__(self) -> None:
         self._files: dict[str, tuple[int, tuple[tuple[int, int], ...]]] = {}
 
+    def files(self) -> tuple[str, ...]:
+        return tuple(sorted(self._files))
+
     def record(self, path: str, start: int, end: int, total_lines: int) -> None:
         normalized = _normalize_path(path)
         if (
