@@ -36,6 +36,23 @@ class APIAvailability:
     api_key: str | None = field(repr=False)
 
 
+@dataclass(frozen=True)
+class AgentLimits:
+    max_turns: int = 30
+    max_total_tokens: int = 2_000_000
+    max_duration_sec: float = 900
+    rate_limit_attempts: int = 3
+    rate_limit_initial_delay_sec: float = 2.0
+
+
+@dataclass(frozen=True)
+class AgentSettings:
+    profile: ResolvedProfile
+    repo_read: bool
+    deny: tuple[str, ...]
+    limits: AgentLimits
+
+
 def provider_dependency_available(provider: str) -> bool:
     try:
         return importlib.util.find_spec(SDK_MODULES[provider]) is not None
@@ -117,6 +134,40 @@ def check_availability(profile: ResolvedProfile) -> APIAvailability:
     if not provider_dependency_available(profile.provider):
         return APIAvailability("dependency_missing", None)
     return APIAvailability(None, resolved_key[0])
+
+
+def resolve_agent_settings(config: dict, name: str) -> AgentSettings:
+    resolved = resolve_profile(config, name)
+    profile = config["api"]["profiles"][name]
+    tools = _mapping(profile.get("tools", {}), "tools")
+    repo_read = tools.get("repo_read", False)
+    if set(tools) - {"repo_read"} or not isinstance(repo_read, bool):
+        raise ProfileError("API プロファイルの tools は repo_read の真偽値だけを指定してください。")
+    deny = profile.get("deny", [])
+    if not isinstance(deny, list) or not all(isinstance(item, str) for item in deny):
+        raise ProfileError("API プロファイルの deny は文字列の配列が必要です。")
+    limits = profile.get("limits", {})
+    defaults = AgentLimits()
+    values = {}
+    for field_name in ("max_turns", "max_total_tokens", "rate_limit_attempts"):
+        value = limits.get(field_name, getattr(defaults, field_name))
+        if type(value) is not int or value < 1:
+            raise ProfileError(f"API プロファイルの {field_name} は正の整数が必要です。")
+        values[field_name] = value
+    for field_name in ("max_duration_sec", "rate_limit_initial_delay_sec"):
+        value = limits.get(field_name, getattr(defaults, field_name))
+        try:
+            valid = (
+                type(value) in (int, float)
+                and math.isfinite(value)
+                and (value >= 0 if field_name == "rate_limit_initial_delay_sec" else value > 0)
+            )
+        except OverflowError:
+            valid = False
+        if not valid:
+            raise ProfileError(f"API プロファイルの {field_name} の数値が不正です。")
+        values[field_name] = float(value)
+    return AgentSettings(resolved, repo_read, tuple(deny), AgentLimits(**values))
 
 
 def availability_message(reason: str, provider: str) -> str:

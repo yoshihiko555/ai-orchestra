@@ -115,6 +115,7 @@ core は全パッケージが依存する共通基盤であり、(1) `.claude/pl
 - [ ] EV-58（正常 / must）: API キーは環境変数 → credentials の順で解決し、空の環境変数は未設定と扱う。保存は ~/.config/orchex/credentials、ディレクトリ 0700 / ファイル 0600。他社のキーを保持し、書き込み失敗で以前の保存値を壊さない — 根拠: order.md 方針4、C-AUTH-SET / C-KEY-ORDER。
 - [ ] EV-59（正常・異常 / must）: API プロファイルは provider と model、検索・添付の許可、正の上限を検証し、model は profile → provider の順で選ぶ。利用不可の理由は無効 → キー不足 → SDK 不足の順で一つ選び、CLI と routing で共有する — 根拠: order.md 方針2・3、計画 C-ROUTE-FALLBACK。
 - [ ] EV-60（正常・異常 / must）: SubagentStart / PreToolUse の API routing は local の実効値を届け、キーを含めない。不正なモデル等で行を注入させず、理由付きで claude-direct に戻す。既存 Codex / auto の出力は維持する — 根拠: order.md 方針3、C-ROUTE-API / C-NO-SECRET / C-CODEX-KEEP。
+- [ ] EV-61（正常・異常 / must、人間レビュー待ち・本 PR）: agent の tools・deny・limits を検証し、往復30回・合計2,000,000トークン・900秒を既定値にする。local の上書き・追加を実行へ届け、既存 ask・routing のプロファイル形式は維持する — 根拠: 今回の order.md 作業1・5、C-DEFAULTS / C-PROFILE-FIELDS / C-PROFILE-LOCAL / C-ROUTING-KEEP。
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

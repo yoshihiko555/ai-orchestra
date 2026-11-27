@@ -18,6 +18,18 @@ from tests.module_loader import REPO_ROOT
 from tests.unit.llm_sdk_support import assert_no_error_details, error_response, tool_response
 
 
+def test_tool_turn_response_requires_explicit_usage():
+    from lib.llm.tool_types import AssistantMessage, TokenUsage, ToolTurnResponse
+
+    message = AssistantMessage("回答")
+    with pytest.raises(TypeError, match="usage"):
+        ToolTurnResponse(message)
+
+    response = ToolTurnResponse(message, usage=TokenUsage(1, 2))
+    assert response.message == message
+    assert response.usage == TokenUsage(1, 2)
+
+
 def tool_request():
     tools = importlib.import_module("lib.llm.tool_types")
     return tools.ToolTurnRequest(
@@ -189,6 +201,7 @@ class RejectSDK(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, RejectSDK())
 from lib.llm.tool_types import ToolSpec, UserMessage, ToolTurnRequest
 from lib.llm import errors, retry, providers
+from lib.llm import agent_loop, agent_answer, run_output
 from lib.llm_cli import run_auth_status
 request = ToolTurnRequest(
     model='test-model', messages=(UserMessage(text='質問'),),
@@ -344,3 +357,113 @@ def test_tool_turn_releases_client_on_success_and_failure(
         )
     assert len(closers) == 1
     closers[0].assert_called_once_with()
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "gemini"])
+def test_tool_turn_returns_input_and_output_usage(
+    sdk_environment, sdk_tool_client_factory, provider
+):
+    from lib.llm.providers import call_tool_turn
+
+    def handle(request):
+        payload = tool_response(provider, request.url.path, final=True)
+        if provider == "openai":
+            payload["usage"] = {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+        return sdk_environment.http.Response(200, json=payload)
+
+    response = call_tool_turn(
+        provider,
+        tool_request(),
+        "dummy-key",
+        client_factory=sdk_tool_client_factory(provider, handle),
+    )
+
+    assert (response.usage.input_tokens, response.usage.output_tokens) == (1, 2)
+
+
+def test_tool_turn_missing_usage_is_zero(sdk_environment, sdk_tool_client_factory):
+    from lib.llm.providers import call_tool_turn
+
+    def handle(request):
+        payload = tool_response("openai", request.url.path, final=True)
+        payload["usage"] = None
+        return sdk_environment.http.Response(200, json=payload)
+
+    response = call_tool_turn(
+        "openai",
+        tool_request(),
+        "dummy-key",
+        client_factory=sdk_tool_client_factory("openai", handle),
+    )
+
+    assert (response.usage.input_tokens, response.usage.output_tokens) == (0, 0)
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "gemini"])
+def test_system_instruction_and_summary_after_tool_error_without_tool_definitions(
+    sdk_environment, sdk_tool_client_factory, provider
+):
+    from lib.llm import tool_types as tools
+    from lib.llm.providers import call_tool_turn
+
+    bodies = []
+
+    def handle(request):
+        bodies.append(json.loads(request.content))
+        return sdk_environment.http.Response(
+            200, json=tool_response(provider, request.url.path, final=True)
+        )
+
+    instruction = "主張ごとに path:開始行-終了行 の根拠を JSON で返す"
+    summary = "ここまでで分かったことをまとめて"
+    request = replace(
+        tool_request(),
+        tools=(),
+        messages=(
+            tools.SystemMessage(instruction),
+            tools.UserMessage("調べて"),
+            tools.AssistantMessage("", (tools.ToolCall("pending", "lookup_value", {"value": 1}),)),
+            tools.ToolResultsMessage((tools.ToolResult("pending", "上限のため実行しない", True),)),
+            tools.UserMessage(summary),
+        ),
+    )
+
+    response = call_tool_turn(
+        provider, request, "dummy-key", client_factory=sdk_tool_client_factory(provider, handle)
+    )
+
+    assert response.message.text == "確認完了"
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert not body.get("tools")
+    if provider == "anthropic":
+        assert instruction in json.dumps(body["system"], ensure_ascii=False)
+        messages = body["messages"]
+        assert messages[-1]["role"] == "user"
+        content = messages[-1]["content"]
+        assert summary in json.dumps(content, ensure_ascii=False)
+        outputs = [
+            block
+            for message in messages
+            if isinstance(message["content"], list)
+            for block in message["content"]
+            if block["type"] == "tool_result"
+        ]
+        assert [block["tool_use_id"] for block in outputs] == ["pending"]
+    elif provider == "openai":
+        assert body["messages"][0] == {"role": "system", "content": instruction}
+        assert body["messages"][-1] == {"role": "user", "content": summary}
+        outputs = [message for message in body["messages"] if message["role"] == "tool"]
+        assert [message["tool_call_id"] for message in outputs] == ["pending"]
+    else:
+        assert instruction in json.dumps(body["systemInstruction"], ensure_ascii=False)
+        contents = body["contents"]
+        assert contents[-1]["role"] == "user"
+        assert summary in json.dumps(contents[-1]["parts"], ensure_ascii=False)
+        outputs = [
+            part["functionResponse"]
+            for content in contents
+            for part in content["parts"]
+            if "functionResponse" in part
+        ]
+        assert [part["id"] for part in outputs] == ["pending"]

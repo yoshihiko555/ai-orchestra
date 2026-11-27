@@ -486,7 +486,11 @@ Anthropic / OpenAI も呼べます。`cli-tools.local.yaml` の `api.profiles` �
 利用枠・残高不足、一時的なレート制限、認証エラーは終了コード9・10・11で区別します。
 レート制限だけは2秒、4秒と待って合計3回まで試行します。本文・ヘッダ・キーはエラー出力へ含めません。
 開発向けには、3社の道具付きメッセージを1往復する共通APIも用意しています。
-道具の実行とループ本体は後続タスクの範囲です。利用方法は上記の設定リファレンスを参照してください。
+`orchex llm agent --profile repo-reader "実装を調べて"` では、プロファイルで許可した
+読み取り道具を使って探索し、根拠の検証結果を含むJSONを返します。設定例は上記の設定リファレンスを参照してください。
+`--output ./out` を付けると、空の出力先へ `progress.json`・`result.json`・`exit` を書きます。
+往復・トークン・時間の上限では一度まとめて partial を返し、利用枠不足・認証エラーでは即時停止します。
+既定のresearcher設定はそのままで、agent用プロファイルは自動では結び付きません。
 
 読み取り道具のライブラリは `scripts/lib/llm/tools/repo_read.py` にあります。
 `RepoReadTools(root, extra_deny_patterns=(), limits=ReadLimits(), ledger=None)` は、

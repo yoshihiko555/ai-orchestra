@@ -11,6 +11,8 @@ from .errors import classify_anthropic, classify_gemini, classify_openai
 from .sdk_logging import redact_sdk_logs
 from .tool_types import (
     AssistantMessage,
+    SystemMessage,
+    TokenUsage,
     ToolCall,
     ToolResultsMessage,
     ToolTurnRequest,
@@ -57,7 +59,9 @@ def _messages(provider: str, request: ToolTurnRequest) -> list[dict]:
     messages: list[dict] = []
     calls: dict[str, ToolCall] = {}
     for message in request.messages:
-        if isinstance(message, UserMessage):
+        if isinstance(message, SystemMessage):
+            messages.append({"role": "system", "content": message.text})
+        elif isinstance(message, UserMessage):
             messages.append({"role": "user", "content": message.text})
         elif isinstance(message, AssistantMessage):
             raw: dict = {}
@@ -148,9 +152,18 @@ def call(
                     text=message.content or "",
                     tool_calls=tuple(calls),
                     provider_state=(provider, message.model_dump_json(exclude_none=True)),
-                )
+                ),
+                usage=TokenUsage(
+                    _token_count(response.usage, "prompt_tokens"),
+                    _token_count(response.usage, "completion_tokens"),
+                ),
             )
     except LLMError:
         raise
     except Exception as exc:
         raise classify(exc) from None
+
+
+def _token_count(usage: object, field: str) -> int:
+    value = getattr(usage, field, None)
+    return value if type(value) is int and value >= 0 else 0
