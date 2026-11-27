@@ -12,9 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **LLM の道具付きメッセージを1往復する共通APIを追加**: any-llm で3社の道具定義・呼び出し・結果を変換し、呼び出しIDとGeminiの署名を次の要求へ引き継ぐ。
+
 - **API キーで Anthropic / OpenAI / Gemini を呼ぶ共通基盤を追加**: `orchex auth set/status` と `orchex llm ask --profile` で認証情報の管理、検索・添付付きの一回の質問ができる。依存は `orchex[llm]` で導入し、researcher は既定の Gemini research プロファイルを必要な場面だけ使う。利用できない場合は Claude だけで調査を続ける。
 
 ### Changed
+
+- **`llm ask` のAPIエラーを種類ごとに区別**: 利用枠・残高不足は9、一時的なレート制限は10、認証エラーは11で終了する。レート制限だけを合計3回まで再試行し、SDKの本文・ヘッダを診断ログへ出さない。
 
 - **Codex の既定モデルを `gpt-6.2-sol` に更新**: エージェントルーティング（`codex.model` / `codex.model_allowlist`）、設定読込失敗時のフォールバック、新規導入用 `.codex/config.toml` テンプレートを同じモデルに揃えた。従来のモデルを使い続ける場合は `cli-tools.local.yaml` で `codex.model: gpt-6.1-sol` を指定する。
 - **`image-generation`: `image_model` の既定値を `gpt-6.2-sol` に変更**: `image_model` 未設定時のフォールバック値も同じモデルに揃えた。従来のモデルを使い続ける場合は `image-generation.local.yaml` で `image_model: gpt-6.1-sol` を指定する。

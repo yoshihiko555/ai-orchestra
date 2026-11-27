@@ -198,7 +198,9 @@ local は既存の deep_merge 規則に従い、mapping はキーごとに上書
 
 プロファイル名とモデルは英数字および `_ . : / @ + = -` の一行で指定する。
 添付は PNG/JPEG/WebP/GIF/PDF を扱い、Gemini の GIF は拒否する。
-API は一回呼び、SDK の自動再試行は行わない。エージェントループや function calling は提供しない。
+`llm ask` は通常1回だけ呼び出す。一時的な `rate_limited` の場合だけ、2秒、4秒と待って
+合計3回まで試行する。`quota_exhausted` と `auth_error` は再試行しない。
+SDK 内部の自動再試行は無効にする。
 
 キーの解決順は `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` → `~/.config/orchex/credentials`。
 空の環境変数は未設定として扱う。`GOOGLE_API_KEY` は orchex のキー解決には使わない。
@@ -216,6 +218,33 @@ API は一回呼び、SDK の自動再試行は行わない。エージェント
 | 6 | タイムアウト |
 | 7 | API エラー |
 | 8 | 設定・添付・ファイル入出力のエラー |
+| 9 | 利用枠・残高不足（quota_exhausted） |
+| 10 | 再試行後も続く一時的なレート制限（rate_limited） |
+| 11 | API の認証・権限エラー（auth_error） |
+
+エラー分類にはHTTPステータスと機械向けコードだけを使い、本文・ヘッダ・キーは出力しない。
+OpenAI の429は `insufficient_quota` の場合に利用枠不足、それ以外は一時的な制限とする。
+Anthropic は402、`billing_error`、支出上限コードを利用枠不足として扱う。
+Gemini は `RESOURCE_EXHAUSTED` の `QuotaFailure.violations[].quotaId` に `PerDay` がある場合を
+利用枠不足とし、分単位や詳細のない429は一時的な制限とする。401/403は認証エラー、
+Gemini の400に含まれる `ErrorInfo.reason=API_KEY_INVALID` も認証エラーとする。
+
+### 道具付きの1往復を呼ぶ部品
+
+後続の実装からは `lib.llm.providers.call_tool_turn(provider, request, api_key)` を利用できる。
+`lib.llm.tool_types` の `ToolSpec`、`UserMessage`、`ToolTurnRequest` で要求を作り、返された
+`ToolTurnResponse.message` の `ToolCall`（ID・名前・JSON引数）を受け取る。
+次の要求には、元のメッセージ列、返された `AssistantMessage`、
+呼び出しIDに対応する `ToolResult` をまとめた `ToolResultsMessage` を渡す。
+`AssistantMessage.provider_state` は署名などを保持する不透明な状態なので、同じプロバイダへそのまま戻す。
+`ToolResult.is_error` は、失敗結果をJSONの `error` フィールドとしてモデルへ返す指定である。
+
+この部品は `any-llm-sdk[gemini]==1.55.0` で3社の形式を変換する。SDKとライブラリは呼び出し時に
+読み込むため、基本インストールでは認証・既存CLIの起動に影響しない。
+道具の実行とエージェントループは後続タスクが担当し、この入口自身は再試行しない。
+再試行が必要な利用側は `lib.llm.retry.call_with_rate_limit_retry` にoperation、
+`max_attempts`（初回を含む回数）、`initial_delay_sec`、必要なら `backoff`（既定2）を渡す。
+詳細な選定根拠は [ADR-068](../adr/ADR-20261127-068.md) を参照。
 
 ---
 
