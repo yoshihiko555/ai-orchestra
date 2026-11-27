@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **API 委譲の共通 rule `api-delegation` を追加**: API を使う全サブエージェントに、ask / agent の使い分け、長時間実行の待機、partial の冒頭報告、根拠の裏取りと終了コード別の対応を共通化する。
+
 - **読み取り道具を使う汎用エージェントループを追加**: `orchex llm agent --profile` が上限付きで探索し、根拠を読取記録と照合したJSONを返す。`--output` では途中経過・結果・終了コードをファイルで受け渡せる。
 
 - **LLM の道具付きメッセージを1往復する共通APIを追加**: any-llm で3社の道具定義・呼び出し・結果を変換し、呼び出しIDとGeminiの署名を次の要求へ引き継ぐ。

@@ -1,0 +1,236 @@
+questions:
+- id: L-01
+  category: location
+  question: Resolved Routing に api.command を描画する関数とファイルはどこか。
+  expected_points:
+  - inject-shared-context.py の build_routing_value_lines が描画し、ハイフンで始まる profile には --profile= を使う
+  evidence:
+  - path: packages/core/hooks/inject-shared-context.py
+    start_line: 238
+    end_line: 253
+    contains: profile_option =
+- id: L-02
+  category: location
+  question: 読み取り道具の既定の拒否パターンはどこで何を定義するか。
+  expected_points:
+  - repo_read.py の _DEFAULT_DENY が .env*、*.pem、*.key、*credentials*、*secret*、.git を拒否する
+  evidence:
+  - path: scripts/lib/llm/tools/repo_read.py
+    start_line: 17
+    end_line: 19
+    contains: _DEFAULT_DENY =
+- id: L-03
+  category: location
+  question: quota_exhausted・rate_limited・auth_error の終了コードの対応はどこか。
+  expected_points:
+  - llm_cli.py の _ERROR_CODES に順に9・10・11を定義する
+  evidence:
+  - path: scripts/lib/llm_cli.py
+    start_line: 31
+    end_line: 48
+    contains: '"quota_exhausted": 9'
+- id: L-04
+  category: location
+  question: Codex 向けに Markdown rule を生成しない分岐はどこか。
+  expected_points:
+  - facet_builder.py の _build_one は target が claude 以外かつ rule の場合に旧 rule を掃除して None を返す
+  evidence:
+  - path: scripts/lib/facet_builder.py
+    start_line: 322
+    end_line: 329
+    contains: if target != "claude"
+- id: L-05
+  category: location
+  question: 配布元の Codex sandbox 無効化要否のキーと既定値は何か。
+  expected_points:
+  - packages/agent-routing/config/cli-tools.yaml の codex.requires_sandbox_disable は true
+  evidence:
+  - path: packages/agent-routing/config/cli-tools.yaml
+    start_line: 29
+    end_line: 33
+    contains: 'requires_sandbox_disable: true'
+- id: F-01
+  category: flow
+  question: llm agent の出力先の確保から結果と終了コードの書込みまでの順序は何か。
+  expected_points:
+  - run_llm_agent は claim_output_dir、run_agent_loop、write_result の順に進み、finally で write_exit を行う
+  evidence:
+  - path: scripts/lib/llm_cli.py
+    start_line: 78
+    end_line: 146
+    contains: output.write_exit(code)
+- id: F-02
+  category: flow
+  question: 探索の往復上限に達した後、ループはどうまとめて停止するか。
+  expected_points:
+  - stop_reason を max_turns にして summary を真にし、道具なしのまとめの要求を一回行って break する
+  evidence:
+  - path: scripts/lib/llm/agent_loop.py
+    start_line: 115
+    end_line: 157
+    contains: () if summary else definitions
+- id: F-03
+  category: flow
+  question: facet の一括 build で同名の local と配布元 composition がある場合の探索順と優先は何か。
+  expected_points:
+  - local を先に走査して seen_names に記録し、配布元で同じ stem をスキップするので local が優先する
+  evidence:
+  - path: scripts/lib/facet_builder.py
+    start_line: 541
+    end_line: 579
+    contains: 'if stem in seen_names:'
+- id: F-04
+  category: flow
+  question: 最終回答の根拠の抽出から verified の決定まではどう流れるか。
+  expected_points:
+  - parse_final_answer、verify_citations、RepoReadTools.check_citation の順に進み、実在・行範囲と ledger の読取範囲を照合する
+  evidence:
+  - path: scripts/lib/llm/agent_loop.py
+    start_line: 165
+    end_line: 175
+    contains: citations = verify_citations
+  - path: scripts/lib/llm/tools/repo_read.py
+    start_line: 130
+    end_line: 145
+    contains: return self.ledger.check_citation(
+- id: F-05
+  category: flow
+  question: core の manifest で inject-shared-context.py はどの hook に登録され、PreToolUse の matcher は何か。
+  expected_points:
+  - SubagentStart と PreToolUse に登録され、PreToolUse は Agent|Task に適用される
+  evidence:
+  - path: packages/core/manifest.json
+    start_line: 13
+    end_line: 29
+    contains: '"SubagentStart"'
+- id: C-01
+  category: configuration
+  question: base/local のマージで mapping と配列の扱いはどう違うか。
+  expected_points:
+  - hook_common.deep_merge は両側 dict の場合だけ再帰マージし、配列などは local の値で置き換える
+  evidence:
+  - path: packages/core/hooks/hook_common.py
+    start_line: 55
+    end_line: 63
+    contains: result[key] = value
+- id: C-02
+  category: configuration
+  question: API プロファイルに model を指定した場合と省略した場合で、どのモデルを使うか。
+  expected_points:
+  - resolve_profile は profile.model を優先し、省略時は api.providers の model を使う
+  evidence:
+  - path: packages/core/hooks/api_profiles.py
+    start_line: 75
+    end_line: 94
+    contains: profile.get("model", settings.get("model"))
+- id: C-03
+  category: configuration
+  question: 探索上限が未指定のとき、往復・総トークン・実行時間の既定値は何か。
+  expected_points:
+  - AgentLimits に max_turns=30、max_total_tokens=2000000、max_duration_sec=900 を定義する
+  evidence:
+  - path: packages/core/hooks/api_profiles.py
+    start_line: 39
+    end_line: 46
+    contains: 'max_duration_sec: float = 900'
+- id: C-04
+  category: configuration
+  question: 'tool: codex で codex.enabled が false のとき実行先と注記はどうなるか。'
+  expected_points:
+  - resolve_agent_routing は claude-direct に戻し、codex.enabled is false の理由を notes に追加する
+  evidence:
+  - path: packages/core/hooks/hook_common.py
+    start_line: 395
+    end_line: 407
+    contains: resolved_tool = "claude-direct"
+- id: C-05
+  category: configuration
+  question: パッケージ設定の読込み時に base と local はどの順で解決されるか。
+  expected_points:
+  - load_package_config は base を探して読み、local を探して読み、local があれば deep_merge(base, local)、なければ base を返す
+  evidence:
+  - path: packages/core/hooks/hook_common.py
+    start_line: 123
+    end_line: 138
+    contains: return deep_merge(base, local)
+- id: X-01
+  category: cross_file
+  question: llm agent の空でない出力先は、どの例外と CLI 終了コードにつながるか。
+  expected_points:
+  - run_output.claim_output_dir が OutputDirInUse を投げ、llm_cli.run_llm_agent が捕捉して13を返すのでループは始まらない
+  evidence:
+  - path: scripts/lib/llm/run_output.py
+    start_line: 49
+    end_line: 59
+    contains: raise OutputDirInUse
+  - path: scripts/lib/llm_cli.py
+    start_line: 78
+    end_line: 85
+    contains: return _OUTPUT_IN_USE_CODE
+- id: X-02
+  category: cross_file
+  question: 読んだ行の記録は、道具と回答の根拠確認にどう共有されるか。
+  expected_points:
+  - ReadLedger.record が行範囲を記録し、RepoReadTools.check_citation が ledger に実在と行数を渡し、agent_loop が同じ check_citation
+    を verify_citations に渡す
+  evidence:
+  - path: scripts/lib/llm/tools/read_ledger.py
+    start_line: 64
+    end_line: 87
+    contains: self._files[normalized]
+  - path: scripts/lib/llm/tools/repo_read.py
+    start_line: 130
+    end_line: 145
+    contains: return self.ledger.check_citation(
+  - path: scripts/lib/llm/agent_loop.py
+    start_line: 165
+    end_line: 175
+    contains: tools.check_citation
+- id: X-03
+  category: cross_file
+  question: 'tool: api の profile 解決結果はどのように hook の api.* 行へ届くか。'
+  expected_points:
+  - resolve_agent_routing が resolve_profile と check_availability を呼び、利用可能なら asdict(profile) から warnings
+    と provider_enabled を除き routing.api に格納し、build_routing_value_lines が描画する
+  evidence:
+  - path: packages/core/hooks/hook_common.py
+    start_line: 414
+    end_line: 438
+    contains: routing["api"] = values
+  - path: packages/core/hooks/inject-shared-context.py
+    start_line: 238
+    end_line: 253
+    contains: 'lines.append(f"- api.{field}: {rendered}")'
+- id: X-04
+  category: cross_file
+  question: context-sharing の composition の instruction は、どの処理を経て rule の本文になるか。
+  expected_points:
+  - 'composition は instruction: context-sharing を指定し、resolve_instruction が instructions の facet を解決し、build_rule_md
+    が sections に追加して結合する'
+  evidence:
+  - path: facets/compositions/rules/context-sharing.yaml
+    start_line: 1
+    end_line: 8
+    contains: 'instruction: context-sharing'
+  - path: scripts/lib/facet_builder.py
+    start_line: 160
+    end_line: 169
+    contains: return self.resolve_facet("instructions", stripped)
+  - path: scripts/lib/facet_builder.py
+    start_line: 229
+    end_line: 246
+    contains: sections.append(instruction)
+- id: X-05
+  category: cross_file
+  question: llm ask のレート制限の再試行は、CLI と共通関数でどう分担するか。
+  expected_points:
+  - llm_cli は provider 呼出しと試行回数・初期待ち時間を call_with_rate_limit_retry に渡し、retry.py は rate_limited だけ待って再試行し、回数切れや他の分類は例外を返す
+  evidence:
+  - path: scripts/lib/llm_cli.py
+    start_line: 209
+    end_line: 213
+    contains: max_attempts=_RATE_LIMIT_ATTEMPTS
+  - path: scripts/lib/llm/retry.py
+    start_line: 28
+    end_line: 36
+    contains: exc.category != "rate_limited"

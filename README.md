@@ -516,7 +516,12 @@ Git の許可一覧、既定・追加の拒否パターン、symlink 解決後�
 すべてが真のときだけ真になる `verified` を持ちます。拒否対象や読取不能のファイルは確認済みにしません。
 根拠判定のための走査は読取記録を増やしません。
 `TOOL_DEFINITIONS` はプロバイダ非依存の JSON Schema です。
-エージェントループ・プロバイダ形式への変換・プロファイル設定との接続は後続タスクで扱います。
+これらは `orchex llm agent` のエージェントループとプロファイルへ接続されています。
+API を呼ぶ全サブエージェントは、共通 rule
+[`api-delegation`](facets/instructions/api-delegation.md) の使い分け・待機・partial の報告・根拠の裏取りに従います。
+リポジトリ把握を Claude 自身の探索と比較する
+[20 問の評価セットと手順](docs/evaluation/repo-understanding/README.md)も用意しています。
+check と集計テストは API 不要です。実評価は人の了承後にだけ行います。
 
 ### 外部 CLI への任意助言
 

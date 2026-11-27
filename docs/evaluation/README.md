@@ -28,6 +28,7 @@
 | `<package>.checks.yaml` | must 観点を runnable check へ写像する自動化用 sidecar（任意） |
 | `skills/_template.md`   | スキルフロー評価セットの雛形                                  |
 | `skills/<flow>.md`      | スキルフロー単位の評価セット（下記「二層構造」参照）          |
+| `repo-understanding/`  | リポジトリ把握の比較評価用の問題・正解・手順・報告雛形       |
 
 ## checks sidecar
 
