@@ -1,6 +1,6 @@
 # orchex CLI（orchestra-manager）評価セット
 
-**改訂**: 2026-11-27（旧 CLI の廃止に対応。人間レビュー待ち（本 PR））
+**改訂**: 2026-11-27（旧 CLI の廃止に対応。LLM 読み取り道具の EV-49〜52 を追加。人間レビュー待ち（本 PR））
 
 **対象**: `scripts/orchestra-manager.py`（CLI 本体）+ `scripts/lib/*.py`（`orchestra_hooks` / `orchestra_context` / `sync_engine` / `facet_builder` / `orchestra_models` / `gitignore_sync` / `toml_merge` / `agent_model_patch` / `settings_io` / `scaffold`）+ `ai_orchestra/cli.py`（`pip install orchex` 経由のエントリポイント）
 **対象テストファイル（SSOT、参考）**: `tests/unit/test_orchestra_manager_core.py`, `test_orchestra_manager_context.py`, `test_orchestra_manager_force_flag.py`, `test_orchestra_manager_gitignore.py`, `test_orchestra_manager_run_passthrough.py`, `test_orchestra_manager_gaps.py`, `test_orchestra_manager_help.py`, `test_ai_orchestra_cli.py`, `test_package_migration.py`, `tests/e2e/test_e2e_packaging.py`
@@ -100,6 +100,13 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-46（正常 / must）: llm ask は base/local の任意プロファイルを使い、3社それぞれを一回呼び、回答を stdout または指定ファイルへ返す。モデル・timeout・出力上限と、許可した検索・添付が SDK に届く — 根拠: order.md 方針1・2・4・6、C-ASK-PROVIDER / C-PROFILE-LOCAL / C-WEB-SEARCH / C-ATTACH。
 - [ ] EV-47（異常 / must）: キー不足・無効化・依存不足・timeout・API error は区別できる終了コードとメッセージを持つ。禁止・不正な添付は送信前に拒否し、SDK の例外もキーをログ・stderr に漏らさない — 根拠: order.md 方針4・制約、C-ERRORS / C-NO-SECRET。
 - [ ] EV-48（正常 / must）: SDK は llm optional extra のみへ追加し、基本依存は pyyaml のまま。extra 無しでも auth と既存 CLI は起動できる — 根拠: order.md 制約、C-EXTRA。
+
+### LLM 読み取りの道具（人間レビュー待ち・本 PR）
+
+- [ ] EV-49（正常・異常 / must）: 読み取りの道具の安全の境界 — `read_file` / `list_dir` / `glob` / `grep` は、リポジトリのルート以下で、git の結果（`git ls-files --cached --others --exclude-standard` または同等）が返すものだけを読む。未追跡のファイルは読め、gitignore の対象は拒否する。git が使えないときは内容を返さずに失敗する。既定の拒否リスト（`.env*`、`*.pem`、`*.key`、`*credentials*`、`*secret*`、`.git/` の中身）と呼び出し側が追加した拒否パターンは、gitignore に漏れていても、symlink 経由でも拒否する。symlink の解決後の実際のパス、`..`、絶対パスでルートの外を指すものは拒否する。拒否は例外にせず理由を道具の結果として返し、拒否したファイルの中身を結果・エラーに含めない — 根拠: 第 2 段階の order 作業2・制約、Gherkin Rule「読み取りの道具は安全の境界の中だけを読む」、C-GITIGNORE / C-GIT-FAIL / C-DENY / C-ROOT / C-REJECT-RESULT。
+- [ ] EV-50（正常・異常 / must）: 出力の上限とバイナリ — 1 回の出力に上限があり、既定は 1 ファイル 2,000 行または 200 KB、grep 200 件で、`list_dir` / `glob` にも件数の上限がある。上限を超えたら切り詰め、切り詰めたことと続きの読み方（`start_line` など）を結果に書く。上限は引数で変えられる。バイナリのファイルは内容を返さない — 根拠: 同 order 作業2、C-LIMITS / C-BINARY。
+- [ ] EV-51（正常 / must）: 読んだ範囲の記録 — 道具が実際に返したファイルと行の範囲だけを、セッション単位で記録する。根拠 `path:開始行-終了行` について、実在する・行の範囲が収まる・読んだ範囲に入る、を判定できる — 根拠: 同 order 作業3、C-LEDGER。
+- [ ] EV-52（正常 / must）: 道具の定義と依存 — 道具は上の 4 つだけで、書き込み・コマンドの実行・ネットワークへのアクセスを行う道具を持たない。名前・説明・引数の JSON Schema をプロバイダに依存しない形で持ち、標準ライブラリと git だけを使う — 根拠: 同 order 作業1・4・制約、C-TOOLS / C-DEFS / C-NO-DEPS。
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

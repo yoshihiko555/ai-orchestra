@@ -483,6 +483,32 @@ Anthropic / OpenAI も呼べます。`cli-tools.local.yaml` の `api.profiles` �
 [設定リファレンス](docs/reference/configuration.md#api-セクション)を参照してください。
 `--project` で設定を読むプロジェクトを指定できます。`--output` 指定時は回答をファイルに書きます。
 
+読み取り道具のライブラリは `scripts/lib/llm/tools/repo_read.py` にあります。
+`RepoReadTools(root, extra_deny_patterns=(), limits=ReadLimits(), ledger=None)` は、
+`read_file` / `list_dir` / `glob` / `grep` と `execute(name, arguments)` を提供します。
+標準ライブラリと Git だけで動き、各呼出しは `ToolResult(ok, text)` を返します。
+Git の許可一覧、既定・追加の拒否パターン、symlink 解決後のルート境界を確認し、拒否理由を結果に含めます。
+読取には POSIX の no-follow 操作を使い、バイナリの内容は返しません。
+追加拒否パターンは大文字小文字を区別せず、末尾の `/` を除いて照合します。
+`/` が残らなければ各パス要素に当たり、`private/` はどの階層の `private` にも当たります。
+`/` が残る場合は先頭の `/` を除き、ルートからのパスと親ディレクトリへ glob として照合します。
+`*` は階層を越えず、`**` はゼロ個以上の階層に一致します。
+例えば `docs/internal/*` は、その下のディレクトリ内も拒否しますが、
+`other/docs/internal/a.md` には当たりません。
+空・NUL・`..` 要素を含むパターンは構築時に `ValueError` になります。
+
+`ReadLimits` の既定値は 2,000 行・本文 200 KiB・grep 200 件・列挙 1,000 件です。
+切り詰め時は続きの読み方を通知します。行番号と改行を含む 1 行分の出力がバイト上限を超える場合はその行を返さず、
+その行番号と返せない理由を通知して止まります。続きが指定範囲内にある場合は、
+次の行を指す `start_line=N+1` を案内します。最終行や `end_line` で続きがなければ案内しません。
+上限を超えた行は読取記録に含めず、案内された引数だけで先へ読み進められます。
+`tools.check_citation("src/a.py:10-20")` で、安全境界を通して現在のファイルと行数を確認し、
+実際に返した行範囲と根拠を照合できます。結果は `exists`・`in_bounds`・`within_read` と、
+すべてが真のときだけ真になる `verified` を持ちます。拒否対象や読取不能のファイルは確認済みにしません。
+根拠判定のための走査は読取記録を増やしません。
+`TOOL_DEFINITIONS` はプロバイダ非依存の JSON Schema です。
+エージェントループ・プロバイダ形式への変換・プロファイル設定との接続は後続タスクで扱います。
+
 ### 外部 CLI への任意助言
 
 `[Codex Suggestion]` は、操作の保留や追加相談を求める必須指示ではありません。
