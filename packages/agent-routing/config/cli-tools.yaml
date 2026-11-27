@@ -64,6 +64,8 @@ api:
       provider: gemini
       tools:
         repo_read: true
+      limits:
+        max_output_tokens: 16384
 
 # エージェント提案（agent-router.py）の判定エンジン（ADR-20261029-062）
 router:
