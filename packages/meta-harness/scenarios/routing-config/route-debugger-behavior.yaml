@@ -9,6 +9,7 @@ prompt: |
      `.claude/config/agent-routing/cli-tools.local.yaml` を読み、local を優先する。
      agent-routing と同じ規則で `agents.debugger.tool` を解決する。
      `codex` が無効なら `claude-direct` にフォールバックする。
+     `api` は API プロファイルを解決できなければ `claude-direct` にフォールバックする。
      `auto` では有効な `codex` を選び、無効なら `claude-direct` を選ぶ。
   2. 数列 `[3, 1, 4, 1, 5]` に対し、解決値ごとに次の作業を行う。
      - `codex`: 最初に重複する値を求める。

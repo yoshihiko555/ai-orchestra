@@ -6,7 +6,7 @@ prompt: |
   外部 CLI を起動せず、設定に応じたレビュー計画を作ってください。
   cli-tools.yaml と存在する cli-tools.local.yaml を読み、local 優先で agents.architect.tool を解決する。
   codex なら action は delegate-review、result.steps は [inspect, cross-check, review]。
-  claude-direct または auto なら action は review-directly、result.steps は [read, verify, report]。
+  claude-direct、auto または api なら action は review-directly、result.steps は [read, verify, report]。
   リポジトリ直下の routing-behavior-holdout.json に、resolved_key: agents.architect.tool、
   resolved_value: 解決した tool、action、result.steps を持つ JSON を書く。既存ファイルは変更しない。
 allowed_tools:

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`meta-harness`: `tool: api` を含むルーティング候補の登録・検証と振る舞い評価を修正**。
+
 ### Added
 
 - **API キーで Anthropic / OpenAI / Gemini を呼ぶ共通基盤を追加**: `orchex auth set/status` と `orchex llm ask --profile` で認証情報の管理、検索・添付付きの一回の質問ができる。依存は `orchex[llm]` で導入し、researcher は既定の Gemini research プロファイルを必要な場面だけ使う。利用できない場合は Claude だけで調査を続ける。

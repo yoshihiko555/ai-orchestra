@@ -318,7 +318,7 @@ class TestProposerPrompt:
 
         assert "agents.*.tool" in prompt
         assert f"agents.debugger.tool = {debugger_tool}" in prompt
-        assert "allowed values: auto | claude-direct | codex" in prompt
+        assert "allowed values: api | auto | claude-direct | codex" in prompt
         assert "codex.model" not in prompt
         assert "config_patch のみ" in prompt
         assert "proposal schema（schema_version, hypothesis, theme, config_patch" in prompt

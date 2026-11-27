@@ -57,7 +57,7 @@ def _holdout_behavior(value: str) -> dict[str, Any]:
             "action": "delegate-review",
             "result": {"steps": ["inspect", "cross-check", "review"]},
         }
-    if value in ("claude-direct", "auto"):
+    if value in ("claude-direct", "auto", "api"):
         return {"action": "review-directly", "result": {"steps": ["read", "verify", "report"]}}
     raise AssertionError(f"unsupported agents.architect.tool value: {value!r}")
 
