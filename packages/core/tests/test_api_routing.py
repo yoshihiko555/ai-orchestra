@@ -296,5 +296,5 @@ def test_shipped_repo_reader_resolves_without_local_overrides() -> None:
     assert settings.repo_read is True
     assert settings.limits == _profiles().AgentLimits()
     assert settings.profile.timeout_sec == 120
-    assert settings.profile.max_output_tokens == 4096
-    assert "limits" not in config["api"]["profiles"]["repo-reader"]
+    assert settings.profile.max_output_tokens == 16384
+    assert set(config["api"]["profiles"]["repo-reader"]["limits"]) == {"max_output_tokens"}

@@ -146,6 +146,9 @@ def run_agent_loop(
         messages.append(message)
         if message.text:
             last_answer = message.text
+        if response.truncated:
+            stop_reason = "output_truncated"
+            break
         if summary or not message.tool_calls:
             break
         if turns >= limits.max_turns:

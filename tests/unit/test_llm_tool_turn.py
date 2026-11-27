@@ -28,6 +28,7 @@ def test_tool_turn_response_requires_explicit_usage():
     response = ToolTurnResponse(message, usage=TokenUsage(1, 2))
     assert response.message == message
     assert response.usage == TokenUsage(1, 2)
+    assert response.truncated is False
 
 
 def tool_request():
@@ -72,6 +73,7 @@ def test_tool_turn_preserves_calls_and_transfers_results_to_next_turn(
     first = call_tool_turn(provider, request, "dummy-key", client_factory=factory)
 
     assert len(requests) == 1
+    assert first.truncated is False
     calls = first.message.tool_calls
     assert [(c.call_id, c.name, c.arguments) for c in calls] == [
         ("call_first", "lookup_value", {"value": 1}),
@@ -92,6 +94,7 @@ def test_tool_turn_preserves_calls_and_transfers_results_to_next_turn(
 
     assert len(requests) == 2
     assert second.message.text == "確認完了"
+    assert second.truncated is False
     assert not second.message.tool_calls
     initial, following = [json.loads(r.content) for r in requests]
     if provider == "anthropic":
@@ -379,6 +382,101 @@ def test_tool_turn_returns_input_and_output_usage(
     )
 
     assert (response.usage.input_tokens, response.usage.output_tokens) == (1, 2)
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "gemini"])
+@pytest.mark.parametrize("final", [False, True])
+def test_output_limit_is_reported_without_returning_tool_calls(
+    sdk_environment, sdk_tool_client_factory, provider, final
+):
+    from lib.llm.providers import call_tool_turn
+
+    def handle(request):
+        payload = tool_response(provider, request.url.path, final=final)
+        if provider == "anthropic":
+            payload["stop_reason"] = "max_tokens"
+        elif provider == "gemini":
+            payload["candidates"][0]["finishReason"] = "MAX_TOKENS"
+        else:
+            payload["choices"][0]["finish_reason"] = "length"
+        return sdk_environment.http.Response(200, json=payload)
+
+    response = call_tool_turn(
+        provider,
+        tool_request(),
+        "dummy-key",
+        client_factory=sdk_tool_client_factory(provider, handle),
+    )
+
+    assert response.truncated is True
+    assert response.message.tool_calls == ()
+    assert response.message.text == ("確認完了" if final else "")
+
+
+def test_truncated_openai_call_does_not_parse_incomplete_arguments(
+    sdk_environment, sdk_tool_client_factory
+):
+    from lib.llm.providers import call_tool_turn
+
+    def handle(request):
+        payload = tool_response("openai", request.url.path, final=False)
+        choice = payload["choices"][0]
+        choice["finish_reason"] = "length"
+        choice["message"]["tool_calls"][0]["function"]["arguments"] = '{"value": '
+        return sdk_environment.http.Response(200, json=payload)
+
+    response = call_tool_turn(
+        "openai",
+        tool_request(),
+        "dummy-key",
+        client_factory=sdk_tool_client_factory("openai", handle),
+    )
+
+    assert response.truncated is True
+    assert response.message.tool_calls == ()
+
+
+def test_gemini_output_limit_without_text_is_reported(sdk_environment, sdk_tool_client_factory):
+    from lib.llm.providers import call_tool_turn
+
+    def handle(request):
+        payload = tool_response("gemini", request.url.path, final=True)
+        candidate = payload["candidates"][0]
+        candidate["finishReason"] = "MAX_TOKENS"
+        candidate["content"]["parts"] = []
+        return sdk_environment.http.Response(200, json=payload)
+
+    response = call_tool_turn(
+        "gemini",
+        tool_request(),
+        "dummy-key",
+        client_factory=sdk_tool_client_factory("gemini", handle),
+    )
+
+    assert response.truncated is True
+    assert response.message.text == ""
+    assert response.message.tool_calls == ()
+
+
+def test_openai_content_filter_does_not_indicate_output_limit(
+    sdk_environment, sdk_tool_client_factory
+):
+    from lib.llm.providers import call_tool_turn
+
+    def handle(request):
+        payload = tool_response("openai", request.url.path, final=True)
+        payload["choices"][0]["finish_reason"] = "content_filter"
+        return sdk_environment.http.Response(200, json=payload)
+
+    response = call_tool_turn(
+        "openai",
+        tool_request(),
+        "dummy-key",
+        client_factory=sdk_tool_client_factory("openai", handle),
+    )
+
+    assert response.truncated is False
+    assert response.message.text == "確認完了"
 
 
 def test_tool_turn_missing_usage_is_zero(sdk_environment, sdk_tool_client_factory):

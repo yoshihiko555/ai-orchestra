@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
@@ -111,6 +112,65 @@ def test_turn_limit_summarizes_once_without_tools_or_executing_pending_read(repo
     assert len(pending) == 1
     assert pending[0].call_id == "2"
     assert pending[0].is_error is True
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_truncated_final_answer_is_partial_and_keeps_read_evidence(repo, structured):
+    (repo / "a.py").write_text("public\n", encoding="utf-8")
+    text = (
+        json.dumps({"answer": "途中まで", "citations": []}, ensure_ascii=False)
+        if structured
+        else '```json\n{"answer": "途中まで'
+    )
+    turn = Mock(
+        side_effect=[
+            _response(calls=(_read(),)),
+            replace(_response(text), truncated=True),
+        ]
+    )
+
+    result = _run(turn, limits=_limits(), tools=RepoReadTools(repo))
+
+    assert (result.status, result.stop_reason) == ("partial", "output_truncated")
+    assert result.answer == ("途中まで" if structured else text)
+    assert result.citations_parse_failed is (not structured)
+    assert result.unverified_count == (0 if structured else None)
+    assert result.files_read == ("a.py",)
+    assert result.turns == turn.call_count == 2
+    assert (result.tokens.input_tokens, result.tokens.output_tokens) == (4, 2)
+
+
+@pytest.mark.parametrize("text", ["途中までの要約", ""])
+def test_truncated_summary_overrides_turn_limit_and_preserves_available_text(repo, text):
+    turn = Mock(
+        side_effect=[
+            _response("探索中の回答", calls=(_read(),)),
+            replace(_response(text), truncated=True),
+        ]
+    )
+
+    result = _run(turn, limits=_limits(max_turns=1), tools=RepoReadTools(repo))
+
+    assert (result.status, result.stop_reason) == ("partial", "output_truncated")
+    assert result.answer == (text or "探索中の回答")
+    assert result.turns == turn.call_count == 2
+    assert turn.call_args.args[0].tools == ()
+
+
+def test_truncated_tool_turn_stops_without_execution_retry_or_summary(repo):
+    (repo / "a.py").write_text("public\n", encoding="utf-8")
+    tools = RepoReadTools(repo)
+    tools.execute = Mock(wraps=tools.execute)
+    turn = Mock(return_value=replace(_response(calls=(_read(),)), truncated=True))
+    sleep = Mock()
+
+    result = _run(turn, limits=_limits(), tools=tools, sleep=sleep)
+
+    assert (result.status, result.stop_reason) == ("partial", "output_truncated")
+    assert result.turns == turn.call_count == 1
+    assert result.files_read == ()
+    tools.execute.assert_not_called()
+    sleep.assert_not_called()
 
 
 def test_token_limit_counts_accumulated_input_and_output_before_summary(repo):

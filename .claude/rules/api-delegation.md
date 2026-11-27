@@ -73,6 +73,8 @@ partial（stop_reason: quota_exhausted、往復 4 回）
 ```
 
 部分結果を完了した回答として扱わない。停止理由・不足する範囲を明示し、必要な探索を claude-direct で補う。
+`output_truncated` は、最終回答・まとめ・途中の道具呼び出しが出力上限で切れたことを示す。
+切れた道具引数は実行されず、再試行や追加のまとめも行われない。本文が残っていても部分結果として扱う。
 
 `citations_parse_failed: true` は、読み取り道具が許可されているのに最後の回答を構造化できず、根拠を読み取れなかったことを示す。この場合の `unverified_count: null` を「すべて確認済み」と解釈しない。status が complete、終了コードが 0 でも、回答全体を未確認として扱い、自分で Read して裏取りする。裏取りできない主張は、その限界を報告する。
 
@@ -80,20 +82,20 @@ partial（stop_reason: quota_exhausted、往復 4 回）
 
 ## 終了コードごとの対応
 
-| 終了コード | agent / ask の意味                                                        | 対応                                                                                 |
-| ---------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| 0          | agent は complete、ask は成功                                             | 結果を読み、根拠を確認して報告                                                       |
-| 2          | 引数エラー                                                                | コマンドを確認・修正。解消できなければ claude-direct                                 |
-| 3          | キー未設定                                                                | `orchex auth set <provider>` の案内を伝え、claude-direct。キーを読んで調べない       |
-| 4          | プロバイダ無効                                                            | 有効化を勝手に変更せず claude-direct                                                 |
-| 5          | SDK 未導入                                                                | `orchex[llm]` が必要なことを伝え、claude-direct                                      |
-| 6          | agent は api_timeout、ask はタイムアウト                                  | 部分結果があれば確認し、claude-direct で補う                                         |
-| 7          | API エラー                                                                | 部分結果があれば確認し、claude-direct。応答本文を報告へコピーしない                  |
-| 8          | 設定・添付・ファイル入出力エラー                                          | 原因に合う設定やパスを確認。拒否を迂回せず、解消できなければ claude-direct           |
-| 9          | quota_exhausted（利用枠・残高不足）                                       | 再試行しない。部分結果を確認し、claude-direct                                        |
-| 10         | rate_limited（再試行後も回復しない）                                      | CLI は既に再試行済み。無限に呼び直さず、部分結果を確認して claude-direct             |
-| 11         | auth_error（認証・権限エラー）                                            | 再試行しない。設定者へ案内し、claude-direct                                          |
-| 12         | agent の探索上限（max_turns / token_limit / timeout）。ask では使用しない | partial として停止理由・往復回数を冒頭に記載し、不足を claude-direct で補う          |
-| 13         | agent の出力先が空でない。ask では使用しない                              | 既存内容を消さず、新しい出力先で一回だけやり直す。再発したら失敗として claude-direct |
+| 終了コード | agent / ask の意味                                                                                                      | 対応                                                                                 |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| 0          | agent は complete、ask は成功                                                                                           | 結果を読み、根拠を確認して報告                                                       |
+| 2          | 引数エラー                                                                                                              | コマンドを確認・修正。解消できなければ claude-direct                                 |
+| 3          | キー未設定                                                                                                              | `orchex auth set <provider>` の案内を伝え、claude-direct。キーを読んで調べない       |
+| 4          | プロバイダ無効                                                                                                          | 有効化を勝手に変更せず claude-direct                                                 |
+| 5          | SDK 未導入                                                                                                              | `orchex[llm]` が必要なことを伝え、claude-direct                                      |
+| 6          | agent は api_timeout、ask はタイムアウト                                                                                | 部分結果があれば確認し、claude-direct で補う                                         |
+| 7          | API エラー                                                                                                              | 部分結果があれば確認し、claude-direct。応答本文を報告へコピーしない                  |
+| 8          | 設定・添付・ファイル入出力エラー                                                                                        | 原因に合う設定やパスを確認。拒否を迂回せず、解消できなければ claude-direct           |
+| 9          | quota_exhausted（利用枠・残高不足）                                                                                     | 再試行しない。部分結果を確認し、claude-direct                                        |
+| 10         | rate_limited（再試行後も回復しない）                                                                                    | CLI は既に再試行済み。無限に呼び直さず、部分結果を確認して claude-direct             |
+| 11         | auth_error（認証・権限エラー）                                                                                          | 再試行しない。設定者へ案内し、claude-direct                                          |
+| 12         | agent の探索上限（max_turns / token_limit / timeout）または出力上限での切り詰め（output_truncated）。ask では使用しない | partial として停止理由・往復回数を冒頭に記載し、不足を claude-direct で補う          |
+| 13         | agent の出力先が空でない。ask では使用しない                                                                            | 既存内容を消さず、新しい出力先で一回だけやり直す。再発したら失敗として claude-direct |
 
 設定・利用可否・入出力の失敗では result.json がない場合もある。exit と結果の有無を確認し、結果がないことを成功へ読み替えない。

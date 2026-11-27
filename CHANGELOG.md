@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`llm agent`: 出力上限で切れた応答を partial として返すように修正**。最終回答・まとめ・途中の道具呼び出しを `output_truncated`（終了コード12）で止め、切れた道具引数は解析・実行しない。repo-reader の出力上限を16384トークンに引き上げた。
+
 - **`llm agent`: コードブロックで囲まれた回答から本文と根拠を取り出せるように修正**。json の言語指定がない場合や、前後に空白・改行がある場合も読み取る。
 
 - **`meta-harness`: `tool: api` を含むルーティング候補の登録・検証と振る舞い評価を修正**。

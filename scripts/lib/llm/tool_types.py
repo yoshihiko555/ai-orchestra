@@ -75,3 +75,4 @@ class TokenUsage:
 class ToolTurnResponse:
     message: AssistantMessage
     usage: TokenUsage
+    truncated: bool = False

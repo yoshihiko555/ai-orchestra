@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -235,6 +236,34 @@ def test_local_profile_turn_limit_reaches_execution(monkeypatch, project, turn, 
     assert turn.call_count == 2
     assert turn.call_args_list[0].args[1].tools
     assert turn.call_args_list[1].args[1].tools == ()
+
+
+@pytest.mark.parametrize("output_files", [False, True])
+def test_truncated_answer_returns_partial_exit_without_error_message(
+    monkeypatch, project, turn, tmp_path, capsys, output_files
+):
+    text = '```json\n{"answer": "途中まで'
+    turn.side_effect = [replace(_response(text), truncated=True)]
+    output = tmp_path / "out"
+    extra = ("--output", output) if output_files else ()
+
+    code = _agent(monkeypatch, project, *extra)
+
+    captured = capsys.readouterr()
+    result = json.loads(
+        (output / "result.json").read_text(encoding="utf-8") if output_files else captured.out
+    )
+    assert code == 12
+    assert result["status"] == "partial"
+    assert result["stop_reason"] == "output_truncated"
+    assert result["answer"] == text
+    assert result["citations_parse_failed"] is True
+    assert result["unverified_count"] is None
+    assert captured.err == ""
+    turn.assert_called_once()
+    if output_files:
+        assert captured.out == ""
+        assert (output / "exit").read_text(encoding="utf-8") == "12\n"
 
 
 def test_profile_deny_reaches_read_tool_and_excludes_file_from_files_read(
