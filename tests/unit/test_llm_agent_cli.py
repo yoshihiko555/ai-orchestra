@@ -17,6 +17,7 @@ from lib.llm.types import LLMError
 from tests.unit.test_llm_agent_loop import _read, _response
 from tests.unit.test_llm_cli import _run
 from tests.unit.test_llm_cli import isolated_environment as isolated_environment
+from tests.unit.test_llm_repo_read import _remove_before_open
 
 
 @pytest.fixture
@@ -106,6 +107,7 @@ def test_agent_stdout_has_public_result_schema(monkeypatch, project, turn, capsy
         "citations",
         "files_read",
         "unverified_count",
+        "citations_parse_failed",
     }
     assert result == {
         "status": "complete",
@@ -116,6 +118,7 @@ def test_agent_stdout_has_public_result_schema(monkeypatch, project, turn, capsy
         "citations": [{**citation, "verified": True}],
         "files_read": ["a.py"],
         "unverified_count": 0,
+        "citations_parse_failed": False,
     }
 
 
@@ -427,3 +430,85 @@ def test_summary_api_error_controls_json_and_process_exit(monkeypatch, project, 
     assert result["answer"] == "最後の回答"
     assert result["turns"] == 1
     assert "枠" in captured.err or "残高" in captured.err
+
+
+@pytest.mark.parametrize("output_files", [False, True])
+def test_unstructured_answer_reports_parse_failure_without_changing_exit(
+    monkeypatch, project, turn, tmp_path, capsys, output_files
+):
+    turn.side_effect = [_response("構造化されていない回答")]
+    output = tmp_path / "out"
+    extra = ("--output", output) if output_files else ()
+
+    code = _agent(monkeypatch, project, *extra)
+
+    captured = capsys.readouterr()
+    result = json.loads(
+        (output / "result.json").read_text(encoding="utf-8") if output_files else captured.out
+    )
+    assert code == 0
+    assert result["status"] == "complete"
+    assert result["stop_reason"] is None
+    assert result["answer"] == "構造化されていない回答"
+    assert result["citations_parse_failed"] is True
+    assert result["unverified_count"] is None
+    if output_files:
+        assert (output / "exit").read_text(encoding="utf-8") == "0\n"
+
+
+@pytest.mark.parametrize("name", ["read_file", "grep"])
+def test_deleted_file_tool_result_reaches_next_turn_without_io_exit(
+    monkeypatch, project, turn, capsys, caplog, name
+):
+    from lib.llm.tool_types import ToolCall, ToolResultsMessage
+
+    target = project / "a.py"
+    target.write_text("needle PRIVATE-ALPHA private-omega\n", encoding="utf-8")
+    (project / "b.py").write_text("needle public\n", encoding="utf-8")
+    removed = _remove_before_open(monkeypatch, target)
+    arguments = {"path": target.name} if name == "read_file" else {"pattern": "needle"}
+    turn.side_effect = [
+        _response(calls=(ToolCall("race", name, arguments),)),
+        _response(json.dumps({"answer": "探索を継続", "citations": []})),
+    ]
+
+    code = _agent(monkeypatch, project)
+
+    captured = capsys.readouterr()
+    assert removed == [target]
+    assert code == 0
+    assert turn.call_count == 2
+    following = turn.call_args_list[1].args[1]
+    assert isinstance(following.messages[-1], ToolResultsMessage)
+    (tool_result,) = following.messages[-1].results
+    assert tool_result.call_id == "race"
+    assert tool_result.is_error is (name == "read_file")
+    if name == "grep":
+        assert tool_result.content == "b.py:1:needle public"
+    else:
+        assert tool_result.content.strip()
+    result = json.loads(captured.out)
+    assert result["status"] == "complete"
+    assert result["turns"] == 2
+    assert result["answer"] == "探索を継続"
+    assert result["files_read"] == (["b.py"] if name == "grep" else [])
+    for text in (tool_result.content, captured.out, captured.err, caplog.text):
+        for fragment in ("private-alpha", "private-omega", "No such file", str(project)):
+            assert fragment not in text
+
+
+def test_failed_progress_write_still_returns_io_exit(monkeypatch, project, turn, tmp_path, capsys):
+    from lib.llm.run_output import RunOutput
+
+    turn.side_effect = [_response(calls=(_read(),))]
+    monkeypatch.setattr(RunOutput, "write_progress", Mock(side_effect=PermissionError("書込失敗")))
+    output = tmp_path / "out"
+
+    assert _agent(monkeypatch, project, "--output", output) == 8
+
+    turn.assert_called_once()
+    assert (output / "exit").read_text(encoding="utf-8") == "8\n"
+    assert not (output / "result.json").exists()
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert captured.err.strip()

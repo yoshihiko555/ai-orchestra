@@ -98,7 +98,7 @@
 
 ### API ルーティング（人間レビュー待ち・本 PR）
 
-- [ ] EV-42（正常 / must）: tool: api と api_profile は任意名のプロファイルへ解決される。既定のプロファイルは research（gemini・検索と添付を許可）だけで、anthropic / openai へ結び付くエージェントはない — 根拠: order.md 方針2・3・6、C-DEFAULT-PROFILES。
+- [ ] EV-42（正常 / must、人間レビュー待ち）: tool: api と api_profile は任意名のプロファイルへ解決される。既定は research（gemini・検索と添付を許可）と repo-reader（gemini・repo_read を許可、limits は未指定）で、local なしで解決できる。repo-reader の上限は既定値を使い、どのエージェントにも結び付かない。researcher は research のままで、anthropic / openai へ結び付くエージェントもない — 根拠: order.md 方針2・3・6、今回の order 作業5、C-DEFAULT-PROFILES / C-REPO-READER-DIST / C-REPO-READER-UNBOUND。
 - [ ] EV-43（異常 / must）: API が無効・キー不足・SDK 不足、またはプロファイルが未定義・不正なら get_agent_tool と hook は claude-direct に戻り、note に理由を書く。キー不足には auth set の案内を含む — 根拠: order.md 方針3、計画 C-ROUTE-FALLBACK。
 - [ ] EV-44（正常 / must）: researcher は API research に結び付き、Bash と既存の探索ツールを使える。探索は Claude 自身が行い、グラウンディング・マルチモーダル・長い文脈が必要なときだけ API を使う。API 不可時は Claude で完結する。本文の意味は文書レビューで確認する — 根拠: order.md 方針5、C-RESEARCHER-DEF。
 
