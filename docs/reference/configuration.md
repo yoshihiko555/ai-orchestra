@@ -231,6 +231,14 @@ Gemini の400に含まれる `ErrorInfo.reason=API_KEY_INVALID` も認証エラ�
 
 ### 読み取り道具で探索するエージェント
 
+API を呼ぶ全サブエージェントは [api-delegation rule](../../facets/instructions/api-delegation.md) に従う。
+一回の検索・添付付きの問い合わせは ask、リポジトリの読取探索は agent を使う。
+長時間の agent は毎回新しい出力先を作り、Bash がバックグラウンドへ移しても `exit` を条件に待ってから
+`result.json` を読む。待機期限は `max_duration_sec + 2 × timeout_sec`（既定 1140 秒）。
+期限までに exit がなければ失敗とする。partial の報告の冒頭には stop_reason と turns を必ず書き、
+未確認根拠と重要な主張は Read で裏取りする。コマンド例と終了コード別の対応は上記 rule を参照。
+開発者向けの [比較評価の手順](../evaluation/repo-understanding/README.md) は実 API 不要の check と集計テストも提供する。
+
 `orchex llm agent --profile repo-reader [--project DIR] [--output DIR] "質問"` で、
 API側のモデルがリポジトリを探索する。呼び出すサブエージェントの用途には依存しない。
 既定のresearcher設定やroutingは変更せず、プロファイルは明示的に選ぶ。

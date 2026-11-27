@@ -74,6 +74,11 @@ Agent の入力（prompt）は書き換えない（auto mode の classifier が�
 ADR-20261104-064）。表示された内容を Agent の prompt に書き写さない。SubagentStart の登録がまだ無い
 環境（同期の前など）では、ブロックはサブエージェントに届かず、サブエージェントは config を自分で読んで解決する。
 
+`tool: api` では `api.profile` / `api.provider` / `api.model` / `api.web_search` /
+`api.attachments` / `api.timeout_sec` / `api.max_output_tokens` と `api.command` が付く。
+API キーは含まれない。`note` は利用不可などで claude-direct に戻った理由も示す。
+解決値の読み方、ask / agent の使い分け、待機と partial の報告は `api-delegation` に従う。
+
 ## 制限
 
 - エントリーは最新 5 件まで注入

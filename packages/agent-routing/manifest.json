@@ -42,7 +42,7 @@
     "agents/testing-reality-checker.md",
     "agents/ux-reviewer.md"
   ],
-  "rules": ["orchestra-usage", "agent-routing-policy"],
+  "rules": ["orchestra-usage", "agent-routing-policy", "api-delegation"],
   "scripts": [],
   "config": ["config/cli-tools.yaml"]
 }

@@ -1,0 +1,8 @@
+# API 委譲の共通ルール
+name: api-delegation
+description: API を呼ぶ全サブエージェントの実行・待機・根拠確認
+type: rule
+
+policies: []
+
+instruction: api-delegation

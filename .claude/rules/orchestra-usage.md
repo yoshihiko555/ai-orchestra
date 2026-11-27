@@ -18,16 +18,17 @@ CLI ツールの利用可否と設定は `cli-tools.yaml` で一元管理する�
 
 1. `.claude/config/agent-routing/cli-tools.yaml` を読み込む
 2. `.claude/config/agent-routing/cli-tools.local.yaml` があれば上書きを適用する
-3. `{tool}.enabled` を確認する（`false` なら `claude-direct` にフォールバック）
+3. Codex は `codex.enabled` を確認する（`false` なら `claude-direct` にフォールバック）。API はプロファイルの provider の有効化・キー・SDK の利用可否を共通解決し、利用不可なら `claude-direct` に戻す
 4. `agents.{name}.tool` で実行先を決定する
 
 ### ルーティング規則
 
-| `agents.{name}.tool` | 動作                                                                         |
-| -------------------- | ---------------------------------------------------------------------------- |
-| `codex`              | Codex CLI を使用                                                             |
-| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                              |
-| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Claude、単純作業 → Claude） |
+| `agents.{name}.tool` | 動作                                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `codex`              | Codex CLI を使用                                                                                             |
+| `claude-direct`      | 外部 CLI を呼ばず Claude で処理                                                                              |
+| `auto`               | タスク種別に応じて選択（深い推論 → Codex、調査 → Claude、単純作業 → Claude）                                 |
+| `api`                | `api_profile` のプロファイルで `orchex llm` を呼ぶ。利用不可時は claude-direct（手順は api-delegation 参照） |
 
 ## サンドボックス実行
 

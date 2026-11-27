@@ -99,6 +99,7 @@ AI Orchestra の全パッケージ一覧と詳細。`packages/*/agents` と `pac
 | agents | 28 定義                   | planner, architect, code-reviewer, general-purpose 等    |
 | rule   | `orchestra-usage.md`      | AI Orchestra 使用ガイド                                  |
 | rule   | `agent-routing-policy.md` | エージェントルーティングポリシー                         |
+| rule   | `api-delegation.md`       | API 利用サブエージェントの呼出し・待機・根拠確認          |
 | config | `cli-tools.yaml`          | モデル名・サンドボックス・フラグの一元管理               |
 
 ### 提案の判定（`router.engine`）

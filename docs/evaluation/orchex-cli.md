@@ -117,6 +117,11 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 - [ ] EV-57（正常・異常 / must）: 回答の根拠を構造化して抽出し、実在・行範囲・実際の読取記録で verified を決める。出力 JSON は公開フィールドだけを持ち、キーと SDK の生データを含めない — 根拠: 同作業2・3、C-OUTPUT-SHAPE / C-CITE-PARSE / C-CITE-VERIFY / C-NO-SECRET。
 - [ ] EV-58（正常・異常 / must）: llm agent は stdout または --output の result.json へ結果を返す。途中経過は progress.json、終了コードは最後に exit へ書く。空でない出力先では実行せず既存内容を保持する。ProfileError / CredentialsError は str(exc) を stderr へ届ける。deny の内容不正と入出力・文字コードの失敗は原因に合った文言を出し、終了コード 8 と --output 指定時の exit 書込を維持する — 根拠: 同作業4、C-CLI-AGENT / C-OUT-FILES / C-OUT-USED / C-EXIT-CODES、レビュー裁定 RES-2 / RES-3。
 
+### リポジトリ把握の比較評価（人間レビュー待ち・本 PR）
+
+- [ ] EV-59（正常・異常 / must）: 評価問題は 20 問・4 種類各 5 問とし、一意な ID、問題、正解の要点、根拠の path・start_line・end_line・contains を持つ。check は形式と指定行範囲の文字列を検査し、文字列が別の行へ移った場合も検出する — 根拠: 今回の order.md 作業2・3、C-EVAL-SET。
+- [ ] EV-60（正常・異常 / must）: 同じ問題を基準方式と llm agent に渡し、Claude の採点と verified から全体・種類別の正答率・未確認割合・トークン・時間を集計する。採用条件は基準の正答率の 9 割以上かつ未確認割合 1 割以下。根拠ゼロは採用しない。確認フラグ欠落・使用済み出力先では実行せず、partial は採点し、結果欠落は不正答として記録する。報告と抜き取り一覧を出力し、環境変数・認証情報を保存しない。テストは実 API を使わない — 根拠: 同作業3・制約、C-EVAL-RUN / C-EVAL-METRICS / C-EVAL-GRADE / C-EVAL-ADOPT / C-EVAL-REPORT / C-EVAL-OUTDIR / C-NO-SECRET。
+
 ## 5. テストレビュー判断基準（パッケージ固有）
 
 - 配布ファイルの安全側スキップ（EV-08〜EV-11）を検証するテストは、「ハッシュ未記録」「ハッシュ不一致（ユーザー変更）」「ハッシュ一致（未変更）」の3状態を独立したケースとして区別しているか。1ケースに複数状態を混在させて期待値を曖昧にしていないか。
