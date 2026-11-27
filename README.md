@@ -459,6 +459,8 @@ UserPromptSubmit のエージェント提案は、プロジェクトに `.claude
 
 `researcher` は既定で API の `research` プロファイル（Gemini）に結び付きます。探索は Claude 自身が Read / Grep / Glob / WebSearch / WebFetch で行い、検索のグラウンディング・マルチモーダル・長い文脈が必要な場面だけ API を呼びます。キーや SDK がない場合は `claude-direct` に戻り、Claude だけで調査を完結させます。
 
+meta-harness の `routing-config` 候補でも `agents.*.tool: api` を指定できます。`api_profile` は既存の設定を引き継ぎ、プロファイルを解決できない場合は `claude-direct` に戻ります。
+
 ### API キーで LLM を一回呼ぶ
 
 API 機能は optional extra です。基本インストールの依存は pyyaml のままです。

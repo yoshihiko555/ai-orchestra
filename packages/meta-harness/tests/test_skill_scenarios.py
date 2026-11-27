@@ -576,6 +576,69 @@ def test_routing_behavior_oracle_covers_agent_router_tool_values(
     fixture.assert_behavior(tmp_path, "train", Path(artifact_name))
 
 
+def test_routing_behavior_holdout_oracle_accepts_api_review(
+    tmp_path: Path,
+) -> None:
+    _stub_hook_common()
+    fixture = _routing_behavior_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={"agents": {"architect": {"tool": "codex"}}},
+        local_overrides={"agents": {"architect": {"tool": "api"}}},
+    )
+    artifact_name = "routing-behavior-holdout.json"
+    artifact_path = tmp_path / artifact_name
+    artifact = {
+        "resolved_key": "agents.architect.tool",
+        "resolved_value": "api",
+        "action": "review-directly",
+        "result": {"steps": ["read", "verify", "report"]},
+    }
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_behavior(tmp_path, "holdout", Path(artifact_name))
+
+    artifact_path.write_text(
+        json.dumps(
+            {
+                **artifact,
+                "action": "delegate-review",
+                "result": {"steps": ["inspect", "cross-check", "review"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(AssertionError, match="materialized routing config"):
+        fixture.assert_behavior(tmp_path, "holdout", Path(artifact_name))
+
+
+def test_routing_behavior_train_oracle_uses_api_fallback_without_profile(
+    tmp_path: Path,
+) -> None:
+    _stub_hook_common()
+    fixture = _routing_behavior_oracle_fixture()
+    _write_routing_config_files(
+        tmp_path,
+        base={"agents": {"debugger": {"tool": "codex"}}},
+        local_overrides={"agents": {"debugger": {"tool": "api"}}},
+    )
+    artifact_name = "routing-behavior-train.json"
+    artifact_path = tmp_path / artifact_name
+    artifact = {
+        "resolved_key": "agents.debugger.tool",
+        "resolved_value": "claude-direct",
+        "action": "solve-sequence-directly",
+        "result": {"sorted": [1, 1, 3, 4, 5]},
+    }
+    artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    fixture.assert_behavior(tmp_path, "train", Path(artifact_name))
+
+    artifact_path.write_text(json.dumps({**artifact, "resolved_value": "api"}), encoding="utf-8")
+    with pytest.raises(AssertionError, match="materialized routing config"):
+        fixture.assert_behavior(tmp_path, "train", Path(artifact_name))
+
+
 def test_routing_behavior_oracle_uses_disabled_cli_fallback(
     tmp_path: Path,
 ) -> None:

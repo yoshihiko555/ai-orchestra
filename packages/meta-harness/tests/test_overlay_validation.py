@@ -508,8 +508,9 @@ class TestValidateConfigPatch:
 
         assert any("duplicate config patch target" in error for error in errors)
 
-    @pytest.mark.parametrize("tool", ["codex", "claude-direct", "auto"])
-    def test_all_released_agent_tool_values_are_accepted(self, tool: str) -> None:
+    @pytest.mark.parametrize("created_by", ["human", "proposer"])
+    @pytest.mark.parametrize("tool", ["codex", "claude-direct", "auto", "api"])
+    def test_all_released_agent_tool_values_are_accepted(self, tool: str, created_by: str) -> None:
         patch = [
             {
                 "file": "agent-routing/cli-tools.yaml",
@@ -524,7 +525,7 @@ class TestValidateConfigPatch:
                 _DEFAULT_OVERLAY_CONFIG,
                 SCHEMA_DIR,
                 target="routing-config",
-                created_by="human",
+                created_by=created_by,
             )
             == []
         )
@@ -534,6 +535,10 @@ class TestValidateConfigPatch:
         [
             ("agents.debugger.tool", "bogus", "must be one of"),
             ("agents.debugger.tool", True, "must be one of"),
+            ("agents.debugger.tool", 123, "must be one of"),
+            ("agents.debugger.tool", "", "must be one of"),
+            ("agents.debugger.tool", " ", "must be one of"),
+            ("agents.debugger.tool", "API", "must be one of"),
             ("codex.model", 123, "injection-safe slug"),
             ("codex.model", False, "injection-safe slug"),
             ("codex.model", "", "injection-safe slug"),

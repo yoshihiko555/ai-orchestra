@@ -4,6 +4,7 @@
 **類型**: 主: CLI ツール型、副: hook 型（config-loading レイヤリングへの依存）
 **作成日**: 2026-07-06
 **最終レビュー日**: 2026-11-09（EV-119・EV-120 を追加し、人間レビューで承認）。2026-08-17
+**追記**: 2026-11-27、ADR-20261127-067 の API 共通基盤に合わせて EV-66 の tool enum に `api` を追加（人間レビューは PR で実施）。
 **情報源**: docs/design/meta-harness.md（基本設計）, docs/design/meta-harness-detailed.md（詳細設計 §1〜§14）, docs/design/meta-harness-proposer-routing-unlock.md, docs/requirements/meta-harness.md, docs/adr/ADR-20260706-032.md, docs/adr/ADR-20260716-041.md, docs/adr/ADR-20260717-042.md, docs/adr/ADR-20260726-045.md
 
 ## 1. 責務定義
@@ -105,7 +106,7 @@
 - [ ] EV-63（異常 / must）: `.local.yaml` を含む実効 `config_patch.allowlist` はコード定数 ceiling の部分集合だけを許可し、2 種以外を追加した設定では候補内容に関係なく fail-closed する — 根拠: 詳細設計 §1-8、§5
 - [ ] EV-64（異常 / must）: non-empty config patch の `created_by` は frozen per-key map で検証し、human は ceiling 2 kind、proposer は `agents.*.tool` だけを通す。未知作成者と map 未定義 key は共通 validator で拒否する — 根拠: 詳細設計 §1-8、ADR-20260717-042
 - [ ] EV-65（正常 / must）: `propose --target routing-config` と `loop --target routing-config` は Phase A guard 成立後に config-patch proposal 経路へ到達し、guard 不成立・引用可能な non-holdout run 不在・cooldown 中は proposer 起動前に exit 2 で fail-closed する — 根拠: 詳細設計 §4-3、§11、§13、ADR-20260717-042
-- [ ] EV-66（境界 / must）: allowlisted value は `agents.*.tool` の 3 enum または charset / YAML round-trip 検証済みの非空 model slug だけを許可し、数値/bool/未知 tool/空文字/charset 違反を拒否する。`codex.model_allowlist` が未定義または空の場合も含め、対応 model の membership を常に必須とする（fail-closed） — 根拠: 詳細設計 §1-8
+- [ ] EV-66（境界 / must）: allowlisted value は `agents.*.tool` の 4 値（`codex` / `claude-direct` / `auto` / `api`）または charset / YAML round-trip 検証済みの非空 model slug だけを許可し、数値/bool/未知 tool/空文字/charset 違反を拒否する。`codex.model_allowlist` が未定義または空の場合も含め、対応 model の membership を常に必須とする（fail-closed） — 根拠: 詳細設計 §1-8、ADR-20261127-067
 - [ ] EV-67（異常 / must）: `routing-config` ⇔ non-empty config patch の双方向排他と empty file overlay を human register・proposer register（第 5 entry point）・evaluate の worktree 変更前・promote preflight で同じ validator 契約として強制し、mixed overlay+patch や target 不一致を拒否する — 根拠: 詳細設計 §1-8、§2-1、§11、§12-1
 - [ ] EV-68（異常 / must）: canonical `config-patch.json` の integrity hash は候補全体の `config_hash` chain に含まれ、register 後に sidecar を改ざん・欠落させると evaluate と promote の双方が worktree/PR 変更前に拒否する — 根拠: 詳細設計 §1-8、§12-1
 - [ ] EV-69（正常 / must）: evaluate は検証済み patch を評価 worktree 内の `.claude/config/agent-routing/cli-tools.local.yaml` だけへ deterministic に deep merge し、`load_cli_tools_config()` が patch 値と未指定 base 値を解決する。developer checkout や worktree 外は変更しない — 根拠: 詳細設計 §2-1

@@ -50,7 +50,7 @@ CONFIG_PATCH_ALLOWED_CREATED_BY: dict[str, frozenset[str]] = {
     "agent-routing/cli-tools.yaml#agents.*.tool": frozenset({"human", "proposer"}),
     "agent-routing/cli-tools.yaml#codex.model": frozenset({"human"}),
 }
-CONFIG_PATCH_TOOL_VALUES = frozenset({"codex", "claude-direct", "auto"})
+CONFIG_PATCH_TOOL_VALUES = frozenset({"codex", "claude-direct", "auto", "api"})
 CONFIG_PATCH_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 CONFIG_PATCH_DANGEROUS_SEGMENTS = frozenset({"__proto__", "constructor"})
 

@@ -1260,7 +1260,7 @@ run 単位でも保持し、run 成果物単体からも再評価要否を判定
   暗黙フォールバックは、壊れた config が意図しない config patch を許可してしまう抜け道になるため
   （PR #252 R3-4 レビュー指摘）。
 - patch item は allowlist entry に 1 件ずつ照合し、同一 `file#key_path` の重複を拒否する。値型は
-  `agents.*.tool` が文字列 enum `codex | claude-direct | auto`、`codex.model` が `^[A-Za-z0-9][A-Za-z0-9._-]*$` に一致する空でない文字列に限定する。数値・bool は
+  `agents.*.tool` が文字列 enum `codex | claude-direct | auto | api`、`codex.model` が `^[A-Za-z0-9][A-Za-z0-9._-]*$` に一致する空でない文字列に限定する。数値・bool は
   両方で拒否する。`codex.model` は参照
   `agent-routing/cli-tools.yaml` の同名 section にある `model_allowlist` の要素でなければならない。
   allowlist が未定義または空の場合も fail-closed とし、対応する model patch を全て拒否する
@@ -3159,7 +3159,7 @@ view 内には以下のパスがあります:
 [制約]
 - facet target は `facets/**` の `changes[]`、routing-config target は `config_patch` のどちらか一方だけを出力する
 - routing-config で提案可能なのは `agents.*.tool` のみ。`codex.model` は提案しない
-- `agents.*.tool` の値は `codex | claude-direct | auto`。現在値は比較用 context として提示する
+- `agents.*.tool` の値は `codex | claude-direct | auto | api`。現在値は比較用 context として提示する
 - routing-config は 1 候補 1 key kind。同じ kind の複数 item は許可するが kind を混在させない
 - 1 仮説・最小差分に限定する
 - based_on_runs には valid based_on_runs candidates に表示された run_id のみを列挙する
