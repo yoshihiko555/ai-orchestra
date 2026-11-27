@@ -1,0 +1,2514 @@
+{
+  "records": [
+    {
+      "question_id": "L-01",
+      "category": "location",
+      "method": "baseline",
+      "question": "Resolved Routing に api.command を描画する関数とファイルはどこか。",
+      "expected_points": [
+        "inject-shared-context.py の build_routing_value_lines が描画し、ハイフンで始まる profile には --profile= を使う"
+      ],
+      "correct": true,
+      "grade_reason": "回答は inject-shared-context.py の build_routing_value_lines が api.command を描画すること、profile が「-」で始まる場合は --profile= を使うことの両方に触れており、正解の要点を満たす。",
+      "answer": "api.command は packages/core/hooks/inject-shared-context.py の build_routing_value_lines() が描画する。routing に api があるとき、profile などの api.* 行の後に `- api.command: orchex llm ask --profile <profile>` を追加する（profile が '-' で始まる場合は `--profile=<profile>`）。[Resolved Routing] 見出しはこの関数では付けない。同じファイルの build_resolved_routing_section() が見出しと説明文を作り、この関数が返す値の行を後ろにつなげる。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 219,
+          "end_line": 220,
+          "claim": "build_routing_value_lines は解決済み routing の値の行（`- key: value`）を描画し、見出しは付けない",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 238,
+          "end_line": 253,
+          "claim": "routing に api があるとき api.* の各行を出し、最後に api.command 行を `orchex llm ask --profile <profile>` の形で追加する（profile が '-' で始まると `--profile=` を使う）",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 205,
+          "end_line": 216,
+          "claim": "build_resolved_routing_section が [Resolved Routing] 見出しと説明文を作り、build_routing_value_lines の結果をつなげる",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 250444,
+        "output": 1045,
+        "total": 251489
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 23.39584095898317
+    },
+    {
+      "question_id": "L-01",
+      "category": "location",
+      "method": "agent",
+      "question": "Resolved Routing に api.command を描画する関数とファイルはどこか。",
+      "expected_points": [
+        "inject-shared-context.py の build_routing_value_lines が描画し、ハイフンで始まる profile には --profile= を使う"
+      ],
+      "correct": false,
+      "grade_reason": "ファイル（inject-shared-context.py）と関数（build_routing_value_lines）は合っている。ただし、ハイフンで始まる profile に --profile= を使う点が書かれていない。{profile_option} に触れているだけで、要点を満たしていない。",
+      "answer": "ファイルは `packages/core/hooks/inject-shared-context.py` です。`api.command` の行を直接描画する関数は `build_routing_value_lines`（219〜259行目）で、`\"api\" in routing` のときに `- api.command: orchex llm ask {profile_option}{api['profile']}` を生成します（252〜253行目）。また、`[Resolved Routing]` ブロック全体を描画する関数は `build_resolved_routing_section`（205〜216行目）で、ヘッダーに `build_routing_value_lines(routing)` の結果を結合して返します。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 219,
+          "end_line": 259,
+          "claim": "build_routing_value_lines 関数が routing に \"api\" が含まれるとき、各 api.* 項目と `- api.command: orchex llm ask {profile_option}{api['profile']}` 行を描画する（252〜253行目）",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 205,
+          "end_line": 216,
+          "claim": "build_resolved_routing_section 関数が `[Resolved Routing]` 見出しを含むヘッダーに build_routing_value_lines(routing) を結合してセクション全体を描画する",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 44932,
+        "output": 1106,
+        "total": 46038
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 4,
+      "elapsed_sec": 26.834010958031286
+    },
+    {
+      "question_id": "F-01",
+      "category": "flow",
+      "method": "baseline",
+      "question": "llm agent の出力先の確保から結果と終了コードの書込みまでの順序は何か。",
+      "expected_points": [
+        "run_llm_agent は claim_output_dir、run_agent_loop、write_result の順に進み、finally で write_exit を行う"
+      ],
+      "correct": true,
+      "grade_reason": "回答の順序は claim_output_dir、run_agent_loop、write_result で、最後に finally で write_exit を書くとしており、正解の要点と一致する。末尾の空の citation と訂正文は判定に関係しない。",
+      "answer": "```json\n{\n  \"answer\": \"`run_llm_agent` は次の順で処理する。(1) `--output` が指定されていれば、最初に `claim_output_dir` で出力先を確保する。ディレクトリを作り（`mkdir(parents=True, exist_ok=True)`）、空でなければ `OutputDirInUse` を出す。空なら `progress.json` を `O_CREAT|O_EXCL`（0o600）で作成し、turns=0・tokens=0 の初期値を書く。確保の段階で失敗したときは exit ファイルを書かずにそのまま返る。出力先が使用中なら 13、OSError か UnicodeError なら 8。(2) 確保できたら終了コードを 8 で初期化し、設定の読込、プロファイルの解決、利用可否の確認を行う。利用不可なら 3/4/5 を終了コードにする。(3) `run_agent_loop` を実行する。API の 1 往復が成功するたびに `on_progress` が呼ばれ、`write_progress` が `progress.json` を更新する。(4) ループが終わったら結果からキーを伏せ字にし、`write_result` で `result.json` を書く。そのあと `_agent_exit_code` で終了コードを決める。complete なら 0、partial なら 12、API エラーなら 6/7/9/10/11。(5) 最後に `finally` で、確保した出力先があれば必ず `write_exit(code)` で `exit` を書く。この書込みに失敗した場合、返す終了コードは 8 になる。progress・result・exit の各書込みは、同じディレクトリに一時ファイルを作ってから `os.replace` で原子的に置き換える。そのため exit は result.json より後に書かれ、利用不可やプロファイルのエラーで終わった場合は result.json なしで exit だけが書かれる。\",\n  \"citations\": [\n    {\"path\": \"scripts/lib/llm/run_output.py\", \"start_line\": 49, \"end_line\": 59, \"claim\": \"claim_output_dir はディレクトリを作り、空でなければ OutputDirInUse を出し、progress.json を O_EXCL で作って初期値 turns=0 を書く\"},\n    {\"path\": \"scripts/lib/llm/run_output.py\", \"start_line\": 26, \"end_line\": 46, \"claim\": \"progress/result/exit は一時ファイルを作ってから os.replace で書く\"},\n    {\"path\": \"scripts/lib/llm_cli.py\", \"start_line\": 78, \"end_line\": 89, \"claim\": \"最初に出力先を確保する。失敗時は 13 か 8 を返し、成功後は code=8 で初期化する\"},\n    {\"path\": \"scripts/lib/llm_cli.py\", \"start_line\": 90, \"end_line\": 98, \"claim\": \"設定・プロファイル・利用可否を確認し、利用不可なら可用性コードを入れる\"},\n    {\"path\": \"scripts/lib/llm_cli.py\", \"start_line\": 30, \"end_line\": 49, \"claim\": \"終了コードの対応（3/4/5、6/7/9/10/11、partial=12、出力先使用中=13）\"},\n    {\"path\": \"scripts/lib/llm_cli.py\", \"start_line\": 112, \"end_line\": 131, \"claim\": \"run_agent_loop に write_progress を渡し、結果を伏せ字にして write_result で書いてから終了コードを決める\"},\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 135, \"end_line\": 140, \"claim\": \"API の 1 往復が成功するたびに on_progress(turns, tokens) を呼ぶ\"},\n    {\"path\": \"scripts/lib/llm_cli.py\", \"start_line\": 139, \"end_line\": 146, \"claim\": \"finally で出力先があれば write_exit(code) を書き、失敗時は code=8 にして返す\"},\n    {\"path\": \"scripts/lib/llm/llm_cli_placeholder\", \"start_line\": 0, \"end_line\": 0, \"claim\": \"\"}\n  ]\n}\n```\n\n訂正: 上の citations の最後の項目は誤って入れた空のエントリなので無視してください。有効な根拠はその前の 8 件です。",
+      "citations": [],
+      "tokens": {
+        "input": 386086,
+        "output": 2608,
+        "total": 388694
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 40.44349274999695
+    },
+    {
+      "question_id": "F-01",
+      "category": "flow",
+      "method": "agent",
+      "question": "llm agent の出力先の確保から結果と終了コードの書込みまでの順序は何か。",
+      "expected_points": [
+        "run_llm_agent は claim_output_dir、run_agent_loop、write_result の順に進み、finally で write_exit を行う"
+      ],
+      "correct": true,
+      "grade_reason": "claim_output_dir → run_agent_loop → write_result の順で進み、finally で write_exit を呼ぶ順序が正しく書かれており、要点を満たしている。",
+      "answer": "`llm agent`（`scripts/lib/llm_cli.py` の `run_llm_agent`）では、出力先の確保から結果・終了コードの書込みまで次の順序で処理されます。\n\n1. **出力先の確保・占有と初期 `progress.json` の作成**  \n   `--output` が指定されている場合、設定読込や API 呼出しより前に `claim_output_dir(args.output)` を呼びます。出力先ディレクトリを作成し、既存エントリがない（空である）ことを確認したうえで、`os.open(..., O_WRONLY | O_CREAT | O_EXCL, 0o600)` により排他的に `progress.json` を作成し、初期値（`turns: 0`, `tokens: 0/0`）を書き込んで出力先を占有します。空でない・使用中の場合は `OutputDirInUse` で終了コード `13`、準備時の入出力エラーは終了コード `8` を返し、この段階では `exit` ファイルを書かずに即座に終了します。\n\n2. **設定読込・利用可否確認・道具の準備**  \n   既定終了コード `code = 8` を設定したうえで `try` ブロックに入り、設定読込・エージェント設定解決・利用可否確認（`check_availability`）・`RepoReadTools` 初期化を行います。利用不可や `deny` パターン不正、設定/認証エラー時はエージェント実行や `result.json` の書込みを行わず `finally` へ進みます。\n\n3. **エージェントループ実行と `progress.json` の更新**  \n   `on_progress=output.write_progress` を渡して `run_agent_loop` を実行します。ループ内では各ターン（往復）が成功するたびに `turns` と累計 `tokens` を更新し、`on_progress` を介して `progress.json` を一時ファイル作成＋`os.replace` で原子的に上書きします。\n\n4. **結果の伏字化と `result.json`（または stdout）への書込み**  \n   ループ終了後、`result.to_dict()` から API キーを `[REDACTED]` に伏字化し、`--output` 指定時は `output.write_result` で一時ファイル＋`os.replace` により `result.json` へ書き込みます（未指定時は stdout に JSON 出力します）。\n\n5. **終了コードの決定**  \n   `result.json` 書込み後に `_agent_exit_code(result)` で終了コード `code` を決定し、`stop_reason` が API エラー系であれば stderr へエラー出力します。\n\n6. **最後に `exit` ファイルへ終了コードを書込み**  \n   `finally` ブロックで、`output` が確保済みであれば設定エラー・利用不可・例外発生時を含めて必ず `output.write_exit(code)` を呼び出し、一時ファイル＋`os.replace` で `exit` ファイルに `\"{code}\\n\"` を書き込みます。`exit` の書込み自体が失敗した場合は stderr へ出力して `code = 8` とし、最終的に `code` を返します。\n\nファイル書込みの順序としては、**出力先の空確認・占有と初期 `progress.json` 作成 → 実行中の `progress.json` 更新 → `result.json` 書込み → 最後に `exit` 書込み** となります。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 78,
+          "end_line": 88,
+          "claim": "run_llm_agent は最初に args.output がある場合に claim_output_dir で出力先を確保し、OutputDirInUse 時は終了コード 13、OSError/UnicodeError 時は終了コード 8 で即座に終了する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/run_output.py",
+          "start_line": 49,
+          "end_line": 59,
+          "claim": "claim_output_dir はディレクトリ作成と空チェックの後、O_WRONLY | O_CREAT | O_EXCL で排他的に progress.json を作成し、turns=0・tokens=0 の初期進捗を書き込んで RunOutput を返す。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 89,
+          "end_line": 111,
+          "claim": "既定終了コード code=8 を置いた後、try ブロック内で設定読込・エージェント設定解決・利用可否確認・RepoReadTools 初期化を行う。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 112,
+          "end_line": 123,
+          "claim": "run_agent_loop に on_progress=output.write_progress（--output 指定時）を渡してエージェントループを実行する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 135,
+          "end_line": 140,
+          "claim": "run_agent_loop は各往復の成功ごとに turns と累計 tokens を更新して on_progress(turns, tokens) を呼び出す。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/run_output.py",
+          "start_line": 26,
+          "end_line": 46,
+          "claim": "RunOutput の write_progress（progress.json）・write_result（result.json）・write_exit（exit）はいずれも一時ファイルへ書き込んだ後 os.replace で原子的に置き換える。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 124,
+          "end_line": 131,
+          "claim": "ループ完了後に API キーを伏字化して output.write_result（または stdout）へ出力し、その後 _agent_exit_code で終了コードを決定し、API エラー時は stderr へ出力する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 132,
+          "end_line": 146,
+          "claim": "例外捕捉後の finally ブロックで、出力先が確保済みであれば最後に output.write_exit(code) を呼び出して終了コードを書き込み、書込み失敗時は code を 8 にして返す。",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 113597,
+        "output": 4482,
+        "total": 118079
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 6,
+      "elapsed_sec": 80.16119612503098
+    },
+    {
+      "question_id": "C-01",
+      "category": "configuration",
+      "method": "baseline",
+      "question": "base/local のマージで mapping と配列の扱いはどう違うか。",
+      "expected_points": [
+        "hook_common.deep_merge は両側 dict の場合だけ再帰マージし、配列などは local の値で置き換える"
+      ],
+      "correct": true,
+      "grade_reason": "deep_merge が両側とも dict のときだけ再帰マージし、配列などは local の値で置き換えると書かれており、要点を満たす。",
+      "answer": "base と local のマージは deep_merge で行う。mapping（dict）は、base と local の両方で同じキーの値が dict のときだけ再帰的にマージする。local に書いたキーだけを上書きし、書かなかったキーは base の値が残る。配列（list）は再帰マージの対象にならず、local の値で丸ごと置き換わる。base の要素への追加や結合は行わない。dict 同士でない組み合わせ（dict を文字列で上書きする場合など）も、local の値がそのまま入る。base 自体は変更せず、新しい dict を返す。load_package_config は、.local.{ext} の中身が空でないときだけ deep_merge(base, local) を返す。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 55,
+          "end_line": 63,
+          "claim": "deep_merge は両方が dict のときだけ再帰し、それ以外（list を含む）は override の値で置き換える。base は dict(base) でコピーする",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 123,
+          "end_line": 138,
+          "claim": "load_package_config は base を読み、local が空でなければ deep_merge(base, local) を返す",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 185,
+          "end_line": 185,
+          "claim": "local は deep_merge 規則に従い、mapping はキーごとに上書きし、配列は置き換える",
+          "verified": true
+        },
+        {
+          "path": "tests/unit/test_hook_common.py",
+          "start_line": 55,
+          "end_line": 60,
+          "claim": "base の [1, 2, 3] は override の [4, 5] で置き換わり、結合されない",
+          "verified": true
+        },
+        {
+          "path": "tests/unit/test_hook_common.py",
+          "start_line": 62,
+          "end_line": 67,
+          "claim": "deep_merge は base を変更しない",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 322867,
+        "output": 1776,
+        "total": 324643
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 30.941688457969576
+    },
+    {
+      "question_id": "C-01",
+      "category": "configuration",
+      "method": "agent",
+      "question": "base/local のマージで mapping と配列の扱いはどう違うか。",
+      "expected_points": [
+        "hook_common.deep_merge は両側 dict の場合だけ再帰マージし、配列などは local の値で置き換える"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点を満たしています。hook_common.py の deep_merge が両側とも dict の場合だけ再帰マージし、配列などは local の値で丸ごと置き換えると明記しています。",
+      "answer": "一般的な base/local 設定のマージ（`deep_merge` 規則）では、mapping（dict）と配列（list）で以下のように扱いが異なります。\n\n- **mapping（dict）**: キー単位で再帰的にマージ・上書きされます。`base` と `local` の両方で値が `dict` であるキーは再帰的に `deep_merge` されるため、`local` に定義されたキーだけが上書きされ、`local` に未定義のキーは `base` の値がそのまま保持されます。\n- **配列（list）**: 要素の結合や部分マージは行われず、`local` 側の配列で丸ごと置き換えられます（`deep_merge` は両者が `dict` の場合のみ再帰し、それ以外の型は `result[key] = value` で置換するため）。\n\nこの挙動は `packages/core/hooks/hook_common.py` の `deep_merge()` / `load_package_config()` をはじめ、`codd` などの他モジュールの `deep_merge` でも共通です。\n\nなお例外として、`quality-gates` の `evaluation-set-mapping.yaml` における `mappings` 配列は、一般的な `deep_merge()` による配列全体の置換を避けるため、`load_evaluation_set_mapping()` が `package` 名単位でマージします（同じ `package` のエントリは local 側でエントリ全体が置き換わり、片方にしかない `package` のエントリは保持されます）。",
+      "citations": [
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 185,
+          "end_line": 185,
+          "claim": "local は既存の deep_merge 規則に従い、mapping はキーごとに上書きし、配列は置き換える",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 55,
+          "end_line": 63,
+          "claim": "deep_merge() は base と override の両方が dict のキーのみ再帰マージし、それ以外の値（配列等）は override の値で置き換える",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 123,
+          "end_line": 138,
+          "claim": "load_package_config() は base 設定と .local.{ext} を読み込み、local があれば deep_merge(base, local) でマージする",
+          "verified": true
+        },
+        {
+          "path": ".claude/rules/config-loading.md",
+          "start_line": 9,
+          "end_line": 12,
+          "claim": "ベース設定と .local ファイルの読み込みでは、ローカルに定義されたキーがベースを上書きし、未定義のキーはベースの値がそのまま使われる",
+          "verified": true
+        },
+        {
+          "path": "tests/unit/test_hook_common.py",
+          "start_line": 25,
+          "end_line": 30,
+          "claim": "ネストされた辞書（mapping）がキー単位で再帰マージされ未指定キーが保持されることをテストで検証している",
+          "verified": true
+        },
+        {
+          "path": "tests/unit/test_hook_common.py",
+          "start_line": 55,
+          "end_line": 60,
+          "claim": "リスト値（配列）はマージではなく置き換えになることをテストで検証している",
+          "verified": true
+        },
+        {
+          "path": "packages/codd/lib/codd_common.py",
+          "start_line": 1116,
+          "end_line": 1124,
+          "claim": "codd_common.py の deep_merge も同様に dict は再帰マージ、その他は置換として実装されている",
+          "verified": true
+        },
+        {
+          "path": "packages/quality-gates/hooks/evaluation-set-checker.py",
+          "start_line": 217,
+          "end_line": 224,
+          "claim": "evaluation-set-mapping.yaml では deep_merge() による mappings 配列全体の置換を避けるため、例外的に package 名単位で base と local をマージする",
+          "verified": true
+        },
+        {
+          "path": "packages/quality-gates/hooks/evaluation-set-checker.py",
+          "start_line": 240,
+          "end_line": 243,
+          "claim": "load_evaluation_set_mapping() は package をキーにした辞書で base_entries に local_entries を上書きしてマージ結果を返す",
+          "verified": true
+        },
+        {
+          "path": "packages/quality-gates/config/evaluation-set-mapping.yaml",
+          "start_line": 13,
+          "end_line": 19,
+          "claim": "evaluation-set-mapping.yaml の *.local.yaml 上書きは一般的な deep_merge ではなく package 単位マージであり、同一 package はエントリ全体が置き換わり他の package は保持される",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 244015,
+        "output": 4338,
+        "total": 248353
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 13,
+      "elapsed_sec": 118.10412216698751
+    },
+    {
+      "question_id": "X-01",
+      "category": "cross_file",
+      "method": "baseline",
+      "question": "llm agent の空でない出力先は、どの例外と CLI 終了コードにつながるか。",
+      "expected_points": [
+        "run_output.claim_output_dir が OutputDirInUse を投げ、llm_cli.run_llm_agent が捕捉して13を返すのでループは始まらない"
+      ],
+      "correct": true,
+      "grade_reason": "要点を満たしています。claim_output_dir が OutputDirInUse を送出し、run_llm_agent がそれを捕捉して終了コード 13 を返す、という核心が正しく書かれています。ループが始まらない点への言及はありませんが、問われているのは例外と終了コードなので不足とはしません。",
+      "answer": "空でない出力先を渡すと、claim_output_dir が ValueError のサブクラスである OutputDirInUse を送出します（メッセージは「空でない出力先は使用できません。」）。run_llm_agent はこれを捕まえ、stderr に「出力先が空ではありません。新しいディレクトリを指定してください。」と出して、終了コード 13（_OUTPUT_IN_USE_CODE）を返します。progress.json を排他作成できなかった場合も同じ OutputDirInUse（「出力先は使用中です。」）になり、終了コードは同じ 13 です。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm/run_output.py",
+          "start_line": 18,
+          "end_line": 19,
+          "claim": "OutputDirInUse は ValueError を継承し、既存の出力を持つディレクトリを再利用しないための例外である",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/run_output.py",
+          "start_line": 49,
+          "end_line": 56,
+          "claim": "claim_output_dir は出力先が空でなければ OutputDirInUse を送出する。progress.json の排他作成で FileExistsError が起きたときも OutputDirInUse になる",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 42,
+          "end_line": 42,
+          "claim": "_OUTPUT_IN_USE_CODE は 13 と定義されている",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 78,
+          "end_line": 85,
+          "claim": "run_llm_agent は OutputDirInUse を捕まえ、stderr にメッセージを出して _OUTPUT_IN_USE_CODE（13）を返す",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 252260,
+        "output": 1222,
+        "total": 253482
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 27.26433683402138
+    },
+    {
+      "question_id": "X-01",
+      "category": "cross_file",
+      "method": "agent",
+      "question": "llm agent の空でない出力先は、どの例外と CLI 終了コードにつながるか。",
+      "expected_points": [
+        "run_output.claim_output_dir が OutputDirInUse を投げ、llm_cli.run_llm_agent が捕捉して13を返すのでループは始まらない"
+      ],
+      "correct": true,
+      "grade_reason": "要点を満たしています。回答には、claim_output_dir が OutputDirInUse を投げ、run_llm_agent がそれを捕捉して13を返す流れが書かれています。ループが始まらないことは明記されていませんが、捕捉して返すと書いてあるので実質的に含まれています。",
+      "answer": "llm agent の空でない出力先は、`OutputDirInUse` 例外（`ValueError` のサブクラス）と CLI 終了コード `13` につながります。具体的には、`claim_output_dir()` が `any(path.iterdir())` で空でない出力先を検出すると `OutputDirInUse(\"空でない出力先は使用できません。\")` を送出し（排他作成の競合による `FileExistsError` 時も `OutputDirInUse(\"出力先は使用中です。\")` を送出）、`run_llm_agent()` が `OutputDirInUse` を捕捉して標準エラー出力へメッセージを出した上で `_OUTPUT_IN_USE_CODE`（`13`）を返します。`scripts/orchestra-manager.py` の `llm agent` 実行はその戻り値を `sys.exit()` に渡すため、CLI 終了コードは `13` になります。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm/run_output.py",
+          "start_line": 18,
+          "end_line": 19,
+          "claim": "`OutputDirInUse` は `ValueError` を継承する例外として定義されている。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/run_output.py",
+          "start_line": 49,
+          "end_line": 56,
+          "claim": "`claim_output_dir()` は出力先ディレクトリが空でない場合（`any(path.iterdir())`）に `OutputDirInUse(\"空でない出力先は使用できません。\")` を送出し、`progress.json` の排他作成で `FileExistsError` が起きた場合も `OutputDirInUse(\"出力先は使用中です。\")` を送出する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 42,
+          "end_line": 42,
+          "claim": "`_OUTPUT_IN_USE_CODE` は `13` と定義されている。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 78,
+          "end_line": 85,
+          "claim": "`run_llm_agent()` は `args.output` 指定時に `claim_output_dir(args.output)` を呼び出し、`OutputDirInUse` を捕捉すると標準エラーにメッセージを出力して `_OUTPUT_IN_USE_CODE`（`13`）を返す。",
+          "verified": true
+        },
+        {
+          "path": "scripts/orchestra-manager.py",
+          "start_line": 1724,
+          "end_line": 1726,
+          "claim": "`llm agent` サブコマンドは `run_llm_agent` を呼び出し、その戻り値を `sys.exit()` に渡して CLI 終了コードとする。",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 101501,
+        "output": 2120,
+        "total": 103621
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 6,
+      "elapsed_sec": 51.083133917010855
+    },
+    {
+      "question_id": "L-02",
+      "category": "location",
+      "method": "baseline",
+      "question": "読み取り道具の既定の拒否パターンはどこで何を定義するか。",
+      "expected_points": [
+        "repo_read.py の _DEFAULT_DENY が .env*、*.pem、*.key、*credentials*、*secret*、.git を拒否する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は、既定の拒否パターンが repo_read.py の _DEFAULT_DENY で定義されていると答えている。挙げた 6 つ（.env*、*.pem、*.key、*credentials*、*secret*、.git）も正解の要点と一致する。",
+      "answer": "既定の拒否パターンは scripts/lib/llm/tools/repo_read.py の 19 行目にある定数 _DEFAULT_DENY で定義されている。中身は \".env*\"、\"*.pem\"、\"*.key\"、\"*credentials*\"、\"*secret*\"、\".git\" の 6 つ。RepoReadTools.__init__ はこの既定リストを必ず先に入れ、その後にプロファイルの deny 設定から渡された extra_deny_patterns を足す。追加パターンは小文字化し、末尾の / を除く。'/' を含むものはパス用のリスト（_deny_paths）に、含まないものは既定と同じリストに入る。そのため追加パターンで既定を外すことはできない。照合は _denied が行う。パスを小文字化し、パスの各要素を fnmatch でこのリストと比べる。一致した場合、_resolve が元のパスと実パスの両方を確かめ、どちらかが一致すれば deny_list として読み取りを拒否する。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 19,
+          "end_line": 19,
+          "claim": "_DEFAULT_DENY に .env*、*.pem、*.key、*credentials*、*secret*、.git の 6 パターンが定義されている",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 84,
+          "end_line": 110,
+          "claim": "__init__ は _DEFAULT_DENY を基にリストを作り、extra_deny_patterns を小文字化・末尾 / 除去して足す。/ を含むものは _deny_paths に、含まないものは _deny に入る",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 235,
+          "end_line": 247,
+          "claim": "_denied は小文字化したパスの各要素を _deny と fnmatch で照合し、パス本体と親ディレクトリを _deny_paths と glob で照合する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 257,
+          "end_line": 260,
+          "claim": "_resolve は元のパスか実パスのどちらかが拒否に当たれば deny_list として拒否する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 104,
+          "end_line": 108,
+          "claim": "repo_read が有効なとき、プロファイル設定の deny を extra_deny_patterns として RepoReadTools に渡す",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 452742,
+        "output": 2077,
+        "total": 454819
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 38.95465554198017
+    },
+    {
+      "question_id": "L-02",
+      "category": "location",
+      "method": "agent",
+      "question": "読み取り道具の既定の拒否パターンはどこで何を定義するか。",
+      "expected_points": [
+        "repo_read.py の _DEFAULT_DENY が .env*、*.pem、*.key、*credentials*、*secret*、.git を拒否する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点をすべて満たしています。定義場所として repo_read.py の _DEFAULT_DENY を挙げ、拒否パターン 6 つ（.env*、*.pem、*.key、*credentials*、*secret*、.git）もすべて一致しています。",
+      "answer": "読み取り道具の既定の拒否パターンは、`scripts/lib/llm/tools/repo_read.py`（19行目）の定数 `_DEFAULT_DENY` として定義されています。\n\n定義されている値は以下の6パターンのタプルです：\n- `.env*`\n- `*.pem`\n- `*.key`\n- `*credentials*`\n- `*secret*`\n- `.git`\n\nこれらは `RepoReadTools.__init__` で `self._deny` の初期要素として取り込まれ（`/` を含まない追加拒否パターン `extra_deny_patterns` もここに追加されます）、`_denied` で `path.casefold()` の各パス要素に対して `fnmatch.fnmatchcase` で照合されます。`_resolve` で解決前パス（`original`）と symlink 解決後パス（`relative`）の双方を検査し、一致した場合は `_Rejected(\"deny_list\")` として拒否されます。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 19,
+          "end_line": 19,
+          "claim": "既定の拒否パターン定数 `_DEFAULT_DENY` が `(\".env*\", \"*.pem\", \"*.key\", \"*credentials*\", \"*secret*\", \".git\")` として定義されている。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 84,
+          "end_line": 110,
+          "claim": "`RepoReadTools.__init__` が `deny = list(_DEFAULT_DENY)` を初期値として `extra_deny_patterns` の `/` を含まないパターンと合わせて `self._deny` を構築する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 235,
+          "end_line": 247,
+          "claim": "`_denied` は `path.casefold()` の各パス要素（`candidate.parts`）を `self._deny` の各パターンと `fnmatch.fnmatchcase` で照合する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 249,
+          "end_line": 260,
+          "claim": "`_resolve` は解決前の相対パス（`original`）と解決後の相対パス（`relative`）の両方を `_denied` で検査し、該当する場合は `_Rejected(\"deny_list\")` を送出する。",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 91482,
+        "output": 2041,
+        "total": 93523
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 5,
+      "elapsed_sec": 38.188602500013076
+    },
+    {
+      "question_id": "L-03",
+      "category": "location",
+      "method": "baseline",
+      "question": "quota_exhausted・rate_limited・auth_error の終了コードの対応はどこか。",
+      "expected_points": [
+        "llm_cli.py の _ERROR_CODES に順に9・10・11を定義する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は、scripts/lib/llm_cli.py の _ERROR_CODES で quota_exhausted・rate_limited・auth_error をそれぞれ 9・10・11 に定義していると述べており、正解の要点と一致する。",
+      "answer": "対応は 9 = quota_exhausted、10 = rate_limited、11 = auth_error です。実装では scripts/lib/llm_cli.py の _ERROR_CODES が決めており、llm agent 用の _AGENT_ERROR_CODES も同じ値を使います。利用者向けの説明は docs/reference/configuration.md にあり、llm ask と llm agent のそれぞれに終了コード表があります。終了コードごとにどう動くかは api-delegation の rule に書かれています。正本は facets/instructions/api-delegation.md で、生成物の .claude/rules/api-delegation.md も同じ内容です。動き方は次のとおりです。9 は再試行しません。10 は CLI がすでに再試行しているので、呼び直しを繰り返しません。11 は再試行せず、設定者に案内します。どの場合も部分結果を確認し、claude-direct に戻します。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 31,
+          "end_line": 38,
+          "claim": "_ERROR_CODES で quota_exhausted=9、rate_limited=10、auth_error=11 と定義している",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 43,
+          "end_line": 49,
+          "claim": "llm agent 用の _AGENT_ERROR_CODES は、この 3 分類に _ERROR_CODES と同じ値を使う",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 62,
+          "end_line": 65,
+          "claim": "_agent_exit_code は stop_reason が _AGENT_ERROR_CODES にあればその終了コードを返す",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 211,
+          "end_line": 223,
+          "claim": "llm ask の終了コード表で、9 が利用枠・残高不足、10 が再試行後も続くレート制限、11 が認証・権限エラー",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 314,
+          "end_line": 322,
+          "claim": "llm agent の終了コード表で、9・10・11 は partial と、それぞれの stop_reason に対応する",
+          "verified": true
+        },
+        {
+          "path": "facets/instructions/api-delegation.md",
+          "start_line": 79,
+          "end_line": 93,
+          "claim": "正本の rule にある終了コード別の対応表で、9・10・11 のときの動き方を決めている",
+          "verified": true
+        },
+        {
+          "path": ".claude/rules/api-delegation.md",
+          "start_line": 91,
+          "end_line": 93,
+          "claim": "生成物の rule にも、9・10・11 について同じ対応が書かれている",
+          "verified": false
+        }
+      ],
+      "tokens": {
+        "input": 465557,
+        "output": 2342,
+        "total": 467899
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 41.40090958296787
+    },
+    {
+      "question_id": "L-03",
+      "category": "location",
+      "method": "agent",
+      "question": "quota_exhausted・rate_limited・auth_error の終了コードの対応はどこか。",
+      "expected_points": [
+        "llm_cli.py の _ERROR_CODES に順に9・10・11を定義する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は、scripts/lib/llm_cli.py の _ERROR_CODES に quota_exhausted=9、rate_limited=10、auth_error=11 が定義されていると明記しており、正解の要点を満たしている。",
+      "answer": "quota_exhausted・rate_limited・auth_error の終了コードはそれぞれ 9・10・11 です。実装上の対応定義は scripts/lib/llm_cli.py にあり、関連ドキュメントにも記載されています。\n\n1. 実装（scripts/lib/llm_cli.py）\n- `_ERROR_CODES`（scripts/lib/llm_cli.py:31-38）に `\"quota_exhausted\": 9`、`\"rate_limited\": 10`、`\"auth_error\": 11` が定義されています。\n- `run_llm_ask`（scripts/lib/llm_cli.py:223-226）では、`LLMError` を捕捉したときに `_ERROR_CODES[exc.category]` を終了コードとして返します。\n- `llm agent` 向けには `_AGENT_ERROR_CODES`（scripts/lib/llm_cli.py:43-49）が `_ERROR_CODES` から `quota_exhausted`・`rate_limited`・`auth_error` などを引き継ぎ、`_agent_exit_code`（scripts/lib/llm_cli.py:62-65）および `run_llm_agent`（scripts/lib/llm_cli.py:129-131）で `result.stop_reason` に対応する終了コードを返します。\n\n2. ドキュメント\n- docs/reference/configuration.md の `llm ask` 終了コード表（docs/reference/configuration.md:221-223）および `llm agent` 終了コード表（docs/reference/configuration.md:318-320）に 9・10・11 の対応が記載されています。\n- facets/instructions/api-delegation.md（facets/instructions/api-delegation.md:91-93）および .claude/rules/api-delegation.md（.claude/rules/api-delegation.md:91-93）の終了コード対応表にも 9・10・11 の意味と対処方針が記載されています。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 31,
+          "end_line": 38,
+          "claim": "_ERROR_CODES に quota_exhausted=9、rate_limited=10、auth_error=11 の終了コード対応が定義されている",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 43,
+          "end_line": 49,
+          "claim": "_AGENT_ERROR_CODES が _ERROR_CODES から quota_exhausted・rate_limited・auth_error などの終了コードを引き継いでいる",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 62,
+          "end_line": 65,
+          "claim": "_agent_exit_code が result.stop_reason に対応する _AGENT_ERROR_CODES の終了コードを返す",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 129,
+          "end_line": 131,
+          "claim": "run_llm_agent が _agent_exit_code(result) で終了コードを決定している",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 223,
+          "end_line": 226,
+          "claim": "run_llm_ask が LLMError 捕捉時に _ERROR_CODES[exc.category] を終了コードとして返す",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 221,
+          "end_line": 223,
+          "claim": "llm ask の終了コード表に 9（quota_exhausted）、10（rate_limited）、11（auth_error）が記載されている",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 318,
+          "end_line": 320,
+          "claim": "llm agent の終了コード表に 9（partial / quota_exhausted）、10（partial / rate_limited）、11（partial / auth_error）が記載されている",
+          "verified": true
+        },
+        {
+          "path": "facets/instructions/api-delegation.md",
+          "start_line": 91,
+          "end_line": 93,
+          "claim": "終了コード対応表に 9（quota_exhausted）、10（rate_limited）、11（auth_error）の意味と対応が記載されている",
+          "verified": true
+        },
+        {
+          "path": ".claude/rules/api-delegation.md",
+          "start_line": 91,
+          "end_line": 93,
+          "claim": "終了コード対応表に 9（quota_exhausted）、10（rate_limited）、11（auth_error）の意味と対応が記載されている",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 25786,
+        "output": 2799,
+        "total": 28585
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 4,
+      "elapsed_sec": 36.5053926249966
+    },
+    {
+      "question_id": "L-04",
+      "category": "location",
+      "method": "baseline",
+      "question": "Codex 向けに Markdown rule を生成しない分岐はどこか。",
+      "expected_points": [
+        "facet_builder.py の _build_one は target が claude 以外かつ rule の場合に旧 rule を掃除して None を返す"
+      ],
+      "correct": true,
+      "grade_reason": "facet_builder.py の _build_one で、target が claude 以外かつ rule のときに _cleanup_legacy_codex_rule で旧 rule を掃除して None を返す、と要点どおりに説明している。",
+      "answer": "分岐は scripts/lib/facet_builder.py の FacetBuilder._build_one にあります（326〜329 行）。target が \"claude\" 以外で、composition の type（未指定なら \"skill\"）が \"rule\" のとき、Markdown rule を生成せずに None を返します。返す前に、targeted build でも旧生成物 .codex/rules/<name>.md を _cleanup_legacy_codex_rule で消します。生成しない理由は 323〜325 行のコメントにあり、Claude のルールは振る舞いの指示、Codex のルールは execpolicy などのコマンドポリシーで考え方が別なので、ルール同期を廃止したためです。_build_all はこの _build_one の結果を使うため、None になった rule は出力にも記録にも加わりません。そのうえで非 claude ターゲットのときは、旧 .codex/rules/*.md をまとめて掃除します（585〜590 行）。extract_one にも同じ条件の分岐があり（623〜625 行）、配布しない rule は書き戻し対象がないので None を返します。",
+      "citations": [
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 323,
+          "end_line": 329,
+          "claim": "非 claude ターゲットで type が rule の composition は生成せず、旧 .codex/rules/<name>.md を掃除して None を返す。理由はルール同期の廃止と、Codex のルールが別の考え方（execpolicy）であること",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 562,
+          "end_line": 565,
+          "claim": "_build_all は _build_one の結果が真のときだけ出力に加え、_track_built で記録する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 585,
+          "end_line": 590,
+          "claim": "build_all で非 claude ターゲットのとき、旧 .codex/rules/*.md 生成物をまとめて掃除する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 623,
+          "end_line": 625,
+          "claim": "extract_one でも、非 claude ターゲットの rule は配布しないので None を返す",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 253875,
+        "output": 1470,
+        "total": 255345
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 25.126233874994796
+    },
+    {
+      "question_id": "L-04",
+      "category": "location",
+      "method": "agent",
+      "question": "Codex 向けに Markdown rule を生成しない分岐はどこか。",
+      "expected_points": [
+        "facet_builder.py の _build_one は target が claude 以外かつ rule の場合に旧 rule を掃除して None を返す"
+      ],
+      "correct": true,
+      "grade_reason": "facet_builder.py の _build_one で、target が claude 以外かつ type が rule のときに旧 rule を掃除して None を返す分岐を正しく挙げており、要点を満たしている。",
+      "answer": "Codex 向け（非 `claude` ターゲット）に Markdown rule を生成しない分岐は、`scripts/lib/facet_builder.py` の `FacetBuilder._build_one` メソッド内にある `if target != \"claude\" and composition.get(\"type\", \"skill\") == \"rule\":` です（326〜329行目）。\n\nこの分岐では、対象が `claude` 以外（`codex` 等）かつ composition の `type` が `\"rule\"` の場合、Markdown ファイルを生成せずに `self._cleanup_legacy_codex_rule(project_dir, composition[\"name\"])` で旧生成物 `.codex/rules/<name>.md` を削除したうえで `return None` で早期終了します。単一ビルドの `build_one` と一括ビルドの `_build_all` の両方が `_build_one` を経由するため、いずれのビルド経路でも Codex 向けの Markdown rule は生成されません。\n\n関連して、`FacetBuilder._build_all` でも `if target != \"claude\":` の分岐で `self._cleanup_legacy_codex_rules(project_dir)` を呼び、旧 `.codex/rules/*.md` のみを削除します（585〜590行目、execpolicy 用の `*.rules` は削除対象外）。また、書き戻し処理の `FacetBuilder.extract_one` でも同様に `if target != \"claude\" and comp_type == \"rule\": return None` として非 `claude` ターゲットのルールを除外しています（624〜625行目）。",
+      "citations": [
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 323,
+          "end_line": 329,
+          "claim": "FacetBuilder._build_one 内の `if target != \"claude\" and composition.get(\"type\", \"skill\") == \"rule\":` 分岐で、非 claude ターゲットのルール生成を抑止し、旧 .codex/rules/<name>.md を削除して None を返す",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 300,
+          "end_line": 305,
+          "claim": "build_one は _build_one を呼び出して単一 composition をビルドする",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 562,
+          "end_line": 578,
+          "claim": "_build_all はローカルおよび orchestra の各 composition に対して _build_one を呼び出す",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 585,
+          "end_line": 590,
+          "claim": "_build_all の `if target != \"claude\":` 分岐で _cleanup_legacy_codex_rules を呼び出し、旧 .codex/rules/*.md を掃除する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 518,
+          "end_line": 530,
+          "claim": "_cleanup_legacy_codex_rules は .codex/rules 配下の *.md のみを削除対象とし、execpolicy 用の *.rules などは削除しない",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 623,
+          "end_line": 625,
+          "claim": "FacetBuilder.extract_one でも `if target != \"claude\" and comp_type == \"rule\": return None` により非 claude ターゲットのルールを除外している",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 301987,
+        "output": 2770,
+        "total": 304757
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 11,
+      "elapsed_sec": 76.65423649997683
+    },
+    {
+      "question_id": "L-05",
+      "category": "location",
+      "method": "baseline",
+      "question": "配布元の Codex sandbox 無効化要否のキーと既定値は何か。",
+      "expected_points": [
+        "packages/agent-routing/config/cli-tools.yaml の codex.requires_sandbox_disable は true"
+      ],
+      "correct": true,
+      "grade_reason": "配布元のファイル packages/agent-routing/config/cli-tools.yaml、キー codex.requires_sandbox_disable、既定値 true をすべて正しく答えており、要点を満たしている。",
+      "answer": "配布元の packages/agent-routing/config/cli-tools.yaml では、キーは `codex.requires_sandbox_disable`（`codex:` ブロック直下の `requires_sandbox_disable`）で、既定値は `true` です。codex 0.145 系は起動時の in-process app-server 初期化が sandbox の OS 制限（EPERM）で失敗し、sandbox.excludedCommands での codex 除外も効かないためです。そこで呼び出し側が sandbox を無効化して実行します。",
+      "citations": [
+        {
+          "path": "packages/agent-routing/config/cli-tools.yaml",
+          "start_line": 13,
+          "end_line": 13,
+          "claim": "設定は codex: ブロックの下にある",
+          "verified": true
+        },
+        {
+          "path": "packages/agent-routing/config/cli-tools.yaml",
+          "start_line": 30,
+          "end_line": 33,
+          "claim": "codex.requires_sandbox_disable の既定値は true。sandbox 内では codex の起動が失敗するため、呼び出し側で sandbox を無効化する",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 186733,
+        "output": 817,
+        "total": 187550
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 15.668871707981452
+    },
+    {
+      "question_id": "L-05",
+      "category": "location",
+      "method": "agent",
+      "question": "配布元の Codex sandbox 無効化要否のキーと既定値は何か。",
+      "expected_points": [
+        "packages/agent-routing/config/cli-tools.yaml の codex.requires_sandbox_disable は true"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点を満たしています。配布元のファイル（packages/agent-routing/config/cli-tools.yaml）、キー（codex.requires_sandbox_disable）、既定値（true）の 3 点がすべて期待どおりです。hook_common.py についての補足は、要点と食い違っていません。",
+      "answer": "配布元（`packages/agent-routing/config/cli-tools.yaml`）における Codex sandbox 無効化要否のキーは `codex.requires_sandbox_disable` で、既定値は `true` です。実行時の設定解決（`packages/core/hooks/hook_common.py`）でも省略時は `True` が既定値として扱われます。",
+      "citations": [
+        {
+          "path": "packages/agent-routing/manifest.json",
+          "start_line": 47,
+          "end_line": 47,
+          "claim": "agent-routing パッケージの配布対象 config として config/cli-tools.yaml が指定されている",
+          "verified": true
+        },
+        {
+          "path": "packages/agent-routing/config/cli-tools.yaml",
+          "start_line": 13,
+          "end_line": 33,
+          "claim": "配布元の cli-tools.yaml の codex セクションに requires_sandbox_disable: true が定義されている",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 341,
+          "end_line": 343,
+          "claim": "設定解決時に codex_config.get(\"requires_sandbox_disable\", True) として省略時の既定値が True になっている",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 69,
+          "end_line": 80,
+          "claim": "設定リファレンスに requires_sandbox_disable の型 bool、デフォルト true（sandbox 外での実行が必要か）が記載されている",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 121350,
+        "output": 1654,
+        "total": 123004
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 5,
+      "elapsed_sec": 40.42674020800041
+    },
+    {
+      "question_id": "F-02",
+      "category": "flow",
+      "method": "baseline",
+      "question": "探索の往復上限に達した後、ループはどうまとめて停止するか。",
+      "expected_points": [
+        "stop_reason を max_turns にして summary を真にし、道具なしのまとめの要求を一回行って break する"
+      ],
+      "correct": true,
+      "grade_reason": "stop_reason を max_turns にして summary を立て、道具定義を空にしたまとめの要求を 1 回だけ送り、無条件にループを抜ける、と述べており要点と一致する。",
+      "answer": "調査は済み、回答をまとめています。\n\n```json\n{\n  \"answer\": \"往復回数 turns が limits.max_turns に達し、そのうえで応答がまだ道具呼び出しを含む場合、ループは stop_reason を \\\"max_turns\\\" にして summary フラグを立てる。その応答の道具呼び出しは実行しない。各呼び出しには「上限に達したため道具を実行しません。」というエラー結果を返して会話に足す。次の周回では「探索を終了します。道具は使わず、ここまでで分かったことをまとめてください。」という UserMessage を追加する。そのうえで道具定義を空にした要求でもう 1 回だけモデルを呼ぶ（この呼び出しでは時間上限の判定を飛ばす）。返ってきた応答のテキストを last_answer として保存し、summary 中なので無条件にループを抜ける。最後に last_answer を最終回答 JSON として解釈し、citations を検証する。stop_reason があるため status は \\\"partial\\\"、stop_reason は \\\"max_turns\\\" で AgentResult を返す。CLI はこの partial に終了コード 12 を返す。なお、まとめの呼び出し自体が LLMError で失敗した場合は、stop_reason がそのエラー種別で上書きされてループを抜ける。\",\n  \"citations\": [\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 38, \"end_line\": 38, \"claim\": \"まとめ用の指示文 _SUMMARY_INSTRUCTION は「探索を終了します。道具は使わず、ここまでで分かったことをまとめてください。」\"},\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 143, \"end_line\": 153, \"claim\": \"応答テキストを last_answer に保存する。道具呼び出しがなければ終了し、あれば turns >= max_turns のとき stop_reason を max_turns にして summary を立てる\"},\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 154, \"end_line\": 164, \"claim\": \"summary 中は道具を実行せず、『上限に達したため道具を実行しません。』のエラー結果を返す\"},\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 101, \"end_line\": 104, \"claim\": \"summary 中は呼び出し前の時間上限判定を行わない\"},\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 117, \"end_line\": 121, \"claim\": \"summary 時はまとめ指示を UserMessage として追加し、道具定義を空にして要求を組む\"},\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 132, \"end_line\": 134, \"claim\": \"呼び出しが LLMError になると stop_reason をエラー種別（timeout は api_timeout）にして抜ける\"},\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 145, \"end_line\": 146, \"claim\": \"summary 中の応答の後は無条件にループを抜ける\"},\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 165, \"end_line\": 175, \"claim\": \"last_answer を解析して citations を検証し、stop_reason があれば status partial で AgentResult を返す\"},\n    {\"path\": \"scripts/lib/llm_cli.py\", \"start_line\": 41, \"end_line\": 41, \"claim\": \"partial の終了コードは 12\"},\n    {\"path\": \"scripts/lib/llm_cli.py\", \"start_line\": 62, \"end_line\": 65, \"claim\": \"エラー系でない stop_reason で complete でなければ終了コード 12 を返す\"}\n  ]\n}\n```",
+      "citations": [],
+      "tokens": {
+        "input": 383557,
+        "output": 2561,
+        "total": 386118
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 37.00485208397731
+    },
+    {
+      "question_id": "F-02",
+      "category": "flow",
+      "method": "agent",
+      "question": "探索の往復上限に達した後、ループはどうまとめて停止するか。",
+      "expected_points": [
+        "stop_reason を max_turns にして summary を真にし、道具なしのまとめの要求を一回行って break する"
+      ],
+      "correct": true,
+      "grade_reason": "要点をすべて満たしている。stop_reason を max_turns にすること、summary を True にすること、道具なしのまとめを1回だけ要求すること、その後 break することが書かれている。",
+      "answer": "`scripts/lib/llm/agent_loop.py` の `run_agent_loop` では、探索の往復上限（`limits.max_turns`）に達すると、未実行の道具呼び出しをエラー結果として返したうえで、道具なしの「まとめ」を探索時間予算外で1回だけ要求して停止します。\n\n具体的な処理手順は次のとおりです。\n1. **上限検出と未実行ツールのエラー化**: 応答に `tool_calls` があり、成功ターン数 `turns >= limits.max_turns` に達すると、`stop_reason = \"max_turns\"`・`summary = True` に設定します（応答に `tool_calls` がなければ、その時点で `complete` としてループを抜けます）。`summary` が `True` の場合、そのターンで要求された `tool_calls` は実行せず、各 `call_id` に対して `ToolResult(call.call_id, \"上限に達したため道具を実行しません。\", True)`（`is_error=True`）を作成し、`ToolResultsMessage` として会話履歴に追加します。\n2. **道具なしでのまとめ要求（1回・時間予算外）**: 次の反復で `summary` が `True` であるため、`limits.max_duration_sec` による時間超過チェックおよびリトライ待機の残り時間制限をスキップし、`UserMessage(\"探索を終了します。道具は使わず、ここまでで分かったことをまとめてください。\")` を会話履歴に追加して、道具定義を空タプル `()` にした `ToolTurnRequest` で1回だけ API を呼び出します。\n3. **ループ終了と結果の返却**:\n   - **まとめ応答が成功した場合**: `turns` と `tokens` にまとめターンの使用量を加算して `on_progress` を呼び出し、応答にテキストがあれば `last_answer` を更新したのち、`if summary or not message.tool_calls: break` により即座にループを抜けます（まとめ応答に `tool_calls` が含まれていても実行しません）。\n   - **まとめ要求が `LLMError` で失敗した場合**: `stop_reason` を `\"api_timeout\"`（`exc.category == \"timeout\"` のとき）または `exc.category` に上書きしてループを抜け、直前までの `last_answer`・`turns`・`tokens` を保持します。\n   - ループ終了後、`last_answer` を `parse_final_answer` でパースし、`verify_citations` で根拠を検証して、`status=\"partial\"` の `AgentResult` を返します。\n4. **CLI の終了コード**: `scripts/lib/llm_cli.py` の `_agent_exit_code` は、`stop_reason=\"max_turns\"` の `partial` 結果に対して終了コード `12` を返します（まとめが API エラーで失敗した場合は対応するエラーコードを返します）。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 38,
+          "end_line": 38,
+          "claim": "まとめ要求時のユーザー指示文 `_SUMMARY_INSTRUCTION` は「探索を終了します。道具は使わず、ここまでで分かったことをまとめてください。」である。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 145,
+          "end_line": 164,
+          "claim": "`tool_calls` がある状態で `turns >= limits.max_turns` に達すると `stop_reason = \"max_turns\"` と `summary = True` を設定し、未実行の `tool_calls` を実行せずに `ToolResult(call.call_id, \"上限に達したため道具を実行しません。\", True)` を `ToolResultsMessage` として会話履歴に追加する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 101,
+          "end_line": 128,
+          "claim": "`summary` が `True` のまとめ反復では `limits.max_duration_sec` による時間予算チェックをバイパスし、`UserMessage(_SUMMARY_INSTRUCTION)` を追加して道具定義を空タプル `()` とした `ToolTurnRequest` を送信する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 132,
+          "end_line": 146,
+          "claim": "まとめ呼び出しが成功した場合は `turns` と `tokens` を加算・`on_progress` 通知・`last_answer` 更新後に `if summary or not message.tool_calls: break` で即終了し、`LLMError` が発生した場合は `stop_reason` を `\"api_timeout\"` または `exc.category` に設定して直前の `last_answer` を保持したままループを抜ける。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 165,
+          "end_line": 175,
+          "claim": "ループ終了後に `parse_final_answer` と `verify_citations` を実行し、`stop_reason` が非 `None` のため `status=\"partial\"` の `AgentResult` を返す。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 41,
+          "end_line": 65,
+          "claim": "CLI の `_agent_exit_code` は `stop_reason` が API エラー系なら対応するエラーコードを返し、それ以外の `partial`（`max_turns` 等）では終了コード `12`（`_AGENT_PARTIAL_CODE`）を返す。",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 282,
+          "end_line": 286,
+          "claim": "探索上限では未実行の道具にエラー結果を渡して道具なしのまとめを1回だけ探索の予算外で要求し、まとめが API エラーで失敗した場合はそのエラーを停止理由にして直前の回答を保持することが文書化されている。",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 90946,
+        "output": 3671,
+        "total": 94617
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 5,
+      "elapsed_sec": 56.926742125011515
+    },
+    {
+      "question_id": "F-03",
+      "category": "flow",
+      "method": "baseline",
+      "question": "facet の一括 build で同名の local と配布元 composition がある場合の探索順と優先は何か。",
+      "expected_points": [
+        "local を先に走査して seen_names に記録し、配布元で同じ stem をスキップするので local が優先する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は正解の要点をすべて満たしています。local を先に走査し、stem を seen_names に記録すること、配布元で同じ stem を continue でスキップすること、その結果 local が優先されることが書かれています。",
+      "answer": "local（`.claude/facets/compositions/`）を先に読み、同じ名前は local が優先されます。\n\n```json\n{\n  \"answer\": \"build_all（_build_all）は、まずプロジェクト側の local composition ディレクトリ（project_facets_dir/compositions。project_facets_dir は対象プロジェクトの .claude/facets/）を rglob('*.yaml') し、名前順（sorted）にビルドする。各ファイル名の stem を seen_names に記録する。local の中で同じ stem が 2 つ目に出た場合は、[warn] duplicate composition を出してスキップする。そのあと配布元（orchestra_dir/facets/compositions）を同じく sorted(rglob('*.yaml')) で走査する。seen_names に既にある stem（local でビルド済みの同名）は警告なしで continue し、ビルドしない。結果として同名なら local が優先され、配布元はスキップされる。各ビルドが呼ぶ _find_composition も、local ディレクトリを先に探し、見つかればそれを返す。配布元を探すのは local に無い場合だけなので、local 優先は一貫している。\",\n  \"citations\": [\n    {\"path\": \"scripts/lib/facet_builder.py\", \"start_line\": 24, \"end_line\": 24, \"claim\": \"project_facets_dir は対象プロジェクトの .claude/facets/ を指す\"},\n    {\"path\": \"scripts/lib/facet_builder.py\", \"start_line\": 549, \"end_line\": 565, \"claim\": \"最初に local の compositions を sorted(rglob('*.yaml')) で走査する。stem を seen_names に記録してビルドし、local 内で重複した stem は警告を出してスキップする\"},\n    {\"path\": \"scripts/lib/facet_builder.py\", \"start_line\": 567, \"end_line\": 578, \"claim\": \"次に配布元の orchestra_dir/facets/compositions を走査する。seen_names にある同名 stem は continue でスキップする\"},\n    {\"path\": \"scripts/lib/facet_builder.py\", \"start_line\": 267, \"end_line\": 291, \"claim\": \"_find_composition は local の compositions を先に探して見つかれば返し、配布元を探すのは local に無いときだけ\"},\n    {\"path\": \"scripts/lib/facet_builder.py\", \"start_line\": 319, \"end_line\": 319, \"claim\": \"_build_one は _find_composition で composition のパスを解決する\"}\n  ]\n}\n```",
+      "citations": [],
+      "tokens": {
+        "input": 387686,
+        "output": 2087,
+        "total": 389773
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 35.52292925002985
+    },
+    {
+      "question_id": "F-03",
+      "category": "flow",
+      "method": "agent",
+      "question": "facet の一括 build で同名の local と配布元 composition がある場合の探索順と優先は何か。",
+      "expected_points": [
+        "local を先に走査して seen_names に記録し、配布元で同じ stem をスキップするので local が優先する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点をすべて満たしています。local を先に走査して stem を seen_names に記録すること、配布元では同じ stem を continue でスキップすること、その結果 local が優先されることを明記しています。",
+      "answer": "facet の一括 build（`FacetBuilder.build_all` / `_build_all`）では、**プロジェクトローカル（`<project_dir>/.claude/facets/compositions`）→ 配布元（`<orchestra_dir>/facets/compositions`）** の順で探索し、同名の composition（拡張子を除いたファイル名 `stem` が一致）がある場合は **プロジェクトローカルが優先** され、配布元側はスキップされます（重複ビルドされません）。\n\n具体的な挙動:\n1. **CLI からのディレクトリ指定**: `orchestra-manager.py` の `facet build`（`--name` 未指定）は、`<project_dir>/.claude/facets` が存在すれば `project_facets_dir` として `FacetBuilder` に渡し、`build_all` を呼び出します。\n2. **探索順と重複排除**: `_build_all` は最初に `project_facets_dir / \"compositions\"` 配下を `sorted(...rglob(\"*.yaml\"))` で再帰・昇順探索し、各ファイルの `stem` を `seen_names` に記録して `_build_one` でビルドします。その後、`orchestra_dir / \"facets\" / \"compositions\"` 配下を同様に `sorted(...rglob(\"*.yaml\"))` で探索しますが、`stem in seen_names` に該当するものは `continue` でスキップします。\n3. **解決時の優先**: `_build_one` 内で呼ばれる `_find_composition(name)` でも、先に `project_facets_dir / \"compositions\"` を `rglob(f\"{name}.yaml\")` で検索して見つかればそちらを返し、見つからない場合のみ `orchestra_dir / \"facets\" / \"compositions\"` を検索するため、実体としてもローカル側が採用されます。\n4. **参考（参照 facet 部品の優先）**: composition から参照される policies / output-contracts / instructions / knowledge / scripts も同じくローカル（`project_facets_dir`）→ 配布元（`orchestra_dir / \"facets\"`）の順でローカルが優先されます。",
+      "citations": [
+        {
+          "path": "scripts/orchestra-manager.py",
+          "start_line": 1773,
+          "end_line": 1791,
+          "claim": "facet build コマンドは project_dir / '.claude' / 'facets'（存在する場合）を project_facets_dir、配布元を orchestra_dir として FacetBuilder を生成し、--name 未指定時に build_all を呼び出す。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 541,
+          "end_line": 579,
+          "claim": "_build_all は先に project_facets_dir / 'compositions' を sorted(...rglob('*.yaml')) で探索して stem を seen_names に登録・ビルドし、次に orchestra_dir / 'facets' / 'compositions' を探索して seen_names にある同名 stem はスキップする。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 267,
+          "end_line": 292,
+          "claim": "_find_composition は project_facets_dir / 'compositions' を先に rglob(f'{name}.yaml') で検索し、存在すればそれを返し、見つからない場合のみ orchestra_dir / 'facets' / 'compositions' を検索する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 136,
+          "end_line": 195,
+          "claim": "resolve_facet / resolve_knowledge / resolve_script も同様に project_facets_dir（プロジェクトローカル）→ orchestra_dir / 'facets'（配布元）の順で解決する。",
+          "verified": true
+        },
+        {
+          "path": "tests/unit/test_facet_build.py",
+          "start_line": 550,
+          "end_line": 588,
+          "claim": "test_build_all_no_duplicate_when_same_name_in_both は、local と orchestra の両方に同名 composition（simplify.yaml）がある場合に build_all が重複なく 1 件のみ生成し、local 側の内容で上書きされることを検証している。",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 283860,
+        "output": 3438,
+        "total": 287298
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 10,
+      "elapsed_sec": 81.00000058399746
+    },
+    {
+      "question_id": "F-04",
+      "category": "flow",
+      "method": "baseline",
+      "question": "最終回答の根拠の抽出から verified の決定まではどう流れるか。",
+      "expected_points": [
+        "parse_final_answer、verify_citations、RepoReadTools.check_citation の順に進み、実在・行範囲と ledger の読取範囲を照合する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点を満たしています。parse_final_answer、verify_citations、RepoReadTools.check_citation の順に進むことを書いています。そのうえで、実在・行範囲（in_bounds）・ledger の読取範囲（within_read）の照合で verified が決まることも説明しています。",
+      "answer": "流れは run_agent_loop の終わりで進みます。(1) 抽出: ループを抜けた後、最後のテキスト応答 last_answer を parse_final_answer に渡します。前後の空白を除き、全体が ```json フェンスで囲まれていれば中身を取り出して json.loads します。結果が dict で、answer が str、citations が list のときだけ (answer, citations) を返します。パースに失敗した場合や形が合わない場合は、元のテキストと空の citations を返します。(2) 項目ごとの正規化: verify_citations が各要素から path(str)・start_line(int)・end_line(int)・claim(str) を取り出します。型が厳密に一致しない値は None になり、要素が dict でなければすべて None です。4 つが揃わない根拠は verified=False です。道具が無効な実行（tools=None で check=None）でも、全件 False になります。(3) 照合: 揃った根拠は \"path:start-end\" の文字列にして RepoReadTools.check_citation に渡します。ここで parse_citation がパスを正規化し、絶対パス・..・NUL を含むもの、start<1、end<start を拒否します。続いて _resolve で現在も安全に読めるか（拒否パターンなど）を確かめ、_text_lines でファイルの今の総行数を数えます。解決や読み取りで例外が出れば (False, False, False) です。成功すれば exists=True と今の総行数を付けて ReadLedger.check_citation に渡します。(4) 読取記録との突き合わせ: in_bounds は 1≤start≤end≤総行数 で決まります。within_read は、そのファイルの記録済み範囲のどれか 1 つが引用範囲をまるごと含むかで決まります。記録は道具が実際に返した行だけです。read_file は返した行の範囲を、grep は一致した行を 1 行ずつ記録します。record は重なる範囲と隣り合う範囲を 1 つにまとめます。(5) 決定: CitationCheck.verified = exists かつ in_bounds かつ within_read です。その値が citation[\"verified\"] になります。AgentResult は verified が False の件数を unverified_count として数え、citations・files_read と一緒に to_dict で出力します。ファイルの実在・行範囲・読取記録は照合しますが、主張の意味が正しいかは確かめません。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 28,
+          "end_line": 37,
+          "claim": "最後の回答の JSON 形式と、実際に読んだ範囲だけを根拠にするようモデルに指示している",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 143,
+          "end_line": 145,
+          "claim": "テキストのある応答を last_answer として保持し、道具呼び出しが無い応答でループを抜ける",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 165,
+          "end_line": 175,
+          "claim": "parse_final_answer で抽出し、tools.check_citation（道具が無効なら None）で verify_citations を呼び、結果を AgentResult に入れる",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 55,
+          "end_line": 69,
+          "claim": "unverified_count は verified が False の件数で、citations・files_read と一緒に出力される",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_answer.py",
+          "start_line": 12,
+          "end_line": 27,
+          "claim": "json フェンスを外して JSON をパースし、形が合わなければ元のテキストと空の citations を返す",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/agent_answer.py",
+          "start_line": 30,
+          "end_line": 54,
+          "claim": "4 項目を型で厳密に確かめ、揃ったものだけ path:start-end 形式で check に渡し、その verified を bool にして記録する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 130,
+          "end_line": 145,
+          "claim": "根拠を解析し、パスを解決して今の総行数を数え、失敗なら全部 False、成功なら exists=True と総行数を付けて ledger で照合する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/read_ledger.py",
+          "start_line": 10,
+          "end_line": 32,
+          "claim": "根拠のパスを正規化し、絶対パス・..・不正な行範囲を拒否する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/read_ledger.py",
+          "start_line": 35,
+          "end_line": 43,
+          "claim": "verified は exists かつ in_bounds かつ within_read",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/read_ledger.py",
+          "start_line": 55,
+          "end_line": 71,
+          "claim": "読取記録は重なる範囲と隣り合う範囲を 1 つにまとめて保存する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/read_ledger.py",
+          "start_line": 73,
+          "end_line": 87,
+          "claim": "in_bounds は総行数の範囲内か、within_read は記録済み範囲の 1 つが引用範囲を含むかで判定する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 359,
+          "end_line": 360,
+          "claim": "read_file は返した行の範囲を読取記録に入れる",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/tools/repo_read.py",
+          "start_line": 458,
+          "end_line": 459,
+          "claim": "grep は一致した行を 1 行ずつ読取記録に入れる",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 399517,
+        "output": 3697,
+        "total": 403214
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 51.833083208010066
+    },
+    {
+      "question_id": "F-04",
+      "category": "flow",
+      "method": "agent",
+      "question": "最終回答の根拠の抽出から verified の決定まではどう流れるか。",
+      "expected_points": [
+        "parse_final_answer、verify_citations、RepoReadTools.check_citation の順に進み、実在・行範囲と ledger の読取範囲を照合する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点を満たしています。parse_final_answer → verify_citations → RepoReadTools.check_citation の順に処理が進むことを示しています。そのうえで、ファイルの実在、行範囲（in_bounds）、ledger の読取範囲（within_read）を照合して verified を決めると説明しています。回答末尾の citations は途中で切れていますが、回答本文は完結しています。",
+      "answer": "```json\n{\n  \"answer\": \"最終回答の根拠の抽出から verified の決定までは、次の 5 段階で進みます。\\n\\n1. 最終回答の受け渡し（agent_loop.py）\\n`run_agent_loop` は各ターンで `message.text` があるたびに `last_answer` を更新し、ループ終了後に `parse_final_answer(last_answer)` で本文と生の根拠リスト `raw_citations` を取り出します。続けて `verify_citations(raw_citations, tools.check_citation if tools is not None else None)` を呼び出し、検証結果を `AgentResult.citations` に格納します（未検証件数は `AgentResult.unverified_count` で `citation[\\\"verified\\\"] is False` を集計します）。\\n\\n2. 最終回答からの根拠抽出（agent_answer.py: `parse_final_answer`）\\n入力文字列の前後空白を除き、全体が ```` ```json ... ``` ```` コードフェンスに完全一致する場合は中身を取り出します。`json.loads` でパースし、`ValueError` / `RecursionError` が起きた場合、または結果が `dict` かつ `answer` が `str` かつ `citations` が `list` という条件を満たさない場合は `(text, [])` にフォールバックします。条件を満たせば `(parsed[\\\"answer\\\"], parsed[\\\"citations\\\"])` を返します。\\n\\n3. 各根拠の型検証と照合呼び出し（agent_answer.py: `verify_citations`）\\n`raw` の各要素を走査し、`dict` でなければ空辞書として扱ったうえで、`path: str`, `start_line: int`, `end_line: int`, `claim: str` の 4 項目を `type(value) is kind` の厳密な型一致で取り出します（不一致・欠落は `None`）。全 4 項目が `None` でないことを `valid` とし、`citation[\\\"verified\\\"]` は `bool(valid and check is not None and check(f\\\"{path}:{start_line}-{end_line}\\\").verified)` で決定します。そのため、`tools` が `None`（`check is None`）の場合や必須フィールド不備・型不一致の場合は必ず `False` になります。\\n\\n4. ファイルの存在確認と現在行数の取得（repo_read.py: `RepoReadTools.check_citation`）\\n`check` に渡される `RepoReadTools.check_citation` は、まず `parse_citation(citation)` で文字列を解析し、不正なら `CitationCheck(False, False, False)` を返します。次に `self._resolve(path)` でリポジトリルート内・拒否リスト外・Git 許可一覧内であることを検証しつつ相対パスへ正規化し、`self._text_lines(relative)` で現在の UTF-8 通常ファイルを開いて走査し総行数 `total` を数えます。これらの途中で `_Rejected` / `OSError` / `RuntimeError` / `ValueError` が起きれば `CitationCheck(False, False, False)` を返します。成功すると `self.ledger.check_citation(f\\\"{relative}:{start}-{end}\\\", exists=True, total_lines=total)` に委譲します。\\n\\n5. 読取台帳との照合と `verified` の確定（read_ledger.py: `ReadLedger.check_citation` / `CitationCheck.verified`）\\nセッション中に実際に返却された行範囲は、`RepoReadTools._read_file` と `_grep` から `ReadLedger.record` へ記録され、重複・隣接する行範囲は統合されて保持されています。`ReadLedger.check_citation` は再度 `parse_citation` で `(.+):([0-9]+)-([0-9]+)` 形式・正規化済み相対パス・`1 <= start <= end` を確認したうえで、以下を判定して `CitationCheck(bool(exists), in_bounds, within_read)` を返します。\\n- `exists`: 呼び出し側（`RepoReadTools.check_citation`）から渡された存在フラグ（ここでは `True`）\\n- `in_bounds`: `total_lines`（省略時は記録済み総行数、未記録なら `0`）が `int` かつ `1 <= start <= end <= count` であること\\n- `within_read`: 対象パスが台帳に記録されており、統合済み読取範囲のいずれか `(lower, upper)` が `lower <= start and end <= upper` で指定範囲全体を包含すること\\n\\n最後に `CitationCheck.verified` プロパティが `self.exists and self.in_bounds and self.within_read` を返し、その真偽値が `verify_citations` で各根拠の `verified` フィールドとして確定します。\",\n  \"citations\": [\n    {\n      \"path\": \"scripts/lib/llm/agent_loop.py\",\n      \"start_line\": 141,\n      \"end_line\": 144,\n      \"claim\": \"会話ループ内で応答メッセージにテキストがあるたびに last_answer を更新する\"\n    },\n    {\n      \"path\": \"scripts/lib/llm/agent_loop.py\",\n      \"start_line\": 165,\n      \"end_line\": 175,\n      \"claim\": \"ループ終了後に parse_final_answer と verify_citations を順に呼び出し、tools がある場合は tools.check_citation を渡して AgentResult を構築する\"\n    },\n    {\n      \"path\": \"scripts/lib/llm/agent_loop.py\",\n      \"start_line\": 55,\n      \"end_line\": 69,\n      \"claim\": \"AgentResult.unverified_count は verified が False の根拠数を数え、to_dict に citations と unverified_count を含める\"\n    },\n    {\n      \"path\": \"scripts/lib/llm/agent_answer.py\",\n      \"start_line\": 12,\n      \"end_line\": 27,\n      \"claim\": \"parse_final_answer は前後の空白と ```json フェンスを処理して JSON をパースし、形式不正時は (text, []) を返し、正常時は (answer, citations) を返す\"\n    },\n    {\n      \"path\": \"scripts/lib/llm/agent_answer.py\",\n      \"start_line\": 30,\n      \"end_line\": 54,\n      \"claim\": \"verify_citations は path/start_line/end_line/claim の厳密な型一致を検証し、valid かつ check 非 None かつ check(path:start-end).verified が真のときのみ verified を True にする\"\n    },\n    {\n      \"path\": \"scripts/lib/llm/tools/repo_read.py\",\n      \"start_line\": 130,\n      \"end_line\": 145,\n      \"claim\": \"RepoReadTools.check_citation は parse_citation、_resolve、_text_lines で現在の存在と総行数を検証・計測し、失敗時は CitationCheck(False, False, False)、成功時は ledger.check_citation に exists=True と total_lines を渡す\"\n    },\n    {\n      \"path\": \"scripts/lib/llm/tools/repo_read.py\",\n      \"start_line\": 249,\n      \"end_line",
+      "citations": [],
+      "tokens": {
+        "input": 168487,
+        "output": 4984,
+        "total": 173471
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 8,
+      "elapsed_sec": 72.4910034579807
+    },
+    {
+      "question_id": "F-05",
+      "category": "flow",
+      "method": "baseline",
+      "question": "core の manifest で inject-shared-context.py はどの hook に登録され、PreToolUse の matcher は何か。",
+      "expected_points": [
+        "SubagentStart と PreToolUse に登録され、PreToolUse は Agent|Task に適用される"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点を満たしています。登録先として SubagentStart と PreToolUse の 2 つを挙げ、PreToolUse の matcher を Agent|Task としています。",
+      "answer": "core の manifest（packages/core/manifest.json）では、inject-shared-context.py は SubagentStart と PreToolUse の 2 つの hook に登録されている。PreToolUse の matcher は \"Agent|Task\"。SubagentStart 側は文字列で書かれていて、matcher は無い。",
+      "citations": [
+        {
+          "path": "packages/core/manifest.json",
+          "start_line": 13,
+          "end_line": 15,
+          "claim": "SubagentStart hook に inject-shared-context.py が文字列で登録されている（matcher は無い）",
+          "verified": true
+        },
+        {
+          "path": "packages/core/manifest.json",
+          "start_line": 21,
+          "end_line": 30,
+          "claim": "PreToolUse hook に inject-shared-context.py が matcher \"Agent|Task\" で登録されている",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 186540,
+        "output": 602,
+        "total": 187142
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 17.924502542009577
+    },
+    {
+      "question_id": "F-05",
+      "category": "flow",
+      "method": "agent",
+      "question": "core の manifest で inject-shared-context.py はどの hook に登録され、PreToolUse の matcher は何か。",
+      "expected_points": [
+        "SubagentStart と PreToolUse に登録され、PreToolUse は Agent|Task に適用される"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点をすべて満たしています。登録先の hook を SubagentStart と PreToolUse の 2 つとし、PreToolUse の matcher を Agent|Task としています。",
+      "answer": "core の manifest（packages/core/manifest.json）では、`inject-shared-context.py` は `SubagentStart` と `PreToolUse` の 2 つの hook に登録されています。また、`PreToolUse` での `matcher` は `Agent|Task` です。",
+      "citations": [
+        {
+          "path": "packages/core/manifest.json",
+          "start_line": 13,
+          "end_line": 15,
+          "claim": "core の manifest の hooks.SubagentStart に inject-shared-context.py が登録されている",
+          "verified": true
+        },
+        {
+          "path": "packages/core/manifest.json",
+          "start_line": 21,
+          "end_line": 30,
+          "claim": "core の manifest の hooks.PreToolUse に inject-shared-context.py が matcher \"Agent|Task\" で登録されている",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 7750,
+        "output": 957,
+        "total": 8707
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 3,
+      "elapsed_sec": 16.888811708020512
+    },
+    {
+      "question_id": "C-02",
+      "category": "configuration",
+      "method": "baseline",
+      "question": "API プロファイルに model を指定した場合と省略した場合で、どのモデルを使うか。",
+      "expected_points": [
+        "resolve_profile は profile.model を優先し、省略時は api.providers の model を使う"
+      ],
+      "correct": true,
+      "grade_reason": "正解の要点を満たしています。回答は、プロファイルに model があればその値（profile.model）を優先し、省略時は provider の既定モデル（api.providers.<provider>.model）を使う、と述べています。既定モデル名や allowlist の挙動などの補足は判定の対象外で、内容の正しさは確かめていません。",
+      "answer": "プロファイルに model を書いた場合は、その値（profiles.<name>.model）を使います。書かなかった場合は、そのプロファイルの provider の既定モデル（api.providers.<provider>.model）を使います。同梱のベース設定では、既定モデルは anthropic が claude-sonnet-5-5、openai が gpt-6.2-sol、gemini が gemini-4-neon です。例えば model を書いていない research プロファイル（provider: gemini）は gemini-4-neon になります。どちらにも model が無い、または名前として不正な値の場合は ProfileError になります。解決したモデルが provider の model_allowlist に無くてもエラーにはならず、警告『API model は model_allowlist にありません。』が付くだけで、そのモデルがそのまま使われます。CLI（ask / agent）は解決した profile.model をそのまま SDK 呼び出しに渡します。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 88,
+          "end_line": 88,
+          "claim": "model は profile.get(\"model\", settings.get(\"model\")) で決まる。プロファイルの model を優先し、無ければ provider 設定の model を使う",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 83,
+          "end_line": 84,
+          "claim": "settings は api.providers の中から、そのプロファイルの provider の設定を取ったもの",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 69,
+          "end_line": 72,
+          "claim": "_safe_name は文字列でない値（None を含む）や不正な名前を ProfileError にする。そのため model がどちらにも無ければエラーになる",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 107,
+          "end_line": 114,
+          "claim": "model_allowlist に無いモデルは warnings に追加されるだけで、拒否はされない",
+          "verified": true
+        },
+        {
+          "path": "packages/agent-routing/config/cli-tools.yaml",
+          "start_line": 37,
+          "end_line": 62,
+          "claim": "provider ごとの既定 model（claude-sonnet-5-5 / gpt-6.2-sol / gemini-4-neon）と、model を持たない research プロファイル（provider: gemini）の定義",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 115,
+          "end_line": 115,
+          "claim": "CLI は解決した profile.model を呼び出しに渡す",
+          "verified": false
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 202,
+          "end_line": 202,
+          "claim": "もう一方の呼び出し経路でも profile.model を渡す",
+          "verified": false
+        }
+      ],
+      "tokens": {
+        "input": 319673,
+        "output": 2129,
+        "total": 321802
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 36.919716500036884
+    },
+    {
+      "question_id": "C-02",
+      "category": "configuration",
+      "method": "agent",
+      "question": "API プロファイルに model を指定した場合と省略した場合で、どのモデルを使うか。",
+      "expected_points": [
+        "resolve_profile は profile.model を優先し、省略時は api.providers の model を使う"
+      ],
+      "correct": true,
+      "grade_reason": "要点を満たしています。回答は、resolve_profile がプロファイルの model を優先し、省略時は api.providers.&lt;provider&gt;.model を使うと述べています。",
+      "answer": "API プロファイル（`api.profiles.<name>`）で `model` を指定した場合は、そのプロファイルに指定した `api.profiles.<name>.model` を使います（プロバイダ側の設定より優先されます）。`model` を省略した場合は、そのプロファイルが参照するプロバイダ設定の `api.providers.<provider>.model` を使います。実装では `resolve_profile` が `profile.get(\"model\", settings.get(\"model\"))` で解決し、英数字と `_ . : / @ + = -` からなる文字列として検証します（不正値や未設定の場合は `ProfileError`）。なお、`api.providers.<provider>.model_allowlist` が設定されていて選ばれたモデルが含まれない場合は、警告を付けたうえでそのモデルを使用します。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 75,
+          "end_line": 88,
+          "claim": "resolve_profile は profile.get(\"model\", settings.get(\"model\")) でモデルを解決し、プロファイルの model を優先し、省略時は対象プロバイダの model を使う。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 69,
+          "end_line": 72,
+          "claim": "_safe_name により、モデル名は英数字および _ . : / @ + = - の文字列として検証され、不正・未設定時は ProfileError を送出する。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 107,
+          "end_line": 114,
+          "claim": "プロバイダの model_allowlist が指定されていて解決された model が含まれない場合は、警告を付けてプロファイル解決を完了する。",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 190,
+          "end_line": 193,
+          "claim": "api.profiles.<name>.model はプロバイダの model より優先する任意の上書きであり、省略した場合は api.providers.<provider>.model を使うと記載されている。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/tests/test_api_routing.py",
+          "start_line": 70,
+          "end_line": 102,
+          "claim": "ルーティング解決テストで、プロファイルに model を指定した場合はプロファイルの model、省略した場合はプロバイダの model が選ばれることが検証されている。",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 98809,
+        "output": 2341,
+        "total": 101150
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 9,
+      "elapsed_sec": 74.62847179203527
+    },
+    {
+      "question_id": "C-03",
+      "category": "configuration",
+      "method": "baseline",
+      "question": "探索上限が未指定のとき、往復・総トークン・実行時間の既定値は何か。",
+      "expected_points": [
+        "AgentLimits に max_turns=30、max_total_tokens=2000000、max_duration_sec=900 を定義する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は既定値を AgentLimits のフィールド初期値とし、max_turns=30・max_total_tokens=2000000・max_duration_sec=900 を挙げている。正解の要点をすべて満たす。",
+      "answer": "API プロファイルの limits に指定がないとき、既定値は往復 30 回（max_turns）、総トークン 2,000,000（max_total_tokens。成功した往復の入力と出力の合計）、実行時間 900 秒（max_duration_sec。15 分）。この既定値は AgentLimits のフィールド初期値で、resolve_agent_settings が limits にないキーにこれを使う。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 39,
+          "end_line": 45,
+          "claim": "AgentLimits の既定値は max_turns=30、max_total_tokens=2_000_000、max_duration_sec=900",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 149,
+          "end_line": 158,
+          "claim": "プロファイルの limits にキーがないときは AgentLimits() の既定値を使う",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 270,
+          "end_line": 272,
+          "claim": "ドキュメントでも既定は 30 往復、2,000,000 トークン（成功した往復の入力＋出力の累計）、900 秒と書かれている",
+          "verified": false
+        }
+      ],
+      "tokens": {
+        "input": 320651,
+        "output": 1488,
+        "total": 322139
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 30.99062345904531
+    },
+    {
+      "question_id": "C-03",
+      "category": "configuration",
+      "method": "agent",
+      "question": "探索上限が未指定のとき、往復・総トークン・実行時間の既定値は何か。",
+      "expected_points": [
+        "AgentLimits に max_turns=30、max_total_tokens=2000000、max_duration_sec=900 を定義する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は AgentLimits の既定値として max_turns=30、max_total_tokens=2,000,000、max_duration_sec=900 を挙げており、正解の要点と一致する。",
+      "answer": "探索上限（agent プロファイルの `limits`）が未指定のとき、既定値は次のとおりです。\n\n- 往復（`limits.max_turns`）: 30（30往復）\n- 総トークン（`limits.max_total_tokens`）: 2,000,000（成功した往復の入力＋出力の累計）\n- 実行時間（`limits.max_duration_sec`）: 900秒（`900.0` 秒 / 15分）\n\n実装では `AgentLimits` の既定値（`max_turns=30`, `max_total_tokens=2_000_000`, `max_duration_sec=900`）が定義されており（packages/core/hooks/api_profiles.py:39-45）、`resolve_agent_settings` で `limits` の各項目が省略された場合にこれらの既定値が採用されます（packages/core/hooks/api_profiles.py:149-170）。設定リファレンスでも同じく、既定30往復・既定2,000,000・既定900秒と記載されています（docs/reference/configuration.md:270-272）。また、単体テストでも `limits` 未指定時に `max_turns == 30`, `max_total_tokens == 2_000_000`, `max_duration_sec == 900` になることが検証されています（packages/core/tests/test_api_profiles_agent.py:27-34）。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 39,
+          "end_line": 45,
+          "claim": "AgentLimits の既定値は max_turns=30、max_total_tokens=2_000_000、max_duration_sec=900 である",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 149,
+          "end_line": 170,
+          "claim": "resolve_agent_settings はプロファイルの limits で各探索上限が未指定のとき AgentLimits() の既定値（max_duration_sec は float 変換）を採用する",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 270,
+          "end_line": 272,
+          "claim": "設定リファレンスでは limits.max_turns が既定30往復、limits.max_total_tokens が既定2,000,000、limits.max_duration_sec が既定900秒と記載されている",
+          "verified": true
+        },
+        {
+          "path": "packages/core/tests/test_api_profiles_agent.py",
+          "start_line": 27,
+          "end_line": 34,
+          "claim": "test_agent_limit_defaults で limits 未指定時の resolve_agent_settings の結果が max_turns=30、max_total_tokens=2_000_000、max_duration_sec=900 であることを検証している",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 110865,
+        "output": 2613,
+        "total": 113478
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 7,
+      "elapsed_sec": 51.237925875000656
+    },
+    {
+      "question_id": "C-04",
+      "category": "configuration",
+      "method": "baseline",
+      "question": "tool: codex で codex.enabled が false のとき実行先と注記はどうなるか。",
+      "expected_points": [
+        "resolve_agent_routing は claude-direct に戻し、codex.enabled is false の理由を notes に追加する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は正解の要点を満たしています。resolve_agent_routing が実行先を claude-direct に戻すこと、notes に codex.enabled is false の理由を足すことの両方が書かれています。",
+      "answer": "実行先は `claude-direct` に切り替わり、注記として `configured tool 'codex' -> claude-direct (codex.enabled is false)` が付きます。\n\n```json\n{\n  \"answer\": \"configured_tool が 'codex' で codex.enabled が false のとき、実行先は 'claude-direct' に切り替わる。注記には \\\"configured tool 'codex' -> claude-direct (codex.enabled is false)\\\" が追加される。解決後の tool が codex ではなく、設定も auto ではないため、Codex 節（model / sandbox / flags）は作られない。そのため [Resolved Routing] には codex.* の行が出ず、'- tool: claude-direct' と '- note: configured tool 'codex' -> claude-direct (codex.enabled is false)' が出力される。\",\n  \"citations\": [\n    {\n      \"path\": \"packages/core/hooks/hook_common.py\",\n      \"start_line\": 395,\n      \"end_line\": 412,\n      \"claim\": \"resolve_agent_routing は configured_tool == 'codex' かつ codex_enabled が偽のとき resolved_tool を 'claude-direct' にし、notes に \\\"configured tool 'codex' -> claude-direct (codex.enabled is false)\\\" を追加して routing の tool と notes に入れる\"\n    },\n    {\n      \"path\": \"packages/core/hooks/hook_common.py\",\n      \"start_line\": 440,\n      \"end_line\": 451,\n      \"claim\": \"Codex 節は resolved_tool == 'codex'、または configured_tool == 'auto' かつ codex が有効のときだけ解決される。このケースはどちらにも当たらないので routing に 'codex' キーは付かない\"\n    },\n    {\n      \"path\": \"packages/core/hooks/inject-shared-context.py\",\n      \"start_line\": 219,\n      \"end_line\": 259,\n      \"claim\": \"routing の値の行は '- agent' と '- tool' を出し、'codex' キーがあるときだけ codex.* の行を出す。notes は '- note: {note}' の形で行になる\"\n    }\n  ]\n}\n```",
+      "citations": [],
+      "tokens": {
+        "input": 385784,
+        "output": 1913,
+        "total": 387697
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 35.265484583971556
+    },
+    {
+      "question_id": "C-04",
+      "category": "configuration",
+      "method": "agent",
+      "question": "tool: codex で codex.enabled が false のとき実行先と注記はどうなるか。",
+      "expected_points": [
+        "resolve_agent_routing は claude-direct に戻し、codex.enabled is false の理由を notes に追加する"
+      ],
+      "correct": true,
+      "grade_reason": "要点を満たしています。回答は、実行先が claude-direct に戻ることと、codex.enabled is false という理由が notes に入ることの両方を述べています。関数名 resolve_agent_routing には触れていませんが、求められた振る舞いは一致しています。",
+      "answer": "設定されたツールが `tool: codex` で `codex.enabled` が `false` の場合、実行先（解決後の `tool`）は `claude-direct` にフォールバックし、Codex CLI は呼び出されません（`routing` に `codex` セクションは含まれず、`[Resolved Routing]` にも `- codex.*` 行は出力されません）。\n\n注記（`notes`）には `configured tool 'codex' -> claude-direct (codex.enabled is false)` が追加され、hook が生成するルーティング情報（`[Resolved Routing]` および PreToolUse プレビュー）では `- note: configured tool 'codex' -> claude-direct (codex.enabled is false)` として出力されます。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 395,
+          "end_line": 412,
+          "claim": "resolve_agent_routing で configured_tool == 'codex' かつ codex_enabled が False の場合、resolved_tool は 'claude-direct' になり、notes に \"configured tool 'codex' -> claude-direct (codex.enabled is false)\" が追加される。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 440,
+          "end_line": 449,
+          "claim": "resolved_tool が 'claude-direct' にフォールバックするため codex セクション解決の条件を満たさず、routing に 'codex' キーは付与されない。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 240,
+          "end_line": 252,
+          "claim": "get_agent_tool でも tool == 'codex' かつ is_cli_enabled('codex', config) が False のとき 'claude-direct' を返す。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 219,
+          "end_line": 259,
+          "claim": "build_routing_value_lines は `- tool: {routing['tool']}` を出力し、'codex' キーがない場合は `- codex.*` 行を出力せず、routing['notes'] の各文字列を `- note: {note}` 形式で出力する。",
+          "verified": true
+        },
+        {
+          "path": "packages/agent-routing/tests/test_sandbox_resolution.py",
+          "start_line": 403,
+          "end_line": 413,
+          "claim": "codex.enabled が False かつ tool が 'codex' のとき、tool が 'claude-direct' になり、'codex' キーがなく、notes が [\"configured tool 'codex' -> claude-direct (codex.enabled is false)\"] となることがテストされている。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/tests/test_inject_resolved_routing.py",
+          "start_line": 162,
+          "end_line": 172,
+          "claim": "codex.enabled: false 時の SubagentStart 出力に `- tool: claude-direct` と `- note: configured tool 'codex' -> claude-direct` が含まれ、`- codex.` 行が含まれないことがテストされている。",
+          "verified": true
+        },
+        {
+          "path": ".claude/rules/codex-delegation.md",
+          "start_line": 24,
+          "end_line": 26,
+          "claim": "ルーティング規則として、codex.enabled == false のときは Codex を呼び出さずフォールバック方針に従うことが定められている。",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 773087,
+        "output": 4273,
+        "total": 777360
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 19,
+      "elapsed_sec": 122.23894216597546
+    },
+    {
+      "question_id": "C-05",
+      "category": "configuration",
+      "method": "baseline",
+      "question": "パッケージ設定の読込み時に base と local はどの順で解決されるか。",
+      "expected_points": [
+        "load_package_config は base を探して読み、local を探して読み、local があれば deep_merge(base, local)、なければ base を返す"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点をすべて満たしています。base を探して読み、次に local を探して読み、local があれば deep_merge(base, local)、なければ base を返す、という順序が書かれています。",
+      "answer": "`packages/core/hooks/hook_common.py` の `load_package_config` は、まず base を探します。探す順は、プロジェクトの `{project_dir}/.claude/config/{package_name}/{filename}`、次に `$AI_ORCHESTRA_DIR/packages/{package_name}/config/{filename}` です。どちらも無ければ `{}` を返します。base があれば読み込み、続けて local（`{name}.local{ext}`）を探します。local はまずプロジェクトの `.claude/config/{package_name}/` を見て、無ければ base と同じディレクトリを見ます。local が空でなければ `deep_merge(base, local)` で、local の値を base に再帰的に上書きします。dict 同士は再帰的にマージし、それ以外の値は local の値で置き換えます。local が無いか空なら base をそのまま返します。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 66,
+          "end_line": 83,
+          "claim": "base のパスはプロジェクトの .claude/config/{package_name}/{filename} を先に、無ければ $AI_ORCHESTRA_DIR/packages/{package_name}/config/{filename} を探す。どちらも無ければ空文字を返す",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 105,
+          "end_line": 120,
+          "claim": "local は {name}.local{ext} という名前で、プロジェクトの .claude/config/{package_name}/ を先に探し、無ければ base と同じディレクトリのパスを返す",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 123,
+          "end_line": 138,
+          "claim": "base が無ければ {} を返す。base を読んでから local を読み、local が空でなければ deep_merge(base, local)、空なら base を返す",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 55,
+          "end_line": 63,
+          "claim": "deep_merge は override（local）の値で base を再帰的に上書きする。dict 同士は再帰的にマージし、それ以外は置き換える",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 253809,
+        "output": 1346,
+        "total": 255155
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 27.74801708298037
+    },
+    {
+      "question_id": "C-05",
+      "category": "configuration",
+      "method": "agent",
+      "question": "パッケージ設定の読込み時に base と local はどの順で解決されるか。",
+      "expected_points": [
+        "load_package_config は base を探して読み、local を探して読み、local があれば deep_merge(base, local)、なければ base を返す"
+      ],
+      "correct": true,
+      "grade_reason": "base を探して読み、次に local を探して読み、local があれば deep_merge(base, local)、なければ base を返すという要点をすべて満たしている。",
+      "answer": "`packages/core/hooks/hook_common.py` の `load_package_config` では、まず **base** を解決して読み込み、次に **local**（`{name}.local{ext}`）を解決して読み込み、local が存在すれば `deep_merge(base, local)` で base の値を local で再帰的に上書きします（base が見つからない場合は local を読まずに空辞書 `{}` を返し、local が存在しない・空の場合は base をそのまま返します）。\n\nそれぞれのパス探索順は以下の通りです。\n\n1. **base の探索順（`find_package_config`）**\n   1. `{project_dir}/.claude/config/{package_name}/{filename}`\n   2. `$AI_ORCHESTRA_DIR/packages/{package_name}/config/{filename}`（`AI_ORCHESTRA_DIR` 設定時のフォールバック）\n\n2. **local の探索順（`_find_local_config_path`）**\n   1. `{project_dir}/.claude/config/{package_name}/{name}.local{ext}`（base が `$AI_ORCHESTRA_DIR` 側であってもプロジェクト側の local を優先）\n   2. `{base_path と同じディレクトリ}/{name}.local{ext}`（フォールバック）\n\n3. **マージ規則（`deep_merge` / `config-loading.md`）**\n   - 辞書同士のキーは再帰的にマージされ、それ以外の値（スカラー・リスト等）は local の値で置き換えられます。local に未定義のキーは base の値が維持されます。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 55,
+          "end_line": 63,
+          "claim": "deep_merge は base と override の両方にある dict 値のキーを再帰マージし、それ以外は override 側の値で置き換える。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 66,
+          "end_line": 83,
+          "claim": "find_package_config は base 設定を 1) {project_dir}/.claude/config/{package_name}/{filename}、2) $AI_ORCHESTRA_DIR/packages/{package_name}/config/{filename} の順で探索する。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 105,
+          "end_line": 120,
+          "claim": "_find_local_config_path は {name}.local{ext} を 1) {project_dir}/.claude/config/{package_name}/{name}.local{ext}、2) base_path と同じディレクトリの順で解決する。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 123,
+          "end_line": 138,
+          "claim": "load_package_config は base を先に解決・読み込み（base が無ければ {} を返す）、次に local を解決・読み込み、local があれば deep_merge(base, local)、無ければ base を返す。",
+          "verified": true
+        },
+        {
+          "path": "packages/core/tests/test_hook_common.py",
+          "start_line": 218,
+          "end_line": 239,
+          "claim": "base が $AI_ORCHESTRA_DIR 配下にあってもプロジェクト側の .claude/config/{package_name}/{name}.local.{ext} が優先してマージされることがテストで検証されている。",
+          "verified": true
+        },
+        {
+          "path": ".claude/rules/config-loading.md",
+          "start_line": 7,
+          "end_line": 12,
+          "claim": "設定読み込みルールとしてベース（.yaml / .json）を先に読み込み、プロジェクト固有のローカル上書き（.local.yaml / .local.json）が存在すればベースを上書きし、未定義キーはベースの値を使うと定義されている。",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 189467,
+        "output": 2881,
+        "total": 192348
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 9,
+      "elapsed_sec": 82.01565916696563
+    },
+    {
+      "question_id": "X-02",
+      "category": "cross_file",
+      "method": "baseline",
+      "question": "読んだ行の記録は、道具と回答の根拠確認にどう共有されるか。",
+      "expected_points": [
+        "ReadLedger.record が行範囲を記録し、RepoReadTools.check_citation が ledger に実在と行数を渡し、agent_loop が同じ check_citation を verify_citations に渡す"
+      ],
+      "correct": true,
+      "grade_reason": "要点をすべて満たしているので正解とした。回答には次の 3 点が書かれている。(1) read_file と grep が、返した行の範囲を ReadLedger に記録する。(2) RepoReadTools.check_citation が、ファイルの実在（exists=True）と現在の総行数を ledger.check_citation に渡す。(3) agent_loop が、同じ tools の check_citation を verify_citations に渡す。",
+      "answer": "読んだ行の記録は、道具 `RepoReadTools` が持つ 1 つの `ReadLedger` にたまり、回答の根拠確認でも同じインスタンスと照合されます。\n\n```json\n{\n  \"answer\": \"読んだ行の記録は ReadLedger 1 つで共有され、1 インスタンスが 1 セッションにあたる。RepoReadTools は生成時に ledger を受け取り、渡されなければ自分で作って self.ledger に持つ。read_file は実際に返した行の範囲（start_line から返した行数ぶん）とファイルの総行数を記録する。grep は返したマッチ行を 1 行ずつ記録する。ledger は同じファイルの範囲を、重なりや隣接があればまとめて保持する。エージェントループは道具の呼び出しを tools.execute で実行する。最後に回答 JSON を parse_final_answer で解析し、同じ tools の check_citation を verify_citations に渡して根拠を確かめる。check_citation はパスを再解決し、ファイルを読み直して現在の総行数を数え、その値を exists=True とともに ledger.check_citation に渡す。ledger は次の 3 つをすべて満たすときだけ verified=true にする。(1) ファイルが存在する、(2) 指定範囲が総行数に収まる、(3) 指定範囲が記録済みのどれか 1 つの範囲に丸ごと含まれる。path・start_line・end_line・claim の型が不正な根拠や、道具が無い実行の根拠は verified=false になる。結果には ledger.files() の読取ファイル一覧も載る。\",\n  \"citations\": [\n    {\"path\": \"scripts/lib/llm/tools/read_ledger.py\", \"start_line\": 1, \"end_line\": 1, \"claim\": \"このモジュールは、セッション内で実際に返した行の範囲と根拠の照合を担う\"},\n    {\"path\": \"scripts/lib/llm/tools/read_ledger.py\", \"start_line\": 35, \"end_line\": 43, \"claim\": \"verified は exists・in_bounds・within_read がすべて真のときだけ真になる\"},\n    {\"path\": \"scripts/lib/llm/tools/read_ledger.py\", \"start_line\": 46, \"end_line\": 71, \"claim\": \"ReadLedger は 1 インスタンスを 1 セッションとして扱い、ファイルごとに総行数と、重なり・隣接をまとめた範囲を記録する\"},\n    {\"path\": \"scripts/lib/llm/tools/read_ledger.py\", \"start_line\": 73, \"end_line\": 87, \"claim\": \"check_citation は総行数との境界と、記録済み範囲に丸ごと含まれるかを判定する\"},\n    {\"path\": \"scripts/lib/llm/tools/repo_read.py\", \"start_line\": 84, \"end_line\": 94, \"claim\": \"RepoReadTools は ledger を受け取るか自分で作り、self.ledger として持つ\"},\n    {\"path\": \"scripts/lib/llm/tools/repo_read.py\", \"start_line\": 130, \"end_line\": 145, \"claim\": \"道具側の check_citation はパスを再解決して現在の総行数を数え、exists=True で ledger に照合させる\"},\n    {\"path\": \"scripts/lib/llm/tools/repo_read.py\", \"start_line\": 359, \"end_line\": 360, \"claim\": \"read_file は実際に返した行の範囲と総行数を ledger に記録する\"},\n    {\"path\": \"scripts/lib/llm/tools/repo_read.py\", \"start_line\": 458, \"end_line\": 459, \"claim\": \"grep は返したマッチ行を 1 行ずつ ledger に記録する\"},\n    {\"path\": \"scripts/lib/llm/agent_loop.py\", \"start_line\": 160, \"end_line\": 175, \"claim\": \"ループは同じ tools で道具を実行し、最後に tools.check_citation で根拠を検証し、結果に ledger.files() を含める\"},\n    {\"path\": \"scripts/lib/llm/agent_answer.py\", \"start_line\": 30, \"end_line\": 54, \"claim\": \"verify_citations は根拠の型を確かめ、check が無ければ false、あれば path:start-end の形で check を呼んで verified を付ける\"}\n  ]\n}\n```",
+      "citations": [],
+      "tokens": {
+        "input": 390492,
+        "output": 2911,
+        "total": 393403
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 49.280001542007085
+    },
+    {
+      "question_id": "X-02",
+      "category": "cross_file",
+      "method": "agent",
+      "question": "読んだ行の記録は、道具と回答の根拠確認にどう共有されるか。",
+      "expected_points": [
+        "ReadLedger.record が行範囲を記録し、RepoReadTools.check_citation が ledger に実在と行数を渡し、agent_loop が同じ check_citation を verify_citations に渡す"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点を満たすと判定しました。ReadLedger.record が _read_file と _grep で行範囲を記録すること、同じ RepoReadTools の ledger を共有すること、agent_loop が tools.check_citation を verify_citations に渡すことを述べています。ただし、check_citation がファイルの実在と行数を ledger に渡す点ははっきり書かれていません。回答は途中で切れていますが、要点の流れはそろっています。",
+      "answer": "```json\n{\n  \"answer\": \"読んだ行の記録は、1セッションにつき1つの `ReadLedger` インスタンス（`scripts/lib/llm/tools/read_ledger.py:46-71`）を `RepoReadTools.ledger` に持たせ、同じ `RepoReadTools` インスタンス（または呼び出し側から注入した同一の `ReadLedger` インスタンス）を道具の実行と最終回答の根拠確認の両方で使い回すことで共有されます。\\n\\n具体的な共有の流れは次の通りです。\\n\\n1. **記録の保持と注入（`ReadLedger` / `RepoReadTools`）**\\n   - `ReadLedger` は `self._files` にファイルごとの総行数と、重複・隣接区間を統合した行範囲タプルを保持します（`scripts/lib/llm/tools/read_ledger.py:46-71`）。\\n   - `RepoReadTools.__init__` は `ledger: ReadLedger | None = None` を受け取り、指定があればそのインスタンスを、省略時は新規の `ReadLedger()` を `self.ledger` として保持します（`scripts/lib/llm/tools/repo_read.py:84-94`）。\\n\\n2. **道具実行時の書き込み**\\n   - `RepoReadTools._read_file` は、`max_lines` / `max_bytes` の上限内に収まって実際に返却した `output` がある場合のみ、返却範囲 `(start_line, start_line + len(output) - 1)` と総行数 `total` を `self.ledger.record(...)` に記録します（`scripts/lib/llm/tools/repo_read.py:334-360`）。\\n   - `RepoReadTools._grep` は、実際に返却する各一致行について `self.ledger.record(candidate, number, number, total)` を1行単位で記録します（`scripts/lib/llm/tools/repo_read.py:458-459`）。\\n   - `list_dir` と `glob` は `self.ledger.record` を呼びません（`scripts/lib/llm/tools/repo_read.py:381-407`）。\\n\\n3. **エージェント実行から回答の根拠確認への共有**\\n   - `run_llm_agent` は `settings.repo_read` が有効な場合に `RepoReadTools` を1つ生成して `run_agent_loop(..., tools=tools, ...)` に渡します（`scripts/lib/llm_cli.py:104-123`）。\\n   - `run_agent_loop` は探索ターン中に同一の `tools.execute(...)` を実行して `tools.ledger` へ読取範囲を蓄積し、ループ終了後に `parse_final_answer(last_answer)` で抽出した根拠を `verify_citations(raw_citations, tools.check_citation if tools is not None else None)` へ渡して検証します。また、結果の `",
+      "citations": [],
+      "tokens": {
+        "input": 161505,
+        "output": 5340,
+        "total": 166845
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 6,
+      "elapsed_sec": 71.84003249998204
+    },
+    {
+      "question_id": "X-03",
+      "category": "cross_file",
+      "method": "baseline",
+      "question": "tool: api の profile 解決結果はどのように hook の api.* 行へ届くか。",
+      "expected_points": [
+        "resolve_agent_routing が resolve_profile と check_availability を呼び、利用可能なら asdict(profile) から warnings と provider_enabled を除き routing.api に格納し、build_routing_value_lines が描画する"
+      ],
+      "correct": true,
+      "grade_reason": "要点をすべて満たしています。回答には次の流れが書かれています。resolve_profile と check_availability を呼ぶ。利用できる場合は asdict(profile) から warnings と provider_enabled を除き、routing['api'] に入れる。それを build_routing_value_lines が api.* 行として描画する。途中で関数名が resolve_routing と書かれている箇所がありますが、冒頭で resolve_agent_routing と明記しているので、要点は外れていません。",
+      "answer": "profile を解決するのは hook_common.resolve_agent_routing です。その結果を inject-shared-context.py が `- api.*` 行にして、additionalContext として届けます。\n\n1. hook の入口: main は SubagentStart では build_combined_injection、PreToolUse では build_routing_preview を呼びます。どちらも resolve_routing を通ります。\n2. 設定の読み込み: resolve_routing は、project に cli-tools.yaml または .local.yaml があり、agents にそのエージェントが定義されているときだけ進みます。設定は load_cli_tools_config が base と local を deep_merge したものです。\n3. profile の解決: 設定された tool が api のとき、resolve_profile(config, agent_config['api_profile']) で ResolvedProfile を作ります。model は profile の値、無ければ provider の値です。features と limits には既定値が入り、model_allowlist に無い model は警告になります。\n4. 利用可否の判定: 続いて check_availability で provider の有効化、API キー、SDK を確かめます。\n   - 利用可なら asdict(profile) から warnings を notes へ移し、provider_enabled を除いて routing['api'] に入れます。\n   - 利用不可、または ProfileError / CredentialsError なら tool を claude-direct に戻し、理由を notes に足すだけです。routing['api'] が無いので api.* 行は出ません。\n   - キーは APIAvailability 側にだけあり、routing には入りません。\n5. 行への描画: build_routing_value_lines が profile / provider / model / web_search / attachments / timeout_sec / max_output_tokens を `- api.{field}: 値` にします（bool は小文字）。そのあと `- api.command: orchex llm ask --profile <name>` と `- note:` 行を足します。\n6. 届け方: hookSpecificOutput.additionalContext として出力されます。\n   - SubagentStart: `[Resolved Routing]` 見出しを付け、共有コンテキストの後ろ（末尾）に置きます。\n   - PreToolUse: 見出しなしの値だけのプレビューになります。",
+      "citations": [
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 355,
+          "end_line": 387,
+          "claim": "main は SubagentStart なら build_combined_injection、それ以外なら build_routing_preview の結果を hookSpecificOutput.additionalContext として出力する",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 269,
+          "end_line": 311,
+          "claim": "resolve_routing は project の config があり agents に定義されたエージェントだけを対象に、load_cli_tools_config と resolve_agent_routing で routing を解決する。SubagentStart は見出し付き、PreToolUse は見出しなしで描画する",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 341,
+          "end_line": 352,
+          "claim": "build_combined_injection は共有コンテキストの後ろに routing のブロックを置き、[Resolved Routing] を最後にする",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 205,
+          "end_line": 216,
+          "claim": "build_resolved_routing_section が [Resolved Routing] 見出しと説明文を付けて値の行を並べる",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 123,
+          "end_line": 138,
+          "claim": "load_package_config は base を読み、.local があれば deep_merge する",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 179,
+          "end_line": 181,
+          "claim": "load_cli_tools_config は agent-routing の cli-tools.yaml を base と local のマージで読む",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/hook_common.py",
+          "start_line": 414,
+          "end_line": 438,
+          "claim": "tool が api のとき resolve_profile と check_availability を呼ぶ。利用可なら asdict(profile) から warnings と provider_enabled を除いて routing['api'] に入れ、利用不可や例外なら claude-direct に戻して note を足す",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 20,
+          "end_line": 36,
+          "claim": "ResolvedProfile のフィールドは profile/provider/provider_enabled/model/web_search/attachments/timeout_sec/max_output_tokens/warnings で、API キーは APIAvailability 側にある",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 75,
+          "end_line": 125,
+          "claim": "resolve_profile が provider・model（provider の値へのフォールバック）・features・limits の既定値と検証・allowlist 警告を決めて ResolvedProfile を返す",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/api_profiles.py",
+          "start_line": 128,
+          "end_line": 136,
+          "claim": "check_availability は provider の無効化、キー未設定、SDK 未導入を順に判定する",
+          "verified": true
+        },
+        {
+          "path": "packages/core/hooks/inject-shared-context.py",
+          "start_line": 238,
+          "end_line": 257,
+          "claim": "routing['api'] の 7 フィールドを `- api.{field}:` 行にし（bool は小文字化）、api.command と note 行を足す",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 825064,
+        "output": 4214,
+        "total": 829278
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 107.13220970897237
+    },
+    {
+      "question_id": "X-03",
+      "category": "cross_file",
+      "method": "agent",
+      "question": "tool: api の profile 解決結果はどのように hook の api.* 行へ届くか。",
+      "expected_points": [
+        "resolve_agent_routing が resolve_profile と check_availability を呼び、利用可能なら asdict(profile) から warnings と provider_enabled を除き routing.api に格納し、build_routing_value_lines が描画する"
+      ],
+      "correct": true,
+      "grade_reason": "要点をすべて満たしているため正解です。回答には、resolve_agent_routing が resolve_profile と check_availability を呼ぶこと、利用可能なら asdict(profile) から warnings と provider_enabled を除いて routing[\"api\"] に入れること、build_routing_value_lines が api.* 行を描画することが書かれています。回答は末尾で途切れていますが、要点は本文で説明済みです。",
+      "answer": "```json\n{\n  \"answer\": \"`tool: api` の profile 解決結果は、以下の経路で `inject-shared-context.py` hook の `api.*` 行として出力されます。\\n\\n1. **hook 起動と設定読み込み（`inject-shared-context.py` / `hook_common.py`）**\\n   - `packages/core/hooks/inject-shared-context.py` は `SubagentStart` および `PreToolUse`（matcher: `Agent|Task`）の hook として登録されています。\\n   - `main()` が stdin の JSON から `resolve_target_agent()` で `(event_name, agent)` を決め、`resolve_routing(agent, project_dir)` を呼びます。プロジェクトに `cli-tools.yaml`（または `.local.yaml`）が存在すれば `load_cli_tools_config()` で base と local を `deep_merge` した設定を読み込み、対象 `agent` が `agents` に含まれる場合に `resolve_agent_routing(agent, config)` を実行します。\\n\\n2. **profile 解決と利用可否チェック（`api_profiles.py`）**\\n   - `resolve_agent_routing()` は `configured_tool == \\\"api\\\"` のとき、`resolve_profile(safe_config, agent_config.get(\\\"api_profile\\\"))` を呼び出します。\\n   - `resolve_profile()` は `api.profiles.<name>` と `api.providers.<provider>` を検証・解決し、`ResolvedProfile(profile, provider, provider_enabled, model, web_search, attachments, timeout_sec, max_output_tokens, warnings)` を返します（`model` は profile 未指定なら provider の `model` を継承し、`model_allowlist` 外なら `warnings` に記録。なお agent 用の `tools` / `deny` / 探索 `limits` は別関数 `resolve_agent_settings()` の管轄で `ResolvedProfile` には入りません）。\\n   - 続いて `check_availability(profile)` が `provider_enabled`・API キー（`resolve_api_key`）・SDK 導入（`provider_dependency_available`）の順に検証し、`APIAvailability(reason, api_key)` を返します。\\n\\n3. **`routing[\\\"api\\\"]` の構築とフォールバック（`hook_common.py`）**\\n   - 利用可能（`availability.reason is None`）な場合、`dataclasses.asdict(profile)` で辞書化し、`warnings` を取り出して `routing[\\\"notes\\\"]` へ移し、`provider_enabled` を取り除いた 7 フィールド（`profile`, `provider`, `model`, `web_search`, `attachments`, `timeout_sec`, `max_output_tokens`）を `routing[\\\"api\\\"]` に格納します（`availability.api_key` は `routing` に入れません）。\\n   - 利用不可（`availability.reason is not None`）または `ProfileError` / `CredentialsError` 送出時は、`routing[\\\"tool\\\"]` を `\\\"claude-direct\\\"` にフォールバックし、理由メッセージを `routing[\\\"notes\\\"]` に追加します。このとき `routing[\\\"api\\\"]` は作られないため `api.*` 行は出力されません。\\n\\n4. **`api.*` 行の描画と `additionalContext` への出力（`inject-shared-context.py`）**\\n   - `build_routing_value_lines(routing)` は `\\\"api\\\" in routing` のとき、上記 7 フィールドを順に `- api.<field>: <value>` として描画します（`bool` 値は `\\\"true\\\"` / `\\\"false\\\"` の小文字に変換）。\\n   - 続けて `api[\\\"profile\\\"]` から `- api.command: orchex llm ask --profile <profile>` を追加します（プロファイル名が `\\\"-\\\"` で始まる場合は `--profile=<profile>` 形式）。`routing[\\\"notes\\\"]` は `- note: <note>` として末尾に出力されます。\\n   - これらの行は `SubagentStart` では `[Resolved Routing]` セクション（`build_resolved_routing_section()`）として共有コンテキストの末尾に結合され、`PreToolUse` では `[Subagent Context Preview]` の配下（`build_routing_preview()`）にまとめられたうえで、最終的に `main()` が `{\\\"hookSpecificOutput\\\": {\\\"hookEventName\\\": event_name, \\\"additionalContext\\\": additional_context}}` として stdout に出力します。\",\n  \"citations\": [\n    {\n      \"path\": \"packages/core/manifest.json\",\n      \"start_line\": 13,\n      \"end_line\": 30,\n      \"claim\": \"inject-shared-context.py は SubagentStart と PreToolUse（matcher: Agent|Task）の hook として登録されている\"\n    },\n    {\n      \"path\": \"packages/core/hooks/inject-shared-context.py\",\n      \"start_line\": 269,\n      \"end_line\": 289,\n      \"claim\": \"resolve_routing がプロジェクト設定の有無を確認し、load_cli_tools_config で読み込んだ設定から agents に存在する対象エージェントに対して resolve_agent_routing を呼び出す\"\n    },\n    {\n      \"path\": \"packages/core/hooks/hook_common.py\",\n      \"start_line\": 123,\n      \"end_line\": 138,\n      \"claim\": \"load_package_config は base 設定と .local 設定が存在する場合に deep_merge して返す\"\n    },\n    {\n      \"path\": \"packages/core/hooks/hook_common.py\",\n      \"start_line\": 179,\n      \"end_line\": 181,\n      \"claim\": \"load_cli_tools_config は agent-routing の cli-tools.yaml（と local 上書き）を読み込む\"\n    },\n    {\n      \"path\": \"packages/core/hooks/api_profiles.py\",\n      \"start_line\": 20,\n      \"end_line\": 36,\n      \"claim\": \"ResolvedProfile は profile, provider, provider_enabled, model, web_search, attachments, timeout_sec, max_output_tokens, warnings を持ち、APIAvailability は reason と api_key を持つ\"\n    },\n    {\n      \"path\": \"packages/core/hooks/api_profiles.py\",\n      \"start_line\": 75,\n      \"end_line\": 136,\n      \"claim\": \"resolve_profile が api.profiles と api.providers からプロファイルを検証・解決し、check_availability が provider_enabled・API キー・SDK 依存の有無を順に検証する\"\n    },\n    {\n      \"path\": \"packages/core/hooks/api_profiles.py\",\n      \"start_line\": 139,\n      \"end_line\": 170,\n      \"claim\": \"agent 用の tools・deny・探索 limits は resolve_agent_settings で別途解決され、ResolvedProfile には含まれない\"\n    },\n    {\n      \"path\": \"packages/core/hooks/hook_common.py\",\n      \"start_line\": 395,\n      \"end_line\": 439,\n      \"claim\": \"resolve_agent_routing は configured_tool == 'api' のとき resolve_profile と check_availability を呼び、利用可能なら asdict(profile) から warnings を notes へ移し provider_enabled を除いた辞書を routing['api'] に格納する（api_key は格納しない）。利用不可や例外時は tool を 'claude-direct' にフォールバックし notes に理由を追加して routing['api'] を設定しない\"\n    },\n    {\n      \"path\": \"packages/core/hooks/inject-shared-context.py\",\n      \"start_line\": 205,\n      \"end_line\": 259,\n      \"claim\": \"build_routing",
+      "citations": [],
+      "tokens": {
+        "input": 273960,
+        "output": 5417,
+        "total": 279377
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 17,
+      "elapsed_sec": 125.06755300000077
+    },
+    {
+      "question_id": "X-04",
+      "category": "cross_file",
+      "method": "baseline",
+      "question": "context-sharing の composition の instruction は、どの処理を経て rule の本文になるか。",
+      "expected_points": [
+        "composition は instruction: context-sharing を指定し、resolve_instruction が instructions の facet を解決し、build_rule_md が sections に追加して結合する"
+      ],
+      "correct": true,
+      "grade_reason": "回答は要点をすべて押さえています。composition が instruction: context-sharing を指定すること、build_rule_md が resolve_instruction を呼ぶこと、resolve_instruction が resolve_facet('instructions', …) で instructions の facet を解決すること、その本文がセクションとして結合され rule 本文になることが書かれています。セクションが 1 つなので区切りが入らないという説明も、結合の結果として矛盾しません。",
+      "answer": "facets/compositions/rules/context-sharing.yaml は type: rule、policies: []、instruction: context-sharing です。FacetBuilder はこれを次の順で rule の本文にします。(1) _find_composition が facets/compositions 配下から context-sharing.yaml を再帰検索します。project_facets_dir があれば、そちらを先に探します。(2) load_composition が YAML を safe_load し、検証します。rule の場合、instruction は文字列か未指定であればよく、policies が None なら [] に直します。(3) core パッケージの manifest の rules に context-sharing があるため、manifest によるフィルタが効く場合は core がインストールされているときだけビルドされます。target が claude 以外なら rule は生成されず、旧 .codex/rules を掃除するだけです。(4) build_rule_md が policies（空）と output_contracts（なし）を処理したあと、resolve_instruction を呼びます。値は改行を含まず 100 文字以下なので、ファイル名として扱われます。resolve_facet('instructions', 'context-sharing') がプロジェクトローカルの facets/instructions/context-sharing.md、orchestra の facets/instructions/context-sharing.md の順にファイルを探し、本文を strip して読み込みます。(5) セクションはこの本文 1 つだけなので、'\\n\\n---\\n\\n' による連結は起きず、末尾に改行を足したものが rule 本文になります。(6) _build_output_path が .claude/rules/context-sharing.md を返し、そこへ書き込みます。(7) 最後に format_markdown_files が prettier --write で整形します。prettier が見つからないか失敗した場合は警告を出し、原文のまま残します。",
+      "citations": [
+        {
+          "path": "facets/compositions/rules/context-sharing.yaml",
+          "start_line": 1,
+          "end_line": 8,
+          "claim": "type: rule、policies: []、instruction: context-sharing",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 267,
+          "end_line": 291,
+          "claim": "_find_composition がローカル → orchestra の facets/compositions を rglob で探す",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 30,
+          "end_line": 102,
+          "claim": "load_composition が YAML を safe_load して検証する。rule の instruction は文字列か None を許容する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 319,
+          "end_line": 365,
+          "claim": "_build_one は非 claude ターゲットの rule を生成しない。パッケージフィルタを通ったあと build_rule_md の結果を出力先へ書き込む",
+          "verified": true
+        },
+        {
+          "path": "packages/core/manifest.json",
+          "start_line": 79,
+          "end_line": 86,
+          "claim": "context-sharing は core パッケージの rules に含まれる",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 229,
+          "end_line": 246,
+          "claim": "build_rule_md は policies → output_contracts → instruction の順に並べ、'\\n\\n---\\n\\n' で連結して末尾に改行を付ける",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 160,
+          "end_line": 169,
+          "claim": "resolve_instruction は改行なし・100 文字以下の値を facets/instructions のファイル名として解決する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 136,
+          "end_line": 158,
+          "claim": "resolve_facet はプロジェクトローカル → orchestra の順でファイルを探し、本文を strip して返す",
+          "verified": true
+        },
+        {
+          "path": "facets/instructions/context-sharing.md",
+          "start_line": 1,
+          "end_line": 3,
+          "claim": "instruction の本文（Context Sharing Rule）",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 256,
+          "end_line": 258,
+          "claim": "claude ターゲットの rule の出力先は .claude/rules/<name>.md",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 300,
+          "end_line": 305,
+          "claim": "build_one は生成後に format_markdown_files で整形する（build_all も 532-539 行で同様）",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/md_format.py",
+          "start_line": 46,
+          "end_line": 85,
+          "claim": "prettier --write で整形し、失敗時は警告を出して原文のまま残す",
+          "verified": false
+        }
+      ],
+      "tokens": {
+        "input": 486979,
+        "output": 3093,
+        "total": 490072
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 51.036372417001985
+    },
+    {
+      "question_id": "X-04",
+      "category": "cross_file",
+      "method": "agent",
+      "question": "context-sharing の composition の instruction は、どの処理を経て rule の本文になるか。",
+      "expected_points": [
+        "composition は instruction: context-sharing を指定し、resolve_instruction が instructions の facet を解決し、build_rule_md が sections に追加して結合する"
+      ],
+      "correct": true,
+      "grade_reason": "要点はすべて満たしています。回答には次の 3 点が書かれています。composition が instruction: context-sharing を指定していること。resolve_instruction が resolve_facet を通じて instructions の facet を解決すること。build_rule_md がその本文を sections に追加し、join で結合すること。",
+      "answer": "`facets/compositions/rules/context-sharing.yaml` に定義された `instruction: context-sharing` は、以下の処理を経て `.claude/rules/context-sharing.md` の本文になります。\n\n1. **ビルド起動と composition の読み込み**:\n   `orchestra-manager.py` の `facet build`（`FacetBuilder.build_one` または `FacetBuilder.build_all`）から `FacetBuilder._build_one()` が呼ばれ、`_find_composition(\"context-sharing\")` で composition YAML（プロジェクトローカル `.claude/facets/compositions` 優先、なければ `facets/compositions` 配下）を特定し、`load_composition()` で読み込み・検証します。なお、`target != \"claude\"` かつ `type == \"rule\"` の場合は配布せずスキップされます。また `manifest_compositions` によるフィルタが有効な場合は、`context-sharing` を `rules` に持つ `core` パッケージが `installed_packages` に含まれているときのみビルドされます。\n\n2. **`build_rule_md()` による rule 本文の組み立て**:\n   `_build_one()` は `type == \"rule\"` を受けて `FacetBuilder.build_rule_md(composition)` を呼び出します。`build_rule_md()` は `policies`（`context-sharing.yaml` では `[]`）、`output_contracts`（未指定）の順に `sections` へ追加した後、`resolve_instruction(composition.get(\"instruction\", \"\"))` を呼び出します。\n\n3. **`resolve_instruction()` と `resolve_facet()` による instruction 解決**:\n   `resolve_instruction(\"context-sharing\")` は前後空白を除去した上で、空文字でなく、改行文字（`\\n`）を含まず、長さが 100 文字以下（15 文字）であるため、インライン本文ではなく facet 名参照と判定して `resolve_facet(\"instructions\", \"context-sharing\")` を呼びます。`resolve_facet()` はまず `project_facets_dir/instructions/context-sharing.md`（`.claude/facets/instructions/context-sharing.md`）を確認し、存在しなければ `orchestra_dir/facets/instructions/context-sharing.md` を UTF-8 で読み込んで `.strip()` した文字列を返します。\n\n4. **セクション結合**:\n   返された instruction 本文が `sections` に追加されます。`context-sharing` では `policies` と `output_contracts` が空のため `sections` は instruction 1 要素のみとなり、`\"\\n\\n---\\n\\n\".join(sections) + \"\\n\"` によって区切り線なしの instruction 本文（末尾改行付き）が `build_rule_md()` の戻り値になります。\n\n5. **ファイル書き出しと Markdown 整形**:\n   `_build_one()` が `_build_output_path(\"context-sharing\", \"claude\", project_dir, \"rule\")` で決定した `project_dir/.claude/rules/context-sharing.md` へ UTF-8 で書き出し、`generated` リストに追加します。その後 `build_one()` / `build_all()` が `scripts/lib/md_format.py` の `format_markdown_files(generated, project_dir)` を呼び出し、prettier が利用可能であれば `--write` で一括整形して最終的な rule ファイルになります（prettier が解決できない、または実行失敗時は警告を出して原文のまま残します）。",
+      "citations": [
+        {
+          "path": "facets/compositions/rules/context-sharing.yaml",
+          "start_line": 1,
+          "end_line": 8,
+          "claim": "context-sharing の composition は name: context-sharing、type: rule、policies: []、instruction: context-sharing として定義されている",
+          "verified": true
+        },
+        {
+          "path": "packages/core/manifest.json",
+          "start_line": 79,
+          "end_line": 86,
+          "claim": "context-sharing は core パッケージの manifest.json の rules に登録されている",
+          "verified": true
+        },
+        {
+          "path": "scripts/orchestra-manager.py",
+          "start_line": 1773,
+          "end_line": 1791,
+          "claim": "facet build コマンドは FacetBuilder を構築し、name 指定有無に応じて build_one または build_all を呼び出す",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 300,
+          "end_line": 365,
+          "claim": "build_one / _build_one は composition を検索・読み込みし、非 claude ターゲットの rule をスキップし、パッケージフィルタ後に comp_type == 'rule' なら build_rule_md() で本文を生成して出力先へ書き出し、format_markdown_files() を呼ぶ",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 229,
+          "end_line": 246,
+          "claim": "build_rule_md() は policies・output_contracts に続いて resolve_instruction() の結果を sections に追加し、'\\n\\n---\\n\\n'.join(sections) + '\\n' で rule 本文を組み立てる",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 160,
+          "end_line": 169,
+          "claim": "resolve_instruction() は strip 後に空でなく、改行を含まず 100 文字以下の文字列を facet 名とみなして resolve_facet('instructions', stripped) を呼ぶ",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 136,
+          "end_line": 158,
+          "claim": "resolve_facet() はプロジェクトローカル（project_facets_dir/instructions/<name>.md）を優先し、なければ orchestra_dir/facets/instructions/<name>.md を UTF-8 で読み込み strip() して返す",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 248,
+          "end_line": 259,
+          "claim": "_build_output_path() は comp_type == 'rule' かつ target == 'claude' の出力先を project_dir / '.claude' / 'rules' / f'{name}.md' に決定する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/facet_builder.py",
+          "start_line": 532,
+          "end_line": 540,
+          "claim": "build_all() は生成した Markdown パス群を generated に集め、finally で format_markdown_files(generated, project_dir) を実行する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/md_format.py",
+          "start_line": 46,
+          "end_line": 85,
+          "claim": "format_markdown_files() は prettier を解決して --write で整形し、見つからない場合や失敗時は警告のみ出してファイルを原文のまま残す",
+          "verified": true
+        },
+        {
+          "path": "facets/instructions/context-sharing.md",
+          "start_line": 1,
+          "end_line": 94,
+          "claim": "orchestra 側の context-sharing instruction ソースファイルとして rule 本文の元テキストを保持している",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 251161,
+        "output": 4714,
+        "total": 255875
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 8,
+      "elapsed_sec": 106.64187283301726
+    },
+    {
+      "question_id": "X-05",
+      "category": "cross_file",
+      "method": "baseline",
+      "question": "llm ask のレート制限の再試行は、CLI と共通関数でどう分担するか。",
+      "expected_points": [
+        "llm_cli は provider 呼出しと試行回数・初期待ち時間を call_with_rate_limit_retry に渡し、retry.py は rate_limited だけ待って再試行し、回数切れや他の分類は例外を返す"
+      ],
+      "correct": true,
+      "grade_reason": "CLI が provider 呼出し・試行回数・初期待ち時間を call_with_rate_limit_retry に渡し、共通関数が rate_limited だけ待って再試行し、回数切れや他の分類は raise する点を満たしている。",
+      "answer": "再試行の制御は共通関数 call_with_rate_limit_retry（scripts/lib/llm/retry.py）が担い、CLI（run_llm_ask）は回数と初期待機の値を渡す役と、最後に残った失敗を終了コードに変える役を担う。\n- 共通関数: operation を呼び、LLMError の category が \"rate_limited\" のときだけ sleep(delay) してから再試行する。待機は毎回 backoff 倍（既定 2.0）に延びる。rate_limited 以外の失敗と、試行回数を使い切った失敗はそのまま raise する。引数 max_attempts（1 以上の整数）・initial_delay_sec（0 以上の有限数）・backoff（1 より大きい有限数）は呼び出し前に検証する。\n- CLI 側: run_llm_ask は call_provider を lambda で包み、max_attempts=_RATE_LIMIT_ATTEMPTS（3）と initial_delay_sec=_RATE_LIMIT_INITIAL_DELAY_SEC（2.0 秒）で共通関数を呼ぶ。sleep は既定の time.sleep のまま。再試行しても解消しなかった LLMError は except で受け、キーを伏せたメッセージを stderr に出し、_ERROR_CODES で終了コードに変える（rate_limited は 10）。\n- 前提: 各プロバイダの SDK は自前の再試行を切っている（Anthropic/OpenAI は max_retries=0、Gemini は retry_options attempts=1）。429 は errors.py が rate_limited に分類する。ただし OpenAI の insufficient_quota は quota_exhausted になり、再試行の対象外。そのため再試行はこの共通関数の 1 か所だけで行われる。\n- 同じ共通関数は agent_loop も使う。ask と違い、試行回数と待機は limits から渡し、sleep には時間予算を考える wait_with_budget を渡す。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm/retry.py",
+          "start_line": 12,
+          "end_line": 36,
+          "claim": "call_with_rate_limit_retry は引数を検証し、category が rate_limited のときだけ sleep して backoff 倍で再試行する。それ以外の失敗と回数切れは raise する",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 31,
+          "end_line": 40,
+          "claim": "rate_limited の終了コードは 10。ask の試行回数は 3、初期待機は 2.0 秒の定数",
+          "verified": false
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 209,
+          "end_line": 213,
+          "claim": "run_llm_ask は call_provider を共通関数に渡し、CLI の定数で再試行させる",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 223,
+          "end_line": 226,
+          "claim": "再試行後も残った LLMError は、キーを伏せて stderr に出し、カテゴリ別の終了コードを返す",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/types.py",
+          "start_line": 33,
+          "end_line": 33,
+          "claim": "rate_limited のメッセージは「レート制限が解消しませんでした。時間を置いて再実行してください」",
+          "verified": false
+        },
+        {
+          "path": "scripts/lib/llm/errors.py",
+          "start_line": 28,
+          "end_line": 36,
+          "claim": "OpenAI の 429 は rate_limited に分類する。ただし insufficient_quota は quota_exhausted になる",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/anthropic_provider.py",
+          "start_line": 44,
+          "end_line": 44,
+          "claim": "Anthropic SDK は max_retries=0 で SDK 側の再試行を切っている",
+          "verified": false
+        },
+        {
+          "path": "scripts/lib/llm/openai_provider.py",
+          "start_line": 36,
+          "end_line": 36,
+          "claim": "OpenAI SDK は max_retries=0 で SDK 側の再試行を切っている",
+          "verified": false
+        },
+        {
+          "path": "scripts/lib/llm/gemini_provider.py",
+          "start_line": 41,
+          "end_line": 41,
+          "claim": "Gemini SDK は retry_options attempts=1 で SDK 側の再試行を切っている",
+          "verified": false
+        },
+        {
+          "path": "scripts/lib/llm/agent_loop.py",
+          "start_line": 123,
+          "end_line": 128,
+          "claim": "agent_loop も同じ共通関数を使い、試行回数・待機は limits から、sleep は wait_with_budget を渡す",
+          "verified": false
+        }
+      ],
+      "tokens": {
+        "input": 323053,
+        "output": 3068,
+        "total": 326121
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "elapsed_sec": 43.011833625030704
+    },
+    {
+      "question_id": "X-05",
+      "category": "cross_file",
+      "method": "agent",
+      "question": "llm ask のレート制限の再試行は、CLI と共通関数でどう分担するか。",
+      "expected_points": [
+        "llm_cli は provider 呼出しと試行回数・初期待ち時間を call_with_rate_limit_retry に渡し、retry.py は rate_limited だけ待って再試行し、回数切れや他の分類は例外を返す"
+      ],
+      "correct": true,
+      "grade_reason": "要点をすべて満たしています。llm_cli が provider 呼び出し・試行回数・初期待ち時間を call_with_rate_limit_retry に渡すこと、retry.py が rate_limited の場合だけ待って再試行し、回数切れや他の分類では例外を送出することが書かれています。",
+      "answer": "llm ask のレート制限再試行は、CLI（scripts/lib/llm_cli.py の run_llm_ask）が試行ポリシーの決定と最終的なエラー出力・終了コード変換を担い、共通関数（scripts/lib/llm/retry.py の call_with_rate_limit_retry）が引数検証・カテゴリ判定・指数バックオフ待機・再試行ループの実行を担う形で分担されています。なお、各プロバイダ呼び出し層は SDK 内部の自動再試行を無効化した1回の呼び出しと例外分類（LLMError 化）のみを担当します。\n\n1. CLI 側（scripts/lib/llm_cli.py）の分担:\n- 再試行パラメータの定義: 初回を含む最大試行数 `_RATE_LIMIT_ATTEMPTS = 3` と初回待機時間 `_RATE_LIMIT_INITIAL_DELAY_SEC = 2.0` を定数として保持します（scripts/lib/llm_cli.py:39-40）。\n- 共通関数への委譲: `run_llm_ask` は1回のプロバイダ呼び出し `lambda: call_provider(profile.provider, request, key)` を `operation` として渡し、`max_attempts=_RATE_LIMIT_ATTEMPTS`、`initial_delay_sec=_RATE_LIMIT_INITIAL_DELAY_SEC` を指定して `call_with_rate_limit_retry` を呼び出します（`backoff` と `sleep` は共通関数の既定値 `2.0` と `time.sleep` を使用）（scripts/lib/llm_cli.py:209-213）。\n- 失敗時の終了処理: 再試行を使い切った最終の `rate_limited` エラーや即時送出された他カテゴリの `LLMError` を捕捉し、メッセージ中の API キーを `[REDACTED]` に置換して標準エラー出力へ出したうえで、分類別の終了コード（`rate_limited` は `10`、`quota_exhausted` は `9`、`auth_error` は `11` など）を返します（scripts/lib/llm_cli.py:31-38, 223-226）。\n\n2. 共通関数側（scripts/lib/llm/retry.py）の分担:\n- 入力検証: `call_with_rate_limit_retry` は `operation`、`max_attempts`、`initial_delay_sec`、`backoff=2.0`、`sleep=time.sleep` を受け取り、実行前に `max_attempts`（bool でない1以上の整数）、`initial_delay_sec`（0以上の有限数）、`backoff`（1より大きい有限数）を検証し、不正なら `ValueError` を送出します（scripts/lib/llm/retry.py:12-25）。\n- 対象エラーの選別とバックオフ再試行: `operation()` を実行し、`LLMError` が発生した場合に残回数を減算したうえで、`exc.category == \"rate_limited\"` かつ残回数がある間だけ `sleep(delay)` で待機し、`delay *= backoff` で待ち時間を増やしながら再試行します（CLI の指定では 2.0 秒・4.0 秒と待って合計3回試行）（scripts/lib/llm/retry.py:26-36, docs/adr/ADR-20261127-068.md:95-97, docs/reference/configuration.md:201-203）。\n- 非対象エラー・回数切れ時の送出: `exc.category != \"rate_limited\"`（`quota_exhausted`、`auth_error`、`timeout`、`api_error` 等）や `LLMError` 以外の例外、または残回数が 0 になった場合は、待機や追加試行をせずその例外をそのまま呼び出し元（CLI）へ再送出します（scripts/lib/llm/retry.py:29-34）。\n\n3. 前提となるプロバイダ層の分担:\n- Anthropic / OpenAI は `max_retries=0`、Gemini は `retry_options: {\"attempts\": 1}` で SDK 内部の自動再試行を無効化し、例外を分類して `LLMError` を送出することで、再試行の制御を共通関数と CLI の境界に一本化しています（scripts/lib/llm/anthropic_provider.py:42-55, scripts/lib/llm/openai_provider.py:34-47, scripts/lib/llm/gemini_provider.py:37-56）。",
+      "citations": [
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 31,
+          "end_line": 40,
+          "claim": "CLI はエラー分類ごとの終了コード（rate_limited: 10 等）と、レート制限の試行回数定数 _RATE_LIMIT_ATTEMPTS = 3・初回待機秒数 _RATE_LIMIT_INITIAL_DELAY_SEC = 2.0 を定義している。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 209,
+          "end_line": 213,
+          "claim": "run_llm_ask は call_provider をラップした無引数関数と _RATE_LIMIT_ATTEMPTS・_RATE_LIMIT_INITIAL_DELAY_SEC を共通関数 call_with_rate_limit_retry へ渡して呼び出す。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm_cli.py",
+          "start_line": 223,
+          "end_line": 226,
+          "claim": "run_llm_ask は再試行後に送出された LLMError を捕捉し、API キーを [REDACTED] で秘匿して stderr へ出力し、_ERROR_CODES[exc.category] を終了コードとして返す。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/retry.py",
+          "start_line": 12,
+          "end_line": 25,
+          "claim": "共通関数 call_with_rate_limit_retry は operation・max_attempts・initial_delay_sec・backoff（既定 2.0）・sleep（既定 time.sleep）を受け取り、実行前に引数値を検証して不正時は ValueError を送出する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/retry.py",
+          "start_line": 26,
+          "end_line": 36,
+          "claim": "共通関数は operation() を実行し、LLMError かつ category == 'rate_limited' で残試行回数がある場合のみ sleep(delay) と delay *= backoff で再試行し、他カテゴリや回数切れでは例外をそのまま再送出する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/anthropic_provider.py",
+          "start_line": 42,
+          "end_line": 55,
+          "claim": "Anthropic プロバイダは max_retries=0 で SDK 自動再試行を無効化し、例外を classify_anthropic で分類して送出する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/openai_provider.py",
+          "start_line": 34,
+          "end_line": 47,
+          "claim": "OpenAI プロバイダは max_retries=0 で SDK 自動再試行を無効化し、例外を classify_openai で分類して送出する。",
+          "verified": true
+        },
+        {
+          "path": "scripts/lib/llm/gemini_provider.py",
+          "start_line": 37,
+          "end_line": 56,
+          "claim": "Gemini プロバイダは retry_options: {'attempts': 1} で SDK 自動再試行を無効化し、例外を classify_gemini で分類して送出する。",
+          "verified": true
+        },
+        {
+          "path": "docs/adr/ADR-20261127-068.md",
+          "start_line": 94,
+          "end_line": 97,
+          "claim": "ADR-068 では、再試行関数は回数・待ち時間・倍率を受け取り rate のみ再試行し、CLI は合計3回・2秒と4秒待って回数切れ時は最後の rate エラー（終了コード10）を返す方針が定められている。",
+          "verified": true
+        },
+        {
+          "path": "docs/reference/configuration.md",
+          "start_line": 201,
+          "end_line": 203,
+          "claim": "設定リファレンスでも、llm ask は通常1回呼び出し、一時的な rate_limited のみ2秒・4秒待って合計3回試行し、quota_exhausted と auth_error は再試行せず SDK 内部の自動再試行は無効にする仕様が明記されている。",
+          "verified": true
+        }
+      ],
+      "tokens": {
+        "input": 147704,
+        "output": 5129,
+        "total": 152833
+      },
+      "status": "complete",
+      "stop_reason": null,
+      "exit_code": 0,
+      "error": null,
+      "turns": 6,
+      "elapsed_sec": 76.13035420799861
+    }
+  ],
+  "summary": {
+    "overall": {
+      "baseline": {
+        "questions": 20,
+        "correct": 20,
+        "accuracy": 1.0,
+        "citations": 92,
+        "unverified": 11,
+        "unverified_ratio": 0.11956521739130435,
+        "tokens": {
+          "input": 7233369,
+          "output": 42466,
+          "total": 7275835
+        },
+        "elapsed_sec": 766.8656557119684
+      },
+      "agent": {
+        "questions": 20,
+        "correct": 19,
+        "accuracy": 0.95,
+        "citations": 105,
+        "unverified": 0,
+        "unverified_ratio": 0.0,
+        "tokens": {
+          "input": 3602251,
+          "output": 67068,
+          "total": 3669319
+        },
+        "elapsed_sec": 1405.0648044160334
+      }
+    },
+    "by_category": {
+      "configuration": {
+        "baseline": {
+          "questions": 5,
+          "correct": 5,
+          "accuracy": 1.0,
+          "citations": 19,
+          "unverified": 3,
+          "unverified_ratio": 0.15789473684210525,
+          "tokens": {
+            "input": 1602784,
+            "output": 8652,
+            "total": 1611436
+          },
+          "elapsed_sec": 161.8655300840037
+        },
+        "agent": {
+          "questions": 5,
+          "correct": 5,
+          "accuracy": 1.0,
+          "citations": 32,
+          "unverified": 0,
+          "unverified_ratio": 0.0,
+          "tokens": {
+            "input": 1416243,
+            "output": 16446,
+            "total": 1432689
+          },
+          "elapsed_sec": 448.2251211669645
+        }
+      },
+      "cross_file": {
+        "baseline": {
+          "questions": 5,
+          "correct": 5,
+          "accuracy": 1.0,
+          "citations": 37,
+          "unverified": 7,
+          "unverified_ratio": 0.1891891891891892,
+          "tokens": {
+            "input": 2277848,
+            "output": 14508,
+            "total": 2292356
+          },
+          "elapsed_sec": 277.7247541270335
+        },
+        "agent": {
+          "questions": 5,
+          "correct": 5,
+          "accuracy": 1.0,
+          "citations": 26,
+          "unverified": 0,
+          "unverified_ratio": 0.0,
+          "tokens": {
+            "input": 935831,
+            "output": 22720,
+            "total": 958551
+          },
+          "elapsed_sec": 430.76294645800954
+        }
+      },
+      "flow": {
+        "baseline": {
+          "questions": 5,
+          "correct": 5,
+          "accuracy": 1.0,
+          "citations": 15,
+          "unverified": 0,
+          "unverified_ratio": 0.0,
+          "tokens": {
+            "input": 1743386,
+            "output": 11555,
+            "total": 1754941
+          },
+          "elapsed_sec": 182.72885983402375
+        },
+        "agent": {
+          "questions": 5,
+          "correct": 5,
+          "accuracy": 1.0,
+          "citations": 22,
+          "unverified": 0,
+          "unverified_ratio": 0.0,
+          "tokens": {
+            "input": 664640,
+            "output": 17532,
+            "total": 682172
+          },
+          "elapsed_sec": 307.46775400004117
+        }
+      },
+      "location": {
+        "baseline": {
+          "questions": 5,
+          "correct": 5,
+          "accuracy": 1.0,
+          "citations": 21,
+          "unverified": 1,
+          "unverified_ratio": 0.047619047619047616,
+          "tokens": {
+            "input": 1609351,
+            "output": 7751,
+            "total": 1617102
+          },
+          "elapsed_sec": 144.54651166690746
+        },
+        "agent": {
+          "questions": 5,
+          "correct": 4,
+          "accuracy": 0.8,
+          "citations": 25,
+          "unverified": 0,
+          "unverified_ratio": 0.0,
+          "tokens": {
+            "input": 585537,
+            "output": 10370,
+            "total": 595907
+          },
+          "elapsed_sec": 218.6089827910182
+        }
+      }
+    },
+    "adoption": {
+      "accepted": true,
+      "accuracy_ok": true,
+      "citations_ok": true
+    }
+  }
+}
