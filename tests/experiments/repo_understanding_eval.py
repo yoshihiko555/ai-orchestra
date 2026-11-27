@@ -492,10 +492,11 @@ def main(
             raise ValueError("実行には人の了承と --confirm-real-api が必要です。")
         if not 0 < args.timeout_sec < float("inf"):
             raise ValueError("timeout-sec は正の有限数にしてください。")
-        if args.out.is_symlink() or (args.out.exists() and any(args.out.iterdir())):
+        out = args.out.absolute()
+        if out.is_symlink() or (out.exists() and any(out.iterdir())):
             raise ValueError("出力先が空ではありません。新しいディレクトリを指定してください。")
-        args.out.mkdir(parents=True, exist_ok=True)
-        marker = args.out / ".evaluation-running"
+        out.mkdir(parents=True, exist_ok=True)
+        marker = out / ".evaluation-running"
         with marker.open("x", encoding="utf-8"):
             pass
         try:
@@ -508,13 +509,13 @@ def main(
                             method,
                             project,
                             args.profile,
-                            args.out,
+                            out,
                             runner,
                             clock,
                             args.timeout_sec,
                         )
                     )
-                _write_reports(records, args.out)
+                _write_reports(records, out)
         finally:
             marker.unlink()
         return 0

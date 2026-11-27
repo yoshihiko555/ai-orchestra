@@ -186,18 +186,19 @@ def test_nonempty_output_is_rejected_before_call_without_changing_files(
 
 
 @pytest.mark.parametrize(
-    "category,code,reason",
+    "category,code",
     [
-        ("quota_exhausted", 9, "quota_exhausted"),
-        ("rate_limited", 10, "rate_limited"),
-        ("auth_error", 11, "auth_error"),
-        ("timeout", 6, "api_timeout"),
-        ("api_error", 7, "api_error"),
+        ("quota_exhausted", 9),
+        ("rate_limited", 10),
+        ("auth_error", 11),
+        ("timeout", 6),
+        ("api_error", 7),
     ],
 )
 def test_agent_error_reason_exit_code_and_output_file_agree(
-    monkeypatch, project, turn, tmp_path, capsys, category, code, reason
+    monkeypatch, project, turn, tmp_path, capsys, category, code
 ):
+    reason = "api_timeout" if category == "timeout" else category
     turn.side_effect = LLMError(category, "安全なエラー")
     output = tmp_path / "out"
 
