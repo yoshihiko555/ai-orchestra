@@ -198,7 +198,9 @@ local は既存の deep_merge 規則に従い、mapping はキーごとに上書
 
 プロファイル名とモデルは英数字および `_ . : / @ + = -` の一行で指定する。
 添付は PNG/JPEG/WebP/GIF/PDF を扱い、Gemini の GIF は拒否する。
-API は一回呼び、SDK の自動再試行は行わない。エージェントループや function calling は提供しない。
+`llm ask` は通常1回だけ呼び出す。一時的な `rate_limited` の場合だけ、2秒、4秒と待って
+合計3回まで試行する。`quota_exhausted` と `auth_error` は再試行しない。
+SDK 内部の自動再試行は無効にする。
 
 キーの解決順は `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` → `~/.config/orchex/credentials`。
 空の環境変数は未設定として扱う。`GOOGLE_API_KEY` は orchex のキー解決には使わない。
@@ -216,6 +218,131 @@ API は一回呼び、SDK の自動再試行は行わない。エージェント
 | 6 | タイムアウト |
 | 7 | API エラー |
 | 8 | 設定・添付・ファイル入出力のエラー |
+| 9 | 利用枠・残高不足（quota_exhausted） |
+| 10 | 再試行後も続く一時的なレート制限（rate_limited） |
+| 11 | API の認証・権限エラー（auth_error） |
+
+エラー分類にはHTTPステータスと機械向けコードだけを使い、本文・ヘッダ・キーは出力しない。
+OpenAI の429は `insufficient_quota` の場合に利用枠不足、それ以外は一時的な制限とする。
+Anthropic は402、`billing_error`、支出上限コードを利用枠不足として扱う。
+Gemini は `RESOURCE_EXHAUSTED` の `QuotaFailure.violations[].quotaId` に `PerDay` がある場合を
+利用枠不足とし、分単位や詳細のない429は一時的な制限とする。401/403は認証エラー、
+Gemini の400に含まれる `ErrorInfo.reason=API_KEY_INVALID` も認証エラーとする。
+
+### 読み取り道具で探索するエージェント
+
+API を呼ぶ全サブエージェントは [api-delegation rule](../../facets/instructions/api-delegation.md) に従う。
+一回の検索・添付付きの問い合わせは ask、リポジトリの読取探索は agent を使う。
+長時間の agent は毎回新しい出力先を作り、Bash がバックグラウンドへ移しても `exit` を条件に待ってから
+`result.json` を読む。待機期限は `max_duration_sec + 2 × timeout_sec`（既定 1140 秒）。
+期限までに exit がなければ失敗とする。partial の報告の冒頭には stop_reason と turns を必ず書き、
+未確認根拠と重要な主張は Read で裏取りする。コマンド例と終了コード別の対応は上記 rule を参照。
+開発者向けの [比較評価の手順](../evaluation/repo-understanding/README.md) は実 API 不要の check と集計テストも提供する。
+
+`orchex llm agent --profile repo-reader [--project DIR] [--output DIR] "質問"` で、
+API側のモデルがリポジトリを探索する。呼び出すサブエージェントの用途には依存しない。
+既定のresearcher設定やroutingは変更せず、プロファイルは明示的に選ぶ。
+
+```yaml
+# .claude/config/agent-routing/cli-tools.local.yaml
+api:
+  profiles:
+    repo-reader:
+      provider: gemini
+      tools:
+        repo_read: true
+      deny:
+        - "docs/internal/*"
+      limits:
+        timeout_sec: 120
+        max_output_tokens: 8192
+        max_turns: 30
+        max_total_tokens: 2000000
+        max_duration_sec: 900
+        rate_limit_attempts: 3
+        rate_limit_initial_delay_sec: 2.0
+```
+
+| agent用設定 | 意味・省略時の値 |
+|------------|----------------|
+| `tools.repo_read` | 真偽値。省略時false。read_file / list_dir / glob / grepを許可する |
+| `deny` | 既定の拒否リストに追加する文字列配列。省略時は空。配列のlocal上書きは置換 |
+| `limits.max_turns` | 正の整数。探索の上限、既定30往復 |
+| `limits.max_total_tokens` | 正の整数。成功した往復の入力＋出力の累計、既定2,000,000 |
+| `limits.max_duration_sec` | 正の有限数。探索の実行時間上限、既定900秒 |
+| `limits.rate_limit_attempts` | 正の整数。429の初回を含む試行数、既定3 |
+| `limits.rate_limit_initial_delay_sec` | 0以上の有限数。429の初回待ち時間、既定2秒。その後は2倍 |
+
+道具の不許可・拒否は結果としてモデルへ返す。根拠はシステム指示で主張ごとに要求し、
+最後の回答を `{"answer": "本文", "citations": [...]}` として取り出す。
+回答全体を包む1つのjsonコードフェンスも受理する。構造化できない本文はそのまま返し、根拠は空にする。
+根拠のverifiedは、ファイルの実在・行範囲・その実行での読取記録の3条件で決める。
+不正な根拠要素も未確認として残す。verifiedは主張の意味的な正しさを保証するものではない。
+
+探索上限では未実行の道具にエラー結果を渡し、道具なしのまとめを1回だけ要求する。
+rate_limitedだけを設定どおり再試行し、quota_exhausted / auth_errorは即時停止する。
+再試行待ちも実行時間に含める。実行時間の判定はAPI要求の間で行い、
+進行中の要求はtimeout_secに従う。上限後のまとめは探索の予算外で行う。
+まとめがAPIエラーで失敗した場合は、そのエラーを停止理由にして直前の回答を保持する。
+
+結果JSONは次の形式で、成功・部分結果とも同じフィールドを持つ。
+
+```json
+{
+  "status": "complete",
+  "stop_reason": null,
+  "turns": 2,
+  "tokens": {"input": 100, "output": 30, "total": 130},
+  "answer": "回答本文",
+  "citations": [
+    {"path": "src/a.py", "start_line": 10, "end_line": 20, "claim": "主張", "verified": true}
+  ],
+  "files_read": ["src/a.py"],
+  "unverified_count": 0
+}
+```
+
+turnsとtokensは成功した往復だけを数え、まとめも含む。失敗した試行の使用量は含めない。
+途中停止時にも最後の回答・読取一覧・使用量を保持する。SDKの生データは公開せず、キーのエコーは伏せる。
+
+`--output` がなければ結果JSONをstdoutへ返す。指定時は、空の出力先を実行開始前に確認・占有し、
+途中のturnsとtokensを `progress.json`、結果を `result.json`、最後に終了コードと改行を `exit` へ書く。
+ファイルは一時ファイルから原子的に置き換える。APIエラーでも部分結果とexitを残す。
+設定・利用可否のエラーでは結果がない場合もexitを残す。使用済み出力先には書き込まない。
+入出力自体が失敗した場合は、ファイルの完備を保証できない。
+
+| llm agentの終了コード | status / stop_reason または意味 |
+|----------------------|--------------------------------|
+| 0 | complete / null |
+| 12 | partial / max_turns・token_limit・timeout（探索上限） |
+| 9 | partial / quota_exhausted |
+| 10 | partial / rate_limited（再試行後も回復しない） |
+| 11 | partial / auth_error |
+| 6 | partial / api_timeout（1要求のタイムアウト） |
+| 7 | partial / api_error |
+| 2 | 引数エラー |
+| 3 / 4 / 5 | キー未設定 / プロバイダ無効 / SDK未導入 |
+| 8 | 設定・ファイル入出力のエラー |
+| 13 | 空でない出力先。実行を開始しない |
+
+### 道具付きの1往復を呼ぶ部品
+
+後続の実装からは `lib.llm.providers.call_tool_turn(provider, request, api_key)` を利用できる。
+`lib.llm.tool_types` の `ToolSpec`、`UserMessage`、`ToolTurnRequest` で要求を作り、返された
+`ToolTurnResponse.message` の `ToolCall`（ID・名前・JSON引数）を受け取る。
+次の要求には、元のメッセージ列、返された `AssistantMessage`、
+呼び出しIDに対応する `ToolResult` をまとめた `ToolResultsMessage` を渡す。
+`AssistantMessage.provider_state` は署名などを保持する不透明な状態なので、同じプロバイダへそのまま戻す。
+`ToolResult.is_error` は、失敗結果をJSONの `error` フィールドとしてモデルへ返す指定である。
+`SystemMessage` はシステムの指示を表す。`ToolTurnResponse.usage` は
+`TokenUsage(input_tokens, output_tokens)` で、使用量がない場合は0を返す。
+
+この部品は `any-llm-sdk[gemini]==1.55.0` で3社の形式を変換する。SDKとライブラリは呼び出し時に
+読み込むため、基本インストールでは認証・既存CLIの起動に影響しない。
+道具の実行とエージェントループは `lib.llm.agent_loop.run_agent_loop` が担当し、この入口自身は再試行しない。
+再試行が必要な利用側は `lib.llm.retry.call_with_rate_limit_retry` にoperation、
+`max_attempts`（初回を含む回数）、`initial_delay_sec`、必要なら `backoff`（既定2）を渡す。
+詳細な選定根拠は [ADR-068](../adr/ADR-20261127-068.md) を参照。
 
 ---
 

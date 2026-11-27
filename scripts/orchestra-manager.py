@@ -1469,6 +1469,13 @@ def build_llm_parser(subparsers: Any) -> argparse.ArgumentParser:
     )
     ask.add_argument("--output", type=Path, help="回答を書き出すファイル")
     ask.add_argument("prompt", help="質問本文")
+    agent = commands.add_parser("agent", help="読み取り道具で探索し、根拠付きの JSON を返す")
+    agent.add_argument("--profile", required=True, help="api.profiles のプロファイル名")
+    agent.add_argument("--project", type=Path, help="設定と探索対象のプロジェクト")
+    agent.add_argument(
+        "--output", type=Path, help="結果・途中経過・終了コードを書く空のディレクトリ"
+    )
+    agent.add_argument("prompt", help="質問本文")
     return parser
 
 
@@ -1484,7 +1491,10 @@ COMMAND_REGISTRY: dict[str, CommandEntry] = {
         "name": "llm",
         "group": "run_delegate",
         "summary": "API プロファイルで一回質問",
-        "examples": ('orchex llm ask --profile research "調査したいこと"',),
+        "examples": (
+            'orchex llm ask --profile research "調査したいこと"',
+            'orchex llm agent --profile repo-reader "実装を調べて"',
+        ),
         "build_parser": build_llm_parser,
     },
     "init": {
@@ -1709,10 +1719,11 @@ def main() -> None:
         if core_hooks not in sys.path:
             sys.path.insert(0, core_hooks)
         os.environ.setdefault("AI_ORCHESTRA_DIR", str(orchestra_dir))
-        from lib.llm_cli import run_auth_set, run_auth_status, run_llm_ask
+        from lib.llm_cli import run_auth_set, run_auth_status, run_llm_agent, run_llm_ask
 
         if args.command == "llm":
-            sys.exit(run_llm_ask(args, manager.get_project_dir(args.project)))
+            run_llm = run_llm_agent if args.llm_command == "agent" else run_llm_ask
+            sys.exit(run_llm(args, manager.get_project_dir(args.project)))
         if args.auth_command == "set":
             sys.exit(run_auth_set(args.provider))
         if args.provider is not None:

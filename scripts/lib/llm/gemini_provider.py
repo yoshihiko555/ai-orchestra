@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from .errors import classify_gemini
 from .sdk_logging import redact_sdk_logs
 from .types import LLMError, LLMRequest, LLMResponse
 
@@ -32,7 +33,7 @@ def call(
     try:
         factory = client_factory if client_factory is not None else _client_factory()
         with (
-            redact_sdk_logs(api_key),
+            redact_sdk_logs(),
             factory(
                 api_key=api_key,
                 http_options={
@@ -52,4 +53,4 @@ def call(
     except LLMError:
         raise
     except Exception as exc:
-        raise LLMError.from_exception(exc) from None
+        raise classify_gemini(exc) from None

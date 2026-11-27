@@ -27,6 +27,8 @@
 - SDK アダプタは `scripts/lib/llm/`、CLI は `scripts/lib/llm_cli.py`。SDK は `orchex[llm]` の optional 依存として遅延 import する。
 - キーは `orchex auth set <provider>` で登録する。認証情報を読んだり、引数・設定・ログ・報告へ書いたりしない。
 - `orchex llm ask --profile <name> "質問"` が一回の呼び出し入口。設定は base/local をマージして解決し、CLI と hook で利用可否の判定を共有する。
+- リポジトリ探索は `orchex llm agent --profile <name> --output <新規dir> "質問"`。API 利用サブエージェントは `api-delegation` rule の待機・partial 報告・Read による裏取りに従う。
+- 把握問題と API 不要の check・テストは `docs/evaluation/repo-understanding/README.md`。実評価は人の了承後だけ行う。
 
 ---
 

@@ -11,6 +11,10 @@ from tests.module_loader import load_module
 # scripts/ を sys.path に載せ、lib.facet_builder を import 可能にする。
 load_module("orchestra_manager", "scripts/orchestra-manager.py")
 
+from tests.unit.llm_sdk_support import sdk_client_factory as sdk_client_factory
+from tests.unit.llm_sdk_support import sdk_environment as sdk_environment
+from tests.unit.llm_sdk_support import sdk_tool_client_factory as sdk_tool_client_factory
+
 
 @pytest.fixture(autouse=True)
 def disable_facet_markdown_format(monkeypatch: pytest.MonkeyPatch) -> None:

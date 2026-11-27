@@ -1,6 +1,6 @@
 # orchex CLI（orchestra-manager）評価セット
 
-**改訂**: 2026-11-27（旧 CLI の廃止に対応。人間レビュー待ち（本 PR））
+**改訂**: 2026-11-27（旧 CLI の廃止に対応。LLM 読み取り道具の EV-49〜52 を追加。人間レビュー待ち（本 PR））
 
 **対象**: `scripts/orchestra-manager.py`（CLI 本体）+ `scripts/lib/*.py`（`orchestra_hooks` / `orchestra_context` / `sync_engine` / `facet_builder` / `orchestra_models` / `gitignore_sync` / `toml_merge` / `agent_model_patch` / `settings_io` / `scaffold`）+ `ai_orchestra/cli.py`（`pip install orchex` 経由のエントリポイント）
 **対象テストファイル（SSOT、参考）**: `tests/unit/test_orchestra_manager_core.py`, `test_orchestra_manager_context.py`, `test_orchestra_manager_force_flag.py`, `test_orchestra_manager_gitignore.py`, `test_orchestra_manager_run_passthrough.py`, `test_orchestra_manager_gaps.py`, `test_orchestra_manager_help.py`, `test_ai_orchestra_cli.py`, `test_package_migration.py`, `tests/e2e/test_e2e_packaging.py`
@@ -98,8 +98,29 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 
 - [ ] EV-45（正常・異常 / must）: auth set は getpass でキーを受け、引数では受け付けず、値を表示せずに保存する。auth status は各社の設定有無だけを表示する — 根拠: order.md 方針4、C-AUTH-SET / C-AUTH-STATUS。
 - [ ] EV-46（正常 / must）: llm ask は base/local の任意プロファイルを使い、3社それぞれを一回呼び、回答を stdout または指定ファイルへ返す。モデル・timeout・出力上限と、許可した検索・添付が SDK に届く — 根拠: order.md 方針1・2・4・6、C-ASK-PROVIDER / C-PROFILE-LOCAL / C-WEB-SEARCH / C-ATTACH。
-- [ ] EV-47（異常 / must）: キー不足・無効化・依存不足・timeout・API error は区別できる終了コードとメッセージを持つ。禁止・不正な添付は送信前に拒否し、SDK の例外もキーをログ・stderr に漏らさない — 根拠: order.md 方針4・制約、C-ERRORS / C-NO-SECRET。
+- [ ] EV-47（異常 / must、人間レビュー待ち）: キー不足・無効化・依存不足・timeout・API error の既存終了コードを維持し、quota_exhausted / rate_limited / auth_error は9 / 10 / 11と種類別のメッセージを返す。分類はHTTPステータスと機械向けコードだけを使う。禁止・不正な添付は送信前に拒否し、SDK例外・応答本文・ヘッダ・キーをログ・stderrへ出さない — 根拠: 第2段階のorder.md 作業4・制約、C-ERR-CATEGORY / C-ERR-OPENAI / C-ERR-GEMINI / C-ERR-ANTHROPIC / C-EXIT / C-NO-SECRET。
 - [ ] EV-48（正常 / must）: SDK は llm optional extra のみへ追加し、基本依存は pyyaml のまま。extra 無しでも auth と既存 CLI は起動できる — 根拠: order.md 制約、C-EXTRA。
+- [ ] EV-53（正常・異常 / must、人間レビュー待ち）: 再試行部品は指定された回数と増加する待ち時間でrate_limitedだけを再試行する。成功値を返し、回数切れでは最後のエラーを返す。quota_exhausted / auth_errorは再試行しない。askの429後の成功と再試行後の失敗を区別できる — 根拠: 第2段階のorder.md 作業4、C-RETRY / C-EXIT。
+- [ ] EV-54（正常・異常 / must、人間レビュー待ち）: 用途に依存しない共通型と1往復のAPIから、3社の道具定義・呼び出し・結果を受け渡せる。複数呼び出しのIDと引数、Geminiのthought_signatureを次の往復へ保持する。道具を自動実行せず、SDKの自動再試行も使わない — 根拠: 第2段階のorder.md 作業3、C-TOOL-TYPES / C-TOOL-TURN / C-NO-LOOP。
+
+### LLM 読み取りの道具（人間レビュー待ち・本 PR）
+
+- [ ] EV-49（正常・異常 / must）: 読み取りの道具の安全の境界 — `read_file` / `list_dir` / `glob` / `grep` は、リポジトリのルート以下で、git の結果（`git ls-files --cached --others --exclude-standard` または同等）が返すものだけを読む。未追跡のファイルは読め、gitignore の対象は拒否する。git が使えないときは内容を返さずに失敗する。既定の拒否リスト（`.env*`、`*.pem`、`*.key`、`*credentials*`、`*secret*`、`.git/` の中身）と呼び出し側が追加した拒否パターンは、gitignore に漏れていても、symlink 経由でも拒否する。symlink の解決後の実際のパス、`..`、絶対パスでルートの外を指すものは拒否する。拒否は例外にせず理由を道具の結果として返し、拒否したファイルの中身を結果・エラーに含めない — 根拠: 第 2 段階の order 作業2・制約、Gherkin Rule「読み取りの道具は安全の境界の中だけを読む」、C-GITIGNORE / C-GIT-FAIL / C-DENY / C-ROOT / C-REJECT-RESULT。
+- [ ] EV-50（正常・異常 / must）: 出力の上限とバイナリ — 1 回の出力に上限があり、既定は 1 ファイル 2,000 行または 200 KB、grep 200 件で、`list_dir` / `glob` にも件数の上限がある。上限を超えたら切り詰め、切り詰めたことと続きの読み方（`start_line` など）を結果に書く。上限は引数で変えられる。バイナリのファイルは内容を返さない — 根拠: 同 order 作業2、C-LIMITS / C-BINARY。
+- [ ] EV-51（正常 / must）: 読んだ範囲の記録 — 道具が実際に返したファイルと行の範囲だけを、セッション単位で記録する。根拠 `path:開始行-終了行` について、実在する・行の範囲が収まる・読んだ範囲に入る、を判定できる — 根拠: 同 order 作業3、C-LEDGER。
+- [ ] EV-52（正常 / must）: 道具の定義と依存 — 道具は上の 4 つだけで、書き込み・コマンドの実行・ネットワークへのアクセスを行う道具を持たない。名前・説明・引数の JSON Schema をプロバイダに依存しない形で持ち、標準ライブラリと git だけを使う — 根拠: 同 order 作業1・4・制約、C-TOOLS / C-DEFS / C-NO-DEPS。
+
+### LLM エージェントループ（人間レビュー待ち・本 PR）
+
+- [ ] EV-55（正常・異常 / must）: 汎用ループは道具の結果を呼び出しID付きで次の往復へ渡す。往復・入出力トークン累計・実行時間の上限で道具なしのまとめを1回だけ行い、partial と停止理由を返す。ToolTurnResponse の生成には usage の明示を必須とし、省略時は TypeError にする。SDK 応答の usage 欠落時に 0 とする扱いは維持する — 根拠: 今回の order.md 作業1、C-LOOP-TOOLS / C-LIMIT-TURNS / C-LIMIT-TOKENS / C-LIMIT-TIME、レビュー裁定 RES-1。
+- [ ] EV-56（正常・異常 / must）: rate_limited だけを指定回数・待ち時間で再試行する。quota_exhausted と auth_error は即時停止し、最後の回答・読取一覧・使用量を保持する — 根拠: 同作業1、C-RETRY-RECOVER / C-RETRY-EXHAUST / C-QUOTA / C-AUTH。
+- [ ] EV-57（正常・異常 / must）: 回答の根拠を構造化して抽出し、実在・行範囲・実際の読取記録で verified を決める。出力 JSON は公開フィールドだけを持ち、キーと SDK の生データを含めない — 根拠: 同作業2・3、C-OUTPUT-SHAPE / C-CITE-PARSE / C-CITE-VERIFY / C-NO-SECRET。
+- [ ] EV-58（正常・異常 / must）: llm agent は stdout または --output の result.json へ結果を返す。途中経過は progress.json、終了コードは最後に exit へ書く。空でない出力先では実行せず既存内容を保持する。ProfileError / CredentialsError は str(exc) を stderr へ届ける。deny の内容不正と入出力・文字コードの失敗は原因に合った文言を出し、終了コード 8 と --output 指定時の exit 書込を維持する — 根拠: 同作業4、C-CLI-AGENT / C-OUT-FILES / C-OUT-USED / C-EXIT-CODES、レビュー裁定 RES-2 / RES-3。
+
+### リポジトリ把握の比較評価（人間レビュー待ち・本 PR）
+
+- [ ] EV-59（正常・異常 / must）: 評価問題は 20 問・4 種類各 5 問とし、一意な ID、問題、正解の要点、根拠の path・start_line・end_line・contains を持つ。check は形式と指定行範囲の文字列を検査し、文字列が別の行へ移った場合も検出する — 根拠: 今回の order.md 作業2・3、C-EVAL-SET。
+- [ ] EV-60（正常・異常 / must）: 同じ問題を基準方式と llm agent に渡し、Claude の採点と verified から全体・種類別の正答率・未確認割合・トークン・時間を集計する。採用条件は基準の正答率の 9 割以上かつ未確認割合 1 割以下。根拠ゼロは採用しない。確認フラグ欠落・使用済み出力先では実行せず、partial は採点し、結果欠落は不正答として記録する。報告と抜き取り一覧を出力し、環境変数・認証情報を保存しない。テストは実 API を使わない — 根拠: 同作業3・制約、C-EVAL-RUN / C-EVAL-METRICS / C-EVAL-GRADE / C-EVAL-ADOPT / C-EVAL-REPORT / C-EVAL-OUTDIR / C-NO-SECRET。
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 
