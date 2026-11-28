@@ -35,12 +35,16 @@ _AGENTS_DIR = REPO_ROOT / "packages" / "agent-routing" / "agents"
 # ルーティング設定の無い取り込みエージェントは vendor スクリプトが警告するだけなので、
 # 孤立 .md の検査（TestNoOrphanAgentMd）は agent-routing だけを対象にする
 _VENDORED_AGENTS_DIR = REPO_ROOT / "packages" / "agency-agents" / "agents"
+_REVERSE_AGENTS_DIR = REPO_ROOT / "packages" / "reverse" / "agents"
 
 
 def _agent_md_path(agent_name: str) -> Path:
-    """エージェント名の .md を agent-routing → agency-agents の順で探す。"""
+    """エージェント名の .md を agent-routing → agency-agents → reverse の順で探す。"""
     own = _AGENTS_DIR / f"{agent_name}.md"
-    return own if own.is_file() else _VENDORED_AGENTS_DIR / f"{agent_name}.md"
+    if own.is_file():
+        return own
+    vendored = _VENDORED_AGENTS_DIR / f"{agent_name}.md"
+    return vendored if vendored.is_file() else _REVERSE_AGENTS_DIR / f"{agent_name}.md"
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +60,7 @@ class TestAgentMdFilesExist:
         md_path = _agent_md_path(agent_name)
         assert md_path.is_file(), (
             f"{agent_name}.md が packages/agent-routing/agents/ にも "
-            "packages/agency-agents/agents/ にも見つかりません"
+            "packages/agency-agents/agents/ にも packages/reverse/agents/ にも見つかりません"
         )
 
 
@@ -81,8 +85,8 @@ class TestAgentTriggersCompleteness:
 
     def test_all_config_agents_have_triggers(self) -> None:
         triggers_agents = set(route_config.AGENT_TRIGGERS.keys())
-        # general-purpose は汎用エージェントでトリガー不要の場合がある
-        config_agents = _AGENTS_IN_CONFIG - {"general-purpose"}
+        # general-purpose は汎用。reverse-coordinator は /reverse スキル内からだけ起動する。
+        config_agents = _AGENTS_IN_CONFIG - {"general-purpose", "reverse-coordinator"}
         missing = config_agents - triggers_agents
         assert not missing, f"AGENT_TRIGGERS に定義がないエージェント: {sorted(missing)}"
 
