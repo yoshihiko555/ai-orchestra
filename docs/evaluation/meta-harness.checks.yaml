@@ -692,7 +692,7 @@
     - packages/meta-harness/tests/test_scenario_docker_image.py::TestRecipeAndPolicyNamespace::test_namespace_is_independent_from_loop_harness_defaults
   notes: >-
     meta-harness's ai.orchestra.meta-harness label, .claude/meta-harness/* cache paths, and
-    meta-harness-builder buildx builder never collide with loop-harness's own namespace;
+    orchex-meta-harness buildx builder never collide with loop-harness's own namespace;
     docker-runtime's own prune-by-family behavior is covered in packages/docker-runtime/tests.
 
 - ev_id: EV-96

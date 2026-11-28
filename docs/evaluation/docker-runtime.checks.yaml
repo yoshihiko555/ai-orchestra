@@ -363,6 +363,47 @@
     warning and left for a later attempt; it never fails the
     `ensure_recipe_image` call it is piggybacking on.
 
+- ev_id: EV-38
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_stops_builder_after_the_post_build_prune
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_failure_still_stops_builder
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_builder_keeps_running_while_another_checkout_uses_it
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_cache_hit_does_not_stop_builder
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_builder_stop_failure_does_not_fail_the_build
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_builder_lock_path_ignores_relative_xdg_cache_home
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_existing_builder_lock_file_is_made_owner_only
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_stops_builder_after_the_post_build_prune
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_build_failure_still_stops_builder
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_builder_keeps_running_while_another_checkout_uses_it
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_cache_hit_does_not_stop_builder
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_builder_stop_failure_does_not_fail_the_build
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_builder_lock_path_ignores_relative_xdg_cache_home
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_existing_builder_lock_file_is_made_owner_only
+  notes: >-
+    the build path holds a shared host-wide lock per builder through the
+    post-build prune and stops the builder only when no other process holds
+    it; failures to stop are warnings. The real auto-boot of a stopped
+    builder by `docker buildx build` is a Docker behavior and is not
+    exercised here (measured manually with buildx v0.37.2).
+
+- ev_id: EV-39
+  phase: 1
+  priority: must
+  oracle: command_exit
+  command: >-
+    AI_ORCHESTRA_DIR="$PWD" python3 -m pytest -q
+    packages/docker-runtime/tests/test_docker_runtime_image.py::test_unavailable_builder_lock_builds_without_stopping
+  covered_by:
+    - packages/docker-runtime/tests/test_docker_runtime_image.py::test_unavailable_builder_lock_builds_without_stopping
+  notes: >-
+    an unwritable lock directory never fails the build; the builder is left
+    running because another checkout might be mid-build on it.
+
 - ev_id: EV-162
   phase: 1
   priority: must

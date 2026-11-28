@@ -28,7 +28,7 @@ def test_default_config_keeps_execution_disabled_and_defines_image_lifecycle() -
         "manifest_path": ".claude/loop/docker-image-cache.json",
         "keep_generations": 3,
         "lock_path": ".claude/loop/docker-image-build.lock",
-        "builder_name": "loop-harness-builder",
+        "builder_name": "orchex-loop-harness",
         "buildkit_cache_max_age": "168h",
         "buildkit_cache_max_size": "10g",
     }

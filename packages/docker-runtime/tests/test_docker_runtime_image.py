@@ -69,6 +69,10 @@ class FakeDocker:
         self.du_total = du_total
         self.lock_path: Path | None = None
         self.lock_was_held = False
+        # Whether another process could have taken the host-wide builder
+        # lock exclusively while `docker buildx build` ran (None: no build).
+        self.builder_lock_held_during_build: bool | None = None
+        self.stop_returncode = 0
         self.image_ls_output: str | None = None
         self.create_should_fail_once = False
         self.rm_should_fail: set[str] = set()
@@ -131,6 +135,7 @@ class FakeDocker:
             return _completed(stdout="loop-harness-builder\n")
         if command[:3] == ["docker", "buildx", "build"]:
             self._record_lock_state()
+            self._record_builder_lock_state(command[command.index("--builder") + 1])
             tag = command[command.index("-t") + 1]
             built_image_id = self.build_image_ids.get(tag, IMAGE_ID)
             self.images[tag] = built_image_id
@@ -176,6 +181,8 @@ class FakeDocker:
             return _completed()
         if command[:3] == ["docker", "buildx", "du"]:
             return _completed(stdout=f"Reclaimable: 0B\nTotal: {self.du_total}\n")
+        if command[:3] == ["docker", "buildx", "stop"]:
+            return _completed(self.stop_returncode)
         raise AssertionError(f"unexpected Docker command: {command}")
 
     def _inspect_created_at(self, image_ref: str) -> subprocess.CompletedProcess:
@@ -239,6 +246,22 @@ class FakeDocker:
             with pytest.raises(BlockingIOError):
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.lock_was_held = True
+        finally:
+            os.close(fd)
+
+    def _record_builder_lock_state(self, builder: str) -> None:
+        try:
+            fd = os.open(image._builder_lock_path(builder), os.O_RDWR)
+        except OSError:
+            self.builder_lock_held_during_build = False
+            return
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.builder_lock_held_during_build = True
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            self.builder_lock_held_during_build = False
         finally:
             os.close(fd)
 
@@ -714,6 +737,138 @@ def test_ensure_builder_raises_when_raced_builder_has_incompatible_driver(
         image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
 
     assert fake.build_count == 0
+
+
+def _builder_stops(fake: FakeDocker) -> list[list[str]]:
+    return [command for command in fake.commands if command[:3] == ["docker", "buildx", "stop"]]
+
+
+def test_build_stops_builder_after_the_post_build_prune(tmp_path: Path, context: Path) -> None:
+    """EV-38: The shared host-wide lock covers the build, and the builder is
+    stopped only after the post-build prune (`du`/`prune` cannot boot a
+    stopped builder)."""
+    fake = FakeDocker()
+
+    ensured = image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
+
+    assert ensured.built is True
+    assert fake.builder_lock_held_during_build is True
+    stops = _builder_stops(fake)
+    assert stops == [["docker", "buildx", "stop", "loop-harness-builder"]]
+    last_prune = max(
+        index
+        for index, command in enumerate(fake.commands)
+        if command[:3] == ["docker", "buildx", "prune"]
+    )
+    assert fake.commands.index(stops[0]) > last_prune
+
+
+def test_build_failure_still_stops_builder(tmp_path: Path, context: Path) -> None:
+    """EV-38: The builder is stopped on the failure path too, without
+    replacing the original build error."""
+
+    class FailingBuildDocker(FakeDocker):
+        def __call__(self, command: list[str], **kwargs) -> subprocess.CompletedProcess:
+            if command[:3] == ["docker", "buildx", "build"]:
+                self.commands.append(command)
+                return _completed(1, stderr="buildx: build failed")
+            return super().__call__(command, **kwargs)
+
+    fake = FailingBuildDocker()
+
+    with pytest.raises(image.DockerImageError, match="could not build required Docker image"):
+        image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
+
+    assert _builder_stops(fake) == [["docker", "buildx", "stop", "loop-harness-builder"]]
+
+
+def test_builder_keeps_running_while_another_checkout_uses_it(
+    tmp_path: Path, context: Path
+) -> None:
+    """EV-38: A shared lock held by another process (a build from another
+    checkout on the same builder) keeps the builder running."""
+    lock_path = image._builder_lock_path("loop-harness-builder")
+    lock_path.parent.mkdir(parents=True)
+    other_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    fake = FakeDocker()
+    try:
+        fcntl.flock(other_fd, fcntl.LOCK_SH)
+        ensured = image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
+    finally:
+        os.close(other_fd)
+
+    assert ensured.built is True
+    assert _builder_stops(fake) == []
+
+
+def test_cache_hit_does_not_stop_builder(tmp_path: Path, context: Path) -> None:
+    """EV-38: The reuse path never uses the builder, so it never stops it."""
+    recipe = _recipe(context)
+    policy = _policy(tmp_path)
+    fake = FakeDocker()
+    image.ensure_recipe_image(recipe, policy, runner=fake)
+    fake.commands.clear()
+
+    ensured = image.ensure_recipe_image(recipe, policy, runner=fake)
+
+    assert ensured.built is False
+    assert _builder_stops(fake) == []
+
+
+def test_builder_stop_failure_does_not_fail_the_build(tmp_path: Path, context: Path) -> None:
+    """EV-38: A failed `docker buildx stop` is only a warning."""
+    fake = FakeDocker()
+    fake.stop_returncode = 1
+
+    ensured = image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
+
+    assert ensured.built is True
+    assert len(_builder_stops(fake)) == 1
+
+
+def test_builder_lock_path_ignores_relative_xdg_cache_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-38: A relative XDG_CACHE_HOME would depend on each process's cwd,
+    so the lock falls back to ~/.cache to stay host-wide."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CACHE_HOME", "relative-cache")
+
+    assert image._builder_lock_path("orchex-loop-harness") == (
+        tmp_path / "home" / ".cache" / "orchex" / "buildx" / "orchex-loop-harness.lock"
+    )
+
+
+def test_existing_builder_lock_file_is_made_owner_only(tmp_path: Path, context: Path) -> None:
+    """EV-38: A pre-existing lock file keeps its creation mode, so it is
+    re-chmodded to 0600 like `exclusive_file_lock` does."""
+    lock_path = image._builder_lock_path("loop-harness-builder")
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text("", encoding="utf-8")
+    lock_path.chmod(0o644)
+    fake = FakeDocker()
+
+    image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
+
+    assert lock_path.stat().st_mode & 0o777 == 0o600
+    assert len(_builder_stops(fake)) == 1
+
+
+def test_unavailable_builder_lock_builds_without_stopping(
+    tmp_path: Path, context: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV-39: When the host-wide lock cannot be opened, the build still runs
+    and the builder is left running."""
+    not_a_directory = tmp_path / "cache-is-a-file"
+    not_a_directory.write_text("", encoding="utf-8")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(not_a_directory))
+    fake = FakeDocker()
+
+    ensured = image.ensure_recipe_image(_recipe(context), _policy(tmp_path), runner=fake)
+
+    assert ensured.built is True
+    assert fake.build_count == 1
+    assert _builder_stops(fake) == []
 
 
 def test_auto_build_disabled_requires_immutable_digest(tmp_path: Path, context: Path) -> None:
