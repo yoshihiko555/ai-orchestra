@@ -155,17 +155,17 @@ agents:
 
 | tool 値         | エージェント                                                                                                                                                                                                                                                                                                                                        |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude-direct` | architect, api-designer, code-reviewer, finding-verifier, security-reviewer, performance-reviewer, adversarial-reviewer, ux-reviewer, spec-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker, engineering-privacy-engineer, engineering-identity-access-engineer, engineering-payments-billing-engineer, engineering-database-reliability-engineer, engineering-minimal-change-engineer |
+| `claude-direct` | architect, api-designer, code-reviewer, finding-verifier, security-reviewer, performance-reviewer, adversarial-reviewer, ux-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker, engineering-privacy-engineer, engineering-identity-access-engineer, engineering-payments-billing-engineer, engineering-database-reliability-engineer, engineering-minimal-change-engineer |
 | `codex`         | ai-dev, backend-go-dev, backend-python-dev, debugger, frontend-dev, rag-engineer, spec-writer, tester                                                                                                                                                                                                                                               |
 | `auto`          | ai-architect, general-purpose                                                                                                                                                                                                                                                                                                                       |
-| `api`           | researcher（api_profile: research。探索は Claude 自身） |
+| `api`           | spec-reviewer、reverse-coordinator（api_profile: repo-reader。該当箇所の収集にagentを使用）、researcher（api_profile: research。Webはask、リポジトリはagent） |
 
 ### api セクション
 
 API 機能は `orchex[llm]` で導入する。キーは環境変数または `orchex auth set <provider>` で登録し、YAML には保存しない。
 `api.providers` は anthropic / openai / gemini ごとの設定、`api.profiles` は用途に依存しない呼び出し設定を持つ。
-既定のプロファイルは research（gemini、Web 検索と添付を許可）と repo-reader（gemini、リポジトリの読み取り道具を許可）。
-repo-reader はどのエージェントにも結び付けない。各社の既定モデルは配布する `cli-tools.yaml` を参照する。
+既定のプロファイルは research（gemini、Web検索・添付・リポジトリの読み取り道具を許可、出力上限16384、timeout 120秒）と repo-reader（gemini、リポジトリの読み取り道具を許可、出力上限16384）。
+spec-reviewerとreverse-coordinatorはrepo-reader、researcherはresearchに結び付く。APIは該当箇所や資料を集め、裏取りと判定はClaude自身が行う。キー未設定・プロバイダ無効・SDK未導入の場合は理由付きでclaude-directに戻る。各社の既定モデルは配布する `cli-tools.yaml` を参照する。
 
 ```yaml
 # .claude/config/agent-routing/cli-tools.local.yaml
@@ -242,7 +242,7 @@ API を呼ぶ全サブエージェントは [api-delegation rule](../../facets/i
 
 `orchex llm agent --profile repo-reader [--project DIR] [--output DIR] "質問"` で、
 API側のモデルがリポジトリを探索する。呼び出すサブエージェントの用途には依存しない。
-既定のresearcher設定やroutingは変更せず、プロファイルは明示的に選ぶ。
+researcherはresearchのまま、Web・添付の調査にはask、リポジトリの調査にはagentを選ぶ。
 
 repo-reader は既定で配布されるため、local 設定を追加せずに実行できる。出力上限は16384トークンで、
 ほかの上限は既定の30往復・2,000,000トークン・900秒、要求ごとの120秒を使う。

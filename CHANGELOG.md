@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **`repo-reader` プロファイルを既定で配布**: Gemini の読み取り道具を local 設定なしで使える。どのエージェントにも自動では結び付かない。
+- **`repo-reader` プロファイルを既定で配布**: Gemini の読み取り道具を local 設定なしで使える。
 
 - **API 委譲の共通 rule `api-delegation` を追加**: API を使う全サブエージェントに、ask / agent の使い分け、長時間実行の待機、partial の冒頭報告、根拠の裏取りと終了コード別の対応を共通化する。
 
@@ -27,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **API キーで Anthropic / OpenAI / Gemini を呼ぶ共通基盤を追加**: `orchex auth set/status` と `orchex llm ask --profile` で認証情報の管理、検索・添付付きの一回の質問ができる。依存は `orchex[llm]` で導入し、researcher は既定の Gemini research プロファイルを必要な場面だけ使う。利用できない場合は Claude だけで調査を続ける。
 
 ### Changed
+
+- **エージェントのリポジトリ探索をAPIへ接続**: spec-reviewerとreverse-coordinatorはrepo-readerで該当箇所を収集し、Claudeが裏取り・判定する。researcherはresearchのままWebはask、リポジトリはagentを使い分け、出力上限を16384トークンにする。APIが使えない場合はClaudeだけで進める。
 
 - **`llm agent` の結果に `citations_parse_failed` を追加**: 道具ありで根拠を読み取れなかった場合は true、`unverified_count` は null を返す。status と終了コードの意味は変わらない。
 

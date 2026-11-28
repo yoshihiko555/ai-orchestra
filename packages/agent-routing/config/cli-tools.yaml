@@ -57,9 +57,11 @@ api:
       features:
         web_search: true
         attachments: true
+      tools:
+        repo_read: true
       limits:
         timeout_sec: 120
-        max_output_tokens: 8192
+        max_output_tokens: 16384
     repo-reader:
       provider: gemini
       tools:
@@ -142,8 +144,6 @@ agents:
     tool: claude-direct
   security-reviewer:
     tool: claude-direct
-  spec-reviewer:
-    tool: claude-direct
   ux-reviewer:
     tool: claude-direct
   # debugger は分析役（Edit を持たない）。tool を codex に切り替えた場合も read-only で呼ぶ
@@ -182,7 +182,13 @@ agents:
     tool: auto
     model: null
 
-  # --- リサーチ系（探索は Claude 自身、必要時のみ API）---
+  # --- API を使う系（該当箇所の収集・探索は API、判定は Claude）---
+  spec-reviewer:
+    tool: api
+    api_profile: repo-reader
+  reverse-coordinator:
+    tool: api
+    api_profile: repo-reader
   researcher:
     tool: api
     api_profile: research

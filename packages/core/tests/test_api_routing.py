@@ -62,6 +62,13 @@ def _available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_profiles(), "provider_dependency_available", lambda provider: True)
 
 
+@pytest.fixture
+def shipped_config() -> dict:
+    return yaml.safe_load(
+        (REPO_ROOT / "packages/agent-routing/config/cli-tools.yaml").read_text(encoding="utf-8")
+    )
+
+
 def test_route_config_resolves_profile_values_without_secret_values(
     api_config, monkeypatch
 ) -> None:
@@ -264,25 +271,103 @@ def test_hook_delivers_local_profile_values_without_secrets(
         assert context.startswith("[Subagent Context Preview]")
 
 
-def test_default_profiles_route_only_research_to_gemini(monkeypatch) -> None:
+@pytest.mark.parametrize("agent", ["spec-reviewer", "reverse-coordinator"])
+def test_shipped_agents_resolve_to_repo_reader_on_subagent_start(
+    tmp_path, shipped_config, monkeypatch, capsys, agent
+) -> None:
     _available(monkeypatch)
-    config = yaml.safe_load(
-        (REPO_ROOT / "packages/agent-routing/config/cli-tools.yaml").read_text(encoding="utf-8")
-    )
+    config_dir = tmp_path / ".claude/config/agent-routing"
+    config_dir.mkdir(parents=True)
+    (config_dir / "cli-tools.yaml").write_text(yaml.safe_dump(shipped_config), encoding="utf-8")
+    payload = {
+        "cwd": str(tmp_path),
+        "hook_event_name": "SubagentStart",
+        "agent_type": agent,
+    }
 
-    researcher = hook_common.resolve_agent_routing("researcher", config)
+    with patch.object(sys, "stdin", io.StringIO(json.dumps(payload))):
+        inject.main()
+
+    output = capsys.readouterr()
+    assert output.out, f"{agent} のルーティングが注入されていません"
+    result = json.loads(output.out)["hookSpecificOutput"]
+    assert result["hookEventName"] == "SubagentStart"
+    context = result["additionalContext"]
+    assert "[Resolved Routing]" in context.splitlines()
+    routing_text = context.rsplit("[Resolved Routing]", 1)[1]
+    fields = dict(
+        line[2:].split(": ", 1) for line in routing_text.splitlines() if line.startswith("- ")
+    )
+    assert fields["agent"] == agent
+    assert fields["tool"] == "api"
+    assert fields["api.profile"] == "repo-reader"
+    assert fields["api.provider"] == "gemini"
+    assert all("dummy-routing" not in value for value in fields.values())
+    assert "dummy-routing" not in output.out + output.err
+
+
+def test_shipped_research_profile_supports_agent_and_keeps_ask_features(shipped_config) -> None:
+    settings = _profiles().resolve_agent_settings(shipped_config, "research")
+    ask_profile = _profiles().resolve_profile(shipped_config, "research")
+
+    assert settings.repo_read is True
+    assert settings.profile.max_output_tokens == 16384
+    assert ask_profile.web_search is True
+    assert ask_profile.attachments is True
+    assert ask_profile.timeout_sec == 120
+
+
+@pytest.mark.parametrize("agent", ["spec-reviewer", "reverse-coordinator", "researcher"])
+@pytest.mark.parametrize("condition", ["key_missing", "provider_disabled", "dependency_missing"])
+def test_shipped_api_agents_fall_back_with_reason(
+    shipped_config, monkeypatch, agent, condition
+) -> None:
+    _available(monkeypatch)
+    if condition == "key_missing":
+        monkeypatch.delenv("GEMINI_API_KEY")
+    elif condition == "provider_disabled":
+        shipped_config["api"]["providers"]["gemini"]["enabled"] = False
+    else:
+        monkeypatch.setattr(_profiles(), "provider_dependency_available", lambda provider: False)
+
+    routing = route_config.resolve_agent_routing(agent, shipped_config)
+
+    assert routing["tool"] == "claude-direct"
+    assert "api" not in routing
+    reasons = {
+        "key_missing": r"キー.*未設定",
+        "provider_disabled": r"プロバイダ.*無効",
+        "dependency_missing": r"SDK.*未導入",
+    }
+    notes = "\n".join(routing["notes"])
+    assert re.search(reasons[condition], notes)
+    if condition == "key_missing":
+        assert "orchex auth set gemini" in notes
+    elif condition == "dependency_missing":
+        assert "orchex[llm]" in notes
+    assert "dummy-routing" not in json.dumps(routing)
+
+
+def test_default_profiles_route_research_and_repository_agents_to_gemini(
+    shipped_config, monkeypatch
+) -> None:
+    _available(monkeypatch)
+
+    researcher = hook_common.resolve_agent_routing("researcher", shipped_config)
 
     assert researcher["tool"] == "api"
     assert researcher["api"]["profile"] == "research"
     assert researcher["api"]["provider"] == "gemini"
     assert researcher["api"]["web_search"] is True
     assert researcher["api"]["attachments"] is True
-    assert set(config["api"]["profiles"]) == {"research", "repo-reader"}
-    for agent in config["agents"]:
-        routing = hook_common.resolve_agent_routing(agent, config)
+    for agent in ("spec-reviewer", "reverse-coordinator"):
+        routing = hook_common.resolve_agent_routing(agent, shipped_config)
+        assert routing["tool"] == "api"
+        assert routing["api"]["profile"] == "repo-reader"
+    for agent in shipped_config["agents"]:
+        routing = hook_common.resolve_agent_routing(agent, shipped_config)
         if routing["tool"] == "api":
             assert routing["api"]["provider"] == "gemini"
-            assert routing["api"]["profile"] != "repo-reader"
 
 
 def test_shipped_repo_reader_resolves_without_local_overrides() -> None:
