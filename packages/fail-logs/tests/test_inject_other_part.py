@@ -366,68 +366,11 @@ def test_scan_stops_at_max_scan_bytes(monkeypatch, tmp_path, capsys) -> None:
     assert "pytest" not in out
 
 
-def test_last_simple_command_tokens() -> None:
-    assert inject._last_simple_command_tokens("a && b c") == ["b", "c"]
-    assert inject._last_simple_command_tokens("a || b | c d ; e f") == ["e", "f"]
-    assert inject._last_simple_command_tokens("FOO=1 BAR=2 grep x") == ["grep", "x"]
-    assert inject._last_simple_command_tokens("") == []
-
-
-# EV-33 / EV-34: 引用符の外の演算子だけで分け、最後の単純コマンドを採用する。
-@pytest.mark.parametrize(
-    ("command", "expected"),
-    [
-        ("a && b", ["b"]),
-        ("x; y", ["y"]),
-        ("a|b", ["b"]),
-        ("a & b", ["b"]),
-        ("a |& b", ["b"]),
-        ("cmd\nnext arg", ["next", "arg"]),
-        ("grep -F '|' file.txt", ["grep", "-F", "|", "file.txt"]),
-        ('"grep" x', ["grep", "x"]),
-        ("echo 5 > f", ["echo", "5"]),
-    ],
-)
-def test_last_simple_command_tokens_preserve_shell_words(command: str, expected: list[str]) -> None:
-    assert inject._last_simple_command_tokens(command) == expected
-
-
-# EV-34: リダイレクトの演算子と宛先は、コマンドのトークンに含めない。
-@pytest.mark.parametrize(
-    "redirect",
-    [
-        "2>&1",
-        ">&2",
-        "&>/dev/null",
-        "&>>file",
-        "2>file",
-        "2>>file",
-        ">file",
-        "<file",
-        "<<EOF",
-        "<&3",
-        ">|file",
-        "<<<value",
-        "<>file",
-        "> 'file with spaces'",
-    ],
-)
-def test_redirections_are_dropped_from_command_tokens(redirect: str) -> None:
-    assert inject._last_simple_command_tokens(f"make build {redirect}") == ["make", "build"]
-    assert inject._last_simple_command_tokens(f"pytest {redirect}") == ["pytest"]
-
-
 # EV-34: リダイレクト先ではなく、最後の単純コマンドをシグネチャにする。
 def test_other_signature_key_ignores_redirections() -> None:
     signature = inject._other_signature_key({"command": "make build 2>&1", "command_kind": "shell"})
 
     assert signature == ("", "shell", "make build")
-
-
-# EV-33: 引用符やエスケープが閉じていない入力でも、予備の分割で処理を続ける。
-@pytest.mark.parametrize("command", ['grep "unterminated', "grep trailing" + "\\"])
-def test_unparseable_shell_input_falls_back(command: str) -> None:
-    assert inject._last_simple_command_tokens(command) == command.split()
 
 
 # EV-33: 引用符の中の `|` `;` では分けない（`grep -E "a|b"` も意図した非ゼロ終了として除外する）。

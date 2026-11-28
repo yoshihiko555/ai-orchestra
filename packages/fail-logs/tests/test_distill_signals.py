@@ -78,6 +78,10 @@ def test_no_signal_sessions(case: dict) -> None:
     assert eval_distill.detect_case_signals(case) == []
 
 
+def test_redirected_grep_exit_one_does_not_trigger_distillation() -> None:
+    assert _signals([["bash", "grep foo file 2>&1", {"error": "Exit code 1\n"}]]) == []
+
+
 # EV-43: テスト・lint の失敗は 3 回で反復、それ以外は 2 回で反復。未解決はそれだけで合図。
 def test_repeat_thresholds_and_unresolved() -> None:
     fail = {"error": "Exit code 1\n1 failed"}

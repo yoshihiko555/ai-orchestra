@@ -1,6 +1,6 @@
 # fail-logs 評価セット
 
-**改訂**: 2026-11-27（旧 CLI の廃止に対応。人間レビュー待ち（本 PR））
+**改訂**: 2026-11-29（旧 CLI の廃止、リダイレクトの分割とサマリー・教訓化の判定共有に対応。人間レビュー待ち（本 PR））
 
 **パッケージ**: `packages/fail-logs`
 **類型**: hook 型（副類型: CLI ツール型。`scripts/lessons_cli.py` / `scripts/lessons_admin.py`）
@@ -65,7 +65,7 @@ fail-logs は AI エージェント（Claude Code 等）のツール実行失敗
 
 - [ ] EV-31（正常 / must）: 新しいイベントの行（`tool_use_id` を持つ）のうちテスト・lint 以外のもの（その他部）と、それ以外の行（従来部）を分けて集計し、それぞれに件数の上限と上位件数（その他部は `summary.top_signatures_new`）を適用する。その他部の行が大量にあっても、テスト・lint の再発が集計から押し出されない（2026-11-03 の実装で、分け方を `failure_type` から記録の出所に改めた。設計 §4 の 5） — 根拠: docs/requirements/fail-logs.md FR-04 受け入れ条件 4 / docs/design/fail-logs.md §4 の 5
 - [ ] EV-32（境界 / must）: その他部の行が無いとき、注入文は 2026-11-03 の変更前と同じ（`tool_use_id` を持たない従来の行は、`failure_type` が `tool_error` でも従来どおり集計する）。ある場合は、従来部の後ろに別の見出しで足す — 根拠: docs/requirements/fail-logs.md NF-06 / docs/design/fail-logs.md §4 の 5
-- [ ] EV-33（境界 / must）: その他部の行のうち、`detected_by: "exit_code"`・`exit_code == 1` で、最後の単純コマンドの（環境変数の代入を除いた）先頭 1〜2 トークンが `summary.expected_nonzero_commands` に当たる行は集計しない（例: `grep`・`test`・`git diff`。`a && grep x` も除外し、`grep x && a` は除外しない） — 根拠: docs/requirements/fail-logs.md FR-04 受け入れ条件 3 / docs/design/fail-logs.md §4 の 6
+- [ ] EV-33（境界 / must）: その他部の行のうち、`detected_by: "exit_code"`・`exit_code == 1` で、最後の単純コマンドの（環境変数の代入を除いた）先頭 1〜2 トークンが `summary.expected_nonzero_commands` に当たる行は集計しない。分割ではリダイレクトの演算子と宛先をトークンに含めない（例: `grep`・`test`・`git diff`。`grep foo file 2>&1`・`a && grep x` も除外し、`grep x && a` は除外しない） — 根拠: docs/requirements/fail-logs.md FR-04 受け入れ条件 3 / docs/design/fail-logs.md §4 の 6
 - [ ] EV-34（正常 / should）: その他部の `command_kind: "shell"` の行は、最後の単純コマンドの先頭 2 トークン（例 `git push`）をシグネチャにする — 根拠: docs/design/fail-logs.md §4 の 7
 - [ ] EV-35（境界 / should）: その他部の、Bash 以外のツール（`tool` が `Bash` でない）の `tool_error` は、`summary.include_non_bash_tool_errors: true` のときだけ集計する — 根拠: docs/design/fail-logs.md §4 の 8
 - [ ] EV-36（境界 / must）: ログの走査は末尾から `summary.max_scan_bytes` で止まり、注入するシグネチャは `top_signatures` + `top_signatures_new` 件が上限 — 根拠: docs/design/fail-logs.md §4 の有界性保証
@@ -78,7 +78,7 @@ fail-logs は AI エージェント（Claude Code 等）のツール実行失敗
 - [ ] EV-40（正常 / must）: 前段判定で合図が無いときは LLM を呼ばず、`no_signal` で記録する — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 2 / docs/design/fail-logs.md §7.1・§7.6
 - [ ] EV-41（正常 / must）: 手動の拒否（ツール結果の本文が `distill.reject_markers` で始まる）・中断（テキストが `distill.interrupt_markers` と一致する）のいずれかを含むセッションは、必ず「合図あり」になる（固定の評価用記録で 100%）。許可ルールの拒否・auto mode の分類器の拒否・セッションの終了による中断は人間の介入に数えない — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 3 / docs/design/fail-logs.md §7.3
 - [ ] EV-42（正常 / must）: TDD の red → green だけのセッションと、意図した非ゼロ終了だけのセッションは「合図なし」になる（固定の評価用記録で 100%） — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 4 / docs/design/fail-logs.md §7.3
-- [ ] EV-43（正常 / must）: 機械的な失敗の合図は、未解決のまま終わったもの・同じシグネチャで閾値（テスト・lint は `distill.repeat_threshold_test`、それ以外は `distill.repeat_threshold`）以上繰り返したもの、に限る。ツール結果のエラーと失敗イベントは `tool_use_id` で突き合わせて二重に数えない — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 4（2026-11-03 に設計に揃えて改訂） / docs/design/fail-logs.md §7.3
+- [ ] EV-43（正常 / must）: 機械的な失敗の合図は、未解決のまま終わったもの・同じシグネチャで閾値（テスト・lint は `distill.repeat_threshold_test`、それ以外は `distill.repeat_threshold`）以上繰り返したもの、に限る。意図した非ゼロ終了は、サマリーと同じ実装でコマンドを分割・判定し、失敗に数えない（例: `grep foo file 2>&1` の exit 1 は合図にならない）。ツール結果のエラーと失敗イベントは `tool_use_id` で突き合わせて二重に数えない — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 4（2026-11-03 に設計に揃えて改訂） / docs/design/fail-logs.md §4 の 6・§7.3
 - [ ] EV-44（正常 / must）: 機械的な失敗がなく訂正だけを含むセッションの 8 割以上が「合図あり」になる（固定の評価用記録 5 件以上。`distill.correction_cues` の文字列の部分一致） — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 5 / docs/design/fail-logs.md §7.3
 - [ ] EV-45（境界 / must）: 利用者の発言として数えるのは、`type: user` で `isSidechain` / `isMeta` / `isCompactSummary` が真でなく、本文がテキストで、`<` と英小文字のタグで始まらない行だけ（スキルの展開・hook の注入・会話の要約・`!` コマンドの出力の中の訂正の語彙で「合図あり」にしない） — 根拠: docs/design/fail-logs.md §7.3
 - [ ] EV-46（境界 / must）: 同じセッションの同じ範囲を 2 回教訓化しない。再開したセッションは前回進めた `transcript_offset` から読み、フォークしたセッションは記録の中で最後に既知の `last_uuid` と一致した行の次から読む — 根拠: docs/requirements/fail-logs.md FR-06 受け入れ条件 6 / docs/design/fail-logs.md §7.3・§7.6
