@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -628,14 +629,30 @@ def test_run_mechanical_command_times_out_with_exit_124(tmp_path: Path) -> None:
 
 
 def test_run_mechanical_command_kills_grandchildren_on_timeout(tmp_path: Path) -> None:
-    """Code review #16: timeout must reap the whole process group, not just direct `bash`.
-
-    Without process-group kill, only the direct `bash -lc ...` child is killed and the
-    background `sleep` it spawned survives past the timeout.
-    """
+    """起動が遅いログインシェルでも、タイムアウト時に孫プロセスまで停止する。"""
+    shell_home = tmp_path / "home"
+    shell_home.mkdir()
+    (shell_home / ".bash_profile").write_text("sleep 0.3\n", encoding="utf-8")
     pid_file = tmp_path / "child.pid"
     command = f"sleep 5 & echo $! > {pid_file}; wait"
-    output, exit_code = lc._run_mechanical_command(command, str(tmp_path), 0.2)
+
+    def wait_for_child(pid: int | None) -> None:
+        if pid is None:
+            return
+        # 起動待ちは communicate のタイムアウトに含めず、遅いシェルでも孫を検証する。
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if pid_file.exists() and pid_file.read_text(encoding="utf-8").strip():
+                return
+            time.sleep(0.01)
+
+    output, exit_code = lc._run_mechanical_command(
+        command,
+        str(tmp_path),
+        0.2,
+        env={**os.environ, "HOME": str(shell_home)},
+        on_start=wait_for_child,
+    )
     assert exit_code == 124
     assert "command timed out" in output
     child_pid = int(pid_file.read_text(encoding="utf-8").strip())
