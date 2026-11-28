@@ -122,26 +122,27 @@ def _salvage_citations(text: str) -> list[object] | None:
     citations: list[object] = []
     for index, match in enumerate(paths):
         path = _load_answer_json(match[1])
-        if not isinstance(path, str):
-            continue
+        citation: dict[str, object] = {}
+        if isinstance(path, str):
+            citation["path"] = path
         stop = paths[index + 1].start() if index + 1 < len(paths) else len(candidate)
         fields = {
             field[1]: field[2] for field in _JSON_RANGE.finditer(candidate, match.end(), stop)
         }
-        if "start_line" not in fields or "end_line" not in fields:
-            continue
-        try:
-            start, end = int(fields["start_line"]), int(fields["end_line"])
-        except ValueError:
-            continue
+        for name in ("start_line", "end_line"):
+            if name in fields:
+                try:
+                    citation[name] = int(fields[name])
+                except ValueError:
+                    # 桁数制限を超えた行番号も、不完全な根拠として残す。
+                    continue
         claim = _JSON_CLAIM.search(candidate, match.end(), stop)
         decoded_claim = _load_answer_json(claim[1]) if claim is not None else None
         if claim is not None and not isinstance(decoded_claim, str):
             # claim のエスケープが救済できなくても、主張の原文を失わないようにする。
             decoded_claim = claim[1][1:-1]
-        citations.append(
-            {"path": path, "start_line": start, "end_line": end, "claim": decoded_claim}
-        )
+        citation["claim"] = decoded_claim
+        citations.append(citation)
     return citations if citations else None
 
 
