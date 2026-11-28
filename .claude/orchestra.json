@@ -129,7 +129,7 @@
       "config/image-generation/styles/industrial-orange.md": "1b196042aec22a7d423b44d43df2976ec392ed117a4c0d50c1c27813776c9b51"
     },
     "loop-harness": {
-      "config/loop-harness/loop-harness.yaml": "e899bc9dfa30ffd636e4629ee635e65a9c2841b47828cc68ac55fc2a80d19b59",
+      "config/loop-harness/loop-harness.yaml": "b9c0e7f287e43b4296aca425bc676b3b003388621a2e315bc318fb27bd10b1a3",
       "config/loop-harness/loops/issue-loop.yaml": "f0355b7d55a1dc603fbf65ec5721056511e7891a794d523934f02062832f5257"
     },
     "fail-logs": {
@@ -142,7 +142,7 @@
       "agents/reverse-coordinator.md": "aacea1692b7d117d7862611634d5d1e15402f5c73ec32a4535737b1555ed453e"
     },
     "meta-harness": {
-      "config/meta-harness/meta-harness.yaml": "1a7a274ab2515ebf44cb364bb69e51c3f4e46e84313e89d9796a967c0bec2c1b"
+      "config/meta-harness/meta-harness.yaml": "c2e47e9dc54cf8d1d7f52e4549a6099bb4c1e65ce859879bcd9c3470955da8ab"
     },
     "quality-gates": {
       "config/quality-gates/evaluation-set-mapping.yaml": "831e3804fa10c7823465e0ae081cdec88ab0a9d2a929d048e50b4690d48baa95",

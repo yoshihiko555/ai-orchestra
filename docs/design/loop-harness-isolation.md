@@ -613,17 +613,30 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
   ビルド全体（`ensure_recipe_image` の戻り値）を失敗にしない。削除できなかった世代はマニフェストに
   残り、次回 prune 実行時に再試行される。
 - **BuildKit build cache の GC（イメージタグ GC とは別に必須）**: loop-harness 専用の
-  `docker buildx` ビルダーインスタンス（`docker buildx create --name loop-harness-builder`）を
+  `docker buildx` ビルダーインスタンス（`docker buildx create --name orchex-loop-harness`。
+  2026-11-29 に既定名を旧 `loop-harness-builder` から変更）を
   新設し、**ビルドは常にこの専用ビルダー経由**で行う（開発者のデフォルトビルダーの cache を
   誤って prune しないようスコープを分離するため）。ビルド成功後、`docker buildx prune --builder
-  loop-harness-builder --filter until=<image_cache.buildkit_cache_max_age>`（既定 168h = 7日）を
+  orchex-loop-harness --filter until=<image_cache.buildkit_cache_max_age>`（既定 168h = 7日）を
   実行し、経過時間ベースで build cache を GC する。加えて `image_cache.buildkit_cache_max_size`
-  （既定 10g）を安全弁として設定し、`docker buildx du --builder loop-harness-builder` で使用量が
+  （既定 10g）を安全弁として設定し、`docker buildx du --builder orchex-loop-harness` で使用量が
   上限を超えていれば `until=0`（無条件 prune）にフォールバックする。**専用ビルダーの初回作成は
   プロジェクト間でレースしうる**（異なる `.claude/loop/docker-image-build.lock` を持つ複数プロジェクトが
   同じグローバルビルダー名を同時に初期化しようとするケース）ため、`docker buildx create` が失敗しても
   即座に致命エラーとせず、`docker buildx inspect` を再試行して driver 検証（`docker-container`）を
   通れば既存ビルダーとして採用する。
+- **ビルダーコンテナの停止（2026-11-29 追加）**: 専用ビルダーはビルドのときしか使わないため、
+  ビルドのたびに止めて常駐させない。ビルダー名は Docker daemon 全体で共有され、
+  `.claude/loop/docker-image-build.lock` はプロジェクトごとなので、ビルダー名ごとのホスト共通ロック
+  （`${XDG_CACHE_HOME:-~/.cache}/orchex/buildx/<builder_name>.lock`）を別に持つ。ビルダーの準備から
+  ビルド後の prune までは共有ロックを保持し、抜けるとき（失敗時を含む）に排他ロックを非ブロッキングで
+  取れた場合だけ `docker buildx stop` する。別のプロジェクトが同じビルダーでビルド中なら止めず、
+  最後に抜けたプロセスが止める。止めたビルダーは次の `docker buildx build` で自動起動し、BuildKit cache は
+  named volume に残る。`docker buildx du` / `prune` は停止中のビルダーを起動せず失敗するため、prune が
+  終わるまでは止めない。ロックを開けない環境（cache ディレクトリへ書き込めない等）ではロックなしで
+  ビルドし、ビルダーは止めない（docker-runtime EV-38 / EV-39）。ただしロックなしのビルドは
+  他のプロジェクトから見えないため、そちらのビルド終了時に止められうる（既知の制限）。ロックを
+  共有するのは同じユーザー・同じ HOME のプロセス同士だけである（既知の制限）。
 - **並行ビルドのロック**: 「マニフェスト確認 → 必要ならビルド → マニフェスト更新」の区間全体を
   `.claude/loop/docker-image-build.lock`（`flock`。`loop_common.held_coord_lock` と同じ
   ファイルロックパターンを踏襲）で保護し、`lp2.concurrency_limit`（既定 2）で複数 driver が
@@ -643,7 +656,7 @@ meta-harness・loop-harness の双方が利用する形を設計目標とする�
 
 Issue #231 の本文は「loop-harness は Docker build を実行しない」としているが、この記述は
 **現在不正確**である。`packages/loop-harness/lib/loop_docker_image.py`
-（`DOCKER_LABEL = "ai.orchestra.loop-harness"`、専用 buildx builder `loop-harness-builder`）は
+（`DOCKER_LABEL = "ai.orchestra.loop-harness"`、専用 buildx builder `orchex-loop-harness`）は
 5.2 節・6 節で述べた共有モジュール（`packages/docker-runtime/lib/docker_runtime_image.py`）を
 meta-harness と同様に呼び出しており、独立した Docker label・manifest/lock パス・builder 名の
 namespace を持つ点で meta-harness と衝突しないが、**build ロジック自体は共通基盤に委譲している**。
@@ -705,7 +718,7 @@ lp2:
       manifest_path: .claude/loop/docker-image-cache.json # メインルート相対
       keep_generations: 3 # image family ごとの保持世代数（5.2 節）
       lock_path: .claude/loop/docker-image-build.lock
-      builder_name: loop-harness-builder # 専用 buildx ビルダー（5.2 節。開発者既定ビルダーの cache と分離）
+      builder_name: orchex-loop-harness # 専用 buildx ビルダー（5.2 節。開発者既定ビルダーの cache と分離）
       buildkit_cache_max_age: 168h # BuildKit build cache の GC 閾値（5.2 節）
       buildkit_cache_max_size: 10g # 安全弁。超過時は age を無視し無条件 prune
     resources:

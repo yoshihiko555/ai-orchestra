@@ -103,6 +103,8 @@ _REPOSITORY_RE = re.compile(
     rf"^(?:{_REGISTRY_HOST_RE}/)?{_REPOSITORY_COMPONENT_RE}(?:/{_REPOSITORY_COMPONENT_RE})*$"
 )
 _BUILDX_DRIVER_RE = re.compile(r"^Driver:\s*(\S+)", re.MULTILINE)
+# Under `${XDG_CACHE_HOME:-~/.cache}`; see `_builder_lock_path`.
+BUILDER_LOCK_SUBDIR = Path("orchex") / "buildx"
 
 
 class DockerImageError(RuntimeError):
@@ -271,60 +273,66 @@ def ensure_recipe_image(
             _lease_image_id_best_effort(policy, image_id, _now(clock))
             return EnsuredImage(image_id, tag, digest, built=False)
 
-        _ensure_builder(policy.builder_name, runner=runner)
-        # Record the tag as in-flight *before* invoking buildx, so a crash
-        # between a successful `--load` and the manifest write (Issue #231
-        # scenario 2) still leaves proof of ownership behind for the next
-        # `ensure_recipe_image` call's opportunistic cleanup to reclaim.
-        # The previously-recorded entry for this exact tag (if any) is kept
-        # around so a failed retry can restore it (PR #320 review, third
-        # round) instead of destroying an earlier attempt's still-valid
-        # ownership proof.
-        previous_pending_entry = _record_pending_build(policy, recipe, tag, digest, now)
-        # Capture whatever `tag` already resolves to *before* attempting the
-        # build (PR #320 review): the same content-addressed tag can already
-        # exist in the shared Docker daemon (e.g. built by a different
-        # checkout) even though it is unknown to this checkout's local
-        # manifest. If the build then fails, this lets the failure handler
-        # tell "we just created/replaced this tag" apart from "this tag
-        # already belonged to someone else and our failed build never
-        # touched it" -- only the former may ever be deleted. Distinguishing
-        # a confirmed miss from an indeterminate inspect (PR #320 review,
-        # third round) matters here too: an inspect that merely *failed*
-        # must never be treated the same as "confirmed absent."
-        pre_build_image_id, pre_build_indeterminate = _inspect_image_id_with_confidence(
-            tag, runner=runner
-        )
-        try:
-            _build_image(recipe, policy, digest, tag, runner=runner)
-            image_id = _inspect_image_id(tag, runner=runner)
-            if image_id is None:
-                raise DockerImageError(f"could not resolve freshly built Docker image ID: {tag}")
-            _tag_latest(tag, recipe.repository, runner=runner)
-        except Exception:
-            # Never mask the original failure with a cleanup error.
-            _best_effort_remove_pending_tag(
-                policy,
-                recipe,
-                tag,
-                digest,
-                pre_build_image_id,
-                pre_build_indeterminate,
-                previous_pending_entry,
-                _now(clock),
-                runner=runner,
+        # Hold the host-wide builder lock from builder setup through the
+        # post-build prune, then stop the builder if no other checkout is
+        # still using it (see `_builder_in_use`).
+        with _builder_in_use(policy.builder_name, runner=runner):
+            _ensure_builder(policy.builder_name, runner=runner)
+            # Record the tag as in-flight *before* invoking buildx, so a crash
+            # between a successful `--load` and the manifest write (Issue #231
+            # scenario 2) still leaves proof of ownership behind for the next
+            # `ensure_recipe_image` call's opportunistic cleanup to reclaim.
+            # The previously-recorded entry for this exact tag (if any) is kept
+            # around so a failed retry can restore it (PR #320 review, third
+            # round) instead of destroying an earlier attempt's still-valid
+            # ownership proof.
+            previous_pending_entry = _record_pending_build(policy, recipe, tag, digest, now)
+            # Capture whatever `tag` already resolves to *before* attempting the
+            # build (PR #320 review): the same content-addressed tag can already
+            # exist in the shared Docker daemon (e.g. built by a different
+            # checkout) even though it is unknown to this checkout's local
+            # manifest. If the build then fails, this lets the failure handler
+            # tell "we just created/replaced this tag" apart from "this tag
+            # already belonged to someone else and our failed build never
+            # touched it" -- only the former may ever be deleted. Distinguishing
+            # a confirmed miss from an indeterminate inspect (PR #320 review,
+            # third round) matters here too: an inspect that merely *failed*
+            # must never be treated the same as "confirmed absent."
+            pre_build_image_id, pre_build_indeterminate = _inspect_image_id_with_confidence(
+                tag, runner=runner
             )
-            raise
-        with exclusive_file_lock(policy.lock_path):
-            # Re-read from disk (rather than reusing an earlier in-memory
-            # snapshot) so a concurrent write by a different family is
-            # merged into, not clobbered by, this write.
-            manifest = _load_valid_manifest(policy.manifest_path, runner=runner)
-            manifest[digest] = ManifestEntry(image_id, now, now)
-            manifest = _prune_image_family(recipe, policy, manifest, _now(clock), runner=runner)
-            _write_manifest(policy.manifest_path, manifest)
-            _clear_pending_entry(policy, tag)
-        _prune_buildkit_cache(policy, runner=runner)
+            try:
+                _build_image(recipe, policy, digest, tag, runner=runner)
+                image_id = _inspect_image_id(tag, runner=runner)
+                if image_id is None:
+                    raise DockerImageError(
+                        f"could not resolve freshly built Docker image ID: {tag}"
+                    )
+                _tag_latest(tag, recipe.repository, runner=runner)
+            except Exception:
+                # Never mask the original failure with a cleanup error.
+                _best_effort_remove_pending_tag(
+                    policy,
+                    recipe,
+                    tag,
+                    digest,
+                    pre_build_image_id,
+                    pre_build_indeterminate,
+                    previous_pending_entry,
+                    _now(clock),
+                    runner=runner,
+                )
+                raise
+            with exclusive_file_lock(policy.lock_path):
+                # Re-read from disk (rather than reusing an earlier in-memory
+                # snapshot) so a concurrent write by a different family is
+                # merged into, not clobbered by, this write.
+                manifest = _load_valid_manifest(policy.manifest_path, runner=runner)
+                manifest[digest] = ManifestEntry(image_id, now, now)
+                manifest = _prune_image_family(recipe, policy, manifest, _now(clock), runner=runner)
+                _write_manifest(policy.manifest_path, manifest)
+                _clear_pending_entry(policy, tag)
+            _prune_buildkit_cache(policy, runner=runner)
         # Best-effort, not fail-closed (PR #320 review, fifth round): the
         # build already succeeded and `image_id` is already durably recorded
         # in the manifest above -- a lease-write failure here (disk
@@ -1237,6 +1245,101 @@ def _inspect_builder(builder: str, *, runner: SubprocessRunner) -> bool:
     return True
 
 
+def _builder_lock_path(builder: str) -> Path:
+    """Host-wide lock file for `builder`.
+
+    buildx builder names are global to the Docker daemon, while
+    `policy.lock_path` is per checkout, so builds from different checkouts
+    and worktrees only see each other through this shared path.
+    """
+    configured = os.environ.get("XDG_CACHE_HOME")
+    # A relative XDG_CACHE_HOME is ignored (as the XDG spec requires): it would
+    # resolve against each process's cwd and stop being host-wide.
+    if configured and Path(configured).is_absolute():
+        cache_home = Path(configured)
+    else:
+        cache_home = Path.home() / ".cache"
+    return cache_home / BUILDER_LOCK_SUBDIR / f"{builder}.lock"
+
+
+@contextmanager
+def _builder_in_use(builder: str, *, runner: SubprocessRunner) -> Iterator[None]:
+    """Mark `builder` as in use by this process, and stop it afterwards if no
+    other process still uses it.
+
+    A stopped `docker-container` builder is booted again by the next
+    `docker buildx build`, and its BuildKit cache lives in a named volume, so
+    stopping it between builds keeps the container from idling without
+    losing the cache. `docker buildx du`/`prune` do not boot it, which is why
+    the shared lock is held through the post-build prune.
+    """
+    fd = _acquire_shared_builder_lock(builder)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            _stop_builder_if_idle(builder, fd, runner=runner)
+
+
+def _acquire_shared_builder_lock(builder: str) -> int | None:
+    """Return an fd holding `LOCK_SH` on the builder lock, or None.
+
+    None means the build proceeds unlocked and the builder is left running:
+    without the lock there is no way to tell whether another checkout is
+    mid-build on the same builder.
+    """
+    try:
+        lock_path = _builder_lock_path(builder)
+        _ensure_private_directory(lock_path.parent)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, FILE_MODE)
+    except (DockerImageError, OSError, RuntimeError):
+        _LOGGER.warning(
+            "could not open the host-wide lock for buildx builder %s; "
+            "leaving the builder running after this build",
+            builder,
+        )
+        return None
+    try:
+        # Match `exclusive_file_lock`: an existing file keeps whatever mode it
+        # was created with, and one this user cannot chmod (e.g. owned by
+        # another user under a shared XDG_CACHE_HOME) is not trusted.
+        os.fchmod(fd, FILE_MODE)
+        fcntl.flock(fd, fcntl.LOCK_SH)
+    except OSError:
+        os.close(fd)
+        _LOGGER.warning(
+            "could not lock buildx builder %s; leaving the builder running after this build",
+            builder,
+        )
+        return None
+    return fd
+
+
+def _stop_builder_if_idle(builder: str, fd: int, *, runner: SubprocessRunner) -> None:
+    """Release this process's shared lock and stop `builder` if no other
+    process holds it. Never raises, so it cannot mask the build's own
+    outcome."""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Another process is still using the builder; whichever process
+            # releases it last stops it.
+            return
+        stopped = cli.run(["docker", "buildx", "stop", builder], runner=runner, timeout=60)
+        if stopped.returncode != 0:
+            _LOGGER.warning(
+                "could not stop buildx builder %s; it keeps running until a later build "
+                "stops it or `docker buildx stop` is run",
+                builder,
+            )
+    except OSError:
+        _LOGGER.warning("could not release the lock for buildx builder %s", builder)
+    finally:
+        os.close(fd)
+
+
 def _build_image(
     recipe: ImageRecipe,
     policy: ImageCachePolicy,
@@ -2060,6 +2163,11 @@ def _log_cleanup_usage(policy: ImageCachePolicy, *, runner: SubprocessRunner) ->
     """Informational BuildKit cache usage check after an opportunistic
     cleanup run. Purely diagnostic: never raises, and does not change
     `_prune_buildkit_cache`'s existing hard-fail behavior on the build path.
+
+    Silent while the builder is stopped, which is its usual state between
+    builds (`_builder_in_use`): `docker buildx du` does not boot a stopped
+    builder and fails instead. The size limit itself is enforced by the
+    post-build prune, which runs while the builder is still up.
     """
     usage = cli.run(
         ["docker", "buildx", "du", "--builder", policy.builder_name],

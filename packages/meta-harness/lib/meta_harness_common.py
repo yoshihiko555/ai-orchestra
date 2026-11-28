@@ -98,7 +98,7 @@ DEFAULTS: dict[str, Any] = {
                 "manifest_path": ".claude/meta-harness/docker-image-cache.json",
                 "lock_path": ".claude/meta-harness/docker-image-build.lock",
                 "keep_generations": 3,
-                "builder_name": "meta-harness-builder",
+                "builder_name": "orchex-meta-harness",
                 "buildkit_cache_max_age": "168h",
                 "buildkit_cache_max_size": "10g",
             },

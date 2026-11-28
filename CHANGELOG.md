@@ -30,6 +30,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **loop-harness / meta-harness: 隔離実行用の buildx builder をビルドのたびに停止**: 使い終わった builder コンテナを常駐させない。次のビルドで自動起動し、BuildKit cache は残る。別のプロジェクトが同じ builder でビルド中なら止めない。
+
+- **loop-harness / meta-harness: buildx builder の既定名を `orchex-loop-harness` / `orchex-meta-harness` に変更**: コンテナ名が `buildx_buildkit_orchex-*` になり、一覧で見分けやすくなる。旧 builder は自動では止めも消しもしないので、不要なら `docker buildx rm loop-harness-builder meta-harness-builder` で消す（`.local.yaml` で `builder_name` を指定している場合は影響しない）。
+
 - **エージェントのリポジトリ探索をAPIへ接続**: spec-reviewerとreverse-coordinatorはrepo-readerで該当箇所を収集し、Claudeが裏取り・判定する。researcherはresearchのままWebはask、リポジトリはagentを使い分け、出力上限を16384トークンにする。APIが使えない場合はClaudeだけで進める。
 
 - **`llm agent` の結果に `citations_parse_failed` を追加**: 道具ありで根拠を読み取れなかった場合は true、`unverified_count` は null を返す。status と終了コードの意味は変わらない。

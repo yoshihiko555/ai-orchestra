@@ -56,7 +56,7 @@ class TestConfigDefaults:
             "manifest_path": ".claude/meta-harness/docker-image-cache.json",
             "keep_generations": 3,
             "lock_path": ".claude/meta-harness/docker-image-build.lock",
-            "builder_name": "meta-harness-builder",
+            "builder_name": "orchex-meta-harness",
             "buildkit_cache_max_age": "168h",
             "buildkit_cache_max_size": "10g",
         }
@@ -108,7 +108,7 @@ class TestRecipeAndPolicyNamespace:
         assert recipe.context_dir == REPO_ROOT / "packages/meta-harness/docker/scenario"
         assert policy.manifest_path == tmp_path / ".claude/meta-harness/docker-image-cache.json"
         assert policy.lock_path == tmp_path / ".claude/meta-harness/docker-image-build.lock"
-        assert policy.builder_name == "meta-harness-builder"
+        assert policy.builder_name == "orchex-meta-harness"
         assert captured["kwargs"]["auto_build"] is True
         assert captured["kwargs"]["immutable_image"] == "ai-orchestra/meta-harness-scenario:2.1.282"
 
@@ -137,7 +137,7 @@ class TestRecipeAndPolicyNamespace:
         assert recipe.context_dir == REPO_ROOT / "packages/docker-runtime/docker/broker"
         assert policy.manifest_path == tmp_path / ".claude/meta-harness/docker-image-cache.json"
         assert policy.lock_path == tmp_path / ".claude/meta-harness/docker-image-build.lock"
-        assert policy.builder_name == "meta-harness-builder"
+        assert policy.builder_name == "orchex-meta-harness"
 
     def test_namespace_is_independent_from_loop_harness_defaults(self, tmp_path: Path) -> None:
         loop_docker_image = load_module(

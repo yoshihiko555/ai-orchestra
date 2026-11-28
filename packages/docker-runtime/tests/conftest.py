@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -30,3 +31,10 @@ def _reset_context_hash_cache() -> Iterator[None]:
     _clear_context_hash_cache()
     yield
     _clear_context_hash_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_builder_lock_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """build 経路が取るホスト共通の builder ロック（`$XDG_CACHE_HOME/orchex/buildx/`）を
+    テストごとの一時ディレクトリへ向け、実際のホームに書かないようにする。"""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))

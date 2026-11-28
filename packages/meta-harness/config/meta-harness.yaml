@@ -47,7 +47,9 @@ evaluate:
       lock_path: .claude/meta-harness/docker-image-build.lock
       # Dedicated `docker buildx` builder name used for all builds/GC in
       # this namespace (never the developer's default builder). Default
-      # when unset: meta-harness-builder
+      # when unset: orchex-meta-harness. The builder container is stopped after
+      # each build once no other checkout is using it, and the next build
+      # starts it again (the BuildKit cache is kept).
       # WARNING: `docker buildx prune --builder <builder_name>` GCs every
       # build cache attached to that builder, not just this namespace's. If
       # `builder_name` is shared across multiple projects/namespaces (e.g.
@@ -55,7 +57,7 @@ evaluate:
       # the age/size-based prune below will also evict that other
       # project's build cache. Keep `builder_name` unique per project
       # unless cache sharing is explicitly intended (Issue #307).
-      builder_name: meta-harness-builder
+      builder_name: orchex-meta-harness
       # BuildKit cache prune threshold, as a Go duration string (e.g. "24h",
       # "168h"). Caches older than this are pruned after every build.
       # Default when unset: 168h
