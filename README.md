@@ -457,7 +457,8 @@ UserPromptSubmit のエージェント提案は、プロジェクトに `.claude
 `cli-tools.local.yaml` で `router.engine: jev` にし、TypeSafe の API キーを置くと、TypeSafe の Jev で判定する（任意）。入力の先頭最大 1200 文字を、既知の秘密情報・URL 等を伏せたうえで外部（api.typesafe.ai）に送る。使えないときはキーワード判定に戻る。
 手順・送る内容・費用・遅れは [提案の判定（`router.engine`）](docs/reference/packages.md#提案の判定routerengine) を参照。
 
-`researcher` は既定で API の `research` プロファイル（Gemini）に結び付きます。探索は Claude 自身が Read / Grep / Glob / WebSearch / WebFetch で行い、検索のグラウンディング・マルチモーダル・長い文脈が必要な場面だけ API を呼びます。キーや SDK がない場合は `claude-direct` に戻り、Claude だけで調査を完結させます。
+`spec-reviewer` と `/reverse` の `reverse-coordinator` は既定で `repo-reader`（Gemini）に結び付き、実装・設計書やリポジトリの概観に必要な該当箇所を agent で集めます。裏取りと判定は Claude 自身が行います。
+`researcher` は `research` のまま、Web・添付の調査には `orchex llm ask --profile research`、リポジトリの調査には `orchex llm agent --profile research` を使い分けます。3エージェントとも、キー未設定・プロバイダ無効・SDK未導入の場合は理由付きで `claude-direct` に戻り、Claude だけで調査を完結させます。
 
 meta-harness の `routing-config` 候補でも `agents.*.tool: api` を指定できます。`api_profile` は既存の設定を引き継ぎ、プロファイルを解決できない場合は `claude-direct` に戻ります。
 
@@ -488,11 +489,11 @@ Anthropic / OpenAI も呼べます。`cli-tools.local.yaml` の `api.profiles` �
 開発向けには、3社の道具付きメッセージを1往復する共通APIも用意しています。
 `orchex llm agent --profile repo-reader "実装を調べて"` では、プロファイルで許可した
 読み取り道具を使って探索し、根拠の検証結果を含むJSONを返します。設定例は上記の設定リファレンスを参照してください。
-repo-reader は Gemini の読み取り用プロファイルとして既定で配布され、local 設定なしで使えます。どのエージェントにも自動では結び付きません。
+repo-reader は Gemini の読み取り用プロファイルとして既定で配布され、local 設定なしで使えます。spec-reviewer と reverse-coordinator の既定の接続先です。
 `--output ./out` を付けると、空の出力先へ `progress.json`・`result.json`・`exit` を書きます。
 往復・トークン・時間の上限では一度まとめて partial を返し、利用枠不足・認証エラーでは即時停止します。
-既定のresearcher設定はそのままで、agent用プロファイルは自動では結び付きません。
-回答がコードフェンスに囲まれていても本文と根拠を取り出します。道具ありで構造化できない場合は
+research も読み取り道具を許可し、出力上限は16384トークンです。ask のWeb検索・添付の許可とtimeout 120秒は維持します。
+最後の回答は Markdown 本文と `CITATIONS:` 以降の根拠行から読み取ります。従来の JSON（コードフェンスあり・なし、不正なエスケープの救済を含む）も受理し、JSON として読めなくても根拠のフィールドをパターンで拾います。救済時の answer は原文を保持します。道具ありでどの方法でも根拠を取り出せなかった場合は
 `citations_parse_failed: true`・`unverified_count: null` を返すため、回答を未確認として裏取りしてください。
 
 読み取り道具のライブラリは `scripts/lib/llm/tools/repo_read.py` にあります。
@@ -521,7 +522,7 @@ Git の許可一覧、既定・追加の拒否パターン、symlink 解決後�
 `TOOL_DEFINITIONS` はプロバイダ非依存の JSON Schema です。
 これらは `orchex llm agent` のエージェントループとプロファイルへ接続されています。
 API を呼ぶ全サブエージェントは、共通 rule
-[`api-delegation`](facets/instructions/api-delegation.md) の使い分け・待機・partial の報告・根拠の裏取りに従います。
+[`api-delegation`](facets/instructions/api-delegation.md) の使い分け・待機・本文より先の状態確認・partial の報告・根拠の裏取りに従います。状態を確かめる前に結果を報告しません。
 リポジトリ把握を Claude 自身の探索と比較する
 [20 問の評価セットと手順](docs/evaluation/repo-understanding/README.md)も用意しています。
 check と集計テストは API 不要です。実評価は人の了承後にだけ行います。

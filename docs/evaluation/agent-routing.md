@@ -5,6 +5,7 @@
 **作成日**: 2026-07-03
 **最終レビュー日**: 2026-10-28（EV-33（CLI にルーティングするエージェントは `Bash` を持つ）を新設。人間レビュー待ち（本 PR）。前回 2026-09-27: EV-31（実装エージェントの書き込めないルーティングでの停止）を新設。ADR-20260926-056 の実装計画 Phase 7。2026-09-27 人間レビュー済み。前回 2026-09-25: Issue #452: EV-27 を新設。`agent-router.py` がバックグラウンドタスク完了通知（`<task-notification>`）に `[Agent Routing]` を提案しないことを追加。前回レビュー 2026-07-04: Issue #124 対応: 検証方法（manual/policy review）の明示、EV-11/EV-22/EV-26 の検証状態更新、4節 N/A 理由の具体化を実施。観点数・優先度は変更なし）
 **改訂**: 2026-11-27（旧 CLI の配布終了、旧設定の direct 解決と警告へ更新。人間レビュー待ち（本 PR））
+**改訂**: 2026-11-28（repo-readerの既定接続先とresearchの探索許可をEV-42・44へ反映。人間レビュー待ち）
 **補助参照（構成要素の列挙のみ）**: packages/agent-routing/manifest.json, packages/agent-routing/{hooks,agents,config}/ 配下のファイル名一覧
 
 ## 1. 責務定義
@@ -98,9 +99,11 @@
 
 ### API ルーティング（人間レビュー待ち・本 PR）
 
-- [ ] EV-42（正常 / must、人間レビュー待ち）: tool: api と api_profile は任意名のプロファイルへ解決される。既定は research（gemini・検索と添付を許可）と repo-reader（gemini・repo_read を許可、max_output_tokens は 16384、ほかの limits は既定値）で、local なしで解決できる。repo-reader はどのエージェントにも結び付かない。researcher は research のままで、anthropic / openai へ結び付くエージェントもない — 根拠: order.md 方針2・3・6、今回の order 作業3、C-DEFAULT-PROFILES / C-REPO-READER-DIST / C-REPO-READER-UNBOUND / C-REPO-READER-TOKENS。
+追加の状態確認（人間レビュー待ち）: spec-reviewer は `api-delegation` の「結果と根拠を確認する」を参照し、result.json の本文より先に状態を確認する。状態の確認前に結果を報告しない。共通手順の表示例は answer を含めず、status・stop_reason・turns・citations_parse_failed・unverified_count・citations の件数を表示する。根拠: 追加ユーザー指示1の作業1・2。本文の意味は文書レビューで確認する。
+
+- [ ] EV-42（正常 / must、人間レビュー待ち）: tool: api と api_profile は任意名のプロファイルへ解決される。既定のresearchはgeminiの検索・添付・repo_readを許可し、timeoutは120秒、max_output_tokensは16384。repo-readerはgeminiのrepo_readを許可し、max_output_tokensは16384、ほかのlimitsは既定値で、localなしで解決できる。spec-reviewerとreverse-coordinatorはrepo-readerに結び付き、SubagentStartでtool: api・api.profile: repo-readerが注入される。researcherはresearchのままで、anthropic / openaiへ結び付くエージェントはない — 根拠: 今回のorder作業1〜3、C-SPEC-ROUTE / C-REV-ROUTE / C-RESEARCH-PROFILE / C-RESEARCH-ASK-KEEP。
 - [ ] EV-43（異常 / must）: API が無効・キー不足・SDK 不足、またはプロファイルが未定義・不正なら get_agent_tool と hook は claude-direct に戻り、note に理由を書く。キー不足には auth set の案内を含む — 根拠: order.md 方針3、計画 C-ROUTE-FALLBACK。
-- [ ] EV-44（正常 / must）: researcher は API research に結び付き、Bash と既存の探索ツールを使える。探索は Claude 自身が行い、グラウンディング・マルチモーダル・長い文脈が必要なときだけ API を使う。API 不可時は Claude で完結する。本文の意味は文書レビューで確認する — 根拠: order.md 方針5、C-RESEARCHER-DEF。
+- [ ] EV-44（正常 / must、人間レビュー待ち）: researcherはAPI researchに結び付き、Bashと既存の探索ツールを使える。Web・添付の調査はask、リポジトリの調査は同じprofileのagentを使い分ける。APIは資料・該当箇所の収集を担い、Claudeが根拠を裏取りして結論を出す。verified: false・citations_parse_failed・partial（output_truncatedを含む）はReadで確認し、呼び方・待機・終了コードはapi-delegationに従う。API不可時はClaudeで完結する。本文の意味は文書レビューで確認する — 根拠: 今回のorder作業3、C-RESEARCHER-DEF。
 
 ## 5. テストレビュー判断基準（パッケージ固有）
 

@@ -10,15 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`llm agent`: 出力上限で切れた応答を partial として返すように修正**。最終回答・まとめ・途中の道具呼び出しを `output_truncated`（終了コード12）で止め、切れた道具引数は解析・実行しない。repo-reader の出力上限を16384トークンに引き上げた。
 
-- **`llm agent`: コードブロックで囲まれた回答から本文と根拠を取り出せるように修正**。json の言語指定がない場合や、前後に空白・改行がある場合も読み取る。
+- **`llm agent`: コードブロックで囲まれた回答から本文と根拠を取り出せるように修正**。json の言語指定がない場合や、前後に空白・改行がある場合も読み取る。正規表現などの不正なエスケープを含む回答からも、本文と根拠を取り出す。最後の回答とまとめは Markdown 本文と `CITATIONS:` 以降の根拠行を使う形式に変更し、従来の JSON と、未エスケープの引用符で壊れた JSON からの根拠抽出も支援する。救済した根拠も既存の読取記録で検証する。
 
 - **`meta-harness`: `tool: api` を含むルーティング候補の登録・検証と振る舞い評価を修正**。
 
 ### Added
 
-- **`repo-reader` プロファイルを既定で配布**: Gemini の読み取り道具を local 設定なしで使える。どのエージェントにも自動では結び付かない。
+- **`repo-reader` プロファイルを既定で配布**: Gemini の読み取り道具を local 設定なしで使える。
 
-- **API 委譲の共通 rule `api-delegation` を追加**: API を使う全サブエージェントに、ask / agent の使い分け、長時間実行の待機、partial の冒頭報告、根拠の裏取りと終了コード別の対応を共通化する。
+- **API 委譲の共通 rule `api-delegation` を追加**: API を使う全サブエージェントに、ask / agent の使い分け、長時間実行の待機、本文より先の状態確認、partial の冒頭報告、根拠の裏取りと終了コード別の対応を共通化する。
 
 - **読み取り道具を使う汎用エージェントループを追加**: `orchex llm agent --profile` が上限付きで探索し、根拠を読取記録と照合したJSONを返す。`--output` では途中経過・結果・終了コードをファイルで受け渡せる。
 
@@ -27,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **API キーで Anthropic / OpenAI / Gemini を呼ぶ共通基盤を追加**: `orchex auth set/status` と `orchex llm ask --profile` で認証情報の管理、検索・添付付きの一回の質問ができる。依存は `orchex[llm]` で導入し、researcher は既定の Gemini research プロファイルを必要な場面だけ使う。利用できない場合は Claude だけで調査を続ける。
 
 ### Changed
+
+- **エージェントのリポジトリ探索をAPIへ接続**: spec-reviewerとreverse-coordinatorはrepo-readerで該当箇所を収集し、Claudeが裏取り・判定する。researcherはresearchのままWebはask、リポジトリはagentを使い分け、出力上限を16384トークンにする。APIが使えない場合はClaudeだけで進める。
 
 - **`llm agent` の結果に `citations_parse_failed` を追加**: 道具ありで根拠を読み取れなかった場合は true、`unverified_count` は null を返す。status と終了コードの意味は変わらない。
 

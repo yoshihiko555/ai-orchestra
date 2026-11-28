@@ -155,17 +155,17 @@ agents:
 
 | tool 値         | エージェント                                                                                                                                                                                                                                                                                                                                        |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude-direct` | architect, api-designer, code-reviewer, finding-verifier, security-reviewer, performance-reviewer, adversarial-reviewer, ux-reviewer, spec-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker, engineering-privacy-engineer, engineering-identity-access-engineer, engineering-payments-billing-engineer, engineering-database-reliability-engineer, engineering-minimal-change-engineer |
+| `claude-direct` | architect, api-designer, code-reviewer, finding-verifier, security-reviewer, performance-reviewer, adversarial-reviewer, ux-reviewer, architecture-reviewer, auth-designer, data-modeler, docs-writer, planner, prompt-engineer, requirements, specialized-mcp-builder, support-executive-summary-generator, testing-reality-checker, engineering-privacy-engineer, engineering-identity-access-engineer, engineering-payments-billing-engineer, engineering-database-reliability-engineer, engineering-minimal-change-engineer |
 | `codex`         | ai-dev, backend-go-dev, backend-python-dev, debugger, frontend-dev, rag-engineer, spec-writer, tester                                                                                                                                                                                                                                               |
 | `auto`          | ai-architect, general-purpose                                                                                                                                                                                                                                                                                                                       |
-| `api`           | researcher（api_profile: research。探索は Claude 自身） |
+| `api`           | spec-reviewer、reverse-coordinator（api_profile: repo-reader。該当箇所の収集にagentを使用）、researcher（api_profile: research。Webはask、リポジトリはagent） |
 
 ### api セクション
 
 API 機能は `orchex[llm]` で導入する。キーは環境変数または `orchex auth set <provider>` で登録し、YAML には保存しない。
 `api.providers` は anthropic / openai / gemini ごとの設定、`api.profiles` は用途に依存しない呼び出し設定を持つ。
-既定のプロファイルは research（gemini、Web 検索と添付を許可）と repo-reader（gemini、リポジトリの読み取り道具を許可）。
-repo-reader はどのエージェントにも結び付けない。各社の既定モデルは配布する `cli-tools.yaml` を参照する。
+既定のプロファイルは research（gemini、Web検索・添付・リポジトリの読み取り道具を許可、出力上限16384、timeout 120秒）と repo-reader（gemini、リポジトリの読み取り道具を許可、出力上限16384）。
+spec-reviewerとreverse-coordinatorはrepo-reader、researcherはresearchに結び付く。APIは該当箇所や資料を集め、裏取りと判定はClaude自身が行う。キー未設定・プロバイダ無効・SDK未導入の場合は理由付きでclaude-directに戻る。各社の既定モデルは配布する `cli-tools.yaml` を参照する。
 
 ```yaml
 # .claude/config/agent-routing/cli-tools.local.yaml
@@ -242,7 +242,7 @@ API を呼ぶ全サブエージェントは [api-delegation rule](../../facets/i
 
 `orchex llm agent --profile repo-reader [--project DIR] [--output DIR] "質問"` で、
 API側のモデルがリポジトリを探索する。呼び出すサブエージェントの用途には依存しない。
-既定のresearcher設定やroutingは変更せず、プロファイルは明示的に選ぶ。
+researcherはresearchのまま、Web・添付の調査にはask、リポジトリの調査にはagentを選ぶ。
 
 repo-reader は既定で配布されるため、local 設定を追加せずに実行できる。出力上限は16384トークンで、
 ほかの上限は既定の30往復・2,000,000トークン・900秒、要求ごとの120秒を使う。
@@ -272,15 +272,35 @@ api:
 道具の不許可・拒否や、一覧取得後に対象が消えるなどの読取失敗は、短い理由を含む結果としてモデルへ返す。
 grep は読めないファイルを飛ばして残りの結果を返し、ループは続行する。ファイルの中身や例外詳細は失敗結果・ログへ含めない。
 出力先への書込失敗は従来どおり終了コード8とする。根拠はシステム指示で主張ごとに要求し、
-最後の回答を `{"answer": "本文", "citations": [...]}` として取り出す。
-回答全体を包む1つの json または言語指定なしのコードフェンスも、内外の空白・改行を取り除いて受理する。
-構造化できない本文はそのまま返し、根拠は空にする。読み取り道具が許可されている場合は
-`citations_parse_failed: true` と `unverified_count: null` で根拠の読み取り失敗を示す。
+最後の回答と上限到達時のまとめでは、Markdown 本文のあとに単独の `CITATIONS:` 行を置き、
+根拠を1行1件 `path:開始行-終了行 | 主張` の形で書くよう求める。JSON での回答は求めない。
+
+```text
+## 調査結果
+設定はプロファイルごとに解決される。
+
+CITATIONS:
+packages/core/hooks/api_profiles.py:75-88 | プロファイルの設定を解決する
+```
+
+この形式を最初に読み、コードフェンス（バッククォート・チルダ）の外にある最後の `CITATIONS:` 行で本文と根拠を分ける。
+区切りの前後の空白と、根拠行の先頭の `-`・`*`、位置を囲むバッククォートも許容する。
+区切りのない地の文の `path:開始行-終了行` からは根拠を抽出しない。
+従来の `{"answer": "本文", "citations": [...]}` 形式も読む。
+JSON 全体を包む1つの json または言語指定なしのコードフェンスも、内外の空白・改行を取り除いて受理する。
+初回の JSON 読み取りに失敗した場合だけ、文字列内の不正なエスケープ（例: 正規表現の `\-`）のバックスラッシュを `\\` にして再読込する。
+正しいエスケープ（`\"`、`\\`、`\/`、`\b`、`\f`、`\n`、`\r`、`\t`、`\uXXXX`）と文字列外のバックスラッシュは変更しない。
+それでも JSON として読めない場合は、`"path"`・`"start_line"`・`"end_line"` と `"claim"` の組をパターンで拾い、
+answer には元の文章をそのまま返す。citations 配列があるときは、その前にある本文内の path 例は拾わない。
+claim がない根拠は未確認として残す。
+読み取り道具が許可され、どの方法でも根拠を取り出せなかった場合は、原文と空の根拠一覧を返し、
+`citations_parse_failed: true` と `unverified_count: null` で読み取り失敗を示す。
 この印は status・stop_reason・終了コードを変更せず、complete なら終了コード0のままとする。
 印が true の回答は未確認として扱い、自分で Read して裏取りする。
-構造化に成功した場合（citations が空配列の場合も含む）や道具が許可されていない場合は印を false とし、
+新形式や従来の JSON として認識できた場合（根拠が空の場合も含む）、パターンで根拠を拾えた場合、
+または道具が許可されていない場合は印を false とし、
 unverified_count は従来どおり未確認根拠の件数を返す。
-根拠のverifiedは、ファイルの実在・行範囲・その実行での読取記録の3条件で決める。
+すべての形式の根拠のverifiedは、ファイルの実在・行範囲・その実行での読取記録の3条件で決める。
 不正な根拠要素も未確認として残す。verifiedは主張の意味的な正しさを保証するものではない。
 
 探索上限では未実行の道具にエラー結果を渡し、道具なしのまとめを1回だけ要求する。

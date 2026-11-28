@@ -8,7 +8,9 @@ frontmatter:
     Reverse-engineer an existing codebase through 5 phases:
     scan, dependency graph, feature extraction, design documentation, debt/security report.
     Defaults to repository-wide scope; accepts `/reverse <path>` to narrow.
-    Claude performs repository analysis directly with Read, Grep, and Glob.
+    Phase 1 uses the hook-resolved API profile (default: repo-reader) to collect repository locations;
+    Claude verifies them with Read and writes conclusions. If API is unavailable or fails,
+    Claude analyzes directly with Read, Grep, and Glob. Phases 2-3 remain direct analysis.
     Trigger: /reverse
   argument-hint: "[path]"
   metadata:

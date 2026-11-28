@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -434,3 +435,194 @@ def test_structured_answer_without_citations_is_not_a_parse_failure(repo):
     public = result.to_dict()
     assert public["citations_parse_failed"] is False
     assert public["unverified_count"] == 0
+
+
+def test_repaired_fenced_answer_verifies_citation_against_actual_read(repo: Path) -> None:
+    (repo / "a.py").write_text("first\nsecond\n", encoding="utf-8")
+    text = r"""```json
+{"answer":"`\w+` を確認","citations":[{"path":"a.py","start_line":1,"end_line":2,"claim":"`\d+` に一致"}]}
+```"""
+    turn = Mock(side_effect=[_response(calls=(_read(end_line=2),)), _response(text)])
+
+    result = _run(turn, limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == r"`\w+` を確認"
+    assert public["citations"] == [
+        {
+            "path": "a.py",
+            "start_line": 1,
+            "end_line": 2,
+            "claim": r"`\d+` に一致",
+            "verified": True,
+        }
+    ]
+    assert public["citations_parse_failed"] is False
+    assert public["unverified_count"] == 0
+
+
+def test_unrepairable_json_keeps_original_text_and_reports_parse_failure(repo: Path) -> None:
+    text = r""" ```json
+{"answer":"\- だけ","citations":[
+``` """
+
+    result = _run(Mock(return_value=_response(text)), limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == text
+    assert public["citations"] == []
+    assert public["citations_parse_failed"] is True
+    assert public["unverified_count"] is None
+
+
+def test_repaired_json_missing_citations_still_reports_parse_failure(repo: Path) -> None:
+    text = r'{"answer":"\-"}'
+
+    result = _run(Mock(return_value=_response(text)), limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == text
+    assert public["citations"] == []
+    assert public["citations_parse_failed"] is True
+    assert public["unverified_count"] is None
+
+
+def test_initial_request_instructs_markdown_and_line_citations(repo: Path) -> None:
+    turn = Mock(return_value=_response("本文\n\nCITATIONS:\n"))
+
+    _run(turn, limits=_limits(), tools=RepoReadTools(repo))
+
+    instruction = turn.call_args.args[0].messages[0]
+    assert isinstance(instruction, tool_types.SystemMessage)
+    assert "Markdown" in instruction.text
+    assert "CITATIONS:" in instruction.text
+    assert "path:開始行-終了行 | 主張" in instruction.text
+    assert '"answer"' not in instruction.text
+    assert '"citations"' not in instruction.text
+
+
+def test_summary_request_repeats_line_citation_format(repo: Path) -> None:
+    turn = Mock(side_effect=[_response(calls=(_read(),)), _response("まとめ\n\nCITATIONS:\n")])
+
+    _run(turn, limits=_limits(max_turns=1), tools=RepoReadTools(repo))
+
+    request = turn.call_args.args[0]
+    assert request.tools == ()
+    instruction = request.messages[-1]
+    assert isinstance(instruction, tool_types.UserMessage)
+    assert "Markdown" in instruction.text
+    assert "CITATIONS:" in instruction.text
+    assert "path:開始行-終了行 | 主張" in instruction.text
+    assert '"answer"' not in instruction.text
+    assert '"citations"' not in instruction.text
+
+
+def test_line_citations_use_actual_file_bounds_and_read_ranges(repo: Path) -> None:
+    (repo / "a.py").write_text("first\nsecond\nthird\n", encoding="utf-8")
+    text = """## 回答
+本文
+
+CITATIONS:
+a.py:1-2 | 読んだ範囲
+a.py:3-3 | 未読の行
+a.py:1-4 | ファイルの範囲外
+missing.py:1-1 | 存在しないファイル
+"""
+    turn = Mock(side_effect=[_response(calls=(_read(end_line=2),)), _response(text)])
+
+    result = _run(turn, limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == "## 回答\n本文"
+    assert public["citations"] == [
+        {"path": "a.py", "start_line": 1, "end_line": 2, "claim": "読んだ範囲", "verified": True},
+        {"path": "a.py", "start_line": 3, "end_line": 3, "claim": "未読の行", "verified": False},
+        {
+            "path": "a.py",
+            "start_line": 1,
+            "end_line": 4,
+            "claim": "ファイルの範囲外",
+            "verified": False,
+        },
+        {
+            "path": "missing.py",
+            "start_line": 1,
+            "end_line": 1,
+            "claim": "存在しないファイル",
+            "verified": False,
+        },
+    ]
+    assert public["citations_parse_failed"] is False
+    assert public["unverified_count"] == 3
+    assert public["files_read"] == ["a.py"]
+
+
+def test_salvaged_citations_use_actual_file_bounds_and_read_ranges(repo: Path) -> None:
+    (repo / "a.py").write_text("first\nsecond\nthird\n", encoding="utf-8")
+    text = r"""```json
+{"answer":"`config["api"]` と `\-`",
+"citations":[
+{"path":"a.py","start_line":1,"end_line":2,"claim":"読んだ範囲"},
+{"path":"a.py","start_line":3,"end_line":3,"claim":"未読の行"},
+{"path":"a.py","start_line":1,"end_line":4,"claim":"ファイルの範囲外"},
+{"path":"missing.py","start_line":1,"end_line":1,"claim":"存在しないファイル"},
+{"path":"a.py","start_line":1,"end_line":1}]}
+```"""
+    turn = Mock(side_effect=[_response(calls=(_read(end_line=2),)), _response(text)])
+
+    result = _run(turn, limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == text
+    assert public["citations"] == [
+        {"path": "a.py", "start_line": 1, "end_line": 2, "claim": "読んだ範囲", "verified": True},
+        {"path": "a.py", "start_line": 3, "end_line": 3, "claim": "未読の行", "verified": False},
+        {
+            "path": "a.py",
+            "start_line": 1,
+            "end_line": 4,
+            "claim": "ファイルの範囲外",
+            "verified": False,
+        },
+        {
+            "path": "missing.py",
+            "start_line": 1,
+            "end_line": 1,
+            "claim": "存在しないファイル",
+            "verified": False,
+        },
+        {"path": "a.py", "start_line": 1, "end_line": 1, "claim": None, "verified": False},
+    ]
+    assert public["citations_parse_failed"] is False
+    assert public["unverified_count"] == 4
+    assert public["files_read"] == ["a.py"]
+
+
+def test_empty_line_citations_are_not_a_parse_failure(repo: Path) -> None:
+    result = _run(
+        Mock(return_value=_response("根拠なし\n\nCITATIONS:\n\n")),
+        limits=_limits(),
+        tools=RepoReadTools(repo),
+    )
+
+    public = result.to_dict()
+    assert public["answer"] == "根拠なし"
+    assert public["citations"] == []
+    assert public["citations_parse_failed"] is False
+    assert public["unverified_count"] == 0
+
+
+def test_malformed_line_citation_is_retained_as_null_and_unverified(repo: Path) -> None:
+    result = _run(
+        Mock(return_value=_response("本文\n\nCITATIONS:\n行番号のない根拠\n")),
+        limits=_limits(),
+        tools=RepoReadTools(repo),
+    )
+
+    public = result.to_dict()
+    assert public["answer"] == "本文"
+    assert public["citations"] == [
+        {"path": None, "start_line": None, "end_line": None, "claim": None, "verified": False}
+    ]
+    assert public["citations_parse_failed"] is False
+    assert public["unverified_count"] == 1
