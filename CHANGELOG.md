@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`llm agent`: 出力上限で切れた応答を partial として返すように修正**。最終回答・まとめ・途中の道具呼び出しを `output_truncated`（終了コード12）で止め、切れた道具引数は解析・実行しない。repo-reader の出力上限を16384トークンに引き上げた。
 
-- **`llm agent`: コードブロックで囲まれた回答から本文と根拠を取り出せるように修正**。json の言語指定がない場合や、前後に空白・改行がある場合も読み取る。
+- **`llm agent`: コードブロックで囲まれた回答から本文と根拠を取り出せるように修正**。json の言語指定がない場合や、前後に空白・改行がある場合も読み取る。正規表現などの不正なエスケープを含む回答からも、本文と根拠を取り出す。
 
 - **`meta-harness`: `tool: api` を含むルーティング候補の登録・検証と振る舞い評価を修正**。
 
@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`repo-reader` プロファイルを既定で配布**: Gemini の読み取り道具を local 設定なしで使える。
 
-- **API 委譲の共通 rule `api-delegation` を追加**: API を使う全サブエージェントに、ask / agent の使い分け、長時間実行の待機、partial の冒頭報告、根拠の裏取りと終了コード別の対応を共通化する。
+- **API 委譲の共通 rule `api-delegation` を追加**: API を使う全サブエージェントに、ask / agent の使い分け、長時間実行の待機、本文より先の状態確認、partial の冒頭報告、根拠の裏取りと終了コード別の対応を共通化する。
 
 - **読み取り道具を使う汎用エージェントループを追加**: `orchex llm agent --profile` が上限付きで探索し、根拠を読取記録と照合したJSONを返す。`--output` では途中経過・結果・終了コードをファイルで受け渡せる。
 

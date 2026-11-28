@@ -51,7 +51,7 @@ done
 if [ -s "$OUT/exit" ]; then
   cat "$OUT/exit"
   if [ -f "$OUT/result.json" ]; then
-    cat "$OUT/result.json"
+    echo '終了: 次節の手順で result.json の状態から確認する。'
   else
     echo '終了したが結果なし。終了コードに従って対応する。'
   fi
@@ -65,6 +65,14 @@ fi
 `progress.json` で turns と tokens を確認できる。**exit を待ち、結果がある場合は result.json を読むまで、呼び出し元への報告を返さない。** 探索上限は既定 15 分。待機期限は `max_duration_sec + 2 × timeout_sec`（既定 1140 秒）とし、期限を超えても exit がなければ実行失敗として報告し、claude-direct で必要な処理を行う。前の実行の結果が後から届いても、新しい実行の結果と混同しない。
 
 ## 結果と根拠を確認する
+
+`result.json` は、answer 本文より先に `status`、`stop_reason`、`turns`、`citations_parse_failed`、`unverified_count`、citations の件数を確認する。長い JSON の先頭だけを読んで状態を判断しない。次の例は本文を出さず、状態のフィールドだけを表示する。
+
+```bash
+jq '{status, stop_reason, turns, citations_parse_failed, unverified_count, citations_count: (.citations | length)}' "$OUT/result.json"
+```
+
+**状態を確かめる前に、結果を報告しない。** 状態を確認してから本文と根拠を読み、以下の手順で裏取りする。
 
 status が **partial の場合、報告の冒頭に必ず stop_reason と往復回数 turns を書く**。例:
 
