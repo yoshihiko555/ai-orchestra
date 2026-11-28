@@ -15,25 +15,55 @@ EXPECTED_NONZERO_EXIT_CODE = 1
 
 # 引用符を解釈できないとき（閉じていない引用符）の予備の分割。
 _COMMAND_SEPARATORS = re.compile(r"&&|\|\||;|\||\n")
-_OPERATOR_CHARS = ";&|\n"
+_SHELL_TOKEN = re.compile(
+    r"""
+    (?P<space>[^\S\n]+)
+    | (?P<redir>&>>?|\d*(?:>>|>\||<<<|<<|<>|>|<)&?)
+    | (?P<sep>&&|\|[|&]?|;|\n|&)
+    | (?P<word>(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s;|&<>"'\\])+)
+    """,
+    re.VERBOSE | re.DOTALL,
+)
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
+def _tokenize_shell(command: str) -> list[tuple[str, str]] | None:
+    """引用符を保持して分類する。閉じていない引用符・末尾のエスケープでは None を返す。"""
+    tokens: list[tuple[str, str]] = []
+    position = 0
+    while position < len(command):
+        match = _SHELL_TOKEN.match(command, position)
+        if match is None:
+            return None
+        kind = match.lastgroup
+        if kind and kind != "space":
+            tokens.append((kind, match.group()))
+        position = match.end()
+    return tokens
+
+
+def _dequote_shell_word(word: str) -> str:
+    """単語内の引用符・エスケープを取り除く。"""
+    return "".join(shlex.split(word))
+
+
 def split_simple_commands(command: str) -> list[list[str]]:
-    """コマンドを ``&&`` ``||`` ``;`` ``|`` と改行で単純コマンドに分ける（引用符の中では分けない）。"""
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=_OPERATOR_CHARS)
-        lexer.whitespace = " \t\r"
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
+    """引用符の外の演算子で単純コマンドに分け、リダイレクトとその宛先を除く。"""
+    tokens = _tokenize_shell(command)
+    if tokens is None:
         return [segment.split() for segment in _COMMAND_SEPARATORS.split(command)]
     segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token and set(token) <= set(_OPERATOR_CHARS):
+    skip_next_word = False
+    for kind, token in tokens:
+        if kind == "sep":
             segments.append([])
+            skip_next_word = False
+        elif kind == "redir":
+            skip_next_word = True
+        elif skip_next_word:
+            skip_next_word = False
         else:
-            segments[-1].append(token)
+            segments[-1].append(_dequote_shell_word(token))
     return segments
 
 

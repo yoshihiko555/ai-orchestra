@@ -23,14 +23,12 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import shlex
 import sys
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
-# --- sys.path 設定（core/hooks を解決してから import する）---------------------
+# --- sys.path 設定（core/hooks と fail-logs/lib を解決してから import する）----
 _hook_dir = os.path.dirname(os.path.abspath(__file__))
 if _hook_dir not in sys.path:
     sys.path.insert(0, _hook_dir)
@@ -40,10 +38,12 @@ _repo_core_hooks = os.path.abspath(os.path.join(_hook_dir, "..", "..", "core", "
 for _candidate in [
     os.path.join(_orchestra_dir, "packages", "core", "hooks") if _orchestra_dir else "",
     _repo_core_hooks,
+    os.path.abspath(os.path.join(_hook_dir, "..", "lib")),
 ]:
     if _candidate and os.path.isdir(_candidate) and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
 
+from command_signature import is_expected_nonzero, signature_head  # noqa: E402
 from hook_common import (  # noqa: E402
     load_package_config,
     read_hook_input,
@@ -87,24 +87,7 @@ DEFAULT_SUMMARY = {
 TEST_LINT_FAILURE_TYPES = frozenset({"test_failure", "lint_failure"})
 FAILURE_TOOL_ERROR = "tool_error"
 DETECTED_BY_EXIT_CODE = "exit_code"
-# 意図した非ゼロ終了とみなす終了コード（検索の不一致・差分あり・存在しない）。
-EXPECTED_NONZERO_EXIT_CODE = 1
-KIND_SHELL = "shell"
-OTHER_SIGNATURE_TOKENS = 2
-
-# 単純コマンドの区切り。引用符を解釈できないとき（閉じていない引用符）の予備の分割に使う。
-_COMMAND_SEPARATORS = re.compile(r"&&|\|\||;|\||\n")
-_SHELL_TOKEN = re.compile(
-    r"""
-    (?P<space>[^\S\n]+)
-    | (?P<redir>&>>?|\d*(?:>>|>\||<<<|<<|<>|>|<)&?)
-    | (?P<sep>&&|\|[|&]?|;|\n|&)
-    | (?P<word>(?:"(?:[^"\\]|\\.)*"|'[^']*'|\\.|[^\s;|&<>"'\\])+)
-    """,
-    re.VERBOSE | re.DOTALL,
-)
 MAX_LABEL_PART_CHARS = 40
-_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # 見出し・抜粋の表示上限（コンテキスト消費を抑える）
 MAX_COMMAND_DISPLAY_CHARS = 120
@@ -352,80 +335,20 @@ def _signature_key(data: dict) -> tuple[str, str, str]:
     return (failure_type, tool, "")
 
 
-def _tokenize_shell(command: str) -> list[tuple[str, str]] | None:
-    """引用符を保持して分類する。閉じていない引用符・末尾のエスケープでは None を返す。"""
-    tokens: list[tuple[str, str]] = []
-    position = 0
-    while position < len(command):
-        match = _SHELL_TOKEN.match(command, position)
-        if match is None:
-            return None
-        kind = match.lastgroup
-        if kind and kind != "space":
-            tokens.append((kind, match.group()))
-        position = match.end()
-    return tokens
-
-
-def _dequote_shell_word(word: str) -> str:
-    """単語内の引用符・エスケープを取り除く。"""
-    return "".join(shlex.split(word))
-
-
-def _split_simple_commands(command: str) -> list[list[str]]:
-    """引用符の外の演算子で単純コマンドに分け、リダイレクトとその宛先を除く。"""
-    tokens = _tokenize_shell(command)
-    if tokens is None:
-        return [segment.split() for segment in _COMMAND_SEPARATORS.split(command)]
-    segments: list[list[str]] = [[]]
-    skip_next_word = False
-    for kind, token in tokens:
-        if kind == "sep":
-            segments.append([])
-            skip_next_word = False
-        elif kind == "redir":
-            skip_next_word = True
-        elif skip_next_word:
-            skip_next_word = False
-        else:
-            segments[-1].append(_dequote_shell_word(token))
-    return segments
-
-
-def _last_simple_command_tokens(command: str) -> list[str]:
-    """最後の単純コマンドのトークン（先頭の環境変数の代入を除く）。"""
-    segments = [segment for segment in _split_simple_commands(command) if segment]
-    if not segments:
-        return []
-    tokens = list(segments[-1])
-    while tokens and _ENV_ASSIGNMENT.match(tokens[0]):
-        tokens.pop(0)
-    return tokens
-
-
 def _is_expected_nonzero(data: dict, expected_commands: frozenset[str]) -> bool:
     """意図した非ゼロ終了（検索の不一致・差分あり等）か判定する（設計 §4 の 6）。"""
     if data.get("detected_by") != DETECTED_BY_EXIT_CODE:
         return False
-    if data.get("exit_code") != EXPECTED_NONZERO_EXIT_CODE:
-        return False
-    tokens = _last_simple_command_tokens(str(data.get("command") or ""))
-    if not tokens:
-        return False
-    head = os.path.basename(tokens[0])
-    if head in expected_commands:
-        return True
-    return len(tokens) >= 2 and f"{head} {tokens[1]}" in expected_commands
+    return is_expected_nonzero(
+        str(data.get("command") or ""), data.get("exit_code"), expected_commands
+    )
 
 
 def _other_signature_key(data: dict) -> tuple[str, str, str]:
     """その他部のシグネチャ（設計 §4 の 7）。shell は最後の単純コマンドの先頭 2 トークン。"""
     command = str(data.get("command") or "")
     command_kind = str(data.get("command_kind") or "")
-    if command_kind == KIND_SHELL:
-        head = " ".join(_last_simple_command_tokens(command)[:OTHER_SIGNATURE_TOKENS])
-    else:
-        head = _first_token(command)
+    head = signature_head(command, command_kind)
     if head:
         return ("", command_kind, head)
     return (str(data.get("failure_type") or "unknown"), str(data.get("tool") or ""), "")

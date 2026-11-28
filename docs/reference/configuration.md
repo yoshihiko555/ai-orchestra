@@ -189,13 +189,18 @@ local は既存の deep_merge 規則に従い、mapping はキーごとに上書
 |------|------|
 | `api.providers.<provider>.enabled` | 真偽値。省略時は true |
 | `api.providers.<provider>.model` | プロファイルで model を省略した場合のモデル |
-| `api.providers.<provider>.model_allowlist` | モデル候補の文字列配列。範囲外は警告して実行する |
-| `api.profiles.<name>.provider` | anthropic / openai / gemini のいずれか |
-| `api.profiles.<name>.model` | プロバイダの model より優先する任意の上書き |
+| `api.providers.<provider>.model_allowlist` | モデル候補の文字列配列。省略時・空配列は照合しない。範囲外は警告して実行する。配列以外や文字列以外の要素は不正 |
+| `api.profiles.<name>.provider` | anthropic / openai / gemini のいずれか。対応する `api.providers.<provider>` の mapping が必須。プロファイルで model を指定する場合、その mapping は空でもよい |
+| `api.profiles.<name>.model` | プロバイダの model より優先する任意の上書き。省略時は `api.providers.<provider>.model` を使い、両方に無い場合は不正。どちらから得た値にも下記のモデル名の文字制限を適用する。プロバイダの model で補完されるのはキーを省略したときだけで、`model: null` を明示すると補完されず、不正になる |
 | `api.profiles.<name>.features.web_search` | 真偽値。省略時は false。許可時だけ各社の検索機能を付ける |
 | `api.profiles.<name>.features.attachments` | 真偽値。省略時は false。`--attach` を許可する |
 | `api.profiles.<name>.limits.timeout_sec` | 正の有限数の秒。省略時は120秒 |
 | `api.profiles.<name>.limits.max_output_tokens` | 正の整数。省略時は4096 |
+
+`features`・`limits` の未知のキーは検査されず、無視される。一方、`tools` は下記のagent用設定のとおり、`repo_read` 以外のキーがあると不正になる。
+
+数値の設定に真偽値は指定できない。`max_output_tokens` と、agent用の `max_turns`・
+`max_total_tokens`・`rate_limit_attempts` は整数だけを受け付け、`4096.0` のような小数も不正になる。
 
 プロファイル名とモデルは英数字および `_ . : / @ + = -` の一行で指定する。
 添付は PNG/JPEG/WebP/GIF/PDF を扱い、Gemini の GIF は拒否する。
@@ -261,13 +266,16 @@ api:
 
 | agent用設定 | 意味・省略時の値 |
 |------------|----------------|
-| `tools.repo_read` | 真偽値。省略時false。read_file / list_dir / glob / grepを許可する |
+| `tools.repo_read` | 真偽値。省略時false。read_file / list_dir / glob / grepを許可する。`tools` に指定できるキーは `repo_read` だけで、ほかのキーは不正 |
 | `deny` | 既定の拒否リストに追加する文字列配列。省略時は空。配列のlocal上書きは置換 |
 | `limits.max_turns` | 正の整数。探索の上限、既定30往復 |
 | `limits.max_total_tokens` | 正の整数。成功した往復の入力＋出力の累計、既定2,000,000 |
 | `limits.max_duration_sec` | 正の有限数。探索の実行時間上限、既定900秒 |
 | `limits.rate_limit_attempts` | 正の整数。429の初回を含む試行数、既定3 |
 | `limits.rate_limit_initial_delay_sec` | 0以上の有限数。429の初回待ち時間、既定2秒。その後は2倍 |
+
+`tools`・`deny`・上表のagent用 `limits` を検査して使うのは `llm agent` だけで、
+`llm ask` はこれらを読み込まない。共通の `limits.timeout_sec`・`limits.max_output_tokens` は両方で検査して使う。
 
 道具の不許可・拒否や、一覧取得後に対象が消えるなどの読取失敗は、短い理由を含む結果としてモデルへ返す。
 grep は読めないファイルを飛ばして残りの結果を返し、ループは続行する。ファイルの中身や例外詳細は失敗結果・ログへ含めない。
