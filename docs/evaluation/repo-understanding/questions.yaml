@@ -66,8 +66,8 @@ questions:
   - stop_reason を max_turns にして summary を真にし、道具なしのまとめの要求を一回行って break する
   evidence:
   - path: scripts/lib/llm/agent_loop.py
-    start_line: 115
-    end_line: 157
+    start_line: 122
+    end_line: 175
     contains: () if summary else definitions
 - id: F-03
   category: flow
@@ -86,8 +86,8 @@ questions:
   - parse_final_answer、verify_citations、RepoReadTools.check_citation の順に進み、実在・行範囲と ledger の読取範囲を照合する
   evidence:
   - path: scripts/lib/llm/agent_loop.py
-    start_line: 165
-    end_line: 175
+    start_line: 176
+    end_line: 180
     contains: citations = verify_citations
   - path: scripts/lib/llm/tools/repo_read.py
     start_line: 130
@@ -183,8 +183,8 @@ questions:
     end_line: 145
     contains: return self.ledger.check_citation(
   - path: scripts/lib/llm/agent_loop.py
-    start_line: 165
-    end_line: 175
+    start_line: 176
+    end_line: 180
     contains: tools.check_citation
 - id: X-03
   category: cross_file

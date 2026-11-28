@@ -143,3 +143,173 @@ second","citations":[]}
 
     assert answer == "first\\-\nsecond"
     assert citations == []
+
+
+def test_parses_markdown_body_and_line_citations() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = '## 結果\n`config["api"]` と `[A-Z\\-]+` を確認。\n\nCITATIONS:\n- src/a.py:10-20 | A は B\nsrc/b.py:1-1 | C'
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == '## 結果\n`config["api"]` と `[A-Z\\-]+` を確認。'
+    assert citations == [
+        {"path": "src/a.py", "start_line": 10, "end_line": 20, "claim": "A は B"},
+        {"path": "src/b.py", "start_line": 1, "end_line": 1, "claim": "C"},
+    ]
+
+
+def test_parses_backticked_line_citation_with_list_marker_and_whitespace() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = " \n本文\n\n  CITATIONS:  \n\n* `src/a.py:1-2` | `a | b` を返す\n"
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == "本文"
+    assert citations == [
+        {"path": "src/a.py", "start_line": 1, "end_line": 2, "claim": "`a | b` を返す"}
+    ]
+
+
+def test_does_not_treat_citations_marker_in_backtick_fence_as_delimiter() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = "例:\n```text\nCITATIONS:\nsrc/x.py:1-2 | 例示\n```\n以上"
+
+    assert parser.parse_final_answer(text) == (text, None)
+
+
+def test_does_not_treat_citations_marker_in_tilde_fence_as_delimiter() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = "例:\n~~~text\nCITATIONS:\nsrc/x.py:1-2 | 例示\n~~~\n以上"
+
+    assert parser.parse_final_answer(text) == (text, None)
+
+
+def test_prefers_line_citations_over_json_example_in_markdown_body() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    body = """例:
+```json
+{"answer":"例示","citations":[{"path":"example.py","start_line":1,"end_line":2,"claim":"例"}]}
+```
+```text
+CITATIONS:
+src/example.py:1-2 | 例示
+```"""
+    text = body + "\n\nCITATIONS:\nsrc/a.py:3-4 | 実際の根拠"
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == body
+    assert citations == [
+        {"path": "src/a.py", "start_line": 3, "end_line": 4, "claim": "実際の根拠"}
+    ]
+
+
+def test_uses_last_citations_delimiter_outside_fences() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    body = "区切りの例:\nCITATIONS:\nここまでは説明。"
+    text = body + "\n\nCITATIONS:\na.py:1-1 | 最後の一覧"
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == body
+    assert citations == [{"path": "a.py", "start_line": 1, "end_line": 1, "claim": "最後の一覧"}]
+
+
+def test_salvages_shortened_spec_reviewer_answer_with_quotes_and_regex_escape() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    # spec-reviewer-result.json の引用符と不正エスケープによる壊れ方を残す。
+    text = r"""```json
+{
+  "answer": "`_safe_name` (`[A-Za-z0-9_.:/@+=\-]+`) checks `config["api"]`.",
+  "citations": [
+    {"path": "docs/reference/configuration.md", "start_line": 19, "end_line": 35,
+     "claim": "Configuration uses a base `{name}.yaml` and a local override `{name}.local.yaml` combined via deep merge."},
+    {"path": "packages/core/hooks/api_profiles.py", "start_line": 10, "end_line": 17,
+     "claim": "Defines `_SAFE_NAME` regex `[A-Za-z0-9_.:/@+=\-]+`."}
+  ]
+}
+```"""
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == text
+    assert citations == [
+        {
+            "path": "docs/reference/configuration.md",
+            "start_line": 19,
+            "end_line": 35,
+            "claim": "Configuration uses a base `{name}.yaml` and a local override `{name}.local.yaml` combined via deep merge.",
+        },
+        {
+            "path": "packages/core/hooks/api_profiles.py",
+            "start_line": 10,
+            "end_line": 17,
+            "claim": r"Defines `_SAFE_NAME` regex `[A-Za-z0-9_.:/@+=\-]+`.",
+        },
+    ]
+
+
+def test_salvages_shortened_reverse_answer_with_unescaped_command_quotes() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    # reverse-result.json のコマンド引用にある未エスケープの引用符を残す。
+    text = r"""```json
+{
+  "answer": "Builds `claude -p --restricted --tools "" --settings {"disableAllHooks": true}`.",
+  "citations": [
+    {"path": "packages/fail-logs/manifest.json", "start_line": 33, "end_line": 46,
+     "claim": "Declares the three package CLI scripts: scripts/lessons_cli.py, scripts/lessons_admin.py, and scripts/eval_distill.py."},
+    {"path": "packages/fail-logs/lib/distill_worker.py", "start_line": 347, "end_line": 459,
+     "claim": "Resolves the claude executable, builds the restricted claude -p command."}
+  ]
+}
+```"""
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == text
+    assert citations == [
+        {
+            "path": "packages/fail-logs/manifest.json",
+            "start_line": 33,
+            "end_line": 46,
+            "claim": "Declares the three package CLI scripts: scripts/lessons_cli.py, scripts/lessons_admin.py, and scripts/eval_distill.py.",
+        },
+        {
+            "path": "packages/fail-logs/lib/distill_worker.py",
+            "start_line": 347,
+            "end_line": 459,
+            "claim": "Resolves the claude executable, builds the restricted claude -p command.",
+        },
+    ]
+
+
+def test_salvage_excludes_path_example_before_citations_array() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = r"""{"answer":"引用 {"path":"z.py","start_line":3,"end_line":4,"claim":"例"}",
+"citations":[{"path":"a.py","start_line":1,"end_line":2,"claim":"根拠"}]}"""
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == text
+    assert citations == [{"path": "a.py", "start_line": 1, "end_line": 2, "claim": "根拠"}]
+
+
+def test_salvages_citation_fields_without_json_envelope() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = '回答が途中で壊れた。\n{"path":"a.py","start_line":1,"end_line":2,"claim":"根拠"}'
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == text
+    assert citations == [{"path": "a.py", "start_line": 1, "end_line": 2, "claim": "根拠"}]
+
+
+def test_salvages_reordered_fields_and_decodes_claim_escapes() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = r"""{"answer":"`config["api"]`",
+"citations":[{"path":"a.py","end_line":2,"claim":"\"api\"\n\u6839\u62e0","start_line":1}]}"""
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == text
+    assert citations == [{"path": "a.py", "start_line": 1, "end_line": 2, "claim": '"api"\n根拠'}]
