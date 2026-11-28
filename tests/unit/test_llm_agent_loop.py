@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -434,3 +435,53 @@ def test_structured_answer_without_citations_is_not_a_parse_failure(repo):
     public = result.to_dict()
     assert public["citations_parse_failed"] is False
     assert public["unverified_count"] == 0
+
+
+def test_repaired_fenced_answer_verifies_citation_against_actual_read(repo: Path) -> None:
+    (repo / "a.py").write_text("first\nsecond\n", encoding="utf-8")
+    text = r"""```json
+{"answer":"`\w+` を確認","citations":[{"path":"a.py","start_line":1,"end_line":2,"claim":"`\d+` に一致"}]}
+```"""
+    turn = Mock(side_effect=[_response(calls=(_read(end_line=2),)), _response(text)])
+
+    result = _run(turn, limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == r"`\w+` を確認"
+    assert public["citations"] == [
+        {
+            "path": "a.py",
+            "start_line": 1,
+            "end_line": 2,
+            "claim": r"`\d+` に一致",
+            "verified": True,
+        }
+    ]
+    assert public["citations_parse_failed"] is False
+    assert public["unverified_count"] == 0
+
+
+def test_unrepairable_json_keeps_original_text_and_reports_parse_failure(repo: Path) -> None:
+    text = r""" ```json
+{"answer":"\- だけ","citations":[
+``` """
+
+    result = _run(Mock(return_value=_response(text)), limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == text
+    assert public["citations"] == []
+    assert public["citations_parse_failed"] is True
+    assert public["unverified_count"] is None
+
+
+def test_repaired_json_missing_citations_still_reports_parse_failure(repo: Path) -> None:
+    text = r'{"answer":"\-"}'
+
+    result = _run(Mock(return_value=_response(text)), limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == text
+    assert public["citations"] == []
+    assert public["citations_parse_failed"] is True
+    assert public["unverified_count"] is None

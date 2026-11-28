@@ -102,7 +102,7 @@
       "agents/requirements.md": "4caaa703214dd3ddd0f68f76038a238860df61bf29131e71485794e4c03033db",
       "agents/researcher.md": "48916b27514e00c766a630ef89eb8bac7b561f61af425b595e62cddf9d62edb3",
       "agents/security-reviewer.md": "ec3fd0f39894bcac78fd78c3d3264b18028d28ba88fdf3a8a37595665ede8d65",
-      "agents/spec-reviewer.md": "272ef54d87061697d518752d08800cabb341e054c8743d12af4d70c5179cf98a",
+      "agents/spec-reviewer.md": "12e11e8f6913784175c1a5e98760e89da6b6377e3ae5732cbcb2ee93e8e0d323",
       "agents/spec-writer.md": "f7dbb6450f39afce14c915a241a00315529da1b88e1fd64bf0fb607049c992c5",
       "agents/tester.md": "52cb656b87db708af31f51921e54076f1e15cf598966b87190369a8f52eccb3c",
       "agents/testing-reality-checker.md": "999f8925e2f27680e4d36a6818fe644c0f473c44bcc29b693b0557ac5217eb27",
@@ -139,7 +139,7 @@
       "config/skill-evolution/skill-evolution.yaml": "f265050f94eacd1d25bff0d75e5e051c5ac237c0a04931344c6726f80f8e7e25"
     },
     "reverse": {
-      "agents/reverse-coordinator.md": "01eae6c60d9391c842f2ab0453b0bf2f387115d180b0e3e9f400931e30c47700"
+      "agents/reverse-coordinator.md": "aacea1692b7d117d7862611634d5d1e15402f5c73ec32a4535737b1555ed453e"
     },
     "meta-harness": {
       "config/meta-harness/meta-harness.yaml": "1a7a274ab2515ebf44cb364bb69e51c3f4e46e84313e89d9796a967c0bec2c1b"

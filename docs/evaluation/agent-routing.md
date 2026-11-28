@@ -99,6 +99,8 @@
 
 ### API ルーティング（人間レビュー待ち・本 PR）
 
+追加の状態確認（人間レビュー待ち）: spec-reviewer は `api-delegation` の「結果と根拠を確認する」を参照し、result.json の本文より先に状態を確認する。状態の確認前に結果を報告しない。共通手順の表示例は answer を含めず、status・stop_reason・turns・citations_parse_failed・unverified_count・citations の件数を表示する。根拠: 追加ユーザー指示1の作業1・2。本文の意味は文書レビューで確認する。
+
 - [ ] EV-42（正常 / must、人間レビュー待ち）: tool: api と api_profile は任意名のプロファイルへ解決される。既定のresearchはgeminiの検索・添付・repo_readを許可し、timeoutは120秒、max_output_tokensは16384。repo-readerはgeminiのrepo_readを許可し、max_output_tokensは16384、ほかのlimitsは既定値で、localなしで解決できる。spec-reviewerとreverse-coordinatorはrepo-readerに結び付き、SubagentStartでtool: api・api.profile: repo-readerが注入される。researcherはresearchのままで、anthropic / openaiへ結び付くエージェントはない — 根拠: 今回のorder作業1〜3、C-SPEC-ROUTE / C-REV-ROUTE / C-RESEARCH-PROFILE / C-RESEARCH-ASK-KEEP。
 - [ ] EV-43（異常 / must）: API が無効・キー不足・SDK 不足、またはプロファイルが未定義・不正なら get_agent_tool と hook は claude-direct に戻り、note に理由を書く。キー不足には auth set の案内を含む — 根拠: order.md 方針3、計画 C-ROUTE-FALLBACK。
 - [ ] EV-44（正常 / must、人間レビュー待ち）: researcherはAPI researchに結び付き、Bashと既存の探索ツールを使える。Web・添付の調査はask、リポジトリの調査は同じprofileのagentを使い分ける。APIは資料・該当箇所の収集を担い、Claudeが根拠を裏取りして結論を出す。verified: false・citations_parse_failed・partial（output_truncatedを含む）はReadで確認し、呼び方・待機・終了コードはapi-delegationに従う。API不可時はClaudeで完結する。本文の意味は文書レビューで確認する — 根拠: 今回のorder作業3、C-RESEARCHER-DEF。

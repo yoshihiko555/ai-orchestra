@@ -493,7 +493,7 @@ repo-reader は Gemini の読み取り用プロファイルとして既定で配
 `--output ./out` を付けると、空の出力先へ `progress.json`・`result.json`・`exit` を書きます。
 往復・トークン・時間の上限では一度まとめて partial を返し、利用枠不足・認証エラーでは即時停止します。
 research も読み取り道具を許可し、出力上限は16384トークンです。ask のWeb検索・添付の許可とtimeout 120秒は維持します。
-回答がコードフェンスに囲まれていても本文と根拠を取り出します。道具ありで構造化できない場合は
+回答がコードフェンスに囲まれていても本文と根拠を取り出します。JSON の読み取りに失敗した場合は、文字列内の不正なエスケープだけを修復して再読込します。道具ありで構造化できない場合は
 `citations_parse_failed: true`・`unverified_count: null` を返すため、回答を未確認として裏取りしてください。
 
 読み取り道具のライブラリは `scripts/lib/llm/tools/repo_read.py` にあります。
@@ -522,7 +522,7 @@ Git の許可一覧、既定・追加の拒否パターン、symlink 解決後�
 `TOOL_DEFINITIONS` はプロバイダ非依存の JSON Schema です。
 これらは `orchex llm agent` のエージェントループとプロファイルへ接続されています。
 API を呼ぶ全サブエージェントは、共通 rule
-[`api-delegation`](facets/instructions/api-delegation.md) の使い分け・待機・partial の報告・根拠の裏取りに従います。
+[`api-delegation`](facets/instructions/api-delegation.md) の使い分け・待機・本文より先の状態確認・partial の報告・根拠の裏取りに従います。状態を確かめる前に結果を報告しません。
 リポジトリ把握を Claude 自身の探索と比較する
 [20 問の評価セットと手順](docs/evaluation/repo-understanding/README.md)も用意しています。
 check と集計テストは API 不要です。実評価は人の了承後にだけ行います。
