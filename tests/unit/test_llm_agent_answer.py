@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -286,6 +287,64 @@ def test_salvages_shortened_reverse_answer_with_unescaped_command_quotes() -> No
 def test_salvage_excludes_path_example_before_citations_array() -> None:
     parser = importlib.import_module("lib.llm.agent_answer")
     text = r"""{"answer":"引用 {"path":"z.py","start_line":3,"end_line":4,"claim":"例"}",
+"citations":[{"path":"a.py","start_line":1,"end_line":2,"claim":"根拠"}]}"""
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == text
+    assert citations == [{"path": "a.py", "start_line": 1, "end_line": 2, "claim": "根拠"}]
+
+
+def test_salvage_retains_citation_with_string_start_line() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = r"""{"answer":"`config["api"]`","citations":[
+{"path":"a.py","start_line":1,"end_line":2,"claim":"読んだ範囲"},
+{"path":"a.py","start_line":"3","end_line":3,"claim":"文字列の行番号"}]}"""
+
+    answer, citations = parser.parse_final_answer(text)
+
+    assert answer == text
+    assert citations is not None
+    assert len(citations) == 2
+    assert citations[0] == {
+        "path": "a.py",
+        "start_line": 1,
+        "end_line": 2,
+        "claim": "読んだ範囲",
+    }
+    assert citations[1]["path"] == "a.py"
+    assert citations[1].get("start_line") is None
+    assert citations[1]["end_line"] == 3
+    assert citations[1]["claim"] == "文字列の行番号"
+
+
+def test_salvage_retains_citation_when_line_number_exceeds_integer_digit_limit() -> None:
+    previous_limit = sys.get_int_max_str_digits()
+    limit = sys.int_info.str_digits_check_threshold
+    oversized_line = "9" * (limit + 1)
+    text = (
+        '{"answer":"`config["api"]`","citations":[{"path":"a.py","start_line":'
+        + oversized_line
+        + ',"end_line":2,"claim":"根拠"}]}'
+    )
+
+    try:
+        sys.set_int_max_str_digits(limit)
+        result = _run(Mock(return_value=_response(text)), limits=_limits(), tools=None)
+    finally:
+        sys.set_int_max_str_digits(previous_limit)
+
+    assert result.answer == text
+    assert result.citations == [
+        {"path": "a.py", "start_line": None, "end_line": 2, "claim": "根拠", "verified": False}
+    ]
+    assert result.unverified_count == 1
+    assert result.to_dict()["citations_parse_failed"] is False
+
+
+def test_salvage_excludes_malformed_path_example_before_citations_array() -> None:
+    parser = importlib.import_module("lib.llm.agent_answer")
+    text = r"""{"answer":"引用 {"path":"z.py","start_line":"9"}",
 "citations":[{"path":"a.py","start_line":1,"end_line":2,"claim":"根拠"}]}"""
 
     answer, citations = parser.parse_final_answer(text)
