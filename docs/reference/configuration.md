@@ -164,7 +164,8 @@ agents:
 
 API 機能は `orchex[llm]` で導入する。キーは環境変数または `orchex auth set <provider>` で登録し、YAML には保存しない。
 `api.providers` は anthropic / openai / gemini ごとの設定、`api.profiles` は用途に依存しない呼び出し設定を持つ。
-既定のプロファイルは research（gemini、Web 検索と添付を許可）だけ。各社の既定モデルは配布する `cli-tools.yaml` を参照する。
+既定のプロファイルは research（gemini、Web 検索と添付を許可）と repo-reader（gemini、リポジトリの読み取り道具を許可）。
+repo-reader はどのエージェントにも結び付けない。各社の既定モデルは配布する `cli-tools.yaml` を参照する。
 
 ```yaml
 # .claude/config/agent-routing/cli-tools.local.yaml
@@ -243,24 +244,19 @@ API を呼ぶ全サブエージェントは [api-delegation rule](../../facets/i
 API側のモデルがリポジトリを探索する。呼び出すサブエージェントの用途には依存しない。
 既定のresearcher設定やroutingは変更せず、プロファイルは明示的に選ぶ。
 
+repo-reader は既定で配布されるため、local 設定を追加せずに実行できる。出力上限は16384トークンで、
+ほかの上限は既定の30往復・2,000,000トークン・900秒、要求ごとの120秒を使う。
+拒否リストや上限を変える場合だけ、次のように任意の local 上書きを追加する。
+
 ```yaml
 # .claude/config/agent-routing/cli-tools.local.yaml
 api:
   profiles:
     repo-reader:
-      provider: gemini
-      tools:
-        repo_read: true
       deny:
         - "docs/internal/*"
       limits:
-        timeout_sec: 120
         max_output_tokens: 8192
-        max_turns: 30
-        max_total_tokens: 2000000
-        max_duration_sec: 900
-        rate_limit_attempts: 3
-        rate_limit_initial_delay_sec: 2.0
 ```
 
 | agent用設定 | 意味・省略時の値 |
@@ -273,9 +269,17 @@ api:
 | `limits.rate_limit_attempts` | 正の整数。429の初回を含む試行数、既定3 |
 | `limits.rate_limit_initial_delay_sec` | 0以上の有限数。429の初回待ち時間、既定2秒。その後は2倍 |
 
-道具の不許可・拒否は結果としてモデルへ返す。根拠はシステム指示で主張ごとに要求し、
+道具の不許可・拒否や、一覧取得後に対象が消えるなどの読取失敗は、短い理由を含む結果としてモデルへ返す。
+grep は読めないファイルを飛ばして残りの結果を返し、ループは続行する。ファイルの中身や例外詳細は失敗結果・ログへ含めない。
+出力先への書込失敗は従来どおり終了コード8とする。根拠はシステム指示で主張ごとに要求し、
 最後の回答を `{"answer": "本文", "citations": [...]}` として取り出す。
-回答全体を包む1つのjsonコードフェンスも受理する。構造化できない本文はそのまま返し、根拠は空にする。
+回答全体を包む1つの json または言語指定なしのコードフェンスも、内外の空白・改行を取り除いて受理する。
+構造化できない本文はそのまま返し、根拠は空にする。読み取り道具が許可されている場合は
+`citations_parse_failed: true` と `unverified_count: null` で根拠の読み取り失敗を示す。
+この印は status・stop_reason・終了コードを変更せず、complete なら終了コード0のままとする。
+印が true の回答は未確認として扱い、自分で Read して裏取りする。
+構造化に成功した場合（citations が空配列の場合も含む）や道具が許可されていない場合は印を false とし、
+unverified_count は従来どおり未確認根拠の件数を返す。
 根拠のverifiedは、ファイルの実在・行範囲・その実行での読取記録の3条件で決める。
 不正な根拠要素も未確認として残す。verifiedは主張の意味的な正しさを保証するものではない。
 
@@ -284,6 +288,9 @@ rate_limitedだけを設定どおり再試行し、quota_exhausted / auth_error�
 再試行待ちも実行時間に含める。実行時間の判定はAPI要求の間で行い、
 進行中の要求はtimeout_secに従う。上限後のまとめは探索の予算外で行う。
 まとめがAPIエラーで失敗した場合は、そのエラーを停止理由にして直前の回答を保持する。
+最終回答・まとめ・途中の道具呼び出しが出力上限で切れた場合は、partial / output_truncated で即時停止する。
+切れた道具引数は解析・実行せず、再試行や追加のまとめは行わない。まとめが切れた場合も、
+探索上限の停止理由を output_truncated に置き換える。空でない本文を保持し、空なら直前の回答を保持する。
 
 結果JSONは次の形式で、成功・部分結果とも同じフィールドを持つ。
 
@@ -298,7 +305,8 @@ rate_limitedだけを設定どおり再試行し、quota_exhausted / auth_error�
     {"path": "src/a.py", "start_line": 10, "end_line": 20, "claim": "主張", "verified": true}
   ],
   "files_read": ["src/a.py"],
-  "unverified_count": 0
+  "unverified_count": 0,
+  "citations_parse_failed": false
 }
 ```
 
@@ -314,7 +322,7 @@ turnsとtokensは成功した往復だけを数え、まとめも含む。失敗
 | llm agentの終了コード | status / stop_reason または意味 |
 |----------------------|--------------------------------|
 | 0 | complete / null |
-| 12 | partial / max_turns・token_limit・timeout（探索上限） |
+| 12 | partial / max_turns・token_limit・timeout（探索上限）、output_truncated（出力上限で切れた） |
 | 9 | partial / quota_exhausted |
 | 10 | partial / rate_limited（再試行後も回復しない） |
 | 11 | partial / auth_error |
@@ -336,6 +344,11 @@ turnsとtokensは成功した往復だけを数え、まとめも含む。失敗
 `ToolResult.is_error` は、失敗結果をJSONの `error` フィールドとしてモデルへ返す指定である。
 `SystemMessage` はシステムの指示を表す。`ToolTurnResponse.usage` は
 `TokenUsage(input_tokens, output_tokens)` で、使用量がない場合は0を返す。
+`ToolTurnResponse.truncated` は出力上限で切れたことを示す真偽値で、既定は false。
+any-llm の chat 形式の finish_reason が length の場合に true となる（Gemini の MAX_TOKENS、
+Anthropic の max_tokens / model_context_window_exceeded、OpenAI chat の length）。
+OpenAI Responses API の incomplete は、この道具付きの入口では使用しない。
+truncated が true の場合は tool_calls を空にして返す。
 
 この部品は `any-llm-sdk[gemini]==1.55.0` で3社の形式を変換する。SDKとライブラリは呼び出し時に
 読み込むため、基本インストールでは認証・既存CLIの起動に影響しない。

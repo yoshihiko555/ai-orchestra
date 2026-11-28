@@ -174,7 +174,7 @@ def _baseline_result(stdout: str, project: Path) -> dict:
     input_count, output_count = sum(counts[:3]), counts[3]
     return {
         "answer": answer,
-        "citations": verify_citations(raw, tools.check_citation),
+        "citations": verify_citations(raw if raw is not None else [], tools.check_citation),
         "tokens": {
             "input": input_count,
             "output": output_count,

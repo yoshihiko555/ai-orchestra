@@ -277,8 +277,24 @@ def test_default_profiles_route_only_research_to_gemini(monkeypatch) -> None:
     assert researcher["api"]["provider"] == "gemini"
     assert researcher["api"]["web_search"] is True
     assert researcher["api"]["attachments"] is True
-    assert set(config["api"]["profiles"]) == {"research"}
+    assert set(config["api"]["profiles"]) == {"research", "repo-reader"}
     for agent in config["agents"]:
         routing = hook_common.resolve_agent_routing(agent, config)
         if routing["tool"] == "api":
             assert routing["api"]["provider"] == "gemini"
+            assert routing["api"]["profile"] != "repo-reader"
+
+
+def test_shipped_repo_reader_resolves_without_local_overrides() -> None:
+    config = yaml.safe_load(
+        (REPO_ROOT / "packages/agent-routing/config/cli-tools.yaml").read_text(encoding="utf-8")
+    )
+
+    settings = _profiles().resolve_agent_settings(config, "repo-reader")
+
+    assert settings.profile.provider == "gemini"
+    assert settings.repo_read is True
+    assert settings.limits == _profiles().AgentLimits()
+    assert settings.profile.timeout_sec == 120
+    assert settings.profile.max_output_tokens == 16384
+    assert set(config["api"]["profiles"]["repo-reader"]["limits"]) == {"max_output_tokens"}

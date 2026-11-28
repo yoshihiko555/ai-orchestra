@@ -81,6 +81,20 @@ def _assert_no_private_content(text: str) -> None:
             assert fragment not in line.casefold()
 
 
+def _remove_before_open(monkeypatch: pytest.MonkeyPatch, target: Path) -> list[Path]:
+    original_open = os.open
+    removed = []
+
+    def remove(path, flags, *args, **kwargs):
+        if path == target.name and kwargs.get("dir_fd") is not None and not removed:
+            target.unlink()
+            removed.append(target)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", remove)
+    return removed
+
+
 def test_read_file_returns_only_requested_lines_with_original_numbers(repo: Path) -> None:
     _write(repo, "src/a.py", "one\ntwo\nthree\nfour\n")
 
@@ -974,6 +988,106 @@ def test_symlink_replacement_between_resolution_and_open_is_rejected(
     _assert_rejected(result)
     _assert_no_private_content(result.text)
     assert ledger.check_citation("src/a.py:1-1", exists=True, total_lines=1).verified is False
+
+
+def test_read_file_deleted_before_open_returns_failure_without_content(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys, caplog
+) -> None:
+    target = _write(repo, "a.py", "PRIVATE-ALPHA private-omega\n")
+    _track(repo, target.name)
+    removed = _remove_before_open(monkeypatch, target)
+    tools = RepoReadTools(repo)
+
+    result = tools.read_file(target.name)
+
+    assert removed == [target]
+    _assert_rejected(result)
+    assert result.text.startswith("not_found:")
+    assert tools.ledger.files() == ()
+    captured = capsys.readouterr()
+    for text in (result.text, captured.out, captured.err, caplog.text):
+        _assert_no_private_content(text)
+        assert str(repo) not in text
+        assert "No such file" not in text
+
+
+@pytest.mark.parametrize(
+    "error_type", [PermissionError, IsADirectoryError, NotADirectoryError, OSError]
+)
+def test_read_file_open_errors_return_safe_reason(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys, caplog, error_type
+) -> None:
+    _write(repo, "a.py", "PRIVATE-ALPHA private-omega\n")
+    original_open = os.open
+
+    def fail(path, flags, *args, **kwargs):
+        if path == "a.py" and kwargs.get("dir_fd") is not None:
+            raise error_type("private-alpha private-omega")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fail)
+    tools = RepoReadTools(repo)
+
+    result = tools.read_file("a.py")
+
+    _assert_rejected(result)
+    reasons = {
+        PermissionError: "permission_denied",
+        IsADirectoryError: "not_regular_file",
+        NotADirectoryError: "not_regular_file",
+        OSError: "unreadable",
+    }
+    assert result.text.startswith(reasons[error_type] + ":")
+    assert tools.ledger.files() == ()
+    captured = capsys.readouterr()
+    for text in (result.text, captured.out, captured.err, caplog.text):
+        _assert_no_private_content(text)
+
+
+def test_grep_skips_file_deleted_before_open_and_records_remaining_match(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _write(repo, "a.py", "needle PRIVATE-ALPHA private-omega\n")
+    _write(repo, "b.py", "needle public\n")
+    _track(repo, target.name)
+    removed = _remove_before_open(monkeypatch, target)
+    tools = RepoReadTools(repo)
+
+    result = tools.grep("needle")
+
+    assert removed == [target]
+    assert result.ok is True
+    assert _grep_matches(result.text) == [("b.py", 1, "needle public")]
+    assert tools.ledger.files() == ("b.py",)
+
+
+@pytest.mark.parametrize("name", ["list_dir", "glob"])
+def test_enumeration_skips_file_deleted_after_git_listing(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    target = _write(repo, "a.py", "unused\n")
+    _write(repo, "b.py", "public\n")
+    _track(repo, target.name)
+    original_run = subprocess.run
+    removed = []
+
+    def list_then_remove(argv, **kwargs):
+        result = original_run(argv, **kwargs)
+        if "ls-files" in argv and "--ignored" not in argv and not removed:
+            assert b"a.py\0" in result.stdout
+            target.unlink()
+            removed.append(target)
+        return result
+
+    monkeypatch.setattr(subprocess, "run", list_then_remove)
+    tools = RepoReadTools(repo)
+    arguments = {"path": "."} if name == "list_dir" else {"pattern": "*.py"}
+
+    result = tools.execute(name, arguments)
+
+    assert removed == [target]
+    assert result.ok is True
+    assert result.text.splitlines() == ["b.py"]
 
 
 def test_binary_detected_after_output_limit_discards_pending_content(repo: Path) -> None:

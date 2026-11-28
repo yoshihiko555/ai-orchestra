@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
@@ -111,6 +112,65 @@ def test_turn_limit_summarizes_once_without_tools_or_executing_pending_read(repo
     assert len(pending) == 1
     assert pending[0].call_id == "2"
     assert pending[0].is_error is True
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_truncated_final_answer_is_partial_and_keeps_read_evidence(repo, structured):
+    (repo / "a.py").write_text("public\n", encoding="utf-8")
+    text = (
+        json.dumps({"answer": "途中まで", "citations": []}, ensure_ascii=False)
+        if structured
+        else '```json\n{"answer": "途中まで'
+    )
+    turn = Mock(
+        side_effect=[
+            _response(calls=(_read(),)),
+            replace(_response(text), truncated=True),
+        ]
+    )
+
+    result = _run(turn, limits=_limits(), tools=RepoReadTools(repo))
+
+    assert (result.status, result.stop_reason) == ("partial", "output_truncated")
+    assert result.answer == ("途中まで" if structured else text)
+    assert result.citations_parse_failed is (not structured)
+    assert result.unverified_count == (0 if structured else None)
+    assert result.files_read == ("a.py",)
+    assert result.turns == turn.call_count == 2
+    assert (result.tokens.input_tokens, result.tokens.output_tokens) == (4, 2)
+
+
+@pytest.mark.parametrize("text", ["途中までの要約", ""])
+def test_truncated_summary_overrides_turn_limit_and_preserves_available_text(repo, text):
+    turn = Mock(
+        side_effect=[
+            _response("探索中の回答", calls=(_read(),)),
+            replace(_response(text), truncated=True),
+        ]
+    )
+
+    result = _run(turn, limits=_limits(max_turns=1), tools=RepoReadTools(repo))
+
+    assert (result.status, result.stop_reason) == ("partial", "output_truncated")
+    assert result.answer == (text or "探索中の回答")
+    assert result.turns == turn.call_count == 2
+    assert turn.call_args.args[0].tools == ()
+
+
+def test_truncated_tool_turn_stops_without_execution_retry_or_summary(repo):
+    (repo / "a.py").write_text("public\n", encoding="utf-8")
+    tools = RepoReadTools(repo)
+    tools.execute = Mock(wraps=tools.execute)
+    turn = Mock(return_value=replace(_response(calls=(_read(),)), truncated=True))
+    sleep = Mock()
+
+    result = _run(turn, limits=_limits(), tools=tools, sleep=sleep)
+
+    assert (result.status, result.stop_reason) == ("partial", "output_truncated")
+    assert result.turns == turn.call_count == 1
+    assert result.files_read == ()
+    tools.execute.assert_not_called()
+    sleep.assert_not_called()
 
 
 def test_token_limit_counts_accumulated_input_and_output_before_summary(repo):
@@ -278,7 +338,8 @@ def test_summary_quota_becomes_stop_reason_and_preserves_previous_answer(repo):
 
 
 @pytest.mark.parametrize("partial", [False, True])
-def test_citations_use_real_read_evidence_for_complete_and_partial_results(repo, partial):
+@pytest.mark.parametrize("fenced", [False, True])
+def test_citations_use_real_read_evidence_for_complete_and_partial_results(repo, partial, fenced):
     (repo / "src").mkdir()
     (repo / "src/a.py").write_text("public\n" * 200, encoding="utf-8")
     citations = [
@@ -292,7 +353,8 @@ def test_citations_use_real_read_evidence_for_complete_and_partial_results(repo,
     responses = [_response(calls=(_read(path="src/a.py", end_line=50),))]
     if partial:
         responses.append(_response(calls=(_read("pending"),)))
-    responses.append(_response(json.dumps({"answer": "回答", "citations": citations})))
+    payload = json.dumps({"answer": "回答", "citations": citations})
+    responses.append(_response(f"```json\n{payload}\n```" if fenced else payload))
 
     result = _run(
         Mock(side_effect=responses), limits=_limits(max_turns=2), tools=RepoReadTools(repo)
@@ -318,3 +380,57 @@ def test_files_read_contains_only_successfully_returned_files_in_sorted_order(re
     assert tools.read_file("b.py").ok
 
     assert tools.ledger.files() == ("a.py", "b.py")
+
+
+@pytest.mark.parametrize("language", ["json", ""])
+def test_fenced_answer_verifies_two_citations_against_actual_reads(repo, language):
+    (repo / "a.py").write_text("first\nsecond\n", encoding="utf-8")
+    citations = [
+        {"path": "a.py", "start_line": line, "end_line": line, "claim": "主張"} for line in (1, 2)
+    ]
+    payload = json.dumps({"answer": "回答本文", "citations": citations}, ensure_ascii=False)
+    turn = Mock(
+        side_effect=[
+            _response(calls=(_read(end_line=2),)),
+            _response(f" \n```{language}\n  {payload}  ```\n"),
+        ]
+    )
+
+    result = _run(turn, limits=_limits(), tools=RepoReadTools(repo))
+
+    assert result.answer == "回答本文"
+    assert result.citations == [{**citation, "verified": True} for citation in citations]
+    assert result.unverified_count == 0
+    assert result.to_dict()["citations_parse_failed"] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "JSON ではない回答",
+        '{"answer":"根拠フィールドなし"}',
+        "[]",
+        '~~~\n{"answer":"x","citations":[]}\n~~~',
+        '```python\n{"answer":"x","citations":[]}\n```',
+    ],
+)
+def test_unstructured_answer_with_tools_reports_unknown_citation_count(repo, text):
+    result = _run(Mock(return_value=_response(text)), limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == text
+    assert public["citations"] == []
+    assert public["citations_parse_failed"] is True
+    assert public["unverified_count"] is None
+
+
+def test_structured_answer_without_citations_is_not_a_parse_failure(repo):
+    result = _run(
+        Mock(return_value=_response(json.dumps({"answer": "根拠なし", "citations": []}))),
+        limits=_limits(),
+        tools=RepoReadTools(repo),
+    )
+
+    public = result.to_dict()
+    assert public["citations_parse_failed"] is False
+    assert public["unverified_count"] == 0

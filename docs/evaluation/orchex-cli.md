@@ -105,6 +105,8 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 
 ### LLM 読み取りの道具（人間レビュー待ち・本 PR）
 
+今回の読取失敗への対応（人間レビュー待ち）: EV-49 は一覧取得後・読取前の削除や権限・文字コードの失敗も対象とする。read_file は ok=False と短い固定理由を返し、grep は読めないファイルを飛ばして残りを返す。list_dir / glob は消えた候補を除く。内容と例外詳細はモデルへの結果・ログへ出さず、ループは続行する。出力先の書込失敗は EV-58 の終了コード 8 を維持する。根拠: 今回の order 作業3、C-TOOL-READ-FAIL / C-LOOP-CONTINUE / C-OUTPUT-EXIT8。
+
 - [ ] EV-49（正常・異常 / must）: 読み取りの道具の安全の境界 — `read_file` / `list_dir` / `glob` / `grep` は、リポジトリのルート以下で、git の結果（`git ls-files --cached --others --exclude-standard` または同等）が返すものだけを読む。未追跡のファイルは読め、gitignore の対象は拒否する。git が使えないときは内容を返さずに失敗する。既定の拒否リスト（`.env*`、`*.pem`、`*.key`、`*credentials*`、`*secret*`、`.git/` の中身）と呼び出し側が追加した拒否パターンは、gitignore に漏れていても、symlink 経由でも拒否する。symlink の解決後の実際のパス、`..`、絶対パスでルートの外を指すものは拒否する。拒否は例外にせず理由を道具の結果として返し、拒否したファイルの中身を結果・エラーに含めない — 根拠: 第 2 段階の order 作業2・制約、Gherkin Rule「読み取りの道具は安全の境界の中だけを読む」、C-GITIGNORE / C-GIT-FAIL / C-DENY / C-ROOT / C-REJECT-RESULT。
 - [ ] EV-50（正常・異常 / must）: 出力の上限とバイナリ — 1 回の出力に上限があり、既定は 1 ファイル 2,000 行または 200 KB、grep 200 件で、`list_dir` / `glob` にも件数の上限がある。上限を超えたら切り詰め、切り詰めたことと続きの読み方（`start_line` など）を結果に書く。上限は引数で変えられる。バイナリのファイルは内容を返さない — 根拠: 同 order 作業2、C-LIMITS / C-BINARY。
 - [ ] EV-51（正常 / must）: 読んだ範囲の記録 — 道具が実際に返したファイルと行の範囲だけを、セッション単位で記録する。根拠 `path:開始行-終了行` について、実在する・行の範囲が収まる・読んだ範囲に入る、を判定できる — 根拠: 同 order 作業3、C-LEDGER。
@@ -112,9 +114,9 @@ orchex CLI（`scripts/orchestra-manager.py`、配布後は `orchex` / `ai-orches
 
 ### LLM エージェントループ（人間レビュー待ち・本 PR）
 
-- [ ] EV-55（正常・異常 / must）: 汎用ループは道具の結果を呼び出しID付きで次の往復へ渡す。往復・入出力トークン累計・実行時間の上限で道具なしのまとめを1回だけ行い、partial と停止理由を返す。ToolTurnResponse の生成には usage の明示を必須とし、省略時は TypeError にする。SDK 応答の usage 欠落時に 0 とする扱いは維持する — 根拠: 今回の order.md 作業1、C-LOOP-TOOLS / C-LIMIT-TURNS / C-LIMIT-TOKENS / C-LIMIT-TIME、レビュー裁定 RES-1。
+- [ ] EV-55（正常・異常 / must、人間レビュー待ち）: 汎用ループは道具の結果を呼び出しID付きで次の往復へ渡す。往復・入出力トークン累計・実行時間の上限で道具なしのまとめを1回だけ行い、partial と停止理由を返す。各社の出力上限終了を ToolTurnResponse.truncated で伝え、最終回答・まとめ・途中の道具呼び出しが切れた場合は partial / output_truncated / 終了コード12にする。切れた道具引数は解析・実行せず、再試行や追加のまとめを行わない。通常終了では既存の停止理由と終了コードを維持する。ToolTurnResponse の生成には usage の明示を必須とし、省略時は TypeError にする。SDK 応答の usage 欠落時に 0 とする扱いは維持する — 根拠: 今回の order.md 作業1・2、C-LOOP-TOOLS / C-LIMIT-TURNS / C-LIMIT-TOKENS / C-LIMIT-TIME / C-TRUNC-DETECT / C-TRUNC-NORMAL / C-TRUNC-FINAL / C-TRUNC-SUMMARY / C-TRUNC-MIDCALL / C-TRUNC-EXIT12 / C-STOP-KEEP、レビュー裁定 RES-1。
 - [ ] EV-56（正常・異常 / must）: rate_limited だけを指定回数・待ち時間で再試行する。quota_exhausted と auth_error は即時停止し、最後の回答・読取一覧・使用量を保持する — 根拠: 同作業1、C-RETRY-RECOVER / C-RETRY-EXHAUST / C-QUOTA / C-AUTH。
-- [ ] EV-57（正常・異常 / must）: 回答の根拠を構造化して抽出し、実在・行範囲・実際の読取記録で verified を決める。出力 JSON は公開フィールドだけを持ち、キーと SDK の生データを含めない — 根拠: 同作業2・3、C-OUTPUT-SHAPE / C-CITE-PARSE / C-CITE-VERIFY / C-NO-SECRET。
+- [ ] EV-57（正常・異常 / must、人間レビュー待ち）: 回答の根拠を、囲みなしの JSON、回答全体を包む json または言語指定なしのコードフェンスから、前後の空白・改行を除いて抽出する。answer は本文だけとし、実在・行範囲・実際の読取記録で verified を決める。道具ありで構造化できなければ citations_parse_failed=true、unverified_count=null とし、status と終了コードは変えない。道具なしではフラグ false と従来の件数を保つ。出力 JSON は既存キーを保持し、キーと SDK の生データを含めない — 根拠: 同作業2・3、今回の order 作業1・2、C-FENCE-PARSE / C-FENCE-VERIFY / C-PARSE-FLAG / C-PARSE-FLAG-NOTOOLS / C-PARSE-EXIT-DOC / C-NO-SECRET。
 - [ ] EV-58（正常・異常 / must）: llm agent は stdout または --output の result.json へ結果を返す。途中経過は progress.json、終了コードは最後に exit へ書く。空でない出力先では実行せず既存内容を保持する。ProfileError / CredentialsError は str(exc) を stderr へ届ける。deny の内容不正と入出力・文字コードの失敗は原因に合った文言を出し、終了コード 8 と --output 指定時の exit 書込を維持する — 根拠: 同作業4、C-CLI-AGENT / C-OUT-FILES / C-OUT-USED / C-EXIT-CODES、レビュー裁定 RES-2 / RES-3。
 
 ### リポジトリ把握の比較評価（人間レビュー待ち・本 PR）

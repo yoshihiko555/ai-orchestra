@@ -140,13 +140,16 @@ def call(
                 max_tokens=request.max_output_tokens,
                 **options,
             )
-            message = response.choices[0].message
+            choice = response.choices[0]
+            message = choice.message
+            truncated = choice.finish_reason == "length"
             calls = []
-            for item in message.tool_calls or ():
-                arguments = json.loads(item.function.arguments)
-                if not isinstance(arguments, dict):
-                    raise LLMError("api_error", "道具の引数はJSONのオブジェクトが必要です。")
-                calls.append(ToolCall(item.id, item.function.name, arguments))
+            if not truncated:
+                for item in message.tool_calls or ():
+                    arguments = json.loads(item.function.arguments)
+                    if not isinstance(arguments, dict):
+                        raise LLMError("api_error", "道具の引数はJSONのオブジェクトが必要です。")
+                    calls.append(ToolCall(item.id, item.function.name, arguments))
             return ToolTurnResponse(
                 AssistantMessage(
                     text=message.content or "",
@@ -157,6 +160,7 @@ def call(
                     _token_count(response.usage, "prompt_tokens"),
                     _token_count(response.usage, "completion_tokens"),
                 ),
+                truncated=truncated,
             )
     except LLMError:
         raise
