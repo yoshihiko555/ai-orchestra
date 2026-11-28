@@ -598,6 +598,52 @@ def test_salvaged_citations_use_actual_file_bounds_and_read_ranges(repo: Path) -
     assert public["files_read"] == ["a.py"]
 
 
+def test_salvaged_mixed_citations_count_string_start_line_as_unverified(repo: Path) -> None:
+    (repo / "a.py").write_text("first\nsecond\nthird\n", encoding="utf-8")
+    text = r"""{"answer":"`config["api"]`","citations":[
+{"path":"a.py","start_line":1,"end_line":2,"claim":"読んだ範囲"},
+{"path":"a.py","start_line":"3","end_line":3,"claim":"文字列の行番号"}]}"""
+    turn = Mock(side_effect=[_response(calls=(_read(end_line=2),)), _response(text)])
+
+    result = _run(turn, limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == text
+    assert public["citations"] == [
+        {"path": "a.py", "start_line": 1, "end_line": 2, "claim": "読んだ範囲", "verified": True},
+        {
+            "path": "a.py",
+            "start_line": None,
+            "end_line": 3,
+            "claim": "文字列の行番号",
+            "verified": False,
+        },
+    ]
+    assert public["citations_parse_failed"] is False
+    assert public["unverified_count"] == 1
+
+
+def test_salvaged_incomplete_citation_is_unverified_not_a_parse_failure(repo: Path) -> None:
+    text = r"""{"answer":"`config["api"]`",
+"citations":[{"path":"a.py","claim":"行範囲のない根拠"}]}"""
+
+    result = _run(Mock(return_value=_response(text)), limits=_limits(), tools=RepoReadTools(repo))
+
+    public = result.to_dict()
+    assert public["answer"] == text
+    assert public["citations"] == [
+        {
+            "path": "a.py",
+            "start_line": None,
+            "end_line": None,
+            "claim": "行範囲のない根拠",
+            "verified": False,
+        }
+    ]
+    assert public["citations_parse_failed"] is False
+    assert public["unverified_count"] == 1
+
+
 def test_empty_line_citations_are_not_a_parse_failure(repo: Path) -> None:
     result = _run(
         Mock(return_value=_response("根拠なし\n\nCITATIONS:\n\n")),
